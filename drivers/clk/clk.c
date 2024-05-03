@@ -31,6 +31,9 @@
 
 #include "clk.h"
 
+#ifdef CONFIG_PROC_FS
+#include <linux/proc_fs.h>
+#endif
 static DEFINE_SPINLOCK(enable_lock);
 static DEFINE_MUTEX(prepare_lock);
 
@@ -100,7 +103,7 @@ struct clk_core {
 	struct hlist_node	child_node;
 	struct hlist_head	clks;
 	unsigned int		notifier_count;
-#ifdef CONFIG_DEBUG_FS
+#if defined (CONFIG_DEBUG_FS) || defined (CONFIG_PROC_FS)
 	struct dentry		*dentry;
 	struct hlist_node	debug_node;
 #endif
@@ -3252,7 +3255,7 @@ int clk_set_flags(struct clk *clk, unsigned long flags)
 }
 EXPORT_SYMBOL_GPL(clk_set_flags);
 
-#ifdef CONFIG_DEBUG_FS
+#if defined(CONFIG_DEBUG_FS) || defined(CONFIG_PROC_FS)
 #include <linux/debugfs.h>
 
 static struct dentry *rootdir;
@@ -3654,9 +3657,14 @@ static void clock_debug_print_enabled_clocks(struct seq_file *s)
 	struct clk_core *core;
 	int cnt = 0;
 
+#ifdef CONFIG_LGE_PM_DEBUG
+    if (!mutex_trylock(&clk_debug_lock))
+        return;
+    clock_debug_output(s, 0, "Enabled clocks:\n");
+#else
 	if (!mutex_trylock(&clk_debug_lock))
 		return;
-
+#endif
 	clock_debug_output(s, 0, "Enabled clocks:\n");
 
 	hlist_for_each_entry(core, &clk_debug_list, debug_node)
@@ -3669,7 +3677,6 @@ static void clock_debug_print_enabled_clocks(struct seq_file *s)
 	else
 		clock_debug_output(s, 0, "No clocks enabled.\n");
 }
-
 static int enabled_clocks_show(struct seq_file *s, void *unused)
 {
 	clock_debug_print_enabled_clocks(s);
@@ -3973,6 +3980,21 @@ static void clk_debug_unregister(struct clk_core *core)
 	mutex_unlock(&clk_debug_lock);
 }
 
+#ifdef CONFIG_LGE_PM_DEBUG
+/*
+ * Print the names of all enabled clocks and their parents if
+ * debug_suspend is set from debugfs.
+ */
+void clock_debug_print_enabled(bool print_parent)
+{
+/*
+    if (likely(!debug_suspend))
+        return;
+*/
+    if (print_parent)
+        clock_debug_print_enabled_clocks(NULL);
+}
+#else
 /*
  * Print the names of all enabled clocks and their parents if
  * debug_suspend is set from debugfs.
@@ -3981,10 +4003,24 @@ void clock_debug_print_enabled(void)
 {
 	if (likely(!debug_suspend))
 		return;
-
 	clock_debug_print_enabled_clocks(NULL);
 }
+#endif
 EXPORT_SYMBOL_GPL(clock_debug_print_enabled);
+
+#ifdef CONFIG_PROC_FS
+static int procfs_clk_summary_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, clk_summary_show, PDE_DATA(inode));
+}
+
+static const struct file_operations procfs_clk_summary_fops = {
+    .open		= procfs_clk_summary_open,
+    .read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+#endif
 
 /**
  * clk_debug_init - lazily populate the debugfs clk directory
@@ -4010,6 +4046,9 @@ static int __init clk_debug_init(void)
 	if (!d)
 		return -ENOMEM;
 
+#ifdef CONFIG_PROC_FS
+	proc_create_data("clk_summary", 0444, NULL, &procfs_clk_summary_fops, &all_lists);
+#endif
 	d = debugfs_create_file("clk_dump", 0444, rootdir, &all_lists,
 				&clk_dump_fops);
 	if (!d)
