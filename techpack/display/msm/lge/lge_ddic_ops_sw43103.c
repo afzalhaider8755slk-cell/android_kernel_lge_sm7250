@@ -444,6 +444,11 @@ static void lge_set_fp_lhbm_sw43103(struct dsi_panel *panel, int input)
 				lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_AOD_TO_FPS);
 				pr_info("AOD to Normal mode\n");
 			}
+			/* Force-enable hardware dimming before turning on the illumination */
+			panel->lge.lhbm_ready_enable = true;
+			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_READY);
+                        msleep(20); /* Give the hardware some time to stabilize dimming registers */
+
 			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_PRE_FP_LHBM_ON);
 			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_ON);
 			if (input == LGE_FP_LHBM_FORCED_ON) {
@@ -459,6 +464,11 @@ static void lge_set_fp_lhbm_sw43103(struct dsi_panel *panel, int input)
 				lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_READY);
 				pr_info("Factory mode need lhbm ready\n");
 			}
+			/* Force-enable hardware dimming before turning on the illumination */
+			panel->lge.lhbm_ready_enable = true;
+			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_READY);
+                        msleep(20); /* Give the hardware some time to stabilize dimming registers */
+                        
 			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_ON);
 			pr_info("[LHBM ON]\n");
 		break;
@@ -470,6 +480,10 @@ static void lge_set_fp_lhbm_sw43103(struct dsi_panel *panel, int input)
 				lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_FPS_TO_AOD);
 				pr_info("Normal to AOD mode\n");
 			}
+			/* Force-disable hardware dimming when turning off */
+			panel->lge.lhbm_ready_enable = false;
+			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_EXIT);
+
 			if (!panel->lge.lhbm_ready_enable) {
 				pr_info("[LHBM OFF] current brightness = %d\n", panel->bl_config.bl_level);
 				dsi_panel_set_backlight(panel, panel->bl_config.bl_level);
@@ -487,6 +501,10 @@ static void lge_set_fp_lhbm_sw43103(struct dsi_panel *panel, int input)
 				lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_FPS_TO_AOD);
 				pr_info("Normal to AOD mode\n");
 			}
+			/* Force-disable hardware dimming when turning off */
+			panel->lge.lhbm_ready_enable = false;
+			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_EXIT);
+
 			if (!panel->lge.lhbm_ready_enable) {
 				pr_info("[LHBM OFF] current brightness = %d\n", panel->bl_config.bl_level);
 				dsi_panel_set_backlight(panel, panel->bl_config.bl_level);
@@ -526,6 +544,12 @@ static void lge_set_fp_lhbm_sw43103(struct dsi_panel *panel, int input)
 				pr_info("AOD to Normal mode\n");
 			}
 			pr_info("[LHBM ON] set max brightness 0x6A9\n");
+
+			/* Force-enable hardware dimming before turning on the illumination */
+			panel->lge.lhbm_ready_enable = true;
+			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_READY);
+                        msleep(20); /* Give the hardware some time to stabilize dimming registers */
+
 			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_ON);
 			if (input == LGE_FP_LHBM_FORCED_ON) {
 				if (panel->lge.old_fp_lhbm_mode == LGE_FP_LHBM_FORCED_ON)
@@ -542,6 +566,11 @@ static void lge_set_fp_lhbm_sw43103(struct dsi_panel *panel, int input)
 				lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_FPS_TO_AOD);
 				pr_info("Normal to AOD mode\n");
 			}
+
+			/* Force-disable hardware dimming when turning off */
+			panel->lge.lhbm_ready_enable = false;
+			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_FP_LHBM_EXIT);
+
 			if (!panel->lge.lhbm_ready_enable) {
 				pr_info("[LHBM OFF] current brightness = %d\n", panel->bl_config.bl_level);
 				dsi_panel_set_backlight(panel, panel->bl_config.bl_level);
