@@ -1,5 +1,8 @@
 ccflags-y := -Iinclude/drm -Itechpack/display/msm -Idrivers/soc/qcom/lge/power
-
+# Include LGE Power and Qualcomm display techpack headers
+ccflags-y += -I$(srctree)/drivers/soc/qcom/lge/power
+ccflags-y += -I$(srctree)/techpack/display/msm
+ccflags-y += -I$(srctree)/techpack/display/msm/sde
 obj-$(CONFIG_MACH_LGE) += devices_lge.o
 obj-$(CONFIG_LGE_BOOTLOADER_LOG) += lge_bootloader_log.o
 obj-$(CONFIG_LGE_BOOTLOADER_TIME_CHECKER) += lge_bootloader_time_checker.o

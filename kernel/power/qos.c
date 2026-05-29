@@ -188,7 +188,7 @@ static void pm_qos_get_client_info(struct pm_qos_request *req, struct task_struc
 	strncpy(req->name, task->comm, sizeof(req->name));
 	if(task->flags & PF_WQ_WORKER) { // if task is workqueue
 		worker = kthread_probe_data(task);
-		probe_kernel_read(&fn, &worker->current_func, sizeof(fn));
+		copy_from_kernel_nofault(&fn, &worker->current_func, sizeof(fn));
 		//probe_kernel_read(desc, worker->desc, sizeof(desc)-1); /* for debugging */
 
 		if(fn) {
