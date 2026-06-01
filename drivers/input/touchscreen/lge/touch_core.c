@@ -688,7 +688,7 @@ static void touch_suspend(struct device *dev)
 	mutex_unlock(&ts->lock);
 
 	if (ts->driver->lpwg) {
-	    int tap2wake_knocked[4] = { 0, 0, 1, 0 };
+	    int tap2wake_knocked[4] = { 1, 1, 1, 1 };
 	    tap2wake_knocked[0] = tap2wake_status;
 		mutex_lock(&ts->lock);
 		TOUCH_I("tap2wake %s\n", (tap2wake_status) ? "Enabled" : "Disabled");
