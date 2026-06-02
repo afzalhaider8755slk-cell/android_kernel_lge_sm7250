@@ -62,3 +62,8 @@
 &disp_rdump_memory {
 	reg = <0x0 0xA0000000 0x0 0x1200000>;
 };
+
+/* Disable the unused Qualcomm PMIC ghost vibrator node */
+&pm7250b_vib {
+    status = "disabled";
+};
