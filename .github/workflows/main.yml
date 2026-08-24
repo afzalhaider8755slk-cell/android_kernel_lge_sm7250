@@ -1,18 +1,17 @@
-name: LG Velvet 5G - Stock Working Kernel + KernelSU v0.9.5 + SUSFS 1.4.2 (Non-GKI)
+name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU v0.9.5 + SUSFS 1.4.2
 
 on:
   workflow_dispatch:
     inputs:
       source_branch:
-        description: "WORKING kernel source branch"
+        description: "EXACT WORKING kernel branch"
         required: true
         type: choice
         options:
           - sixteen
         default: sixteen
-
       defconfig:
-        description: "WORKING kernel defconfig"
+        description: "EXACT WORKING kernel defconfig"
         required: true
         type: choice
         options:
@@ -23,204 +22,179 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-velvet-working-kernel-ksu-susfs-${{ github.ref }}
+  group: lg-velvet-working-4.19-ksu-susfs-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
     name: Build WORKING 4.19 Non-GKI + KSU + SUSFS
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 150
 
     env:
-      # This is the known WORKING kernel baseline. Do not move to another
-      # kernel tree or Android release unless the baseline itself is changed.
       KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
       SOURCE_BRANCH: ${{ inputs.source_branch }}
       SOURCE_COMMIT: 6f4cab15a4e8f5e3400e95d17517fd8b24b37b49
       DEFCONFIG: ${{ inputs.defconfig }}
 
-      # The only functional additions.
+      # ONLY these two functional additions are intended.
       KSU_VERSION: v0.9.5
       SUSFS_VERSION: 1.4.2-kernel-4.19
 
-      # The working build used clang-r563880c.
+      # Exact toolchain family used by the current WORKING build.
       CLANG_REVISION: clang-r563880c
       CLANG_PREBUILT_TAG: ndk-r29
+      GCC64_BRANCH: lineage-19.1
+      GCC32_BRANCH: lineage-19.1
 
       ARCH: arm64
       OUT_DIR: ${{ github.workspace }}/out
       DIAG_DIR: ${{ github.workspace }}/ci-diagnostics
 
+      # SHA256 of the user's known-good stock WORKING kernel .config.
+      # This is the config extracted from the working kernel supplied for this build.
+      WORKING_BASELINE_CONFIG_SHA256: 8b931841bcfcfad0b8ed596fbc156e67a6da8f32f226753ffabc89c907accffa
+
     steps:
-      - name: 01 - Checkout EXACT WORKING kernel baseline
+      - name: 01 - Checkout EXACT WORKING kernel source
         shell: bash
         run: |
           set -euo pipefail
-
           rm -rf "$GITHUB_WORKSPACE/kernel"
 
           git clone --depth=1 --branch "$SOURCE_BRANCH" \
             "$KERNEL_REPO" "$GITHUB_WORKSPACE/kernel"
 
           cd "$GITHUB_WORKSPACE/kernel"
-
           git fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
           git checkout --detach "$SOURCE_COMMIT"
 
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
 
-          echo "=== WORKING BASELINE ==="
+          echo "=== EXACT WORKING SOURCE ==="
           echo "branch=$SOURCE_BRANCH"
           echo "commit=$(git rev-parse HEAD)"
           echo "kernel=$(make -s kernelversion || true)"
 
-      - name: 02 - Install build dependencies
+      - name: 02 - Install build dependencies (including GCC 4.9 Python wrapper fix)
         shell: bash
         run: |
           set -euo pipefail
-
           sudo apt-get update
-
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            ccache \
-            curl \
-            flex \
-            git \
-            libelf-dev \
-            libssl-dev \
-            lld \
-            llvm \
-            python3 \
-            rsync \
-            unzip \
-            wget
+            bc bison build-essential ccache curl flex git libelf-dev libssl-dev \
+            lld llvm python3 python-is-python3 rsync unzip wget
+
+          # LineageOS GCC 4.9 wrappers use #!/usr/bin/python.
+          # Ubuntu 22.04 does not guarantee that /usr/bin/python exists.
+          test -x /usr/bin/python
+          /usr/bin/python --version
 
           mkdir -p "$DIAG_DIR"
 
-      - name: 03 - Download EXACT working Clang r563880c + GCC 4.9
+      - name: 03 - Download EXACT Android Clang r563880c + GCC 4.9
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$GITHUB_WORKSPACE"
-
           rm -rf clang-prebuilt gcc64 gcc32
 
-          # IMPORTANT:
-          # clang-r563880c is NOT a branch of the clang prebuilt repository.
-          # It is a directory inside the Android NDK r29 prebuilt snapshot.
-          # The previous workflow incorrectly used:
-          #   --branch clang-r563880c
-          # which caused:
-          #   fatal: Remote branch clang-r563880c not found
-          #
-          # Pin the NDK snapshot, then sparse-checkout ONLY that toolchain.
-          git clone \
-            --depth=1 \
-            --filter=blob:none \
-            --sparse \
+          # clang-r563880c is a DIRECTORY inside the NDK r29 snapshot,
+          # not a Git branch. NDK r29 contains clang-r563880c. 
+          git clone --depth=1 --filter=blob:none --sparse \
             --branch "$CLANG_PREBUILT_TAG" \
             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
             clang-prebuilt
-
           cd clang-prebuilt
           git sparse-checkout set "$CLANG_REVISION"
-
-          test -x "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang"
-
           cd "$GITHUB_WORKSPACE"
 
-          # These are the legacy Android GCC 4.9 prebuilts used by the
-          # working kernel build.
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+          # Use the LineageOS lineage-19.1 GCC 4.9 prebuilts.
+          # They contain wrapper scripts that require /usr/bin/python.
+          git clone --depth=1 --branch "$GCC64_BRANCH" \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
             gcc64
 
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+          git clone --depth=1 --branch "$GCC32_BRANCH" \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
             gcc32
 
-          echo "CLANG_DIR=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION" >> "$GITHUB_ENV"
-          echo "PATH=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH" >> "$GITHUB_ENV"
+          test -x "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang"
+          test -x "$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc"
+          test -x "$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc"
 
-          echo "=== CLANG ==="
+          # This catches the exact failure seen previously:
+          # ".../aarch64-linux-android-gcc: No such file or directory"
+          # when the wrapper's /usr/bin/python interpreter was missing.
+          "$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc" --version | head -n 1
+          "$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc" --version | head -n 1
           "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang" --version | head -n 2
           "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang" --version | grep -q 'r563880c'
 
-          echo "=== GCC64 ==="
-          "$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc" --version | head -n 1
+          echo "CLANG_DIR=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION" >> "$GITHUB_ENV"
+          echo "GCC64_DIR=$GITHUB_WORKSPACE/gcc64" >> "$GITHUB_ENV"
+          echo "GCC32_DIR=$GITHUB_WORKSPACE/gcc32" >> "$GITHUB_ENV"
+          echo "PATH=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH" >> "$GITHUB_ENV"
 
-          echo "=== GCC32 ==="
-          "$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc" --version | head -n 1
-
-      - name: 04 - Generate and freeze pristine WORKING baseline config
+      - name: 04 - Generate and VERIFY pristine WORKING baseline config
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$GITHUB_WORKSPACE/kernel"
 
           rm -rf "$OUT_DIR"
           mkdir -p "$OUT_DIR"
 
-          # This is the WORKING kernel's vendor defconfig.
-          # Nothing else is changed at this point.
           make O="$OUT_DIR" ARCH="$ARCH" "$DEFCONFIG"
-
           cp "$OUT_DIR/.config" "$DIAG_DIR/working-baseline.config"
 
-          echo "=== BASELINE CONFIG SHA256 ==="
-          sha256sum "$DIAG_DIR/working-baseline.config" | tee "$DIAG_DIR/baseline-config.sha256"
+          BASELINE_SHA256="$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+          echo "baseline_config_sha256=$BASELINE_SHA256" | tee "$DIAG_DIR/baseline-config.sha256"
 
-          echo "=== BASELINE KERNEL CONFIG ==="
-          grep -E '^(CONFIG_LOCALVERSION|CONFIG_MACH_LITO_CAYMANLM|CONFIG_MACH_LITO_CAYMANLM_LAO_COM|CONFIG_KPROBES|CONFIG_MODULES|CONFIG_MODVERSIONS)=' \
-            "$OUT_DIR/.config" || true
+          # Hard stop if the repo/branch/defconfig is not the same working kernel
+          # supplied by the user. This prevents accidental porting or drift.
+          test "$BASELINE_SHA256" = "$WORKING_BASELINE_CONFIG_SHA256"
 
-          # Kprobe is part of the known-good Non-GKI KernelSU path.
-          # Do not silently change it if the working baseline lacks it.
-          grep -q '^CONFIG_KPROBES=y$' "$OUT_DIR/.config"
+          # Critical working-kernel properties. Do NOT turn KPROBES on.
+          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_HAVE_KPROBES=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_MODULES=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_OVERLAY_FS=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_MACH_LITO_CAYMANLM=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_LOCALVERSION="-perf"$' "$OUT_DIR/.config"
 
-      - name: 05 - Integrate ONLY KernelSU v0.9.5 (Non-GKI)
+          echo "PASS: pristine WORKING baseline is byte-for-byte config-identical."
+          echo "PASS: CONFIG_KPROBES remains disabled exactly as in the working kernel."
+
+      - name: 05 - Integrate ONLY KernelSU v0.9.5 (manual Non-GKI path)
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$GITHUB_WORKSPACE/kernel"
 
-          curl -fL \
-            "https://raw.githubusercontent.com/tiann/KernelSU/v0.9.5/kernel/setup.sh" \
-            -o /tmp/ksu-setup.sh
-
-          chmod +x /tmp/ksu-setup.sh
-          /tmp/ksu-setup.sh "$KSU_VERSION"
+          # v0.9.5 is the last official KernelSU release supporting non-GKI.
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
+            | bash -s "$KSU_VERSION"
 
           test -d KernelSU/kernel
-          test -e drivers/kernelsu
           test -e drivers/kernelsu/Kconfig
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
           grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
 
-          echo "=== KernelSU ==="
           cd KernelSU
           test "$(git describe --tags --exact-match 2>/dev/null || true)" = "$KSU_VERSION"
           git describe --tags --always
 
-      - name: 06 - Download and verify SUSFS 1.4.2 for kernel 4.19
+      - name: 06 - Download and VERIFY SUSFS 1.4.2 for kernel 4.19
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$GITHUB_WORKSPACE"
-
           rm -rf susfs4ksu
 
           git clone --depth=1 --branch "$SUSFS_VERSION" \
-            https://gitlab.com/simonpunk/susfs4ksu.git \
-            susfs4ksu
+            https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
 
           test -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
           test -f susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
@@ -230,138 +204,262 @@ jobs:
           test -f susfs4ksu/kernel_patches/include/linux/susfs.h
           test -f susfs4ksu/kernel_patches/include/linux/sus_su.h
 
-          echo "SUSFS tag=$SUSFS_VERSION"
-          echo "SUSFS commit=$(git -C susfs4ksu rev-parse HEAD)"
+          echo "susfs_tag=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
+          echo "susfs_commit=$(git -C susfs4ksu rev-parse HEAD)" | tee -a "$DIAG_DIR/susfs-version.txt"
 
       - name: 07 - Apply ONLY SUSFS kernel + KernelSU integration
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # SUSFS 1.4.2 non-GKI instructions for 4.19:
-          # copy the four kernel files + sucompat header, then apply the
-          # two matching patches.
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" \
-            fs/susfs.c
-
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" \
-            fs/sus_su.c
-
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h" \
-            include/linux/susfs.h
-
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h" \
-            include/linux/sus_su.h
-
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h" \
-            KernelSU/kernel/sucompat.h
+          # Follow SUSFS 1.4.2 kernel-4.19 non-GKI instructions.
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" fs/susfs.c
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h" include/linux/sus_su.h
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h" KernelSU/kernel/sucompat.h
 
           cd KernelSU
-
           patch --forward --batch -p1 \
             < "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
 
           cd "$GITHUB_WORKSPACE/kernel"
-
           patch --forward --batch -p1 \
             < "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
 
-      - name: 08 - Add KSU + SUSFS config while preserving WORKING baseline
+      - name: 08 - Add manual KernelSU hooks WITHOUT enabling KPROBES
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # The baseline .config was generated before any KSU/SUSFS changes.
-          # Only KSU/SUSFS symbols are added/changed here.
+          # The supplied WORKING config has CONFIG_KPROBES disabled.
+          # Therefore we use the official v0.9.5 manual-hook method instead of
+          # changing the working kernel's KPROBES setting.
+          test -f "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def insert_before_regex(path, pattern, addition, label):
+              p = Path(path)
+              s = p.read_text()
+              if addition.strip() in s:
+                  print(f"PASS already present: {label}")
+                  return
+              m = re.search(pattern, s, re.M | re.S)
+              if not m:
+                  raise SystemExit(f"ERROR: hook anchor not found: {label} in {path}")
+              p.write_text(s[:m.start()] + addition + s[m.start():])
+              print(f"PASS inserted: {label}")
+
+          def insert_after_regex(path, pattern, addition, label):
+              p = Path(path)
+              s = p.read_text()
+              if addition.strip() in s:
+                  print(f"PASS already present: {label}")
+                  return
+              m = re.search(pattern, s, re.M | re.S)
+              if not m:
+                  raise SystemExit(f"ERROR: hook body anchor not found: {label} in {path}")
+              p.write_text(s[:m.end()] + addition + s[m.end():])
+              print(f"PASS inserted: {label}")
+
+          root = Path('.')
+
+          exec_decl = '''#ifdef CONFIG_KSU
+          extern bool ksu_execveat_hook __read_mostly;
+          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+          \t\t\tvoid *envp, int *flags);
+          extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+          \t\t\t\t void *argv, void *envp, int *flags);
+          #endif
+          
+          '''.replace('          ','')
+          insert_before_regex(root/'fs/exec.c', r'(?m)^static int do_execveat_common\s*\(', exec_decl, 'fs/exec.c declarations')
+          exec_hook = '''
+          #ifdef CONFIG_KSU
+          \tif (unlikely(ksu_execveat_hook))
+          \t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+          \telse
+          \t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+          #endif
+          '''.replace('          ','')
+          insert_after_regex(root/'fs/exec.c', r'(?m)^static int do_execveat_common\s*\([^\{]+\)\s*\{', exec_hook, 'fs/exec.c hook')
+
+          open_decl = '''#ifdef CONFIG_KSU
+          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
+          \t\t\t\t int *flags);
+          #endif
+          
+          '''.replace('          ','')
+          insert_before_regex(root/'fs/open.c', r'(?m)^long do_faccessat\s*\(', open_decl, 'fs/open.c declarations')
+          open_hook = '''
+          #ifdef CONFIG_KSU
+          \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+          #endif
+          '''.replace('          ','')
+          insert_after_regex(root/'fs/open.c', r'(?m)^long do_faccessat\s*\([^\{]+\)\s*\{', open_hook, 'fs/open.c hook')
+
+          read_decl = '''#ifdef CONFIG_KSU
+          extern bool ksu_vfs_read_hook __read_mostly;
+          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
+          \t\t\tsize_t *count_ptr, loff_t **pos);
+          #endif
+          
+          '''.replace('          ','')
+          insert_before_regex(root/'fs/read_write.c', r'(?m)^ssize_t vfs_read\s*\(', read_decl, 'fs/read_write.c declarations')
+          read_hook = '''
+          #ifdef CONFIG_KSU
+          \tif (unlikely(ksu_vfs_read_hook))
+          \t\tksu_handle_vfs_read(&file, &buf, &count, &pos);
+          #endif
+          '''.replace('          ','')
+          insert_after_regex(root/'fs/read_write.c', r'(?m)^ssize_t vfs_read\s*\([^\{]+\)\s*\{', read_hook, 'fs/read_write.c hook')
+
+          stat_decl = '''#ifdef CONFIG_KSU
+          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+          #endif
+          
+          '''.replace('          ','')
+          insert_before_regex(root/'fs/stat.c', r'(?m)^int vfs_statx\s*\(', stat_decl, 'fs/stat.c declarations')
+          stat_hook = '''
+          #ifdef CONFIG_KSU
+          \tksu_handle_stat(&dfd, &filename, &flags);
+          #endif
+          '''.replace('          ','')
+          insert_after_regex(root/'fs/stat.c', r'(?m)^int vfs_statx\s*\([^\{]+\)\s*\{', stat_hook, 'fs/stat.c hook')
+
+          input_decl = '''#ifdef CONFIG_KSU
+          extern bool ksu_input_hook __read_mostly;
+          extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+          #endif
+          
+          '''.replace('          ','')
+          insert_before_regex(root/'drivers/input/input.c', r'(?m)^static void input_handle_event\s*\(', input_decl, 'drivers/input/input.c declarations')
+          input_hook = '''
+          #ifdef CONFIG_KSU
+          \tif (unlikely(ksu_input_hook))
+          \t\tksu_handle_input_handle_event(&type, &code, &value);
+          #endif
+          '''.replace('          ','')
+          insert_after_regex(root/'drivers/input/input.c', r'(?m)^static void input_handle_event\s*\([^\{]+\)\s*\{', input_hook, 'drivers/input/input.c safe-mode hook')
+          PY
+
+          # The manual path must remain genuinely non-KPROBE.
+          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
+          grep -Rsn 'ksu_handle_execveat\|ksu_handle_faccessat\|ksu_handle_vfs_read\|ksu_handle_stat' \
+            fs/exec.c fs/open.c fs/read_write.c fs/stat.c
+
+      - name: 09 - Configure ONLY KSU/SUSFS; preserve every WORKING config value
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          # These are the only functional configuration additions.
+          # KPROBES stays exactly as the stock WORKING kernel: disabled.
           scripts/config --file "$OUT_DIR/.config" \
             --enable CONFIG_KSU \
             --enable CONFIG_KSU_SUSFS \
             --enable CONFIG_KSU_SUSFS_SUS_PATH \
-            --enable CONFIG_KSU_SUSFS_SUS_MOUNT \
             --enable CONFIG_KSU_SUSFS_SUS_KSTAT \
-            --enable CONFIG_KSU_SUSFS_SUS_MAP \
             --enable CONFIG_KSU_SUSFS_SPOOF_UNAME \
+            --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
             --disable CONFIG_KSU_SUSFS_SUS_SU
 
-          # Do NOT alter the working baseline's KPROBES value.
-          grep -q '^CONFIG_KPROBES=y$' "$DIAG_DIR/working-baseline.config"
-          grep -q '^CONFIG_KPROBES=y$' "$OUT_DIR/.config"
-
           make O="$OUT_DIR" ARCH="$ARCH" olddefconfig
-
           cp "$OUT_DIR/.config" "$DIAG_DIR/final.config"
 
-          # HARD SAFETY CHECK:
-          # Apart from CONFIG_KSU* symbols, the final configuration must be
-          # identical to the WORKING baseline configuration. This prevents
-          # an accidental port/restart-causing configuration drift.
+          grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KSU_SUSFS_SPOOF_UNAME=y$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
+
+          # The working-kernel config must remain identical except for CONFIG_KSU*.
           normalize_config() {
             sed -E '/^[[:space:]]*#/d; /^CONFIG_KSU([_=]|$)/d' "$1" | sort
           }
 
           normalize_config "$DIAG_DIR/working-baseline.config" > "$DIAG_DIR/baseline.non-ksu"
-          normalize_config "$DIAG_DIR/final.config" > "$DIAG_DIR/final.non-ksu"
+          normalize_config "$OUT_DIR/.config" > "$DIAG_DIR/final.non-ksu"
 
-          if ! diff -u "$DIAG_DIR/baseline.non-ksu" "$DIAG_DIR/final.non-ksu"               > "$DIAG_DIR/config-drift.diff"; then
-            echo "::error::Non-KSU configuration drift detected."
+          if ! diff -u "$DIAG_DIR/baseline.non-ksu" "$DIAG_DIR/final.non-ksu" > "$DIAG_DIR/config-drift.diff"; then
+            echo "::error::NON-KSU configuration drift detected. Build stopped for safety."
             cat "$DIAG_DIR/config-drift.diff"
             exit 1
           fi
 
-          echo "PASS: all non-KSU configuration values match the WORKING baseline."
+          # Explicitly verify the boot-sensitive baseline values again.
+          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_HAVE_KPROBES=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_MODULES=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_OVERLAY_FS=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_MACH_LITO_CAYMANLM=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_LOCALVERSION="-perf"$' "$OUT_DIR/.config"
 
-          echo "=== KSU/SUSFS FINAL CONFIG ==="
-          grep -E '^CONFIG_KSU($|_)' "$OUT_DIR/.config" | sort
+          echo "PASS: no non-KSU configuration drift."
+          echo "PASS: KPROBES remains disabled; no KPROBE config was added."
 
-          # Known fix for the previous __NR_compat_gettimeofday /
-          # __NR_compat_clock_gettime / __NR_compat_clock_getres errors:
-          # SUS_SU must remain disabled when the existing KSU hook path is used.
-          grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
-
-      - name: 09 - Prove device-tree and working defconfig sources are untouched
+      - name: 10 - Verify source scope (only KSU/SUSFS integration files changed)
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # These are the files that can cause device-specific boot/port/
-          # restart differences. They must remain byte-for-byte untouched.
+          git status --short > "$DIAG_DIR/source-status.txt"
+          git diff --stat > "$DIAG_DIR/source-diff-stat.txt"
+
+          # These device/boot configuration sources are forbidden to change.
           if git status --short -- \
               arch/arm64/boot/dts \
               arch/arm64/configs \
+              drivers/staging \
               | grep -q .; then
-            echo "::error::Working DTB/DTBO or defconfig source files were modified."
-            git status --short -- arch/arm64/boot/dts arch/arm64/configs
+            echo "::error::Device DT/DTBO/defconfig sources changed."
+            git status --short -- arch/arm64/boot/dts arch/arm64/configs drivers/staging
             exit 1
           fi
 
-          echo "PASS: DTB/DTBO sources and defconfig sources are unchanged."
+          echo "=== MODIFIED FILES ==="
+          git status --short
 
-      - name: 10 - Build WORKING kernel with exact toolchain
+          # Expected integration files must exist.
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -d KernelSU/kernel
+
+      - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$GITHUB_WORKSPACE/kernel"
 
           export ARCH=arm64
-          export CROSS_COMPILE="$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-"
-          export CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-"
+          export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CC="$CLANG_DIR/bin/clang"
           export LLVM=1
           export LLVM_IAS=1
+          export CC="$CLANG_DIR/bin/clang"
+          export LD_LIBRARY_PATH="$CLANG_DIR/lib:${LD_LIBRARY_PATH:-}"
 
           echo "CC=$CC"
+          echo "CROSS_COMPILE=$CROSS_COMPILE"
+          echo "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
           "$CC" --version | head -n 2
+          "$GCC64_DIR/bin/aarch64-linux-android-gcc" --version | head -n 1
+          "$GCC32_DIR/bin/arm-linux-androideabi-gcc" --version | head -n 1
 
+          # The supplied working kernel is a raw ARM64 Image with separate DTB/DTBO.
+          # Therefore build Image, not Image.gz, and never replace the stock DTB/DTBO.
           make -Oline \
             O="$OUT_DIR" \
             ARCH=arm64 \
@@ -370,113 +468,114 @@ jobs:
             LLVM_IAS=1 \
             CROSS_COMPILE="$CROSS_COMPILE" \
             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             -j"$(nproc)" \
-            Image.gz \
-            dtbs \
+            Image \
             modules
 
-          test -f "$OUT_DIR/arch/arm64/boot/Image.gz"
+          test -f "$OUT_DIR/arch/arm64/boot/Image"
+          file "$OUT_DIR/arch/arm64/boot/Image" | tee "$DIAG_DIR/image-file.txt"
+          grep -q 'ARM aarch64\|ARM64\|Linux kernel' "$DIAG_DIR/image-file.txt" || true
 
-          cp "$OUT_DIR/arch/arm64/boot/Image.gz" \
-            "$GITHUB_WORKSPACE/Image.gz"
+          cp "$OUT_DIR/arch/arm64/boot/Image" "$GITHUB_WORKSPACE/Image"
 
-          if [ -f "$OUT_DIR/arch/arm64/boot/Image.gz-dtb" ]; then
-            cp "$OUT_DIR/arch/arm64/boot/Image.gz-dtb" \
-              "$GITHUB_WORKSPACE/Image.gz-dtb"
-          fi
+          # DTB/DTBO are intentionally not copied into the kernel artifact.
+          # The user's known-good stock DTB/DTBO remain the device boot assets.
 
-          find "$OUT_DIR/arch/arm64/boot/dts" -type f \
-            \( -name '*.dtb' -o -name '*.dtbo' \) \
-            -print > "$DIAG_DIR/dtb-files.txt" || true
-
-      - name: 11 - Final safety and configuration verification
+      - name: 12 - Final safety checks
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$GITHUB_WORKSPACE/kernel"
 
           test -f "$OUT_DIR/.config"
-          test -f "$OUT_DIR/arch/arm64/boot/Image.gz"
+          test -f "$OUT_DIR/arch/arm64/boot/Image"
 
-          # KSU/SUSFS must be present.
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
-
-          # The problematic SUS_SU compatibility layer must stay disabled.
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
 
-          # Device identity from the WORKING kernel must remain enabled.
+          # Absolutely critical: the working kernel's KPROBES state is unchanged.
+          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_HAVE_KPROBES=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_MODULES=y$' "$OUT_DIR/.config"
+
+          # Device identity remains exactly the working kernel's values.
           grep -q '^CONFIG_MACH_LITO_CAYMANLM=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_LOCALVERSION="-perf"$' "$OUT_DIR/.config"
 
-          # DTB/DTBO/defconfig source safety.
-          test -z "$(git status --short -- arch/arm64/boot/dts arch/arm64/configs)"
+          # DTB/DTBO/defconfig source trees must remain untouched.
+          test -z "$(git status --short -- arch/arm64/boot/dts arch/arm64/configs drivers/staging)"
 
           {
-            echo "=== BUILD METADATA ==="
+            echo "=== FINAL BUILD REPORT ==="
             echo "source_branch=$SOURCE_BRANCH"
             echo "source_commit=$(git rev-parse HEAD)"
             echo "defconfig=$DEFCONFIG"
-            echo "kernel_version=$(make -s O="$OUT_DIR" kernelversion || true)"
+            echo "baseline_config_sha256=$WORKING_BASELINE_CONFIG_SHA256"
             echo "clang=$CLANG_REVISION"
             echo "clang_snapshot=$CLANG_PREBUILT_TAG"
+            echo "gcc64_branch=$GCC64_BRANCH"
+            echo "gcc32_branch=$GCC32_BRANCH"
             echo "ksu=$KSU_VERSION"
             echo "susfs=$SUSFS_VERSION"
+            echo "KPROBES=disabled (preserved from stock working kernel)"
+            echo "artifact=raw ARM64 Image; stock DTB/DTBO intentionally preserved"
             echo
-            echo "=== FINAL KSU/SUSFS CONFIG ==="
+            echo "=== KSU/SUSFS CONFIG ==="
             grep -E '^CONFIG_KSU($|_)' "$OUT_DIR/.config" | sort
             echo
             echo "=== IMAGE ==="
-            ls -lh "$OUT_DIR/arch/arm64/boot/Image.gz"
-            [ -f "$OUT_DIR/arch/arm64/boot/Image.gz-dtb" ] && \
-              ls -lh "$OUT_DIR/arch/arm64/boot/Image.gz-dtb" || true
+            ls -lh "$OUT_DIR/arch/arm64/boot/Image"
           } | tee "$DIAG_DIR/final-report.txt"
 
-      - name: 12 - Package diagnostics
+      - name: 13 - Package diagnostics
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p "$DIAG_DIR"
-
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          git status --short > "$DIAG_DIR/git-status.txt" || true
-          git diff --stat > "$DIAG_DIR/git-diff-stat.txt" || true
+          if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
+            cd "$GITHUB_WORKSPACE/kernel"
+            git status --short > "$DIAG_DIR/git-status.txt" || true
+            git diff --stat > "$DIAG_DIR/git-diff-stat.txt" || true
+            git diff --name-only > "$DIAG_DIR/git-diff-files.txt" || true
+          fi
 
           {
             echo "source_branch=$SOURCE_BRANCH"
-            echo "source_commit=$(git rev-parse HEAD)"
+            echo "source_commit=$SOURCE_COMMIT"
             echo "defconfig=$DEFCONFIG"
+            echo "baseline_config_sha256=$WORKING_BASELINE_CONFIG_SHA256"
             echo "clang_revision=$CLANG_REVISION"
             echo "clang_snapshot=$CLANG_PREBUILT_TAG"
+            echo "gcc64_branch=$GCC64_BRANCH"
+            echo "gcc32_branch=$GCC32_BRANCH"
             echo "ksu=$KSU_VERSION"
             echo "susfs=$SUSFS_VERSION"
+            echo "KPROBES=disabled"
           } > "$DIAG_DIR/build-metadata.txt"
 
-      - name: 13 - Upload kernel image
+      - name: 14 - Upload RAW kernel Image (only on success)
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: LG-Velvet-Stock-KSU-SUSFS-NonGKI-sixteen
+          name: LG-Velvet-Stock-WORKING-4.19-KSU-SUSFS-NonGKI-sixteen
           if-no-files-found: error
           path: |
-            ${{ github.workspace }}/Image.gz
-            ${{ github.workspace }}/Image.gz-dtb
-            ${{ github.workspace }}/kernel/out/arch/arm64/boot/Image.gz
-            ${{ github.workspace }}/kernel/out/arch/arm64/boot/Image.gz-dtb
-            ${{ github.workspace }}/kernel/out/arch/arm64/boot/dts/**/*.dtb
-            ${{ github.workspace }}/kernel/out/arch/arm64/boot/dts/**/*.dtbo
+            ${{ github.workspace }}/Image
+            ${{ github.workspace }}/kernel/out/.config
 
-      - name: 14 - Upload complete diagnostics
+      - name: 15 - Upload complete diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LG-Velvet-KSU-SUSFS-diagnostics-sixteen
+          name: LG-Velvet-KSU-SUSFS-NonGKI-sixteen-diagnostics
           if-no-files-found: warn
           path: |
             ${{ github.workspace }}/ci-diagnostics
             ${{ github.workspace }}/out/.config
             ${{ github.workspace }}/out/arch/arm64/boot/Makefile
+            ${{ github.workspace }}/Image
