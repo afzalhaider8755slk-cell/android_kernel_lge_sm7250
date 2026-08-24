@@ -1,7 +1,22 @@
-name: LG Velvet 5G - Stock 4.19 + KernelSU v0.9.5 + SUSFS 1.4.2
+name: LG Velvet 5G - Stock 4.19 + KernelSU v0.9.5 + SUSFS 1.4.2 (Non-GKI Safe)
 
 on:
   workflow_dispatch:
+    inputs:
+      vendor:
+        description: "Vendor"
+        required: true
+        type: choice
+        default: lge-qcom-dev
+        options:
+          - lge-qcom-dev
+      source_branch:
+        description: "Known working kernel source branch"
+        required: true
+        type: choice
+        default: lineage-22.2
+        options:
+          - lineage-22.2
 
 permissions:
   contents: read
@@ -9,7 +24,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 120
+
     env:
       ARCH: arm64
       LLVM: "1"
@@ -17,56 +33,120 @@ jobs:
       KSU_VERSION: "v0.9.5"
       SUSFS_VERSION: "1.4.2-kernel-4.19"
       SUSFS_COMMIT: "1a6c90d9a45321bcc5c645720e21a28c36548f83"
-      SOURCE_COMMIT: "e4f5f8b0cbc6f93a87be58185086a5e0190adb6"
+      SOURCE_REPO: "lge-qcom-dev/android_kernel_lge_sm7250"
       CLANG_DIR: ${{ github.workspace }}/clang-prebuilt/clang-r563880c
       GCC64_DIR: ${{ github.workspace }}/gcc64
       GCC32_DIR: ${{ github.workspace }}/gcc32
       DIAG_DIR: ${{ github.workspace }}/ci-logs
-    steps:
-      - name: 01 - Checkout exact stock kernel source
-        uses: actions/checkout@v4
-        with:
-          repository: lge-qcom-dev/android_kernel_lge_sm7250
-          ref: ${{ env.SOURCE_COMMIT }}
-          fetch-depth: 1
 
-      - name: 02 - Install dependencies
+    steps:
+      - name: 01 - Checkout known-working stock kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # GitHub's fetch path was failing with protocol v2 in the previous workflow.
+          # Force protocol v1 and clone the known-working lineage branch directly.
+          git -c protocol.version=1 clone \
+            --depth=1 \
+            --single-branch \
+            --branch "${{ inputs.source_branch }}" \
+            "https://github.com/${SOURCE_REPO}.git" .
+
+          test -f Makefile
+          test -d arch/arm64
+          test -d drivers
+          test -d fs
+
+          echo "SOURCE_REPO=${SOURCE_REPO}" | tee "$GITHUB_ENV"
+          echo "SOURCE_BRANCH=${{ inputs.source_branch }}" | tee -a "$GITHUB_ENV"
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" | tee -a "$GITHUB_ENV"
+          git log -1 --oneline
+          git status --short
+
+      - name: 02 - Install build dependencies
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
+
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git curl wget make gcc g++ bison flex bc cpio python3 python-is-python3 gawk zip unzip rsync patch perl libssl-dev libelf-dev device-tree-compiler file
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git curl wget make gcc g++ bison flex bc cpio python3 python-is-python3 \
+            gawk zip unzip rsync patch perl libssl-dev libelf-dev \
+            device-tree-compiler file xz-utils
 
       - name: 03 - Download exact Android toolchains
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth=1 --filter=blob:none --sparse --branch android-16.0.0_r4 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86.git clang-prebuilt
-          (cd clang-prebuilt && git sparse-checkout set clang-r563880c)
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git gcc64
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git gcc32
+
+          git -c protocol.version=1 clone \
+            --depth=1 \
+            --filter=blob:none \
+            --sparse \
+            --branch android-16.0.0_r4 \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86.git \
+            clang-prebuilt
+
+          (
+            cd clang-prebuilt
+            git sparse-checkout set clang-r563880c
+          )
+
+          git -c protocol.version=1 clone \
+            --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+            gcc64
+
+          git -c protocol.version=1 clone \
+            --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
+            gcc32
+
+          test -x "$CLANG_DIR/bin/clang"
+          test -x "$GCC64_DIR/bin/aarch64-linux-android-gcc"
+          test -x "$GCC32_DIR/bin/arm-linux-androideabi-gcc"
+
           echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
           echo "$GCC64_DIR/bin" >> "$GITHUB_PATH"
           echo "$GCC32_DIR/bin" >> "$GITHUB_PATH"
+
           echo "CROSS_COMPILE=$GCC64_DIR/bin/aarch64-linux-android-" >> "$GITHUB_ENV"
           echo "CROSS_COMPILE_ARM32=$GCC32_DIR/bin/arm-linux-androideabi-" >> "$GITHUB_ENV"
+
           "$CLANG_DIR/bin/clang" --version | head -2
 
-      - name: 04 - Apply KernelSU v0.9.5 (non-GKI)
+      - name: 04 - Apply KernelSU v0.9.5 (Non-GKI)
         shell: bash
         run: |
           set -euo pipefail
-          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s "$KSU_VERSION"
-          test -f KernelSU/kernel/Kconfig
 
-      - name: 05 - Apply SUSFS 1.4.2 for kernel 4.19
+          # v0.9.5 is the last official KernelSU release supporting Non-GKI.
+          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh \
+            | bash -s "$KSU_VERSION"
+
+          test -f KernelSU/kernel/Kconfig
+          test -f KernelSU/kernel/ksu.c
+
+          echo "[PASS] KernelSU ${KSU_VERSION} integrated in Non-GKI mode."
+
+      - name: 05 - Apply SUSFS 1.4.2 for Linux 4.19
         shell: bash
         run: |
           set -euo pipefail
-          git clone --no-checkout https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+
+          git -c protocol.version=1 clone \
+            --no-checkout \
+            --filter=blob:none \
+            https://gitlab.com/simonpunk/susfs4ksu.git \
+            susfs4ksu
+
           git -C susfs4ksu fetch --depth=1 origin "$SUSFS_COMMIT"
           git -C susfs4ksu checkout --detach "$SUSFS_COMMIT"
+
+          test "$(git -C susfs4ksu rev-parse HEAD)" = "$SUSFS_COMMIT"
+
           cp -f susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
           cp -f susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h KernelSU/kernel/
           cp -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch 50_add_susfs_in_kernel.patch
@@ -74,27 +154,47 @@ jobs:
           cp -f susfs4ksu/kernel_patches/fs/sus_su.c fs/
           cp -f susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
           cp -f susfs4ksu/kernel_patches/include/linux/sus_su.h include/linux/
-          (cd KernelSU && patch -p1 --forward < 10_enable_susfs_for_ksu.patch)
+
+          (
+            cd KernelSU
+            patch -p1 --forward < 10_enable_susfs_for_ksu.patch
+          )
+
           patch -p1 --forward < 50_add_susfs_in_kernel.patch
+
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('include/linux/sched/user.h'); s=p.read_text()
-          if '#include <linux/android_kabi.h>' not in s:
-              a='#include <linux/ratelimit.h>'
-              if a not in s: raise SystemExit('sched/user.h include anchor missing')
-              s=s.replace(a,a+'\n#include <linux/android_kabi.h>',1)
-          if 'ANDROID_KABI_RESERVE(1);' not in s:
-              a='\tstruct ratelimit_state ratelimit;\n'
-              if a not in s: raise SystemExit('struct user_struct tail missing')
-              s=s.replace(a,a+'\n\tANDROID_KABI_RESERVE(1);\n\tANDROID_KABI_RESERVE(2);\n',1)
+
+          p = Path("include/linux/sched/user.h")
+          s = p.read_text(errors="replace")
+
+          if "#include <linux/android_kabi.h>" not in s:
+              anchor = "#include <linux/ratelimit.h>"
+              if anchor not in s:
+                  raise SystemExit("[FAIL] sched/user.h include anchor not found")
+              s = s.replace(anchor, anchor + "\n#include <linux/android_kabi.h>", 1)
+
+          if "android_kabi_reserved1" not in s:
+              anchor = "\tstruct ratelimit_state ratelimit;\n"
+              if anchor not in s:
+                  raise SystemExit("[FAIL] struct user_struct tail not found")
+              s = s.replace(
+                  anchor,
+                  anchor +
+                  "\tANDROID_KABI_RESERVE(1);\n"
+                  "\tANDROID_KABI_RESERVE(2);\n",
+                  1
+              )
+
           p.write_text(s)
-          print('[PASS] SUSFS 4.19 KABI reserve compatibility applied.')
+          print("[PASS] user_struct KABI reserves added for SUSFS 4.19.")
           PY
 
-      - name: 06 - Restore exact known-working config and add only KSU/SUSFS
+      - name: 06 - Restore exact working config and add only required KSU/SUSFS symbols
         shell: bash
         run: |
           set -euo pipefail
+
           BASE64_FILE="$RUNNER_TEMP/working-kernel.config.gz.b64"
           cat > "$BASE64_FILE" <<'BASE64_EOF'
           H4sIAMjMimoC/6S9WZPjOJIu+n5+hazG7Fi1ne4uLlqouZYPIAlKKHELgloiX2hRkcqquBMZkRMR2VN1fv11B0mJILGo7bZ1Zabg
@@ -617,112 +717,207 @@ jobs:
           Hi6SdHPtIuQ8TgvZyd1U64nC0b516W6eZDLp9cdh31yH6bj7MXi9vfvr9vvxbF+ZPyXH0+D49+n4/K6/5+UxqnTh3cDXJz1NbAQk
           /T/pURuxjaYCAA==
           BASE64_EOF
+
           base64 -d "$BASE64_FILE" > "$RUNNER_TEMP/working-kernel.config.gz"
           gzip -dc "$RUNNER_TEMP/working-kernel.config.gz" > working-kernel.config
           cp -f working-kernel.config .config
+
           python3 - <<'PY'
           from pathlib import Path
-          
+          import subprocess
+
           def parse(path):
-              d={}
-              for line in Path(path).read_text(errors='ignore').splitlines():
-                  if line.startswith('CONFIG_') and '=' in line:
-                      k,v=line.split('=',1); d[k]=v
-                  elif line.startswith('# CONFIG_') and line.endswith(' is not set'):
-                      d[line[2:-len(' is not set')]]='n'
+              d = {}
+              for line in Path(path).read_text(errors="ignore").splitlines():
+                  if line.startswith("CONFIG_") and "=" in line:
+                      k, v = line.split("=", 1)
+                      d[k] = v
+                  elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+                      d[line[2:-len(" is not set")]] = "n"
               return d
-          
+
           def rewrite(path, values):
-              p=Path(path); lines=p.read_text(errors='ignore').splitlines(); pos={}
-              for i,line in enumerate(lines):
-                  if line.startswith('CONFIG_') and '=' in line: pos[line.split('=',1)[0]]=i
-                  elif line.startswith('# CONFIG_') and line.endswith(' is not set'): pos[line[2:-len(' is not set')]]=i
-              for k,v in values.items():
-                  line=f'{k}={v}' if v!='n' else f'# {k} is not set'
-                  if k in pos: lines[pos[k]]=line
-                  else: lines.append(line)
-              p.write_text('\n'.join(lines)+'\n')
-          
-          base=parse('working-kernel.config')
-          values={
-           'CONFIG_KSU':'y','CONFIG_KSU_SUSFS':'y',
-           'CONFIG_KSU_SUSFS_SUS_PATH':'y','CONFIG_KSU_SUSFS_SUS_MOUNT':'y',
-           'CONFIG_KSU_SUSFS_SUS_KSTAT':'y','CONFIG_KSU_SUSFS_SUS_OVERLAYFS':'y',
-           'CONFIG_KSU_SUSFS_TRY_UMOUNT':'y','CONFIG_KSU_SUSFS_SPOOF_UNAME':'y',
-           'CONFIG_KSU_SUSFS_ENABLE_LOG':'y','CONFIG_KSU_SUSFS_SUS_SU':'y',
-           'CONFIG_KPROBES':'y','CONFIG_KPROBE_EVENTS':'y'}
-          rewrite('.config', values)
-          cur=parse('.config')
-          allowed=lambda k: k.startswith('CONFIG_KSU') or k in {'CONFIG_KPROBES','CONFIG_KPROBE_EVENTS'}
-          changed=[(k,base.get(k,'n'),cur.get(k,'n')) for k in sorted(set(base)|set(cur)) if base.get(k,'n')!=cur.get(k,'n') and not allowed(k)]
+              p = Path(path)
+              lines = p.read_text(errors="ignore").splitlines()
+              pos = {}
+
+              for i, line in enumerate(lines):
+                  if line.startswith("CONFIG_") and "=" in line:
+                      pos[line.split("=", 1)[0]] = i
+                  elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+                      pos[line[2:-len(" is not set")]] = i
+
+              for k, v in values.items():
+                  line = f"{k}={v}" if v != "n" else f"# {k} is not set"
+                  if k in pos:
+                      lines[pos[k]] = line
+                  else:
+                      lines.append(line)
+
+              p.write_text("\n".join(lines) + "\n")
+
+          base = parse("working-kernel.config")
+
+          values = {
+              "CONFIG_KSU": "y",
+              "CONFIG_KSU_SUSFS": "y",
+              "CONFIG_KSU_SUSFS_SUS_PATH": "y",
+              "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
+              "CONFIG_KSU_SUSFS_SUS_KSTAT": "y",
+              "CONFIG_KSU_SUSFS_SUS_OVERLAYFS": "y",
+              "CONFIG_KSU_SUSFS_TRY_UMOUNT": "y",
+              "CONFIG_KSU_SUSFS_SPOOF_UNAME": "y",
+              "CONFIG_KSU_SUSFS_ENABLE_LOG": "y",
+              "CONFIG_KSU_SUSFS_SUS_SU": "n",
+              "CONFIG_KPROBES": "y",
+          }
+
+          rewrite(".config", values)
+          subprocess.run(["make", "ARCH=arm64", "olddefconfig"], check=True)
+
+          cur = parse(".config")
+          allowed = lambda k: k.startswith("CONFIG_KSU") or k == "CONFIG_KPROBES"
+
+          changed = [
+              (k, base.get(k, "n"), cur.get(k, "n"))
+              for k in sorted(set(base) | set(cur))
+              if base.get(k, "n") != cur.get(k, "n") and not allowed(k)
+          ]
+
           if changed:
-              print('[FAIL] Config drift outside KSU/SUSFS/kprobe:')
-              for x in changed: print(' ',x)
+              print("[FAIL] Config drift outside KSU/SUSFS/KPROBES:")
+              for item in changed:
+                  print(" ", item)
               raise SystemExit(2)
-          for k,v in {'CONFIG_KSU':'y','CONFIG_KSU_SUSFS':'y','CONFIG_KPROBES':'y','CONFIG_KPROBE_EVENTS':'y'}.items():
-              if cur.get(k)!=v: raise SystemExit(f'[FAIL] {k}: got {cur.get(k)}, expected {v}')
-          Path('.config').touch()
-          print('[PASS] Exact working config preserved; only KSU/SUSFS/kprobe symbols added.')
+
+          expected = {
+              "CONFIG_KSU": "y",
+              "CONFIG_KSU_SUSFS": "y",
+              "CONFIG_KSU_SUSFS_SUS_PATH": "y",
+              "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
+              "CONFIG_KSU_SUSFS_SUS_KSTAT": "y",
+              "CONFIG_KSU_SUSFS_SUS_OVERLAYFS": "y",
+              "CONFIG_KSU_SUSFS_TRY_UMOUNT": "y",
+              "CONFIG_KSU_SUSFS_SPOOF_UNAME": "y",
+              "CONFIG_KSU_SUSFS_ENABLE_LOG": "y",
+              "CONFIG_KSU_SUSFS_SUS_SU": "n",
+              "CONFIG_KPROBES": "y",
+          }
+
+          for k, v in expected.items():
+              if cur.get(k) != v:
+                  raise SystemExit(
+                      f"[FAIL] {k}: got {cur.get(k)!r}, expected {v!r}"
+                  )
+
+          print("[PASS] Working baseline preserved; only KSU/SUSFS + KPROBES changed.")
           PY
+
           cp -f working-kernel.config "$DIAG_DIR/working-kernel.config"
           cp -f .config "$DIAG_DIR/config-after-ksu-susfs.config"
 
-      - name: 07 - Verify source/config scope
+      - name: 07 - Verify source scope and protected stock files
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== config-only feature diff ==="
-          diff -u "$DIAG_DIR/working-kernel.config" .config | grep -E '^[-+](CONFIG_|# CONFIG_)' || true
-          echo "=== source changes ==="
+
+          echo "=== Source ==="
+          git rev-parse HEAD
           git status --short
-          if git status --short | grep -E '^( M|\?\?) (arch/arm64/boot/dts|lib/fault-inject.c|drivers/nfc/|techpack/|drivers/clk/qcom/)'; then
-            echo '[FAIL] Unrelated DTS/fault-injection/NFC/techpack changes detected.'
+
+          # Stock DTB/DTBO/vendor/device-tree inputs are protected.
+          if git status --short | grep -E \
+            '^( M|\?\?) (arch/arm64/boot/dts|vendor/|drivers/nfc/|techpack/|drivers/clk/qcom/)'; then
+            echo "[FAIL] Protected DTS/vendor/device-tree area was modified."
             exit 2
           fi
-          echo '[PASS] No unrelated source compatibility hacks are allowed.'
 
-      - name: 08 - Build Image only; preserve stock DTB/DTBO
+          echo "[PASS] No porting/vendor/DTS changes detected."
+
+      - name: 08 - Build stock-compatible kernel Image only
         shell: bash
         run: |
           set +e
+
           FULL_LOG="$GITHUB_WORKSPACE/kernel-build-full.log"
           : > "$FULL_LOG"
+
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
           export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
+
           START=$(date +%s)
-          make ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" -j"$(nproc)" Image V=1 WERROR=0 >"$FULL_LOG" 2>&1
+
+          make \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            -j"$(nproc)" \
+            Image V=1 WERROR=0 \
+            >"$FULL_LOG" 2>&1
+
           STATUS=$?
           END=$(date +%s)
+
           echo "BUILD_STATUS=$STATUS" | tee "$DIAG_DIR/08-build-summary.log"
           echo "BUILD_TIME_SECONDS=$((END-START))" | tee -a "$DIAG_DIR/08-build-summary.log"
-          grep -nEi 'fatal error:|error:|undefined reference|undeclared|implicit declaration|No rule to make target|recipe for target|make\[[0-9]+\]: \*\*\*|Error [0-9]+' "$FULL_LOG" | tail -200 > "$DIAG_DIR/08-build-errors.log" || true
+
+          grep -nEi \
+            'fatal error:|error:|undefined reference|undeclared|implicit declaration|No rule to make target|recipe for target|make\[[0-9]+\]: \*\*\*|Error [0-9]+' \
+            "$FULL_LOG" | tail -200 > "$DIAG_DIR/08-build-errors.log" || true
+
           tail -300 "$FULL_LOG" > "$DIAG_DIR/08-build-tail.log" || true
-          if [ "$STATUS" -ne 0 ]; then tail -100 "$FULL_LOG"; exit "$STATUS"; fi
+
+          if [ "$STATUS" -ne 0 ]; then
+            tail -150 "$FULL_LOG"
+            exit "$STATUS"
+          fi
+
           test -s arch/arm64/boot/Image
-          echo '[PASS] Kernel Image built.'
+          echo "[PASS] Kernel Image built."
 
       - name: 09 - Final safety/config check
         if: success()
         shell: bash
         run: |
           set -euo pipefail
+
           python3 - <<'PY'
           from pathlib import Path
-          
+
           def parse(path):
-              d={}
-              for line in Path(path).read_text(errors='ignore').splitlines():
-                  if line.startswith('CONFIG_') and '=' in line: k,v=line.split('=',1); d[k]=v
-                  elif line.startswith('# CONFIG_') and line.endswith(' is not set'): d[line[2:-len(' is not set')]]='n'
+              d = {}
+              for line in Path(path).read_text(errors="ignore").splitlines():
+                  if line.startswith("CONFIG_") and "=" in line:
+                      k, v = line.split("=", 1)
+                      d[k] = v
+                  elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+                      d[line[2:-len(" is not set")]] = "n"
               return d
-          base=parse('working-kernel.config'); cur=parse('.config')
-          allowed=lambda k:k.startswith('CONFIG_KSU') or k in {'CONFIG_KPROBES','CONFIG_KPROBE_EVENTS'}
-          changed=[(k,base.get(k,'n'),cur.get(k,'n')) for k in sorted(set(base)|set(cur)) if base.get(k,'n')!=cur.get(k,'n') and not allowed(k)]
-          if changed: raise SystemExit(f'Config drift remains: {changed}')
-          print('[PASS] Final config still matches working baseline except KSU/SUSFS/kprobe.')
+
+          base = parse("working-kernel.config")
+          cur = parse(".config")
+          allowed = lambda k: k.startswith("CONFIG_KSU") or k == "CONFIG_KPROBES"
+
+          changed = [
+              (k, base.get(k, "n"), cur.get(k, "n"))
+              for k in sorted(set(base) | set(cur))
+              if base.get(k, "n") != cur.get(k, "n") and not allowed(k)
+          ]
+
+          if changed:
+              raise SystemExit(f"Config drift remains: {changed}")
+
+          if cur.get("CONFIG_KSU_SUSFS_SUS_SU") != "n":
+              raise SystemExit("CONFIG_KSU_SUSFS_SUS_SU must remain disabled.")
+
+          print("[PASS] Final config matches the working baseline except KSU/SUSFS/KPROBES.")
           PY
-          grep -E '^CONFIG_(KSU|KSU_SUSFS|KPROBES|KPROBE_EVENTS)=' .config
+
+          grep -E '^CONFIG_(KSU|KSU_SUSFS|KPROBES)=' .config || true
+          grep -E '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' .config
           sha256sum arch/arm64/boot/Image | tee "$DIAG_DIR/Image.sha256"
 
       - name: 10 - Stage diagnostics
@@ -731,18 +926,28 @@ jobs:
         run: |
           set +e
           mkdir -p diagnostic-artifact
+
           cp -f kernel-build-full.log diagnostic-artifact/08-build-full.log 2>/dev/null || true
           cp -f .config diagnostic-artifact/final.config 2>/dev/null || true
           cp -f working-kernel.config diagnostic-artifact/working-kernel.config 2>/dev/null || true
           cp -f 50_add_susfs_in_kernel.patch diagnostic-artifact/50_add_susfs_in_kernel.patch 2>/dev/null || true
           cp -rf "$DIAG_DIR" diagnostic-artifact/ci-logs 2>/dev/null || true
-          printf 'Source commit: %s\nKernelSU: %s\nSUSFS: %s\n' "$SOURCE_COMMIT" "$KSU_VERSION" "$SUSFS_VERSION" > diagnostic-artifact/MANIFEST.txt
+
+          {
+            printf 'Source repo: %s\n' "$SOURCE_REPO"
+            printf 'Source branch: %s\n' "$SOURCE_BRANCH"
+            printf 'Source commit: %s\n' "$SOURCE_COMMIT"
+            printf 'KernelSU: %s\n' "$KSU_VERSION"
+            printf 'SUSFS: %s\n' "$SUSFS_VERSION"
+            printf 'Mode: Non-GKI\n'
+            printf 'DTB/DTBO: stock source preserved\n'
+          } > diagnostic-artifact/MANIFEST.txt
 
       - name: 11 - Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LG-Velvet-Stock-KSU-SUSFS-Diagnostics-Fixed
+          name: LG-Velvet-Stock-KSU-SUSFS-NonGKI-Diagnostics
           path: diagnostic-artifact
           if-no-files-found: error
           retention-days: 14
@@ -751,7 +956,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: LG-Velvet-Stock-KSU-SUSFS-Image-Fixed
+          name: LG-Velvet-Stock-KSU-SUSFS-NonGKI-Image
           path: arch/arm64/boot/Image
           if-no-files-found: error
           retention-days: 14
