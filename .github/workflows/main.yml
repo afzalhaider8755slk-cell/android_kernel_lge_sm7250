@@ -1,6 +1,10 @@
 name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU v0.9.5 + SUSFS 1.4.2
 
 on:
+  # Automatic run: any commit/upload to this repository triggers the build.
+  # The build itself always checks out the locked WORKING sixteen source commit.
+  push:
+
   workflow_dispatch:
     inputs:
       source_branch:
@@ -33,9 +37,9 @@ jobs:
 
     env:
       KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
-      SOURCE_BRANCH: ${{ inputs.source_branch }}
+      SOURCE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || 'sixteen' }}
       SOURCE_COMMIT: 6f4cab15a4e8f5e3400e95d17517fd8b24b37b49
-      DEFCONFIG: ${{ inputs.defconfig }}
+      DEFCONFIG: ${{ github.event_name == 'workflow_dispatch' && inputs.defconfig || 'vendor/caymanlm_defconfig' }}
 
       # ONLY these two functional additions are intended.
       KSU_VERSION: v0.9.5
@@ -145,7 +149,25 @@ jobs:
           rm -rf "$OUT_DIR"
           mkdir -p "$OUT_DIR"
 
-          make O="$OUT_DIR" ARCH="$ARCH" "$DEFCONFIG"
+          # IMPORTANT: generate Kconfig with the Ubuntu HOST compiler, not the
+          # Android cross compiler/Clang toolchain.  Linux 4.19's Kconfig runs
+          # scripts/as-version.sh against CC; if CC accidentally points at an
+          # Android/unsupported compiler it stops with:
+          #   "Sorry, this assembler is not supported."
+          # This is a HOST/Kconfig probe failure, not a kernel/defconfig failure.
+          # Keep the working kernel config untouched while making the host toolchain explicit.
+          unset CC HOSTCC HOSTCXX LD AS CROSS_COMPILE CROSS_COMPILE_ARM32 LLVM LLVM_IAS CLANG_TRIPLE || true
+          command -v gcc
+          command -v g++
+          command -v ld.bfd
+          gcc --version | head -n 1
+          ld.bfd --version | head -n 1
+          echo "=== KCONFIG ASSEMBLER PROBE ==="
+          ./scripts/as-version.sh gcc "" | tee "$DIAG_DIR/host-as-version.txt"
+
+          make O="$OUT_DIR" ARCH="$ARCH" \
+            CC=gcc HOSTCC=gcc HOSTCXX=g++ LD=ld.bfd AS=as \
+            "$DEFCONFIG"
           cp "$OUT_DIR/.config" "$DIAG_DIR/working-baseline.config"
 
           BASELINE_SHA256="$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
@@ -371,7 +393,12 @@ jobs:
             --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
             --disable CONFIG_KSU_SUSFS_SUS_SU
 
-          make O="$OUT_DIR" ARCH="$ARCH" olddefconfig
+          # Kconfig/syncconfig is still a HOST operation.  Do not let the
+          # Android Clang/GCC cross toolchain answer scripts/as-version.sh.
+          unset CC HOSTCC HOSTCXX LD AS CROSS_COMPILE CROSS_COMPILE_ARM32 LLVM LLVM_IAS CLANG_TRIPLE || true
+          make O="$OUT_DIR" ARCH="$ARCH" \
+            CC=gcc HOSTCC=gcc HOSTCXX=g++ LD=ld.bfd AS=as \
+            olddefconfig
           cp "$OUT_DIR/.config" "$DIAG_DIR/final.config"
 
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
@@ -449,6 +476,8 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
           export CC="$CLANG_DIR/bin/clang"
+          export HOSTCC=gcc
+          export HOSTCXX=g++
           export LD_LIBRARY_PATH="$CLANG_DIR/lib:${LD_LIBRARY_PATH:-}"
 
           echo "CC=$CC"
