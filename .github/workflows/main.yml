@@ -149,13 +149,58 @@ jobs:
           rm -rf "$OUT_DIR"
           mkdir -p "$OUT_DIR"
 
+          # IMPORTANT: this exact WORKING source contains scripts/as-version.sh,
+          # but its matching scripts/min-tool-version.sh is absent. as-version.sh
+          # unconditionally calls that helper for the GNU assembler probe.
+          # Restore ONLY this missing kbuild helper in the CI checkout. It is not
+          # a kernel feature and is never committed back to the WORKING source.
+          if grep -q 'min-tool-version.sh' scripts/as-version.sh; then
+            cat > scripts/min-tool-version.sh <<'EOF'
+          #!/bin/sh
+          # SPDX-License-Identifier: GPL-2.0-only
+          # CI restoration for the exact WORKING 4.19 source: as-version.sh exists
+          # in the source, but its companion helper is missing from this commit.
+          set -e
+
+          if [ "$#" != 1 ]; then
+            echo "Usage: $0 toolname" >&2
+            exit 1
+          fi
+
+          case "$1" in
+            binutils)
+              echo 2.23.0
+              ;;
+            gcc)
+              if [ "$SRCARCH" = arm64 ]; then
+                echo 5.1.0
+              else
+                echo 4.9.0
+              fi
+              ;;
+            icc)
+              echo 16.0.3
+              ;;
+            llvm)
+              echo 10.0.1
+              ;;
+            *)
+              echo "$1: unknown tool" >&2
+              exit 1
+              ;;
+          esac
+          EOF
+            chmod 0755 scripts/min-tool-version.sh
+          fi
+
+          test -x scripts/min-tool-version.sh
+          test "$(scripts/min-tool-version.sh binutils)" = "2.23.0"
+          test "$(SRCARCH=arm64 scripts/min-tool-version.sh gcc)" = "5.1.0"
+          test "$(scripts/min-tool-version.sh llvm)" = "10.0.1"
+
           # IMPORTANT: generate Kconfig with the Ubuntu HOST compiler, not the
-          # Android cross compiler/Clang toolchain.  Linux 4.19's Kconfig runs
-          # scripts/as-version.sh against CC; if CC accidentally points at an
-          # Android/unsupported compiler it stops with:
-          #   "Sorry, this assembler is not supported."
-          # This is a HOST/Kconfig probe failure, not a kernel/defconfig failure.
-          # Keep the working kernel config untouched while making the host toolchain explicit.
+          # Android cross compiler/Clang toolchain. Linux 4.19 Kconfig invokes
+          # scripts/as-version.sh through scripts/Kconfig.include.
           unset CC HOSTCC HOSTCXX LD AS CROSS_COMPILE CROSS_COMPILE_ARM32 LLVM LLVM_IAS CLANG_TRIPLE || true
           command -v gcc
           command -v g++
@@ -163,7 +208,7 @@ jobs:
           gcc --version | head -n 1
           ld.bfd --version | head -n 1
           echo "=== KCONFIG ASSEMBLER PROBE ==="
-          ./scripts/as-version.sh gcc "" | tee "$DIAG_DIR/host-as-version.txt"
+          ./scripts/as-version.sh gcc | tee "$DIAG_DIR/host-as-version.txt"
 
           make O="$OUT_DIR" ARCH="$ARCH" \
             CC=gcc HOSTCC=gcc HOSTCXX=g++ LD=ld.bfd AS=as \
