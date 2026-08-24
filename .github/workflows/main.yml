@@ -14,9 +14,9 @@ on:
         description: "Known working kernel source branch"
         required: true
         type: choice
-        default: lineage-22.2
+        default: sixteen
         options:
-          - lineage-22.2
+          - sixteen
 
 permissions:
   contents: read
@@ -33,7 +33,7 @@ jobs:
       KSU_VERSION: "v0.9.5"
       SUSFS_VERSION: "1.4.2-kernel-4.19"
       SUSFS_COMMIT: "1a6c90d9a45321bcc5c645720e21a28c36548f83"
-      SOURCE_REPO: "lge-qcom-dev/android_kernel_lge_sm7250"
+      SOURCE_REPO: "afzalhaider8755slk-cell/android_kernel_lge_sm7250"
       CLANG_DIR: ${{ github.workspace }}/clang-prebuilt/clang-r563880c
       GCC64_DIR: ${{ github.workspace }}/gcc64
       GCC32_DIR: ${{ github.workspace }}/gcc32
