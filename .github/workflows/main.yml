@@ -808,10 +808,15 @@ jobs:
 
           patch --forward --batch -p1 < "$RUNNER_TEMP/50_susfs-no-namespace.patch"
 
-          # Never compile a partially patched kernel.
-          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "::error::Patch reject/original file detected."
-            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print
+          # GNU patch may leave harmless *.orig backup files even when every
+          # hunk applied successfully. They are NOT patch failures.
+          # Remove only those patch-created backups, then fail only on real
+          # reject files (*.rej). This avoids the false failure seen in run #15.
+          find . -type f -name '*.orig' -delete
+
+          if find . -type f -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::A SUSFS patch reject (*.rej) was created."
+            find . -type f -name '*.rej' -print
             exit 1
           fi
 
