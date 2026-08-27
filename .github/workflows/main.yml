@@ -1,4 +1,4 @@
-name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU v0.9.5 + SUSFS 1.4.2 (v5)
+name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU v0.9.5 + SUSFS 1.4.2 (v6)
 
 on:
   # Automatic run: any commit/upload to this repository triggers the build.
@@ -1019,6 +1019,7 @@ jobs:
           normalize_config() {
             sed -E \
               -e '/^[[:space:]]*#/d' \
+              -e '/^[[:space:]]*$/d' \
               -e '/^CONFIG_KSU([_=]|$)/d' \
               -e '/^CONFIG_CC_/d' \
               -e '/^CONFIG_CLANG_/d' \
@@ -1033,11 +1034,16 @@ jobs:
           normalize_config "$DIAG_DIR/working-baseline.config" > "$DIAG_DIR/baseline.non-ksu"
           normalize_config "$OUT_DIR/.config" > "$DIAG_DIR/final.non-ksu"
 
+          # Kconfig may reflow blank lines when writing .config. Blank-line-only
+          # formatting changes are not configuration drift; actual CONFIG_* value
+          # changes are. The normalized comparison above removes blank lines.
           if ! diff -u "$DIAG_DIR/baseline.non-ksu" "$DIAG_DIR/final.non-ksu" > "$DIAG_DIR/config-drift.diff"; then
             echo "::error::NON-KSU configuration drift detected. Build stopped for safety."
             cat "$DIAG_DIR/config-drift.diff"
             exit 1
           fi
+
+          echo "PASS: semantic non-KSU configuration matches the WORKING baseline."
 
           # Explicitly verify boot-sensitive values again.
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
@@ -1075,6 +1081,18 @@ jobs:
 
           echo "=== MODIFIED FILES ==="
           git status --short
+
+          # Strict source-scope allowlist. Only KernelSU/SUSFS integration and
+          # the documented non-KPROBE hook sites may differ from the WORKING tree.
+          allowed_files='^(
+KernelSU/|
+drivers/Kconfig$|drivers/Makefile$|drivers/input/input.c$|fs/Makefile$|fs/dcache.c$|fs/devpts/inode.c$|fs/exec.c$|fs/inode.c$|fs/namei.c$|fs/open.c$|fs/overlayfs/inode.c$|fs/overlayfs/readdir.c$|fs/overlayfs/super.c$|fs/proc/task_mmu.c$|fs/proc_namespace.c$|fs/read_write.c$|fs/readdir.c$|fs/stat.c$|fs/statfs.c$|include/linux/sched.h$|kernel/sys.c$|fs/susfs.c$|include/linux/susfs.h$|fs/sus_su.c$|include/linux/sus_su.h$)$'
+          unexpected="$(git status --short | sed -E 's/^.. //g' | grep -Ev "$allowed_files" || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::Unexpected source files changed:"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
 
           # Expected integration files must exist.
           test -f fs/susfs.c
