@@ -973,13 +973,24 @@ jobs:
           scripts/config --file "$OUT_DIR/.config" \
             --enable CONFIG_KSU \
             --enable CONFIG_KSU_SUSFS \
-            --enable CONFIG_KSU_SUSFS_SUS_PATH \
+            --disable CONFIG_KSU_SUSFS_SUS_PATH \
             --enable CONFIG_KSU_SUSFS_SUS_KSTAT \
             --enable CONFIG_KSU_SUSFS_SPOOF_UNAME \
             --enable CONFIG_KSU_SUSFS_TRY_UMOUNT \
             --enable CONFIG_KSU_SUSFS_ENABLE_LOG \
             --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
             --disable CONFIG_KSU_SUSFS_SUS_SU
+
+          # SUS_PATH compatibility:
+          # SUSFS 1.4.2-kernel-4.19 writes new->user->android_kabi_reserved1
+          # when CONFIG_KSU_SUSFS_SUS_PATH=y. The exact LG WORKING 4.19 source
+          # does not have that member in struct user_struct. Adding it would
+          # change a core kernel struct layout, so only SUS_PATH is disabled.
+          if grep -q 'android_kabi_reserved1' include/linux/user.h; then
+            echo "INFO: user_struct has android_kabi_reserved1, but SUS_PATH remains disabled for this build."
+          else
+            echo "PASS: LG WORKING user_struct has no android_kabi_reserved1; SUS_PATH correctly disabled."
+          fi
 
           # Run Kconfig with the SAME Android Clang/LLVM family used by the
           # supplied working kernel. Do not regenerate the baseline from the
@@ -1006,7 +1017,7 @@ jobs:
 
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS_SPOOF_UNAME=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$OUT_DIR/.config"
@@ -1123,6 +1134,10 @@ jobs:
           "$GCC64_DIR/bin/aarch64-linux-android-gcc" --version | head -n 1
           "$GCC32_DIR/bin/arm-linux-androideabi-gcc" --version | head -n 1
 
+          # SUS_PATH must remain disabled on this exact source. Stop before
+          # compilation if it is ever enabled accidentally.
+          grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set$' "$OUT_DIR/.config"
+
           # The supplied working kernel is a raw ARM64 Image with separate DTB/DTBO.
           # Therefore build Image, not Image.gz, and never replace the stock DTB/DTBO.
           make -Oline \
@@ -1188,6 +1203,7 @@ jobs:
             echo "gcc32_branch=$GCC32_BRANCH"
             echo "ksu=$KSU_VERSION"
             echo "susfs=$SUSFS_VERSION"
+            echo "SUS_PATH=disabled_for_LG_user_struct_compatibility"
             echo "KPROBES=disabled (preserved from stock working kernel)"
             echo "artifact=raw ARM64 Image; stock DTB/DTBO intentionally preserved"
             echo
@@ -1243,6 +1259,7 @@ jobs:
             echo "gcc32_branch=$GCC32_BRANCH"
             echo "ksu=$KSU_VERSION"
             echo "susfs=$SUSFS_VERSION"
+            echo "SUS_PATH=disabled_for_LG_user_struct_compatibility"
             echo "KPROBES=disabled"
             echo "SUS_MOUNT=disabled_for_non_GKI_stability"
             echo "SUS_SU=disabled_non_KPROBE"
