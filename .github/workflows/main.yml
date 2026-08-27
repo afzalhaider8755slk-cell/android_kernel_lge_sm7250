@@ -753,7 +753,7 @@ jobs:
           echo "susfs_tag=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
           echo "susfs_commit=$(git -C susfs4ksu rev-parse HEAD)" | tee -a "$DIAG_DIR/susfs-version.txt"
 
-      - name: 07 - Apply ONLY SUSFS kernel + KernelSU integration
+      - name: 07 - Apply SUSFS 1.4.2 safely for this WORKING 4.19 source
         shell: bash
         run: |
           set -euo pipefail
@@ -761,7 +761,16 @@ jobs:
           exec > >(tee "$DIAG_DIR/07-patches.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # Follow SUSFS 1.4.2 kernel-4.19 non-GKI instructions.
+          # The official SUSFS 1.4.2-kernel-4.19 namespace patch targets a
+          # different 4.19 fs/namespace.c layout. This LG source uses the
+          # fs_context/vfs_create_mount layout, so blindly applying that hunk
+          # can match the wrong function and reject the real clone_mnt hunk.
+          #
+          # SUS_MOUNT is explicitly disabled in Step 09. SUSFS itself documents
+          # non-GKI bootloop risk for its mount-id reordering feature. Therefore
+          # namespace.c is intentionally excluded while all other SUSFS changes
+          # are applied from the official 1.4.2-kernel-4.19 patch.
+
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" fs/susfs.c
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
@@ -773,9 +782,42 @@ jobs:
             < "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
 
           cd "$GITHUB_WORKSPACE/kernel"
-          patch --forward --batch -p1 \
-            < "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
 
+          # Remove ONLY the fs/namespace.c diff from the official SUSFS
+          # integration patch. SUS_MOUNT is disabled, so no namespace changes
+          # are required for the requested KSU + SUSFS build.
+          python3 - "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch" "$RUNNER_TEMP/50_susfs-no-namespace.patch" <<'PY'
+          import sys
+          src, dst = sys.argv[1], sys.argv[2]
+          lines = open(src, encoding="utf-8").read().splitlines(True)
+          out, skip = [], False
+          for line in lines:
+              if line.startswith("diff --git a/fs/namespace.c b/fs/namespace.c"):
+                  skip = True
+                  continue
+              if skip and line.startswith("diff --git "):
+                  skip = False
+              if not skip:
+                  out.append(line)
+          open(dst, "w", encoding="utf-8").writelines(out)
+          PY
+
+          test -s "$RUNNER_TEMP/50_susfs-no-namespace.patch"
+          ! grep -q '^diff --git a/fs/namespace.c b/fs/namespace.c' \
+            "$RUNNER_TEMP/50_susfs-no-namespace.patch"
+
+          patch --forward --batch -p1 < "$RUNNER_TEMP/50_susfs-no-namespace.patch"
+
+          # Never compile a partially patched kernel.
+          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+            echo "::error::Patch reject/original file detected."
+            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print
+            exit 1
+          fi
+
+          echo "PASS: SUSFS 1.4.2 applied without fs/namespace.c."
+          echo "PASS: SUS_MOUNT is intentionally disabled."
+          git diff --check
       - name: 08 - Add manual KernelSU hooks WITHOUT enabling KPROBES
         shell: bash
         run: |
@@ -920,6 +962,8 @@ jobs:
             --enable CONFIG_KSU_SUSFS_SUS_PATH \
             --enable CONFIG_KSU_SUSFS_SUS_KSTAT \
             --enable CONFIG_KSU_SUSFS_SPOOF_UNAME \
+            --enable CONFIG_KSU_SUSFS_TRY_UMOUNT \
+            --enable CONFIG_KSU_SUSFS_ENABLE_LOG \
             --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
             --disable CONFIG_KSU_SUSFS_SUS_SU
 
@@ -951,6 +995,8 @@ jobs:
           grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS_SPOOF_UNAME=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
 
@@ -1168,6 +1214,8 @@ jobs:
             echo "ksu=$KSU_VERSION"
             echo "susfs=$SUSFS_VERSION"
             echo "KPROBES=disabled"
+            echo "SUS_MOUNT=disabled_for_non_GKI_stability"
+            echo "SUS_SU=disabled_non_KPROBE"
           } > "$DIAG_DIR/build-metadata.txt"
 
           # Never leave the artifact empty. Even an early failure produces a
