@@ -1,4 +1,4 @@
-name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU v0.9.5 + SUSFS 1.4.2
+name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU v0.9.5 + SUSFS 1.4.2 (v5)
 
 on:
   # Automatic run: any commit/upload to this repository triggers the build.
@@ -753,7 +753,7 @@ jobs:
           echo "susfs_tag=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
           echo "susfs_commit=$(git -C susfs4ksu rev-parse HEAD)" | tee -a "$DIAG_DIR/susfs-version.txt"
 
-      - name: 07 - Apply SUSFS 1.4.2 safely for this WORKING 4.19 source
+      - name: 07 - Apply SUSFS 1.4.2 safely for this WORKING 4.19 source (sanitized patch)
         shell: bash
         run: |
           set -euo pipefail
@@ -798,6 +798,11 @@ jobs:
               if skip and line.startswith("diff --git "):
                   skip = False
               if not skip:
+                  # Clean trailing whitespace only on added patch lines. This
+                  # preserves context/original lines while avoiding a false
+                  # failure from git diff --check on upstream SUSFS whitespace.
+                  if line.startswith("+") and not line.startswith("+++"):
+                      line = line.rstrip(" \t\r\n") + "\n"
                   out.append(line)
           open(dst, "w", encoding="utf-8").writelines(out)
           PY
@@ -822,7 +827,11 @@ jobs:
 
           echo "PASS: SUSFS 1.4.2 applied without fs/namespace.c."
           echo "PASS: SUS_MOUNT is intentionally disabled."
+          # The official patch is sanitized only for trailing whitespace on
+          # added lines, so this is now a real source-integrity check rather
+          # than a failure caused by upstream patch formatting.
           git diff --check
+          echo "PASS: git diff --check"
       - name: 08 - Add manual KernelSU hooks WITHOUT enabling KPROBES
         shell: bash
         run: |
