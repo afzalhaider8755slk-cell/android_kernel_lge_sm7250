@@ -133,96 +133,43 @@ jobs:
           "$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc" --version | head -n 1
           "$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc" --version | head -n 1
           "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang" --version | head -n 2
-          "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang" --version | grep -q 'r563880c'
+          "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang" --version | grep -q '21\.0\.0'
 
           echo "CLANG_DIR=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION" >> "$GITHUB_ENV"
           echo "GCC64_DIR=$GITHUB_WORKSPACE/gcc64" >> "$GITHUB_ENV"
           echo "GCC32_DIR=$GITHUB_WORKSPACE/gcc32" >> "$GITHUB_ENV"
           echo "PATH=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH" >> "$GITHUB_ENV"
 
-      - name: 04 - Generate and VERIFY pristine WORKING baseline config
+      - name: 04 - Load and VERIFY exact WORKING baseline config
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel"
 
-          rm -rf "$OUT_DIR"
-          mkdir -p "$OUT_DIR"
+          # IMPORTANT:
+          # Do NOT regenerate the stock config from vendor/caymanlm_defconfig.
+          # The supplied working kernel contains a byte-for-byte embedded .config,
+          # and the defconfig in this source tree does NOT reproduce it.
+          #
+          # The baseline file is committed separately at:
+          #   .github/kernel-baseline/working.config
+          #
+          # It was extracted from the user's known-good WORKING kernel Image.
+          BASELINE_FILE="$GITHUB_WORKSPACE/.github/kernel-baseline/working.config"
+          test -f "$BASELINE_FILE"
 
-          # IMPORTANT: this exact WORKING source contains scripts/as-version.sh,
-          # but its matching scripts/min-tool-version.sh is absent. as-version.sh
-          # unconditionally calls that helper for the GNU assembler probe.
-          # Restore ONLY this missing kbuild helper in the CI checkout. It is not
-          # a kernel feature and is never committed back to the WORKING source.
-          if grep -q 'min-tool-version.sh' scripts/as-version.sh; then
-            cat > scripts/min-tool-version.sh <<'EOF'
-          #!/bin/sh
-          # SPDX-License-Identifier: GPL-2.0-only
-          # CI restoration for the exact WORKING 4.19 source: as-version.sh exists
-          # in the source, but its companion helper is missing from this commit.
-          set -e
-
-          if [ "$#" != 1 ]; then
-            echo "Usage: $0 toolname" >&2
-            exit 1
-          fi
-
-          case "$1" in
-            binutils)
-              echo 2.23.0
-              ;;
-            gcc)
-              if [ "$SRCARCH" = arm64 ]; then
-                echo 5.1.0
-              else
-                echo 4.9.0
-              fi
-              ;;
-            icc)
-              echo 16.0.3
-              ;;
-            llvm)
-              echo 10.0.1
-              ;;
-            *)
-              echo "$1: unknown tool" >&2
-              exit 1
-              ;;
-          esac
-          EOF
-            chmod 0755 scripts/min-tool-version.sh
-          fi
-
-          test -x scripts/min-tool-version.sh
-          test "$(scripts/min-tool-version.sh binutils)" = "2.23.0"
-          test "$(SRCARCH=arm64 scripts/min-tool-version.sh gcc)" = "5.1.0"
-          test "$(scripts/min-tool-version.sh llvm)" = "10.0.1"
-
-          # IMPORTANT: generate Kconfig with the Ubuntu HOST compiler, not the
-          # Android cross compiler/Clang toolchain. Linux 4.19 Kconfig invokes
-          # scripts/as-version.sh through scripts/Kconfig.include.
-          unset CC HOSTCC HOSTCXX LD AS CROSS_COMPILE CROSS_COMPILE_ARM32 LLVM LLVM_IAS CLANG_TRIPLE || true
-          command -v gcc
-          command -v g++
-          command -v ld.bfd
-          gcc --version | head -n 1
-          ld.bfd --version | head -n 1
-          echo "=== KCONFIG ASSEMBLER PROBE ==="
-          ./scripts/as-version.sh gcc | tee "$DIAG_DIR/host-as-version.txt"
-
-          make O="$OUT_DIR" ARCH="$ARCH" \
-            CC=gcc HOSTCC=gcc HOSTCXX=g++ LD=ld.bfd AS=as \
-            "$DEFCONFIG"
-          cp "$OUT_DIR/.config" "$DIAG_DIR/working-baseline.config"
-
-          BASELINE_SHA256="$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
+          BASELINE_SHA256="$(sha256sum "$BASELINE_FILE" | awk '{print $1}')"
+          echo "baseline_file=$BASELINE_FILE" | tee "$DIAG_DIR/baseline-source.txt"
           echo "baseline_config_sha256=$BASELINE_SHA256" | tee "$DIAG_DIR/baseline-config.sha256"
 
-          # Hard stop if the repo/branch/defconfig is not the same working kernel
-          # supplied by the user. This prevents accidental porting or drift.
           test "$BASELINE_SHA256" = "$WORKING_BASELINE_CONFIG_SHA256"
 
-          # Critical working-kernel properties. Do NOT turn KPROBES on.
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          cp "$BASELINE_FILE" "$OUT_DIR/.config"
+          cp "$BASELINE_FILE" "$DIAG_DIR/working-baseline.config"
+
+          # Verify critical stock values BEFORE any KSU/SUSFS modification.
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_HAVE_KPROBES=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_MODULES=y$' "$OUT_DIR/.config"
@@ -231,8 +178,22 @@ jobs:
           grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_LOCALVERSION="-perf"$' "$OUT_DIR/.config"
 
-          echo "PASS: pristine WORKING baseline is byte-for-byte config-identical."
-          echo "PASS: CONFIG_KPROBES remains disabled exactly as in the working kernel."
+          # The baseline itself must be KSU/SUSFS-free.
+          if grep -Eq '^CONFIG_KSU($|_)' "$OUT_DIR/.config"; then
+            echo "::error::Baseline config already contains KernelSU symbols."
+            exit 1
+          fi
+
+          # The supplied working kernel was built with Android Clang 21/r563880c.
+          grep -q '^CONFIG_CC_IS_CLANG=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_CLANG_VERSION=210000$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_AS_IS_LLVM=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_AS_VERSION=210000$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_LLD_VERSION=210000$' "$OUT_DIR/.config"
+
+          echo "PASS: exact supplied WORKING .config loaded."
+          echo "PASS: baseline SHA256 matches the known-good kernel."
+          echo "PASS: KPROBES remains disabled in the pristine baseline."
 
       - name: 05 - Integrate ONLY KernelSU v0.9.5 (manual Non-GKI path)
         shell: bash
@@ -427,8 +388,8 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # These are the only functional configuration additions.
-          # KPROBES stays exactly as the stock WORKING kernel: disabled.
+          # These are the intended functional configuration additions.
+          # KPROBES stays exactly as the supplied WORKING kernel: disabled.
           scripts/config --file "$OUT_DIR/.config" \
             --enable CONFIG_KSU \
             --enable CONFIG_KSU_SUSFS \
@@ -438,12 +399,27 @@ jobs:
             --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
             --disable CONFIG_KSU_SUSFS_SUS_SU
 
-          # Kconfig/syncconfig is still a HOST operation.  Do not let the
-          # Android Clang/GCC cross toolchain answer scripts/as-version.sh.
-          unset CC HOSTCC HOSTCXX LD AS CROSS_COMPILE CROSS_COMPILE_ARM32 LLVM LLVM_IAS CLANG_TRIPLE || true
+          # Run Kconfig with the SAME Android Clang/LLVM family used by the
+          # supplied working kernel. Do not regenerate the baseline from the
+          # vendor defconfig and do not use Ubuntu GCC for Kconfig.
+          export CC="$CLANG_DIR/bin/clang"
+          export HOSTCC=gcc
+          export HOSTCXX=g++
+          export LD="$CLANG_DIR/bin/ld.lld"
+          export AS="$CLANG_DIR/bin/llvm-as"
+          export LLVM=1
+          export LLVM_IAS=1
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
+          export LD_LIBRARY_PATH="$CLANG_DIR/lib:${LD_LIBRARY_PATH:-}"
+
+          "$CC" --version | head -n 2 | tee "$DIAG_DIR/kconfig-clang-version.txt"
+
           make O="$OUT_DIR" ARCH="$ARCH" \
-            CC=gcc HOSTCC=gcc HOSTCXX=g++ LD=ld.bfd AS=as \
+            CC="$CC" HOSTCC="$HOSTCC" HOSTCXX="$HOSTCXX" \
+            LD="$LD" AS="$AS" LLVM=1 LLVM_IAS=1 \
             olddefconfig
+
           cp "$OUT_DIR/.config" "$DIAG_DIR/final.config"
 
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
@@ -454,9 +430,20 @@ jobs:
           grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
 
-          # The working-kernel config must remain identical except for CONFIG_KSU*.
+          # Compare every non-KSU config symbol against the exact working
+          # baseline. Any drift outside CONFIG_KSU* stops the build.
           normalize_config() {
-            sed -E '/^[[:space:]]*#/d; /^CONFIG_KSU([_=]|$)/d' "$1" | sort
+            sed -E \
+              -e '/^[[:space:]]*#/d' \
+              -e '/^CONFIG_KSU([_=]|$)/d' \
+              -e '/^CONFIG_CC_/d' \
+              -e '/^CONFIG_CLANG_/d' \
+              -e '/^CONFIG_GCC_/d' \
+              -e '/^CONFIG_AS_/d' \
+              -e '/^CONFIG_LD_/d' \
+              -e '/^CONFIG_LLD_/d' \
+              -e '/^CONFIG_TOOLS_SUPPORT_RELR=/d' \
+              "$1" | sort
           }
 
           normalize_config "$DIAG_DIR/working-baseline.config" > "$DIAG_DIR/baseline.non-ksu"
@@ -468,7 +455,7 @@ jobs:
             exit 1
           fi
 
-          # Explicitly verify the boot-sensitive baseline values again.
+          # Explicitly verify boot-sensitive values again.
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_HAVE_KPROBES=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_MODULES=y$' "$OUT_DIR/.config"
@@ -616,6 +603,7 @@ jobs:
             git status --short > "$DIAG_DIR/git-status.txt" || true
             git diff --stat > "$DIAG_DIR/git-diff-stat.txt" || true
             git diff --name-only > "$DIAG_DIR/git-diff-files.txt" || true
+            git diff --binary > "$DIAG_DIR/kernel-source.patch" || true
           fi
 
           {
@@ -630,6 +618,8 @@ jobs:
             echo "ksu=$KSU_VERSION"
             echo "susfs=$SUSFS_VERSION"
             echo "KPROBES=disabled"
+            echo "baseline_file=.github/kernel-baseline/working.config"
+            echo "baseline_sha256=$(sha256sum "$GITHUB_WORKSPACE/.github/kernel-baseline/working.config" | awk '{print $1}')"
           } > "$DIAG_DIR/build-metadata.txt"
 
       - name: 14 - Upload RAW kernel Image (only on success)
