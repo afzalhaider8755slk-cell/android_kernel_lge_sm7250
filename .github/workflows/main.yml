@@ -1151,36 +1151,29 @@ jobs:
           exec > >(tee "$DIAG_DIR/09-kconfig.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # These are the intended functional configuration additions.
-          # KPROBES stays exactly as the supplied WORKING kernel: disabled.
-          # Legacy KernelSU-Next provides the manual hook mode needed for this
-          # 4.19 non-GKI tree, so enable it explicitly.
-          scripts/config --file "$OUT_DIR/.config" \
-            --enable CONFIG_KSU \
-            --enable CONFIG_KSU_MANUAL_HOOK \
-            --enable CONFIG_KSU_SUSFS \
-            --disable CONFIG_KSU_SUSFS_SUS_PATH \
-            --enable CONFIG_KSU_SUSFS_SUS_KSTAT \
-            --enable CONFIG_KSU_SUSFS_SPOOF_UNAME \
-            --enable CONFIG_KSU_SUSFS_TRY_UMOUNT \
-            --enable CONFIG_KSU_SUSFS_ENABLE_LOG \
-            --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
-            --disable CONFIG_KSU_SUSFS_SUS_SU
+          # IMPORTANT: this exact WORKING 4.19 tree has KPROBES disabled.
+          # KernelSU-Next v3.2.0-legacy supports the manual-hook path, so do NOT
+          # enable KPROBES.  The previous run proved that the KSU symbols were
+          # being stripped during olddefconfig; diagnose the Kconfig visibility
+          # first and then configure the symbols through the actual Kconfig DB.
+          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_HAVE_KPROBES=y$' "$OUT_DIR/.config"
+          test -L drivers/kernelsu
+          test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Kbuild
+          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
+          grep -q '^config KSU$' drivers/kernelsu/Kconfig
+          grep -q '^config KSU_MANUAL_HOOK$' drivers/kernelsu/Kconfig
+          grep -q 'default y if !KPROBES' drivers/kernelsu/Kconfig
 
-          # SUS_PATH compatibility:
-          # SUSFS latest-kernel-4.19 writes new->user->android_kabi_reserved1
-          # when CONFIG_KSU_SUSFS_SUS_PATH=y. The exact LG WORKING 4.19 source
-          # does not have that member in struct user_struct. Adding it would
-          # change a core kernel struct layout, so only SUS_PATH is disabled.
-          if grep -q 'android_kabi_reserved1' include/linux/user.h; then
-            echo "INFO: user_struct has android_kabi_reserved1, but SUS_PATH remains disabled for this build."
-          else
-            echo "PASS: LG WORKING user_struct has no android_kabi_reserved1; SUS_PATH correctly disabled."
-          fi
+          # Make sure the Kconfig parser sees KernelSU before changing the config.
+          # This is the critical check that was missing in the failed workflow.
+          KSU_KCONFIG_TEST="$RUNNER_TEMP/ksu-kconfig-test"
+          rm -rf "$KSU_KCONFIG_TEST"
+          mkdir -p "$KSU_KCONFIG_TEST"
+          cp "$OUT_DIR/.config" "$KSU_KCONFIG_TEST/.config"
 
-          # Run Kconfig with the SAME Android Clang/LLVM family used by the
-          # supplied working kernel. Do not regenerate the baseline from the
-          # vendor defconfig and do not use Ubuntu GCC for Kconfig.
           export CC="$CLANG_DIR/bin/clang"
           export HOSTCC=gcc
           export HOSTCXX=g++
@@ -1192,16 +1185,47 @@ jobs:
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
           export LD_LIBRARY_PATH="$CLANG_DIR/lib:${LD_LIBRARY_PATH:-}"
 
-          "$CC" --version | head -n 2 | tee "$DIAG_DIR/kconfig-clang-version.txt"
+          # Force KSU through a real Kconfig fragment, not only scripts/config.
+          # KCONFIG_ALLCONFIG is consumed by olddefconfig and therefore proves
+          # that the symbol is part of the parsed Kconfig tree.
+          cat > "$RUNNER_TEMP/ksu.fragment" <<'EOF'
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          # CONFIG_KSU_KPROBES_HOOK is not set
+          CONFIG_KSU_SUSFS=y
+          # CONFIG_KSU_SUSFS_SUS_PATH is not set
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          # CONFIG_KSU_SUSFS_SUS_MOUNT is not set
+          # CONFIG_KSU_SUSFS_SUS_SU is not set
+          EOF
+          sed -i 's/^          //' "$RUNNER_TEMP/ksu.fragment"
 
+          # Keep the exact WORKING config as the base and merge ONLY KSU/SUSFS.
+          cp "$OUT_DIR/.config" "$OUT_DIR/.config.before-ksu"
+          KCONFIG_ALLCONFIG="$RUNNER_TEMP/ksu.fragment" \
           make O="$OUT_DIR" ARCH="$ARCH" \
             CC="$CC" HOSTCC="$HOSTCC" HOSTCXX="$HOSTCXX" \
             LD="$LD" AS="$AS" LLVM=1 LLVM_IAS=1 \
+            KCONFIG_ALLCONFIG="$RUNNER_TEMP/ksu.fragment" \
             olddefconfig
 
           cp "$OUT_DIR/.config" "$DIAG_DIR/final.config"
 
-          grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
+          # Do not silently continue if Kconfig discarded the requested symbols.
+          if ! grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"; then
+            echo 'ERROR: Kconfig discarded CONFIG_KSU=y.'
+            echo '--- KSU Kconfig source ---'
+            sed -n '1,80p' drivers/kernelsu/Kconfig
+            echo '--- KSU source visibility in drivers/Kconfig ---'
+            grep -n -C 3 'drivers/kernelsu/Kconfig' drivers/Kconfig
+            echo '--- final KSU symbols ---'
+            grep -E '^(# )?CONFIG_KSU($|_)' "$OUT_DIR/.config" || true
+            exit 1
+          fi
+
           grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_KPROBES_HOOK is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
@@ -1213,8 +1237,6 @@ jobs:
           grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
 
-          # Compare every non-KSU config symbol against the exact working
-          # baseline. Any drift outside CONFIG_KSU* stops the build.
           normalize_config() {
             sed -E \
               -e '/^[[:space:]]*#/d' \
@@ -1233,18 +1255,12 @@ jobs:
           normalize_config "$DIAG_DIR/working-baseline.config" > "$DIAG_DIR/baseline.non-ksu"
           normalize_config "$OUT_DIR/.config" > "$DIAG_DIR/final.non-ksu"
 
-          # Kconfig may reflow blank lines when writing .config. Blank-line-only
-          # formatting changes are not configuration drift; actual CONFIG_* value
-          # changes are. The normalized comparison above removes blank lines.
           if ! diff -u "$DIAG_DIR/baseline.non-ksu" "$DIAG_DIR/final.non-ksu" > "$DIAG_DIR/config-drift.diff"; then
-            echo "::error::NON-KSU configuration drift detected. Build stopped for safety."
+            echo '::error::NON-KSU configuration drift detected. Build stopped for safety.'
             cat "$DIAG_DIR/config-drift.diff"
             exit 1
           fi
 
-          echo "PASS: semantic non-KSU configuration matches the WORKING baseline."
-
-          # Explicitly verify boot-sensitive values again.
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_HAVE_KPROBES=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_MODULES=y$' "$OUT_DIR/.config"
@@ -1253,8 +1269,10 @@ jobs:
           grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_LOCALVERSION="-perf"$' "$OUT_DIR/.config"
 
-          echo "PASS: no non-KSU configuration drift."
-          echo "PASS: KPROBES remains disabled; no KPROBE config was added."
+          echo 'PASS: Kconfig recognized KernelSU-Next v3.2.0-legacy.'
+          echo 'PASS: CONFIG_KSU=y + CONFIG_KSU_MANUAL_HOOK=y.'
+          echo 'PASS: KPROBES remains disabled.'
+          echo 'PASS: semantic non-KSU configuration matches the WORKING baseline.'
 
       - name: 10 - Verify source scope (only KSU/SUSFS integration files changed)
         shell: bash
