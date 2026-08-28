@@ -661,26 +661,45 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$DIAG_DIR"; exec > >(tee "$DIAG_DIR/06-susfs.log") 2>&1
-          cd "$GITHUB_WORKSPACE"; rm -rf susfs4ksu
-          SUSFS_ARCHIVE="$RUNNER_TEMP/susfs-kernel-4.19.tar.gz"; rm -f "$SUSFS_ARCHIVE"
-          # FIX: remove the failing post-download git ls-remote. The previous
-          # run died with GitLab remote error 128 while the archive was valid.
-          curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 --max-time 600 \
-            "https://gitlab.com/simonpunk/susfs4ksu/-/archive/${SUSFS_VERSION}/susfs4ksu-${SUSFS_VERSION}.tar.gz" -o "$SUSFS_ARCHIVE"
-          test -s "$SUSFS_ARCHIVE"
-          tar -xzf "$SUSFS_ARCHIVE" -C "$GITHUB_WORKSPACE"
-          SUSFS_DIR="$(find "$GITHUB_WORKSPACE" -maxdepth 1 -mindepth 1 -type d -name 'susfs4ksu-*' -print -quit)"
-          test -n "$SUSFS_DIR"; mv "$SUSFS_DIR" "$GITHUB_WORKSPACE/susfs4ksu"
-          test -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
-          test -f susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
-          test -f susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h
-          test -f susfs4ksu/kernel_patches/fs/susfs.c
-          test -f susfs4ksu/kernel_patches/fs/sus_su.c
-          test -f susfs4ksu/kernel_patches/include/linux/susfs.h
-          test -f susfs4ksu/kernel_patches/include/linux/sus_su.h
-          echo "susfs_tag=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
-          echo "susfs_source=official GitLab kernel-4.19 branch archive" | tee -a "$DIAG_DIR/susfs-version.txt"
+          mkdir -p "$DIAG_DIR"
+          exec > >(tee "$DIAG_DIR/06-susfs.log") 2>&1
+          cd "$GITHUB_WORKSPACE"
+
+          # IMPORTANT:
+          # Do NOT use GitLab raw/archive URLs here. The GitLab HTTP response
+          # has been observed to transfer the complete ~177 KiB patch and then
+          # return curl exit 1 in GitHub Actions. That is a transport failure,
+          # not a SUSFS patch failure.
+          #
+          # The official SUSFS kernel-4.19 branch is the correct non-GKI source
+          # for Linux 4.19. Clone the branch directly with Git instead.
+          rm -rf "$GITHUB_WORKSPACE/susfs4ksu"
+          git clone --depth 1 --single-branch --branch "$SUSFS_VERSION"             https://gitlab.com/simonpunk/susfs4ksu.git             "$GITHUB_WORKSPACE/susfs4ksu"
+
+          cd "$GITHUB_WORKSPACE/susfs4ksu"
+          test "$(git branch --show-current)" = "$SUSFS_VERSION"
+          SUSFS_COMMIT="$(git rev-parse HEAD)"
+          echo "susfs_branch=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
+          echo "susfs_commit=$SUSFS_COMMIT" | tee -a "$DIAG_DIR/susfs-version.txt"
+
+          # Verify the exact files required by the kernel-4.19 patch.
+          test -s kernel_patches/50_add_susfs_in_kernel-4.19.patch
+          test -s kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
+          test -s kernel_patches/fs/susfs.c
+          test -s kernel_patches/fs/sus_su.c
+          test -s kernel_patches/include/linux/susfs.h
+          test -s kernel_patches/include/linux/sus_su.h
+
+          # sucompat.h is optional for this KSU-Next integration path.
+          # Never fail the build merely because this legacy SUSFS helper file
+          # is absent; KSU-Next already supplies its own sucompat implementation.
+          if [ -f kernel_patches/KernelSU/kernel/sucompat.h ]; then
+            echo "legacy_sucompat_patch_file=present" | tee -a "$DIAG_DIR/susfs-version.txt"
+          else
+            echo "legacy_sucompat_patch_file=absent (OK for KSU-Next)" | tee -a "$DIAG_DIR/susfs-version.txt"
+          fi
+
+          echo "susfs_source=official GitLab susfs4ksu kernel-4.19 branch" | tee -a "$DIAG_DIR/susfs-version.txt"
 
       - name: 07 - Apply SUSFS latest safely
         shell: bash
@@ -692,7 +711,12 @@ jobs:
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h" include/linux/sus_su.h
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h" KernelSU-Next/kernel/sucompat.h
+          if [ -f "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h" ]; then
+            cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h" KernelSU-Next/kernel/sucompat.h
+            echo "SUSFS legacy sucompat.h: copied"
+          else
+            echo "SUSFS legacy sucompat.h: absent; keeping KernelSU-Next sucompat.h unchanged"
+          fi
           cd KernelSU-Next
           patch --forward --batch -p1 < "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
           cd "$GITHUB_WORKSPACE/kernel"
