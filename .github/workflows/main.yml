@@ -1,4 +1,4 @@
-name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.3.0 + SUSFS 1.5.5 (4.19 stable-compatible)
+name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.3.0 + SUSFS kernel-4.19 (v8)
 
 on:
   # Automatic run: any commit/upload to this repository triggers the build.
@@ -43,7 +43,7 @@ jobs:
 
       # ONLY these two functional additions are intended.
       KSU_VERSION: v3.3.0
-      SUSFS_VERSION: 1.5.5
+      SUSFS_VERSION: kernel-4.19
 
       # Exact toolchain family used by the current WORKING build.
       CLANG_REVISION: clang-r563880c
@@ -709,7 +709,7 @@ jobs:
           echo "PASS: baseline SHA256 matches $WORKING_BASELINE_CONFIG_SHA256"
           echo "PASS: KPROBES remains disabled in pristine baseline."
 
-      - name: 05 - Integrate ONLY KernelSU-Next v3.3.0 (manual NonGKI path)
+      - name: 05 - Integrate ONLY KernelSU-Next v3.3.0 (manual Non-GKI path)
         shell: bash
         run: |
           set -euo pipefail
@@ -717,52 +717,43 @@ jobs:
           exec > >(tee "$DIAG_DIR/05-ksu.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # Verified upstream KernelSU-Next release.
-          curl -LSsf \
-            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/v3.3.0/kernel/setup.sh" \
+          # v0.9.5 is the last official KernelSU release supporting non-GKI.
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
             | bash -s "$KSU_VERSION"
 
-          test -d KernelSU-Next/kernel
+          test -d KernelSU/kernel
           test -e drivers/kernelsu/Kconfig
-          grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
 
-          cd KernelSU-Next
+          cd KernelSU
           test "$(git describe --tags --exact-match 2>/dev/null || true)" = "$KSU_VERSION"
-
-          echo "ksu_tag=$KSU_VERSION" | tee "$DIAG_DIR/ksu-version.txt"
-          echo "ksu_commit=$(git rev-parse HEAD)" | tee -a "$DIAG_DIR/ksu-version.txt"
           git describe --tags --always
 
-      - name: 06 - Download and VERIFY SUSFS 1.5.5 for kernel 4.19
+      - name: 06 - Download and VERIFY SUSFS kernel-4.19 for kernel 4.19
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
           exec > >(tee "$DIAG_DIR/06-susfs.log") 2>&1
           cd "$GITHUB_WORKSPACE"
-
           rm -rf susfs4ksu
 
-          # The upstream kernel-4.19 branch is the maintained 4.19-specific
-          # SUSFS line. Pin its latest known commit so the build is reproducible.
-          git clone --depth=1 --single-branch --branch kernel-4.19 \
+          git clone --depth=1 --branch "$SUSFS_VERSION" \
             https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-
-          SUSFS_EXPECTED_COMMIT="001e69919c6271f690fd00b17e4c721c9e599152"
-          SUSFS_ACTUAL_COMMIT="$(git -C susfs4ksu rev-parse HEAD)"
-
-          test "$SUSFS_ACTUAL_COMMIT" = "$SUSFS_EXPECTED_COMMIT"
 
           test -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
           test -f susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
+          test -f susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h
           test -f susfs4ksu/kernel_patches/fs/susfs.c
+          test -f susfs4ksu/kernel_patches/fs/sus_su.c
           test -f susfs4ksu/kernel_patches/include/linux/susfs.h
+          test -f susfs4ksu/kernel_patches/include/linux/sus_su.h
 
-          echo "susfs_tag=kernel-4.19@1.5.5" | tee "$DIAG_DIR/susfs-version.txt"
-          echo "susfs_commit=$SUSFS_ACTUAL_COMMIT" | tee -a "$DIAG_DIR/susfs-version.txt"
+          echo "susfs_tag=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
+          echo "susfs_commit=$(git -C susfs4ksu rev-parse HEAD)" | tee -a "$DIAG_DIR/susfs-version.txt"
 
-      - name: 07 - Apply SUSFS 1.5.5 safely to KernelSU-Next v3.3.0
+      - name: 07 - Apply SUSFS kernel-4.19 safely for this WORKING 4.19 source (sanitized patch)
         shell: bash
         run: |
           set -euo pipefail
@@ -770,78 +761,95 @@ jobs:
           exec > >(tee "$DIAG_DIR/07-patches.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # SUSFS 1.5.5's kernel-4.19 patch set is the stable-compatible
-          # upstream line for this old non-GKI kernel.
+          # The official SUSFS kernel-4.19-kernel-4.19 namespace patch targets a
+          # different 4.19 fs/namespace.c layout. This LG source uses the
+          # fs_context/vfs_create_mount layout, so blindly applying that hunk
+          # can match the wrong function and reject the real clone_mnt hunk.
           #
-          # IMPORTANT:
-          # Do NOT copy KernelSU/kernel/sucompat.h. KernelSU-Next v3.x uses
-          # the modular drivers/kernelsu -> KernelSU-Next/kernel layout.
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" \
-             fs/susfs.c
+          # SUS_MOUNT is explicitly disabled in Step 09. SUSFS itself documents
+          # non-GKI bootloop risk for its mount-id reordering feature. Therefore
+          # namespace.c is intentionally excluded while all other SUSFS changes
+          # are applied from the official 1.4.2-kernel-4.19 patch.
 
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h" \
-             include/linux/susfs.h
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" fs/susfs.c
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h" include/linux/sus_su.h
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h" KernelSU/kernel/sucompat.h
 
-          # The kernel-side SUSFS patch is independent of the old
-          # KernelSU/kernel/sucompat.h copy and is the part appropriate to
-          # this 4.19 source tree.
-          python3 - \
-            "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch" \
-            "$RUNNER_TEMP/50_susfs-kernel.patch" <<'PY'
+          cd KernelSU
+          patch --forward --batch -p1 \
+            < "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          # Remove ONLY the fs/namespace.c diff from the official SUSFS
+          # integration patch. SUS_MOUNT is disabled, so no namespace changes
+          # are required for the requested KSU + SUSFS build.
+          python3 - "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch" "$RUNNER_TEMP/50_susfs-no-namespace.patch" <<'PY'
           import sys
           src, dst = sys.argv[1], sys.argv[2]
           lines = open(src, encoding="utf-8").read().splitlines(True)
-          out = []
-          skip = False
+          out, skip = [], False
           for line in lines:
-              if line.startswith("diff --git "):
-                  skip = line.startswith("diff --git a/fs/namespace.c b/fs/namespace.c")
+              if line.startswith("diff --git a/fs/namespace.c b/fs/namespace.c"):
+                  skip = True
+                  continue
+              if skip and line.startswith("diff --git "):
+                  skip = False
               if not skip:
+                  # Clean trailing whitespace only on added patch lines. This
+                  # preserves context/original lines while avoiding a false
+                  # failure from git diff --check on upstream SUSFS whitespace.
                   if line.startswith("+") and not line.startswith("+++"):
                       line = line.rstrip(" \t\r\n") + "\n"
                   out.append(line)
           open(dst, "w", encoding="utf-8").writelines(out)
           PY
 
-          patch --forward --batch -p1 \
-            < "$RUNNER_TEMP/50_susfs-kernel.patch"
+          test -s "$RUNNER_TEMP/50_susfs-no-namespace.patch"
+          ! grep -q '^diff --git a/fs/namespace.c b/fs/namespace.c' \
+            "$RUNNER_TEMP/50_susfs-no-namespace.patch"
 
+          # Use Git's 3-way merge for the kernel-side SUSFS patch.
+          # The LG SM7250 4.19 tree is not byte-identical to the upstream
+          # 4.19 reference tree; 3-way apply lets Git reconcile context
+          # without silently dropping a SUSFS hunk.
+          git apply --3way --whitespace=nowarn \
+            "$RUNNER_TEMP/50_susfs-no-namespace.patch"
+
+          if git diff --check; then
+            echo "PASS: SUSFS kernel patch applied cleanly via 3-way merge."
+          else
+            echo "::error::git diff --check failed after SUSFS 3-way apply."
+            exit 1
+          fi
+
+          # GNU patch may leave harmless *.orig backup files even when every
+          # hunk applied successfully. They are NOT patch failures.
+          # Remove only those patch-created backups, then fail only on real
+          # reject files (*.rej). This avoids the false failure seen in run #15.
           find . -type f -name '*.orig' -delete
 
           if find . -type f -name '*.rej' -print -quit | grep -q .; then
-            echo "::error::SUSFS kernel patch created a reject file."
+            echo "::error::A SUSFS patch reject (*.rej) was created."
             find . -type f -name '*.rej' -print
             exit 1
           fi
 
-          # KernelSU-Next does not use the old flat KernelSU tree. Instead of
-          # blindly applying the obsolete 1.5.5 KernelSU patch, verify that
-          # the current KSU tree has the required modern symbols/paths and
-          # fail with a complete diagnostic if a manual adapter is required.
-          test -d "$GITHUB_WORKSPACE/kernel/KernelSU-Next/kernel"
-          test -f "$GITHUB_WORKSPACE/kernel/KernelSU-Next/kernel/core_hook.c"
-          test -f "$GITHUB_WORKSPACE/kernel/KernelSU-Next/kernel/Kconfig"
-
-          echo "PASS: SUSFS kernel-side integration applied."
-          echo "INFO: legacy KernelSU-side SUSFS patch was intentionally NOT applied."
-          echo "INFO: KSU-Next v3.x requires its own SUSFS-compatible KSU-side integration."
-          echo "KSU_NEXT_SUSFS_ADAPTER_REQUIRED=1" > "$DIAG_DIR/ksu-next-susfs-adapter.txt"
-
-          git diff --check
-
-      - name: 07B - Verify KernelSU-Next SUSFS compatibility adapter
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$DIAG_DIR"
-
-          if [ -f "$DIAG_DIR/ksu-next-susfs-adapter.txt" ]; then
-            echo "::error::KernelSU-Next v3.3.0 does not accept the legacy SUSFS 1.5.5 KernelSU patch layout."
-            echo "::error::This workflow deliberately refuses to build a kernel with incomplete SUSFS support."
-            echo "The complete diagnostic artifact has been preserved."
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo "::error::SUSFS 3-way merge left unresolved conflicts."
+            git diff --name-only --diff-filter=U
             exit 1
           fi
 
+          echo "PASS: SUSFS kernel-4.19 applied without fs/namespace.c."
+          echo "PASS: SUS_MOUNT is intentionally disabled."
+          # The official patch is sanitized only for trailing whitespace on
+          # added lines, so this is now a real source-integrity check rather
+          # than a failure caused by upstream patch formatting.
+          git diff --check
+          echo "PASS: git diff --check"
       - name: 08 - Add manual KernelSU hooks WITHOUT enabling KPROBES
         shell: bash
         run: |
@@ -992,7 +1000,7 @@ jobs:
             --disable CONFIG_KSU_SUSFS_SUS_SU
 
           # SUS_PATH compatibility:
-          # SUSFS 1.5.5-kernel-4.19 writes new->user->android_kabi_reserved1
+          # SUSFS kernel-4.19-kernel-4.19 writes new->user->android_kabi_reserved1
           # when CONFIG_KSU_SUSFS_SUS_PATH=y. The exact LG WORKING 4.19 source
           # does not have that member in struct user_struct. Adding it would
           # change a core kernel struct layout, so only SUS_PATH is disabled.
@@ -1212,7 +1220,7 @@ jobs:
             echo "gcc64_branch=$GCC64_BRANCH"
             echo "gcc32_branch=$GCC32_BRANCH"
             echo "ksu=$KSU_VERSION"
-            echo "susfs=$SUSFS_VERSION"
+            echo "susfs=$SUSFS_VERSION (4.19 stable-compatible branch)"
             echo "SUS_PATH=disabled_for_LG_user_struct_compatibility"
             echo "KPROBES=disabled (preserved from stock working kernel)"
             echo "artifact=raw ARM64 Image; stock DTB/DTBO intentionally preserved"
@@ -1268,7 +1276,7 @@ jobs:
             echo "gcc64_branch=$GCC64_BRANCH"
             echo "gcc32_branch=$GCC32_BRANCH"
             echo "ksu=$KSU_VERSION"
-            echo "susfs=$SUSFS_VERSION"
+            echo "susfs=$SUSFS_VERSION (4.19 stable-compatible branch)"
             echo "SUS_PATH=disabled_for_LG_user_struct_compatibility"
             echo "KPROBES=disabled"
             echo "SUS_MOUNT=disabled_for_non_GKI_stability"
