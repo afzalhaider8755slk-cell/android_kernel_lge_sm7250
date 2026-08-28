@@ -1311,6 +1311,106 @@ jobs:
           masked = mask_comments_strings(source)
 
           # ---------------------------------------------------------------
+          # 2b) Evaluate the small set of LINUX_VERSION_CODE guards used by
+          #      KernelSU-Next's file_wrapper.c for the actual LG 4.19 tree.
+          #
+          # KernelSU-Next intentionally keeps newer VFS members such as
+          # f_op->fop_flags (>= 6.12) and f_op->splice_eof (>= 6.6) in the
+          # source, but those branches are dead on 4.19. A plain regex over
+          # the whole file falsely reports them as missing vendor members.
+          # Do NOT edit fs.h to add those modern members; evaluate the guards
+          # instead and audit only code that can compile on 4.19.
+          # ---------------------------------------------------------------
+          KERNEL_MAJOR, KERNEL_MINOR, KERNEL_PATCH = 4, 19, 0
+
+          def version_tuple(text):
+              mm = re.search(
+                  r'KERNEL_VERSION\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)',
+                  text,
+              )
+              return tuple(map(int, mm.groups())) if mm else None
+
+          def eval_419_guard(expr):
+              expr = expr.strip()
+              # The wrapper only needs these direct version comparisons.
+              mm = re.search(
+                  r'LINUX_VERSION_CODE\s*([<>]=?)\s*KERNEL_VERSION\(([^)]*)\)',
+                  expr,
+              )
+              if not mm:
+                  return None
+              op = mm.group(1)
+              rhs = tuple(int(x.strip()) for x in mm.group(2).split(','))
+              lhs = (KERNEL_MAJOR, KERNEL_MINOR, KERNEL_PATCH)
+              if op == '>=':
+                  return lhs >= rhs
+              if op == '>':
+                  return lhs > rhs
+              if op == '<=':
+                  return lhs <= rhs
+              if op == '<':
+                  return lhs < rhs
+              return None
+
+          def active_for_419(text):
+              # Preserve line count while replacing inactive preprocessor
+              # branches with blank lines. This keeps diagnostics readable.
+              lines = text.splitlines(True)
+              out = []
+              stack = []
+              active = True
+
+              for line in lines:
+                  st = line.strip()
+                  if st.startswith("#if "):
+                      val = eval_419_guard(st[3:].strip())
+                      parent = active
+                      branch = val if val is not None else True
+                      stack.append([parent, branch, parent and branch])
+                      active = parent and branch
+                      out.append("\n" if line.endswith("\n") else "")
+                      continue
+
+                  if st.startswith("#ifdef ") or st.startswith("#ifndef "):
+                      stack.append([active, True, active])
+                      out.append("\n" if line.endswith("\n") else "")
+                      continue
+
+                  if st.startswith("#elif "):
+                      if not stack:
+                          out.append(line)
+                          continue
+                      parent, _, _ = stack[-1]
+                      val = eval_419_guard(st[5:].strip())
+                      branch = val if val is not None else True
+                      stack[-1][1] = branch
+                      stack[-1][2] = parent and branch
+                      active = parent and branch
+                      out.append("\n" if line.endswith("\n") else "")
+                      continue
+
+                  if st.startswith("#else"):
+                      if stack:
+                          parent, branch, _ = stack[-1]
+                          stack[-1][2] = parent and not branch
+                          active = stack[-1][2]
+                      out.append("\n" if line.endswith("\n") else "")
+                      continue
+
+                  if st.startswith("#endif"):
+                      if stack:
+                          parent, _, _ = stack.pop()
+                          active = parent
+                      out.append("\n" if line.endswith("\n") else "")
+                      continue
+
+                  out.append(line if active else ("\n" if line.endswith("\n") else ""))
+
+              return "".join(out)
+
+          masked_active = active_for_419(masked)
+
+          # ---------------------------------------------------------------
           # 3) Find KSU wrapper function ranges by brace matching.
           # ---------------------------------------------------------------
           def find_functions(text):
@@ -1335,7 +1435,7 @@ jobs:
                       i += 1
               return ranges
 
-          functions = find_functions(masked)
+          functions = find_functions(masked_active)
 
           def containing_function(pos):
               hits = [(a, b, n) for a, b, n in functions if a <= pos < b]
@@ -1344,8 +1444,8 @@ jobs:
           # ---------------------------------------------------------------
           # 4) Determine actual f_op member references.
           # ---------------------------------------------------------------
-          refs = set(re.findall(r'\b(?:\w+)\s*->\s*f_op\s*->\s*(\w+)', masked))
-          refs |= set(re.findall(r'\bf_op\s*->\s*(\w+)', masked))
+          refs = set(re.findall(r'\b(?:\w+)\s*->\s*f_op\s*->\s*(\w+)', masked_active))
+          refs |= set(re.findall(r'\bf_op\s*->\s*(\w+)', masked_active))
           missing = sorted(x for x in refs if x not in members)
 
           known_missing = {"iopoll", "remap_file_range"}
@@ -1361,7 +1461,7 @@ jobs:
           # ---------------------------------------------------------------
           targets = set()
           for token in known_missing:
-              for mm in re.finditer(r'\b' + re.escape(token) + r'\b', masked):
+              for mm in re.finditer(r'\b' + re.escape(token) + r'\b', masked_active):
                   fn = containing_function(mm.start())
                   if fn:
                       targets.add(fn[2])
@@ -1444,7 +1544,7 @@ jobs:
                   out.append(line)
               return "\n".join(out)
 
-          active = active_without_if0(clean)
+          active = active_for_419(active_without_if0(clean))
 
           for forbidden in ("iopoll", "remap_file_range", "REMAP_FILE_DEDUP"):
               if re.search(r'\b' + re.escape(forbidden) + r'\b', active):
@@ -1474,7 +1574,13 @@ jobs:
           print("disabled incompatible wrappers:", ", ".join(sorted(targets)) or "<none>")
           print("PASS: no active iopoll/remap_file_range/REMAP_FILE_DEDUP reference.")
           print("PASS: no unknown vendor-missing VFS member remains active.")
+          if "fop_flags" in refs or "splice_eof" in refs:
+              raise SystemExit(
+                  "ERROR: 4.19 audit regression: a post-4.19 file_operations member "
+                  "escaped version-guard evaluation."
+              )
           print("PASS: vendor fs.h ABI was not modified.")
+          print("PASS: 4.19 version guards exclude modern fop_flags/splice_eof branches from the audit.")
           PY
 
           echo "PASS: full KernelSU-Next file_wrapper LG 4.19 compatibility audit completed."
