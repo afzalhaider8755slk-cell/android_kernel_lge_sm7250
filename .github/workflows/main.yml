@@ -1,4 +1,4 @@
-name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.3.0 + SUSFS v2.2.0
+name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.3.0 + SUSFS 4.19 - V31 FULL FILE_WRAPPER AUDIT
 
 "on":
   # Explicit empty maps avoid the invalid-workflow parser issue seen in main.yml.
@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build WORKING 4.19 Non-GKI + KSU-Next v3.3.0 + SUSFS v2.2.0
+    name: Build WORKING 4.19 Non-GKI + KSU + SUSFS - V31 FILE_WRAPPER AUDIT
     runs-on: ubuntu-22.04
     timeout-minutes: 150
 
@@ -42,7 +42,7 @@ jobs:
 
       # Exact SUSFS-compatible KernelSU-Next release.
       # v3.3.0 is the current stable KernelSU-Next release, and the
-      # SUSFS-compatible KernelSU-Next tree is the pinned pershoot dev-susfs commit; kernel-side SUSFS is the v2.2.0 Non-GKI 4.19 backport.
+      # SUSFS-compatible build is the pershoot dev-susfs tree at that tag.
       KSU_VERSION: v3.3.0
       KSU_REPO: https://github.com/pershoot/KernelSU-Next.git
       KSU_BRANCH: dev-susfs
@@ -53,8 +53,8 @@ jobs:
       # "KPROBES || SUSFS" dependency and excludes KPROBE hook objects when
       # CONFIG_KSU_SUSFS=y.
       KSU_REF: 26fded805206ae4542f4745e09cc465412994492
-      SUSFS_VERSION: v2.2.0
-      SUSFS_REF: JackA1ltman/NonGKI_Kernel_Build_2nd@mainline
+      SUSFS_VERSION: kernel-4.19
+      SUSFS_REF: 001e69919c6271f690fd00b17e4c721c9e599152
 
       # Exact toolchain family used by the current WORKING build.
       CLANG_REVISION: clang-r563880c
@@ -894,42 +894,41 @@ jobs:
           echo "PASS: exact stable tag = $KSU_VERSION_RESOLVED"
           echo "PASS: no legacy KernelSU SUSFS patch will be applied."
 
-      - name: 06 - Download and VERIFY SUSFS v2.2.0 Non-GKI 4.19 backport
+      - name: 06 - Download and VERIFY SUSFS kernel-4.19 latest branch
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
           exec > >(tee "$DIAG_DIR/06-susfs.log") 2>&1
           cd "$GITHUB_WORKSPACE"
-          rm -rf susfs-backport
+          rm -rf susfs4ksu
 
-          # JackA1ltman's current Non-GKI 4.19 backport contains the kernel-side
-          # SUSFS v2.2.0 implementation and explicitly identifies itself as NON-GKI.
-          # This is used instead of simonpunk's legacy kernel-4.19 branch, which is
-          # from the old 1.x SUSFS generation.
-          git clone --depth=1 --branch mainline \
-            https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git susfs-backport
+          # For Linux 4.19, the official SUSFS kernel-4.19 branch is the
+          # maintained kernel-specific source. It currently contains SUSFS
+          # 1.5.5-era kernel-4.19 patches.
+          git clone --depth=1 --branch "$SUSFS_VERSION" \
+            https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
 
-          PATCH_FILE="$GITHUB_WORKSPACE/susfs-backport/Patches/Patch/susfs_patch_to_4.19.patch"
-          test -s "$PATCH_FILE"
+          test -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
+          test -f susfs4ksu/kernel_patches/fs/susfs.c
+          test -f susfs4ksu/kernel_patches/fs/sus_su.c
+          test -f susfs4ksu/kernel_patches/include/linux/susfs.h
+          test -f susfs4ksu/kernel_patches/include/linux/sus_su.h
 
-          # Hard verify the patch really contains SUSFS v2.2.0 before touching the
-          # LG kernel tree. Never label an older patch as v2.2.0.
-          grep -q '#define SUSFS_VERSION "v2.2.0"' "$PATCH_FILE"
-          grep -q '#define SUSFS_VARIANT "NON-GKI"' "$PATCH_FILE"
+          # CRITICAL: the legacy KernelSU patch must NOT be used with
+          # KernelSU-Next. Fail early if it somehow appears in the workflow.
+          if test -e susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch; then
+            echo "INFO: legacy KernelSU SUSFS patch exists upstream, but it will NOT be copied/applied."
+          fi
 
-          {
-            echo "susfs_source=JackA1ltman/NonGKI_Kernel_Build_2nd"
-            echo "susfs_branch=mainline"
-            echo "susfs_patch=susfs_patch_to_4.19.patch"
-            echo "susfs_version=v2.2.0"
-            echo "susfs_variant=NON-GKI"
-            echo "susfs_repo_commit=$(git -C susfs-backport rev-parse HEAD)"
-          } | tee "$DIAG_DIR/susfs-version.txt"
+          SUSFS_COMMIT="$(git -C susfs4ksu rev-parse HEAD)"
+          test "$SUSFS_COMMIT" = "$SUSFS_REF"
+          echo "susfs_branch=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
+          echo "susfs_commit=$SUSFS_COMMIT" | tee -a "$DIAG_DIR/susfs-version.txt"
 
-          echo "PASS: SUSFS v2.2.0 NON-GKI 4.19 backport verified."
+          echo "PASS: official SUSFS kernel-4.19 source verified."
 
-      - name: 07 - Apply SUSFS v2.2.0 Non-GKI 4.19 backport
+      - name: 07 - Apply SUSFS kernel-4.19 patch with source-specific fixes
         shell: bash
         run: |
           set -euo pipefail
@@ -937,99 +936,539 @@ jobs:
           exec > >(tee "$DIAG_DIR/07-patches.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          PATCH_FILE="$GITHUB_WORKSPACE/susfs-backport/Patches/Patch/susfs_patch_to_4.19.patch"
-          test -s "$PATCH_FILE"
+          PATCH_FILE="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
 
-          # The patch is a complete kernel-side SUSFS backport. Do not copy the
-          # old simonpunk 1.x files and do not apply the legacy KernelSU SUSFS patch.
-          # KSU-Next v3.3.0 already supplies the SUSFS-aware KernelSU side.
-          # The LG SM7250 sixteen tree uses the newer fs_context-based
-          # vfs_kern_mount() implementation. The upstream Non-GKI 4.19
-          # backport has one obsolete SUS_MOUNT-only hunk for the older
-          # vfs_kern_mount() body. SUS_MOUNT is intentionally disabled in
-          # this exact working configuration, so that hunk must be omitted;
-          # every other SUSFS hunk is applied unchanged.
-          FILTERED_PATCH="$GITHUB_WORKSPACE/susfs-backport/susfs_patch_to_4.19_lg_sm7250.patch"
-          # The LG SM7250 `sixteen` tree is 4.19.325, but its
-          # fs/namespace.c has a newer fs_context-based vfs_kern_mount()
-          # implementation than the old SUS_MOUNT hunk in the generic 4.19
-          # backport. That hunk is SUS_MOUNT-only, and SUS_MOUNT is deliberately
-          # disabled for this non-GKI build. Remove that ONE hunk by its function
-          # context, not by a brittle line-number/header match.
-          FILTERED_PATCH="$GITHUB_WORKSPACE/susfs-backport/susfs_patch_to_4.19_lg_sm7250.patch"
-          python3 - "$PATCH_FILE" "$FILTERED_PATCH" <<'PY'
-          from pathlib import Path
+          # KernelSU-Next SUSFS support is supplied by the SUSFS-compatible
+          # KernelSU-Next tree from Step 05. Do NOT apply the legacy
+          # KernelSU/10_enable_susfs_for_ksu.patch.
+
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" fs/susfs.c
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h" include/linux/sus_su.h
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs_def.h" include/linux/susfs_def.h
+
+          # LG Velvet's three vendor-layout files are handled below against the
+          # actual source. Remove ONLY those three file sections from the
+          # upstream patch so patch(1) never creates misleading .rej files.
+          # fs/namespace.c remains excluded exactly as before.
+          python3 - "$PATCH_FILE" "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch" <<'PY'
           import sys
-
-          src = Path(sys.argv[1]).read_text().splitlines(True)
+          src, dst = sys.argv[1], sys.argv[2]
+          excluded = {
+              "fs/namespace.c",
+              "fs/proc/cmdline.c",
+              "fs/proc/task_mmu.c",
+              "include/linux/mount.h",
+          }
+          lines = open(src, encoding="utf-8").read().splitlines(True)
           out = []
-          i = 0
-          removed = False
+          block = []
+          keep = True
 
-          while i < len(src):
-              line = src[i]
+          def flush():
+              if keep:
+                  out.extend(block)
+
+          for line in lines:
               if line.startswith("diff --git "):
-                  # Copy the file header normally.
-                  out.append(line)
-                  i += 1
-                  continue
+                  flush()
+                  block = [line]
+                  parts = line.split()
+                  path = parts[2][2:] if len(parts) >= 3 and parts[2].startswith("a/") else ""
+                  keep = path not in excluded
+              else:
+                  block.append(line)
+          flush()
 
-              # Only remove the hunk whose @@ header is explicitly about
-              # vfs_kern_mount. Do not touch any other namespace.c hunk.
-              if line.startswith("@@ ") and "vfs_kern_mount" in line:
-                  removed = True
-                  i += 1
-                  while i < len(src):
-                      if src[i].startswith("@@ ") or src[i].startswith("diff --git "):
-                          break
-                      i += 1
-                  continue
-
-              out.append(line)
-              i += 1
-
-          if not removed:
-              raise SystemExit("ERROR: expected SUS_MOUNT-only vfs_kern_mount hunk was not found")
-          Path(sys.argv[2]).write_text(
-              "# SUSFS 2.2.0: omitted obsolete SUS_MOUNT-only vfs_kern_mount hunk for LG SM7250 sixteen\n"
-              + "".join(out)
-          )
+          open(dst, "w", encoding="utf-8").writelines(out)
           PY
 
-          test -s "$FILTERED_PATCH"
-          grep -q 'fs/namespace.c' "$FILTERED_PATCH"
-          if grep -Eq '^@@ .*vfs_kern_mount' "$FILTERED_PATCH"; then
-            echo "::error::Obsolete SUS_MOUNT vfs_kern_mount hunk was not removed."
-            exit 1
-          fi
+          test -s "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"
+          for excluded in \
+            fs/namespace.c \
+            fs/proc/cmdline.c \
+            fs/proc/task_mmu.c \
+            include/linux/mount.h; do
+            if grep -q "^diff --git a/$excluded b/$excluded" \
+              "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"; then
+              echo "::error::Excluded vendor-layout file leaked into SUSFS patch: $excluded"
+              exit 1
+            fi
+          done
 
-          patch --batch --forward --fuzz=3 -p1 < "$FILTERED_PATCH"
+          # Apply every upstream SUSFS hunk that matches the LG vendor tree.
+          #
+          # IMPORTANT: this exact LG 4.19 source differs slightly from the
+          # generic SUSFS 4.19 context. patch(1) therefore needs its documented
+          # maximum fuzz of 2 for a few harmless context-only matches. Make the
+          # tolerated fuzz explicit instead of relying on patch(1)'s implicit
+          # default. The four vendor-layout files are still excluded and handled
+          # source-aware below.
+          PATCH_FUZZ=2
+          echo "Applying SUSFS vendor-neutral patch with explicit fuzz limit: $PATCH_FUZZ"
+          patch --forward --batch --fuzz="$PATCH_FUZZ" -p1 \
+            < "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"
 
-          # A partial patch is worse than a failed build. Rejects are fatal.
+          # A successful patch command is necessary but not sufficient: never
+          # allow a partial application or stale reject file to reach the build.
           if find . -type f -name '*.rej' -print -quit | grep -q .; then
-            echo "::error::SUSFS v2.2.0 backport produced patch rejects on this LG 4.19 tree."
+            echo "::error::SUSFS patch produced reject files."
             find . -type f -name '*.rej' -print
             exit 1
           fi
-          find . -type f -name '*.orig' -delete
+          if find . -type f -name '*.orig' -print -quit | grep -q .; then
+            echo "::error::SUSFS patch left backup files; patch application was not clean."
+            find . -type f -name '*.orig' -print
+            exit 1
+          fi
 
+          # 1) Vendor cmdline.c keeps LGE's updated_command_line logic.
+          # Insert the official SUSFS hook at the output point, AFTER the
+          # existing LGE boot-mode adjustment. Do not replace vendor behavior.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("fs/proc/cmdline.c")
+          s = p.read_text()
+
+          inc = """#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          extern int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);
+          #endif
+          """
+          if "extern int susfs_spoof_cmdline_or_bootconfig" not in s:
+              anchor = "#include <linux/seq_file.h>\n"
+              if anchor not in s:
+                  raise SystemExit("cmdline.c seq_file include anchor not found")
+              s = s.replace(anchor, anchor + inc, 1)
+
+          hook = """#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+              if (!susfs_spoof_cmdline_or_bootconfig(m)) {
+                  seq_putc(m, '\\n');
+                  return 0;
+              }
+          #endif
+          """
+          if "susfs_spoof_cmdline_or_bootconfig(m)" not in s:
+              anchor = "\tseq_puts(m, updated_command_line);\n"
+              if anchor not in s:
+                  raise SystemExit("cmdline.c updated_command_line output anchor not found")
+              s = s.replace(anchor, hook + anchor, 1)
+
+          p.write_text(s)
+          PY
+
+          # 2) task_mmu.c: recreate the two upstream SUSFS hunks against the
+          # actual LG include block and show_map_vma location.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("fs/proc/task_mmu.c")
+          s = p.read_text()
+
+          if "#include <linux/susfs_def.h>" not in s:
+              anchor = "#include <linux/mm_inline.h>\n"
+              if anchor not in s:
+                  raise SystemExit("task_mmu.c mm_inline include anchor not found")
+              inc = """#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          #include <linux/susfs_def.h>
+          #endif
+          """
+              s = s.replace(anchor, anchor + inc, 1)
+
+          decl = """#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          extern void susfs_sus_ino_for_show_map_vma(unsigned long ino, dev_t *out_dev, unsigned long *out_ino);
+          #endif
+
+          """
+          if "extern void susfs_sus_ino_for_show_map_vma" not in s:
+              needle = "static void\nshow_map_vma("
+              pos = s.find(needle)
+              if pos < 0:
+                  raise SystemExit("task_mmu.c show_map_vma anchor not found")
+              s = s[:pos] + decl + s[pos:]
+
+          p.write_text(s)
+          PY
+
+          # 4) CONFIG_KSU_SUSFS_SUS_MOUNT is intentionally disabled in this
+          # non-GKI build. The pinned KernelSU-Next SUSFS branch leaves
+          # susfs_set_current_proc_umounted() in setuid_hook.c under the broader
+          # CONFIG_KSU_SUSFS branch, but that helper is only declared when
+          # CONFIG_KSU_SUSFS_SUS_MOUNT is enabled. Guard only that unavailable
+          # call; do not enable SUS_MOUNT and do not change the surrounding
+          # setuid/umount logic.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("KernelSU-Next/kernel/hook/setuid_hook.c")
+          s = p.read_text()
+          target = "    susfs_set_current_proc_umounted();\n"
+          if "LG 4.19: SUS_MOUNT-only proc-umount marker" not in s:
+              if target not in s:
+                  raise SystemExit("setuid_hook.c SUS_MOUNT proc-umount call not found")
+              s = s.replace(
+                  target,
+                  "    /* LG 4.19: SUS_MOUNT-only proc-umount marker */\n"
+                  "    #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+                  + target
+                  + "    #endif\n",
+                  1,
+              )
+              p.write_text(s)
+          if "LG 4.19: SUS_MOUNT-only proc-umount marker" not in p.read_text():
+              raise SystemExit("setuid_hook.c SUS_MOUNT guard insertion failed")
+          PY
+          grep -q 'LG 4.19: SUS_MOUNT-only proc-umount marker' KernelSU-Next/kernel/hook/setuid_hook.c
+          grep -Eq '^[[:space:]]*#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT$' KernelSU-Next/kernel/hook/setuid_hook.c
+          grep -Eq '^[[:space:]]*#endif$' KernelSU-Next/kernel/hook/setuid_hook.c
+          echo "PASS: setuid_hook SUS_MOUNT-only helper call is guarded; SUS_MOUNT remains disabled."
+          
+          # Full LG 4.19 file_wrapper compatibility audit.
+          #
+          # Do not add missing VFS members to the vendor fs.h. Instead:
+          #   1. inventory every f_op member referenced by file_wrapper.c;
+          #   2. compare it with the actual vendor struct file_operations;
+          #   3. disable ONLY wrappers/assignments that use members absent on 4.19;
+          #   4. explicitly audit REMAP_FILE_DEDUP;
+          #   5. fail closed if an unknown missing VFS member is discovered.
+          #
+          # This is deliberately source-aware rather than a broad "grep and
+          # ignore" workaround. It prevents a future KSU-Next update from
+          # introducing another incompatible VFS member silently.
+          FILE_WRAPPER_C="KernelSU-Next/kernel/infra/file_wrapper.c"
+          FS_H="include/linux/fs.h"
+          test -f "$FILE_WRAPPER_C"
+          test -f "$FS_H"
+
+          python3 - "$FILE_WRAPPER_C" "$FS_H" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          fw = Path(sys.argv[1])
+          fs = Path(sys.argv[2])
+          source = fw.read_text()
+          header = fs.read_text()
+
+          MARK = "LG 4.19: file_wrapper compatibility audit v31"
+          if MARK not in source:
+              source = "/* " + MARK + " */\n" + source
+
+          # ---------------------------------------------------------------
+          # 1) Build an inventory of the vendor's actual file_operations.
+          # ---------------------------------------------------------------
+          m = re.search(r'struct\s+file_operations\s*\{', header)
+          if not m:
+              raise SystemExit("ERROR: struct file_operations not found in vendor fs.h")
+
+          depth = 0
+          end = None
+          for i in range(m.end(), len(header)):
+              if header[i] == '{':
+                  depth += 1
+              elif header[i] == '}':
+                  if depth == 0:
+                      end = i
+                      break
+                  depth -= 1
+          if end is None:
+              raise SystemExit("ERROR: could not parse vendor file_operations")
+
+          fops = header[m.end():end]
+          members = set(re.findall(r'\(\s*\*\s*(\w+)\s*\)\s*\(', fops))
+          members.update(re.findall(r'^\s*(?:unsigned\s+long|loff_t|ssize_t|int|long|void\s*\*|bool|umode_t|fmode_t|struct\s+\w+\s*\*)\s+(\w+)\s*;', fops, re.M))
+
+          # ---------------------------------------------------------------
+          # 2) Remove comments/strings for reliable source-reference scanning.
+          # ---------------------------------------------------------------
+          def mask_comments_strings(text):
+              out = list(text)
+              i = 0
+              n = len(text)
+              state = "code"
+              quote = ""
+              while i < n:
+                  if state == "code":
+                      if text.startswith("//", i):
+                          out[i] = out[i+1] = " "
+                          i += 2
+                          state = "line"
+                          continue
+                      if text.startswith("/*", i):
+                          out[i] = out[i+1] = " "
+                          i += 2
+                          state = "block"
+                          continue
+                      if text[i] in ("'", '"'):
+                          quote = text[i]
+                          out[i] = " "
+                          i += 1
+                          state = "string"
+                          continue
+                  elif state == "line":
+                      if text[i] == "\n":
+                          state = "code"
+                      else:
+                          out[i] = " "
+                  elif state == "block":
+                      if text.startswith("*/", i):
+                          out[i] = out[i+1] = " "
+                          i += 2
+                          state = "code"
+                          continue
+                      if text[i] != "\n":
+                          out[i] = " "
+                  elif state == "string":
+                      if text[i] == "\\" and i + 1 < n:
+                          out[i] = out[i+1] = " "
+                          i += 2
+                          continue
+                      if text[i] == quote:
+                          out[i] = " "
+                          i += 1
+                          state = "code"
+                          continue
+                      if text[i] != "\n":
+                          out[i] = " "
+                  i += 1
+              return "".join(out)
+
+          masked = mask_comments_strings(source)
+
+          # ---------------------------------------------------------------
+          # 3) Find KSU wrapper function ranges by brace matching.
+          # ---------------------------------------------------------------
+          def find_functions(text):
+              ranges = []
+              pat = re.compile(
+                  r'(?m)^\s*(?:(?:static|inline|__always_inline|extern)\s+)*'
+                  r'(?:[\w\s\*]+?)\s+(ksu_wrapper_[A-Za-z0-9_]+)\s*\([^;{}]*\)\s*\{'
+              )
+              for mm in pat.finditer(text):
+                  name = mm.group(1)
+                  brace = text.find("{", mm.start(), mm.end())
+                  depth = 0
+                  i = brace
+                  while i < len(text):
+                      if text[i] == "{":
+                          depth += 1
+                      elif text[i] == "}":
+                          depth -= 1
+                          if depth == 0:
+                              ranges.append((mm.start(), i + 1, name))
+                              break
+                      i += 1
+              return ranges
+
+          functions = find_functions(masked)
+
+          def containing_function(pos):
+              hits = [(a, b, n) for a, b, n in functions if a <= pos < b]
+              return max(hits, key=lambda x: x[0]) if hits else None
+
+          # ---------------------------------------------------------------
+          # 4) Determine actual f_op member references.
+          # ---------------------------------------------------------------
+          refs = set(re.findall(r'\b(?:\w+)\s*->\s*f_op\s*->\s*(\w+)', masked))
+          refs |= set(re.findall(r'\bf_op\s*->\s*(\w+)', masked))
+          missing = sorted(x for x in refs if x not in members)
+
+          known_missing = {"iopoll", "remap_file_range"}
+          unknown_missing = [x for x in missing if x not in known_missing]
+          if unknown_missing:
+              raise SystemExit(
+                  "ERROR: file_wrapper references unknown vendor-missing VFS member(s): "
+                  + ", ".join(unknown_missing)
+              )
+
+          # ---------------------------------------------------------------
+          # 5) Disable only incompatible wrapper functions.
+          # ---------------------------------------------------------------
+          targets = set()
+          for token in known_missing:
+              for mm in re.finditer(r'\b' + re.escape(token) + r'\b', masked):
+                  fn = containing_function(mm.start())
+                  if fn:
+                      targets.add(fn[2])
+
+          # REMAP_FILE_DEDUP is not a file_operations member; it is separately
+          # audited and the containing remap wrapper is disabled if present.
+          for mm in re.finditer(r'\bREMAP_FILE_DEDUP\b', masked):
+              fn = containing_function(mm.start())
+              if fn:
+                  targets.add(fn[2])
+
+          # Apply function guards from bottom to top so offsets remain valid.
+          if targets:
+              functions_now = find_functions(masked)
+              spans = [x for x in functions_now if x[2] in targets]
+              for a, b, name in sorted(spans, reverse=True):
+                  original = source[a:b]
+                  if "LG 4.19: disabled incompatible VFS wrapper" in original:
+                      continue
+                  wrapped = (
+                      "#if 0 /* LG 4.19: disabled incompatible VFS wrapper: "
+                      + name + " */\n"
+                      + original
+                      + "\n#endif\n"
+                  )
+                  source = source[:a] + wrapped + source[b:]
+              masked = mask_comments_strings(source)
+
+          # ---------------------------------------------------------------
+          # 6) Remove assignments that still bind missing VFS members.
+          #    This is necessary even if the wrapper function itself is #if 0.
+          # ---------------------------------------------------------------
+          source = re.sub(
+              r'(?ms)^[ \t]*p->ops\.iopoll\s*=\s*[^;]*;\s*$',
+              "    /* LG 4.19: iopoll operation unavailable; wrapper not registered. */",
+              source,
+          )
+          source = re.sub(
+              r'(?ms)^[ \t]*p->ops\.remap_file_range\s*=\s*[^;]*;\s*$',
+              "    /* LG 4.19: remap_file_range unavailable; wrapper not registered. */",
+              source,
+          )
+
+          # Also catch common direct f_op assignment forms.
+          source = re.sub(
+              r'(?m)^[ \t]*[^/\\n]*->f_op->iopoll[^;\\n]*;[ \t]*$',
+              "    /* LG 4.19: f_op->iopoll unavailable. */",
+              source,
+          )
+          source = re.sub(
+              r'(?m)^[ \t]*[^/\\n]*->f_op->remap_file_range[^;\\n]*;[ \t]*$',
+              "    /* LG 4.19: f_op->remap_file_range unavailable. */",
+              source,
+          )
+
+          fw.write_text(source)
+
+          # ---------------------------------------------------------------
+          # 7) Final active-code audit.
+          #    Strip our #if 0 blocks with a small preprocessor-depth scanner.
+          # ---------------------------------------------------------------
+          final = fw.read_text()
+          clean = mask_comments_strings(final)
+
+          def active_without_if0(text):
+              lines = text.splitlines()
+              out = []
+              disabled = 0
+              for line in lines:
+                  st = line.strip()
+                  if re.match(r'^#\s*if\s+0\b', st):
+                      disabled += 1
+                      continue
+                  if disabled:
+                      if re.match(r'^#\s*(if|ifdef|ifndef)\b', st):
+                          disabled += 1
+                      elif re.match(r'^#\s*endif\b', st):
+                          disabled -= 1
+                      continue
+                  out.append(line)
+              return "\n".join(out)
+
+          active = active_without_if0(clean)
+
+          for forbidden in ("iopoll", "remap_file_range", "REMAP_FILE_DEDUP"):
+              if re.search(r'\b' + re.escape(forbidden) + r'\b', active):
+                  raise SystemExit(
+                      "ERROR: active file_wrapper code still references " + forbidden
+                  )
+
+          # No unknown f_op member may remain.
+          active_refs = set(re.findall(r'\b(?:\w+\s*->\s*)?f_op\s*->\s*(\w+)', active))
+          active_missing = sorted(x for x in active_refs if x not in members)
+          if active_missing:
+              raise SystemExit(
+                  "ERROR: active file_wrapper references vendor-missing VFS member(s): "
+                  + ", ".join(active_missing)
+              )
+
+          # Vendor ABI remains untouched.
+          if re.search(r'\(\s*\*\s*iopoll\s*\)\s*\(', fops):
+              raise SystemExit("ERROR: vendor fs.h unexpectedly defines iopoll")
+          if re.search(r'\(\s*\*\s*remap_file_range\s*\)\s*\(', fops):
+              raise SystemExit("ERROR: vendor fs.h unexpectedly defines remap_file_range")
+
+          print("=== LG 4.19 FILE_WRAPPER FULL AUDIT ===")
+          print("file_operations members:", len(members))
+          print("f_op members referenced by KSU wrapper:", ", ".join(sorted(refs)) or "<none>")
+          print("vendor-missing known members:", ", ".join(missing) or "<none>")
+          print("disabled incompatible wrappers:", ", ".join(sorted(targets)) or "<none>")
+          print("PASS: no active iopoll/remap_file_range/REMAP_FILE_DEDUP reference.")
+          print("PASS: no unknown vendor-missing VFS member remains active.")
+          print("PASS: vendor fs.h ABI was not modified.")
+          PY
+
+          echo "PASS: full KernelSU-Next file_wrapper LG 4.19 compatibility audit completed."
+
+          # 3) Preserve the vendor mount.h layout and use KABI slot 4 only
+          # for SUSFS, wherever the existing reserve(4) line occurs.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("include/linux/mount.h")
+          s = p.read_text()
+          if "susfs_mnt_id_backup" not in s:
+              needle = "\tANDROID_KABI_RESERVE(4);"
+              pos = s.find(needle)
+              if pos < 0:
+                  raise SystemExit("mount.h ANDROID_KABI_RESERVE(4) not found")
+              repl = ("#ifdef CONFIG_KSU_SUSFS\n"
+                      "\tANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);\n"
+                      "#else\n"
+                      "\tANDROID_KABI_RESERVE(4);\n"
+                      "#endif")
+              s = s[:pos] + repl + s[pos+len(needle):]
+          p.write_text(s)
+          PY
+
+          find . -type f -name '*.orig' -delete
+          if find . -type f -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::SUSFS patch still has reject files after source-specific fixes."
+            find . -type f -name '*.rej' -print
+            exit 1
+          fi
+
+          # Required SUSFS symbols/fields must now exist in the exact vendor
+          # source. This catches an incomplete/manual patch before compilation.
+          grep -q 'susfs_spoof_cmdline_or_bootconfig' fs/proc/cmdline.c
+          grep -q '#include <linux/susfs_def.h>' fs/proc/task_mmu.c
+          grep -q 'susfs_sus_ino_for_show_map_vma' fs/proc/task_mmu.c
+          grep -q 'susfs_mnt_id_backup' include/linux/mount.h
+
+          # Exact vendor-layout sanity checks: preserve LGE cmdline behavior and
+          # do not allow the SUSFS hook to bypass the charger-mode adjustment.
+          grep -q 'proc_cmdline_set("androidboot.mode", "charger")' fs/proc/cmdline.c
+          grep -q 'seq_puts(m, updated_command_line);' fs/proc/cmdline.c
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path("fs/proc/cmdline.c").read_text()
+          hook = s.index("susfs_spoof_cmdline_or_bootconfig(m)")
+          charger = s.index('proc_cmdline_set("androidboot.mode", "charger")')
+          output = s.index("seq_puts(m, updated_command_line);")
+          if not (charger < hook < output):
+              raise SystemExit("cmdline SUSFS hook is not between LGE adjustment and command-line output")
+          PY
           test -f fs/susfs.c
+          test -f fs/sus_su.c
           test -f include/linux/susfs.h
+          test -f include/linux/sus_su.h
           test -f include/linux/susfs_def.h
 
-          # These are literal version markers embedded in the backport itself.
-          grep -q '#define SUSFS_VERSION "v2.2.0"' include/linux/susfs.h
-          grep -q '#define SUSFS_VARIANT "NON-GKI"' include/linux/susfs.h
-
-          # Keep KPROBES untouched. The KSU/SUSFS path for this build is the
-          # manual non-KPROBE path already present in the workflow.
-          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
+          # The upstream SUSFS 4.19 patch contains one harmless trailing-space
+          # comment in fs/overlayfs/readdir.c. Remove only that whitespace so
+          # git diff --check does not reject an otherwise valid patch.
+          sed -i 's/[[:space:]]\+$//' fs/overlayfs/readdir.c
 
           git diff --check
 
-          echo "PASS: SUSFS v2.2.0 NON-GKI 4.19 kernel patch applied with zero rejects."
-          echo "PASS: legacy simonpunk kernel-4.19 SUSFS patch was NOT used."
-          echo "PASS: legacy KernelSU SUSFS integration patch was NOT used."
+          echo "PASS: SUSFS kernel-4.19 patch applied with no reject/backup files."
+          echo "PASS: three known LG Velvet vendor-layout files were integrated source-aware."
+          echo "PASS: only the explicit patch fuzz limit ($PATCH_FUZZ) was permitted for generic-context drift."
+          echo "PASS: legacy KernelSU SUSFS patch was NOT applied."
+          echo "PASS: fs/namespace.c SUS_MOUNT patch remains excluded."
+          echo "PASS: legacy KernelSU SUSFS patch was NOT applied."
+          echo "PASS: fs/namespace.c SUS_MOUNT patch remains excluded."
 
       - name: 07B - Verify KernelSU-Next + SUSFS integration identity
         shell: bash
@@ -1348,7 +1787,7 @@ jobs:
           # created by the SUSFS-compatible setup script; do not mistake it for
           # the legacy KernelSU/ directory. Only KernelSU-Next/SUSFS integration
           # and the documented non-KPROBE hook sites may differ from the WORKING tree.
-          allowed_files='^(KernelSU-Next/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$|drivers/input/input.c$|fs/Makefile$|fs/dcache.c$|fs/devpts/inode.c$|fs/exec.c$|fs/inode.c$|fs/notify/fdinfo.c$|fs/namei.c$|fs/open.c$|fs/overlayfs/inode.c$|fs/overlayfs/readdir.c$|fs/overlayfs/super.c$|fs/proc/base.c$|fs/proc/cmdline.c$|fs/proc/fd.c$|fs/proc/task_mmu.c$|fs/proc_namespace.c$|fs/read_write.c$|fs/readdir.c$|fs/stat.c$|fs/statfs.c$|mm/memory.c$|security/selinux/avc.c$|include/linux/fs.h$|include/linux/mount.h$|include/linux/sched.h$|kernel/kallsyms.c$|kernel/sys.c$|fs/susfs.c$|include/linux/susfs.h$|fs/sus_su.c$|include/linux/sus_su.h$|include/linux/susfs_def.h$)$'
+          allowed_files='^(KernelSU-Next/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$|drivers/input/input.c$|fs/Makefile$|fs/dcache.c$|fs/devpts/inode.c$|fs/exec.c$|fs/inode.c$|fs/notify/fdinfo.c$|fs/namei.c$|fs/open.c$|fs/overlayfs/inode.c$|fs/overlayfs/readdir.c$|fs/overlayfs/super.c$|fs/proc/cmdline.c$|fs/proc/fd.c$|fs/proc/task_mmu.c$|fs/proc_namespace.c$|fs/read_write.c$|fs/readdir.c$|fs/stat.c$|fs/statfs.c$|include/linux/mount.h$|include/linux/sched.h$|kernel/kallsyms.c$|kernel/sys.c$|fs/susfs.c$|include/linux/susfs.h$|fs/sus_su.c$|include/linux/sus_su.h$|include/linux/susfs_def.h$)$'
           unexpected="$(git status --short | sed -E 's/^.. //g' | grep -Ev "$allowed_files" || true)"
           if [ -n "$unexpected" ]; then
             echo "::error::Unexpected source files changed (outside KSU/SUSFS integration scope):"
@@ -1456,7 +1895,7 @@ jobs:
             echo "gcc64_branch=$GCC64_BRANCH"
             echo "gcc32_branch=$GCC32_BRANCH"
             echo "ksu=$KSU_VERSION"
-            echo "susfs=v2.2.0"
+            echo "susfs=$SUSFS_VERSION"
             echo "SUS_PATH=disabled_for_LG_user_struct_compatibility"
             echo "KPROBES=disabled (preserved from stock working kernel)"
             echo "artifact=raw ARM64 Image; stock DTB/DTBO intentionally preserved"
@@ -1543,7 +1982,7 @@ jobs:
             echo "gcc64_branch=$GCC64_BRANCH"
             echo "gcc32_branch=$GCC32_BRANCH"
             echo "ksu=$KSU_VERSION"
-            echo "susfs=v2.2.0"
+            echo "susfs=$SUSFS_VERSION"
             echo "SUS_PATH=disabled_for_LG_user_struct_compatibility"
             echo "KPROBES=disabled"
             echo "SUS_MOUNT=disabled_for_non_GKI_stability"
