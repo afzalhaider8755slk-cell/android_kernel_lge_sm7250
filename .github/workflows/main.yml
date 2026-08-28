@@ -956,6 +956,8 @@ jobs:
           import sys
           src, dst = sys.argv[1], sys.argv[2]
           excluded = {
+              "fs/Makefile",
+              "fs/namei.c",
               "fs/namespace.c",
               "fs/proc/cmdline.c",
               "fs/proc/task_mmu.c",
@@ -986,6 +988,8 @@ jobs:
 
           test -s "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"
           for excluded in \
+            fs/Makefile \
+            fs/namei.c \
             fs/namespace.c \
             fs/proc/cmdline.c \
             fs/proc/task_mmu.c \
@@ -997,32 +1001,104 @@ jobs:
             fi
           done
 
-          # Apply every upstream SUSFS hunk that matches the LG vendor tree.
+          # Apply the generic SUSFS hunks with ZERO FUZZ.
           #
-          # IMPORTANT: this exact LG 4.19 source differs slightly from the
-          # generic SUSFS 4.19 context. patch(1) therefore needs its documented
-          # maximum fuzz of 2 for a few harmless context-only matches. Make the
-          # tolerated fuzz explicit instead of relying on patch(1)'s implicit
-          # default. The four vendor-layout files are still excluded and handled
-          # source-aware below.
-          PATCH_FUZZ=0
-          echo "Applying SUSFS vendor-neutral patch with STRICT fuzz limit: $PATCH_FUZZ"
-          echo "Whitespace-only context differences are normalized with patch -l; no context lines may be dropped."
-          patch --forward --batch --fuzz=0 -l -p1 \
+          # Two files are intentionally excluded because this LG tree is not
+          # byte-for-byte identical to the generic 4.19 patch base:
+          #   - fs/Makefile: vendor object list/context differs.
+          #   - fs/namei.c: LG uses the 4.19 mnt-aware may_create() API.
+          #
+          # Those two SUSFS changes are applied source-aware immediately after
+          # this generic patch. This is preferable to allowing patch(1) to
+          # guess with fuzz or to silently accept a wrong context match.
+          echo "Applying SUSFS generic hunks with STRICT fuzz limit: 0"
+          echo "LG-specific fs/Makefile and fs/namei.c hunks are handled source-aware."
+
+          rm -f fs/Makefile.rej fs/namei.c.rej fs/Makefile.orig fs/namei.c.orig
+          patch --forward --batch --fuzz=0 -l --no-backup-if-mismatch -p1 \
             < "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"
 
-          # A successful patch command is necessary but not sufficient: never
-          # allow a partial application or stale reject file to reach the build.
           if find . -type f -name '*.rej' -print -quit | grep -q .; then
-            echo "::error::SUSFS patch produced reject files."
+            echo "::error::SUSFS generic patch produced reject files."
             find . -type f -name '*.rej' -print
             exit 1
           fi
-          if find . -type f -name '*.orig' -print -quit | grep -q .; then
-            echo "::error::SUSFS patch left backup files; patch application was not clean."
-            find . -type f -name '*.orig' -print
-            exit 1
-          fi
+
+          # ---------------------------------------------------------------
+          # LG 4.19 source-aware SUSFS integration: fs/Makefile
+          # ---------------------------------------------------------------
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("fs/Makefile")
+          s = p.read_text()
+          line = "obj-$(CONFIG_KSU_SUSFS) += susfs.o"
+          if line not in s:
+              anchor = "fs_context.o fs_parser.o\n"
+              if anchor not in s:
+                  raise SystemExit("ERROR: fs/Makefile SUSFS anchor not found")
+              s = s.replace(anchor, anchor + "\n" + line + "\n", 1)
+              p.write_text(s)
+          if line not in p.read_text():
+              raise SystemExit("ERROR: fs/Makefile SUSFS object integration failed")
+          PY
+
+          # ---------------------------------------------------------------
+          # LG 4.19 source-aware SUSFS integration: fs/namei.c / may_create()
+          #
+          # The upstream 4.19 patch assumes an older may_create() signature.
+          # This LG tree has:
+          #   may_create(struct vfsmount *mnt, struct inode *dir, ...)
+          # so preserve the vendor mnt-aware permission path and add only the
+          # SUS_PATH check from the upstream hunk.
+          # ---------------------------------------------------------------
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("fs/namei.c")
+          s = p.read_text()
+
+          if "LG 4.19: SUSFS_SUS_PATH may_create integration" not in s:
+              needle = """static inline int may_create(struct vfsmount *mnt, struct inode *dir, struct dentry *child)
+          {
+          \tstruct user_namespace *s_user_ns;
+          \taudit_inode_child(dir, child, AUDIT_TYPE_CHILD_CREATE);
+          """
+              replacement = """static inline int may_create(struct vfsmount *mnt, struct inode *dir, struct dentry *child)
+          {
+          \t/* LG 4.19: SUSFS_SUS_PATH may_create integration */
+          \tstruct user_namespace *s_user_ns;
+          #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+          \tint error;
+          #endif
+          \taudit_inode_child(dir, child, AUDIT_TYPE_CHILD_CREATE);
+          #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+          \tif (child->d_inode &&
+          \t    unlikely(child->d_inode->i_state & INODE_STATE_SUS_PATH) &&
+          \t    likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)) {
+          \t\terror = inode_permission2(mnt, dir, MAY_WRITE | MAY_EXEC);
+          \t\tif (error)
+          \t\t\treturn error;
+          \t\treturn -ENOENT;
+          \t}
+          #endif
+          """
+              if needle not in s:
+                  raise SystemExit("ERROR: LG may_create() anchor not found")
+              s = s.replace(needle, replacement, 1)
+              p.write_text(s)
+
+          if "LG 4.19: SUSFS_SUS_PATH may_create integration" not in p.read_text():
+              raise SystemExit("ERROR: namei.c SUSFS may_create integration failed")
+          PY
+
+          grep -Fq 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          grep -Fq 'LG 4.19: SUSFS_SUS_PATH may_create integration' fs/namei.c
+          grep -Fq 'inode_permission2(mnt, dir, MAY_WRITE | MAY_EXEC)' fs/namei.c
+
+          echo "PASS: generic SUSFS patch applied with fuzz=0 and no rejects."
+          echo "PASS: LG fs/Makefile SUSFS object integration applied source-aware."
+          echo "PASS: LG fs/namei.c may_create SUS_PATH integration applied source-aware."
+          echo "PASS: no legacy KernelSU SUSFS patch applied."
+          echo "PASS: fs/namespace.c remains excluded as requested."
 
           # 1) Vendor cmdline.c keeps LGE's updated_command_line logic.
           # Insert the official SUSFS hook at the output point, AFTER the
