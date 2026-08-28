@@ -43,7 +43,7 @@ jobs:
 
       # ONLY these two functional additions are intended.
       KSU_VERSION: v3.3.0
-      SUSFS_VERSION: kernel-4.19
+      SUSFS_VERSION: 1.4.2-kernel-4.19
 
       # Exact toolchain family used by the current WORKING build.
       CLANG_REVISION: clang-r563880c
@@ -709,7 +709,7 @@ jobs:
           echo "PASS: baseline SHA256 matches $WORKING_BASELINE_CONFIG_SHA256"
           echo "PASS: KPROBES remains disabled in pristine baseline."
 
-      - name: 05 - Integrate ONLY KernelSU-Next latest (manual NonGKI path)
+      - name: 05 - Integrate ONLY KernelSU-Next v3.3.0 (manual Non-GKI path)
         shell: bash
         run: |
           set -euo pipefail
@@ -717,8 +717,7 @@ jobs:
           exec > >(tee "$DIAG_DIR/05-ksu.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # Current latest stable KernelSU-Next: v3.3.0.
-          # Use the official KernelSU-Next setup script only.
+          # Fixed, verified KernelSU-Next release for this build.
           curl -LSsf "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/v3.3.0/kernel/setup.sh" \
             | bash -s "$KSU_VERSION"
 
@@ -733,7 +732,7 @@ jobs:
           echo "ksu_commit=$(git rev-parse HEAD)" | tee -a "$DIAG_DIR/ksu-version.txt"
           git describe --tags --always
 
-      - name: 06 - Download and VERIFY SUSFS latest for kernel 4.19
+      - name: 06 - Download and VERIFY SUSFS 1.4.2-kernel-4.19
         shell: bash
         run: |
           set -euo pipefail
@@ -742,7 +741,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           rm -rf susfs4ksu
 
-          git clone --depth=1 --single-branch --branch "$SUSFS_VERSION" \
+          git clone --depth=1 --branch "$SUSFS_VERSION" \
             https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
 
           test -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
@@ -753,8 +752,8 @@ jobs:
           test -f susfs4ksu/kernel_patches/include/linux/susfs.h
           test -f susfs4ksu/kernel_patches/include/linux/sus_su.h
 
+          test "$(git -C susfs4ksu describe --tags --exact-match 2>/dev/null || true)" = "$SUSFS_VERSION"
           echo "susfs_tag=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
-          echo "susfs_branch=$SUSFS_VERSION" | tee -a "$DIAG_DIR/susfs-version.txt"
           echo "susfs_commit=$(git -C susfs4ksu rev-parse HEAD)" | tee -a "$DIAG_DIR/susfs-version.txt"
 
       - name: 07 - Apply SUSFS latest safely for this WORKING 4.19 source (sanitized patch)
@@ -765,7 +764,7 @@ jobs:
           exec > >(tee "$DIAG_DIR/07-patches.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # The official SUSFS kernel-4.19 namespace patch targets a
+          # The official SUSFS 1.4.2-kernel-4.19 namespace patch targets a
           # different 4.19 fs/namespace.c layout. This LG source uses the
           # fs_context/vfs_create_mount layout, so blindly applying that hunk
           # can match the wrong function and reject the real clone_mnt hunk.
@@ -773,7 +772,7 @@ jobs:
           # SUS_MOUNT is explicitly disabled in Step 09. SUSFS itself documents
           # non-GKI bootloop risk for its mount-id reordering feature. Therefore
           # namespace.c is intentionally excluded while all other SUSFS changes
-          # are applied from the official kernel-4.19 branch patch set.
+          # are applied from the official 1.4.2-kernel-4.19 patch.
 
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" fs/susfs.c
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
@@ -829,7 +828,7 @@ jobs:
             exit 1
           fi
 
-          echo "PASS: SUSFS latest applied without fs/namespace.c."
+          echo "PASS: SUSFS 1.4.2-kernel-4.19 applied without fs/namespace.c."
           echo "PASS: SUS_MOUNT is intentionally disabled."
           # The official patch is sanitized only for trailing whitespace on
           # added lines, so this is now a real source-integrity check rather
