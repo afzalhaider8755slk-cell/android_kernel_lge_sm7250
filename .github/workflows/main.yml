@@ -806,6 +806,38 @@ jobs:
           echo "KSU_VERSION_RESOLVED=$KSU_VERSION_RESOLVED" >> "$GITHUB_ENV"
           echo "KSU_COMMIT=$KSU_COMMIT" >> "$GITHUB_ENV"
 
+          # Exact LG 4.19 compatibility fix for KernelSU-Next v3.3.0:
+          # su_mount_ns.c includes <uapi/linux/mount.h>, but this vendor
+          # 4.19 tree predates the split of the mount UAPI header. The
+          # required MS_PRIVATE/MS_REC flags are already provided by the
+          # existing <linux/fs.h> include in su_mount_ns.c, so do not add
+          # or modify a vendor UAPI header. Remove only the unavailable
+          # include from this KSU translation unit.
+          SU_MOUNT_NS_C="KernelSU-Next/kernel/infra/su_mount_ns.c"
+          test -f "$SU_MOUNT_NS_C"
+          python3 - "$SU_MOUNT_NS_C" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          bad = "#include <uapi/linux/mount.h>\n"
+          if bad in s:
+              s = s.replace(bad, "", 1)
+              p.write_text(s)
+
+          if "#include <uapi/linux/mount.h>" in s:
+              raise SystemExit("unavailable uapi/linux/mount.h include remains in su_mount_ns.c")
+
+          if "MS_PRIVATE | MS_REC" not in s:
+              raise SystemExit("Expected MS_PRIVATE/MS_REC mount flags were not found in su_mount_ns.c")
+          PY
+
+          ! grep -q '^#include <uapi/linux/mount.h>$' "$SU_MOUNT_NS_C"
+          grep -q 'MS_PRIVATE | MS_REC' "$SU_MOUNT_NS_C"
+          grep -q '^#include <linux/fs.h>$' "$SU_MOUNT_NS_C"
+          echo "PASS: su_mount_ns.c uses the existing 4.19 linux/fs.h mount flags; no unavailable uapi/linux/mount.h dependency."
+
           echo "PASS: KernelSU-Next SUSFS-compatible repository detected."
           # Compile fix for this exact 4.19 + Clang combination:
           # sulog.h declares __init/__exit but is included directly by sulog.c,
