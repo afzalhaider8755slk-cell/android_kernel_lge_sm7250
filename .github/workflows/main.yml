@@ -793,7 +793,7 @@ jobs:
 
           echo "PASS: official SUSFS kernel-4.19 source verified."
 
-      - name: 07 - Apply ONLY SUSFS kernel-4.19 patch (NO legacy KernelSU patch)
+      - name: 07 - Apply SUSFS kernel-4.19 patch with source-specific fixes
         shell: bash
         run: |
           set -euo pipefail
@@ -801,47 +801,34 @@ jobs:
           exec > >(tee "$DIAG_DIR/07-patches.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # KernelSU-Next SUSFS compatibility is already supplied by the
-          # SUSFS-compatible KernelSU-Next tree in Step 05.
-          #
-          # Therefore DO NOT apply:
-          #   kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
-          #   kernel_patches/KernelSU/kernel/sucompat.h
-          #
-          # Those are the exact files that caused the previous run to reject
-          # KernelSU-Next's allowlist/apk_sign/core_hook/ksud/selinux files.
-          #
-          # Only the kernel-4.19 SUSFS patch is applied here, plus the source
-          # files explicitly required by the official SUSFS instructions.
+          PATCH_FILE="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+
+          # KernelSU-Next SUSFS support is supplied by the SUSFS-compatible
+          # KernelSU-Next tree from Step 05. Do NOT apply the legacy
+          # KernelSU/10_enable_susfs_for_ksu.patch.
 
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" fs/susfs.c
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h" include/linux/sus_su.h
+          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs_def.h" include/linux/susfs_def.h
 
-          # The namespace part of the 4.19 patch is intentionally excluded
-          # because this exact LG Velvet 4.19 source has a different
-          # fs/namespace.c layout and SUS_MOUNT is disabled below.
-          python3 - "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch" "$RUNNER_TEMP/50_susfs-no-namespace.patch" <<'PY'
+          # This LG Velvet 4.19 source has a vendor-specific fs/namespace.c.
+          # Keep the namespace part disabled exactly as in the previous
+          # working non-KPROBE configuration.
+          python3 - "$PATCH_FILE" "$RUNNER_TEMP/50_susfs-no-namespace.patch" <<'PY'
           import sys
-
           src, dst = sys.argv[1], sys.argv[2]
-          lines = open(src, encoding="utf-8").read().splitlines(True)
-
-          out = []
-          skip = False
-
-          for line in lines:
+          text = open(src, encoding="utf-8").read().splitlines(True)
+          out, skip = [], False
+          for line in text:
               if line.startswith("diff --git a/fs/namespace.c b/fs/namespace.c"):
                   skip = True
                   continue
-
               if skip and line.startswith("diff --git "):
                   skip = False
-
               if not skip:
                   out.append(line)
-
           open(dst, "w", encoding="utf-8").writelines(out)
           PY
 
@@ -849,29 +836,148 @@ jobs:
           ! grep -q '^diff --git a/fs/namespace.c b/fs/namespace.c' \
             "$RUNNER_TEMP/50_susfs-no-namespace.patch"
 
-          patch --forward --batch -p1 \
-            < "$RUNNER_TEMP/50_susfs-no-namespace.patch"
+          # The upstream patch is based on a stock 4.19 layout. This vendor
+          # source differs in exactly three small places. Let patch apply all
+          # matching hunks, then repair ONLY the three known vendor-layout
+          # hunks below. Any other reject is a hard failure.
+          set +e
+          patch --forward --batch -p1 < "$RUNNER_TEMP/50_susfs-no-namespace.patch"
+          PATCH_RC=$?
+          set -e
+
+          REJECTS="$(find . -type f -name '*.rej' -print)"
+          if [ -n "$REJECTS" ]; then
+            echo "Detected SUSFS reject files:"
+            printf '%s\n' "$REJECTS"
+
+            EXPECTED_REJECTS=$(
+              printf '%s\n' "$REJECTS" |
+              sed 's#^./##' |
+              sort
+            )
+            EXPECTED=$(
+              printf '%s\n' \
+                fs/proc/cmdline.c.rej \
+                fs/proc/task_mmu.c.rej \
+                include/linux/mount.h.rej |
+              sort
+            )
+
+            if [ "$EXPECTED_REJECTS" != "$EXPECTED" ]; then
+              echo "::error::Unexpected SUSFS patch reject(s)."
+              exit 1
+            fi
+
+            # 1) Vendor cmdline.c keeps LGE's updated_command_line logic.
+            # Insert SUSFS spoofing without replacing that vendor behavior.
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path("fs/proc/cmdline.c")
+          s = p.read_text()
+          anchor = "#include <linux/seq_file.h>\n"
+          inc = """#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          extern int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);
+          #endif
+          """
+          if "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG" not in s:
+              if anchor not in s:
+                  raise SystemExit("cmdline.c anchor not found")
+              s = s.replace(anchor, anchor + inc, 1)
+
+          old = """static int cmdline_proc_show(struct seq_file *m, void *v)
+          {
+          """
+          new = """static int cmdline_proc_show(struct seq_file *m, void *v)
+          {
+          #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+              if (!susfs_spoof_cmdline_or_bootconfig(m)) {
+                  seq_putc(m, '\\n');
+                  return 0;
+              }
+          #endif
+          """
+          if "susfs_spoof_cmdline_or_bootconfig(m)" not in s:
+              if old not in s:
+                  raise SystemExit("cmdline_proc_show anchor not found")
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+
+            # 2) task_mmu.c only missed the SUS_KSTAT header include.
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path("fs/proc/task_mmu.c")
+          s = p.read_text()
+          anchor = "#include <linux/mm_inline.h>\n"
+          inc = """#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          #include <linux/susfs_def.h>
+          #endif
+          """
+          if "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT" not in s:
+              if anchor not in s:
+                  raise SystemExit("task_mmu.c include anchor not found")
+              s = s.replace(anchor, anchor + inc, 1)
+          p.write_text(s)
+          PY
+
+            # 3) This vendor mount.h places the KABI reserve block after
+            # mnt_flags/data. Replace ONLY reserve slot 4 with the SUSFS
+            # backup field, preserving the vendor layout.
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path("include/linux/mount.h")
+          s = p.read_text()
+          old = """\tANDROID_KABI_RESERVE(4);
+          } __randomize_layout;
+          """
+          new = """#ifdef CONFIG_KSU_SUSFS
+          \tANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);
+          #else
+          \tANDROID_KABI_RESERVE(4);
+          #endif
+          } __randomize_layout;
+          """
+          if "susfs_mnt_id_backup" not in s:
+              if old not in s:
+                  raise SystemExit("mount.h reserve(4) anchor not found")
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+
+            rm -f fs/proc/cmdline.c.rej fs/proc/task_mmu.c.rej include/linux/mount.h.rej
+          fi
 
           find . -type f -name '*.orig' -delete
-
           if find . -type f -name '*.rej' -print -quit | grep -q .; then
-            echo "::error::SUSFS kernel-4.19 patch produced reject files."
+            echo "::error::SUSFS patch still has reject files after source-specific fixes."
             find . -type f -name '*.rej' -print
             exit 1
           fi
 
-          # Prove the old incompatible KernelSU SUSFS patch was not used.
-          if find KernelSU-Next -maxdepth 3 -type f \
-              \( -name '10_enable_susfs_for_ksu.patch' -o -name 'sucompat.h' \) \
-              -print -quit | grep -q .; then
-            echo "INFO: upstream KSU-Next files may legitimately contain sucompat.h."
+          # Required SUSFS symbols/fields must now exist in the exact vendor
+          # source. This catches an incomplete/manual patch before compilation.
+          grep -q 'susfs_spoof_cmdline_or_bootconfig' fs/proc/cmdline.c
+          grep -q 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/proc/task_mmu.c
+          grep -q 'susfs_mnt_id_backup' include/linux/mount.h
+          test -f fs/susfs.c
+          test -f fs/sus_su.c
+          test -f include/linux/susfs.h
+          test -f include/linux/sus_su.h
+          test -f include/linux/susfs_def.h
+
+          # A non-zero patch status is acceptable only when the three
+          # explicitly handled vendor-layout rejects were produced.
+          if [ "$PATCH_RC" -ne 0 ] && [ -z "$REJECTS" ]; then
+            echo "::error::SUSFS patch failed without one of the expected vendor-layout rejects."
+            exit 1
           fi
 
           git diff --check
 
           echo "PASS: SUSFS kernel-4.19 patch applied."
-          echo "PASS: legacy 10_enable_susfs_for_ksu.patch was NOT applied."
-          echo "PASS: fs/namespace.c SUS_MOUNT patch was intentionally excluded."
+          echo "PASS: three known LG Velvet vendor-layout hunks were integrated manually."
+          echo "PASS: legacy KernelSU SUSFS patch was NOT applied."
+          echo "PASS: fs/namespace.c SUS_MOUNT patch remains excluded."
 
       - name: 07B - Verify KernelSU-Next + SUSFS integration identity
         shell: bash
