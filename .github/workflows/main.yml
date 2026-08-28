@@ -848,6 +848,48 @@ jobs:
           PY
           ! grep -q '^#include <linux/minmax.h>$' "$SUCOMPAT_C"
           echo "PASS: removed only unavailable linux/minmax.h from sucompat.c for this 4.19 tree."
+
+          # Exact compile fix for this build's intentional configuration:
+          # CONFIG_KSU_SUSFS_SUS_MOUNT is disabled. KernelSU-Next v3.3.0
+          # references the SUS_MOUNT-only proc-umount helpers from sucompat.c
+          # under CONFIG_KSU_SUSFS, but those helpers are not declared when
+          # SUS_MOUNT is disabled. Guard only that SUS_MOUNT-specific block;
+          # do not enable SUS_MOUNT and do not alter any other KSU/SUSFS code.
+          python3 - "$SUCOMPAT_C" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          start = """            size_t len = strlen(filename->name);
+            if (likely(!ksu_is_zygote_or_adbd(filename->name, len)) &&
+                        !susfs_is_current_proc_umounted())
+            {
+                pr_info("susfs: mark no sucompat checks for pid: '%d', exec: '%s'\\n", current->pid, filename->name);
+                susfs_set_current_proc_umounted();
+                return 0;
+            }
+          """
+          if "/* LG 4.19: SUS_MOUNT-only proc-umount optimization */" not in s:
+              if start not in s:
+                  raise SystemExit("expected SUS_MOUNT-only sucompat block not found")
+              repl = """            size_t len = strlen(filename->name);
+            /* LG 4.19: SUS_MOUNT-only proc-umount optimization */
+            #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+            if (likely(!ksu_is_zygote_or_adbd(filename->name, len)) &&
+                        !susfs_is_current_proc_umounted())
+            {
+                pr_info("susfs: mark no sucompat checks for pid: '%d', exec: '%s'\\n", current->pid, filename->name);
+                susfs_set_current_proc_umounted();
+                return 0;
+            }
+            #endif
+          """
+              s = s.replace(start, repl, 1)
+              p.write_text(s)
+          PY
+          grep -q 'LG 4.19: SUS_MOUNT-only proc-umount optimization' "$SUCOMPAT_C"
+          grep -q '^#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT$' "$SUCOMPAT_C"
+          echo "PASS: sucompat SUS_MOUNT-only proc-umount calls are guarded; SUS_MOUNT remains disabled."
           echo "PASS: exact stable tag = $KSU_VERSION_RESOLVED"
           echo "PASS: no legacy KernelSU SUSFS patch will be applied."
 
