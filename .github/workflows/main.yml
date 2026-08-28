@@ -811,7 +811,7 @@ jobs:
           # sulog.h declares __init/__exit but is included directly by sulog.c,
           # so it must include linux/init.h itself. This is the upstream fix for
           # the exact "variable has incomplete type 'void'" error seen with Clang.
-          SULOG_H="KernelSU-Next/kernel/drivers/kernelsu/feature/sulog.h"
+          SULOG_H="KernelSU-Next/kernel/feature/sulog.h"
           test -f "$SULOG_H"
           if ! grep -q '^#include <linux/init.h>$' "$SULOG_H"; then
             python3 - "$SULOG_H" <<'PY'
@@ -819,8 +819,12 @@ jobs:
           import sys
           p = Path(sys.argv[1])
           s = p.read_text()
-          s = "#include <linux/init.h>\n" + s
-          p.write_text(s)
+          marker = "#include <linux/types.h>\n"
+          if "#include <linux/init.h>" not in s:
+              if marker not in s:
+                  raise SystemExit("linux/types.h include anchor not found in sulog.h")
+              s = s.replace(marker, marker + "#include <linux/init.h>\n", 1)
+              p.write_text(s)
           PY
           fi
           grep -q '^#include <linux/init.h>$' "$SULOG_H"
