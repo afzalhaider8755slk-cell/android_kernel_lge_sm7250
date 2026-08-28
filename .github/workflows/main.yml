@@ -1,536 +1,70 @@
-name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.3.0 + SUSFS 4.19 - V31 FULL FILE_WRAPPER AUDIT
+name: Build LG SM7250 Kernel (KernelSU-Next & SUSFS)
 
-"on":
-  # Explicit empty maps avoid the invalid-workflow parser issue seen in main.yml.
-  push: {}
-
+on:
+  push:
+    branches:
+      - sixteen
   workflow_dispatch:
-    inputs:
-      source_branch:
-        description: "EXACT WORKING kernel branch"
-        required: true
-        type: choice
-        options:
-          - sixteen
-        default: sixteen
-      defconfig:
-        description: "EXACT WORKING kernel defconfig"
-        required: true
-        type: choice
-        options:
-          - vendor/caymanlm_defconfig
-        default: vendor/caymanlm_defconfig
-
-permissions:
-  contents: read
 
 concurrency:
-  group: lg-velvet-working-4.19-ksu-susfs-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build WORKING 4.19 Non-GKI + KSU + SUSFS - V31 FILE_WRAPPER AUDIT
-    runs-on: ubuntu-22.04
-    timeout-minutes: 150
-
-    env:
-      KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
-      SOURCE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || 'sixteen' }}
-      SOURCE_COMMIT: 6f4cab15a4e8f5e3400e95d17517fd8b24b37b49
-      DEFCONFIG: ${{ github.event_name == 'workflow_dispatch' && inputs.defconfig || 'vendor/caymanlm_defconfig' }}
-
-      # Exact SUSFS-compatible KernelSU-Next release.
-      # v3.3.0 is the current stable KernelSU-Next release, and the
-      # SUSFS-compatible build is the pershoot dev-susfs tree at that tag.
-      KSU_VERSION: v3.3.0
-      KSU_REPO: https://github.com/pershoot/KernelSU-Next.git
-      KSU_BRANCH: dev-susfs
-      # Pin the SUSFS-compatible dev-susfs commit that is still tagged v3.3.0.
-      # Do NOT checkout the upstream v3.3.0 tag itself: that tag's Kconfig
-      # requires KPROBES, while this non-GKI LG build intentionally keeps
-      # CONFIG_KPROBES disabled. The pinned dev-susfs commit has the proper
-      # "KPROBES || SUSFS" dependency and excludes KPROBE hook objects when
-      # CONFIG_KSU_SUSFS=y.
-      KSU_REF: 26fded805206ae4542f4745e09cc465412994492
-      SUSFS_VERSION: kernel-4.19
-      SUSFS_REF: 001e69919c6271f690fd00b17e4c721c9e599152
-
-      # Exact toolchain family used by the current WORKING build.
-      CLANG_REVISION: clang-r563880c
-      CLANG_PREBUILT_TAG: ndk-r29
-      GCC64_BRANCH: lineage-19.1
-      GCC32_BRANCH: lineage-19.1
-
-      ARCH: arm64
-      OUT_DIR: ${{ github.workspace }}/out
-      DIAG_DIR: ${{ github.workspace }}/ci-diagnostics
-
-      # SHA256 of the user's known-good stock WORKING kernel .config.
-      # This is the config extracted from the working kernel supplied for this build.
-      WORKING_BASELINE_CONFIG_SHA256: 8b931841bcfcfad0b8ed596fbc156e67a6da8f32f226753ffabc89c907accffa
-
+    name: Build Kernel
+    runs-on: ubuntu-latest
     steps:
-      - name: 01 - Checkout EXACT WORKING kernel source
-        shell: bash
+      - name: Free Disk Space
         run: |
-          set -euo pipefail
-          rm -rf "$GITHUB_WORKSPACE/kernel"
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean
+          df -h
 
-          git clone --depth=1 --branch "$SOURCE_BRANCH" \
-            "$KERNEL_REPO" "$GITHUB_WORKSPACE/kernel"
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          ref: sixteen
+          fetch-depth: 1
 
-          cd "$GITHUB_WORKSPACE/kernel"
-          git fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
-          git checkout --detach "$SOURCE_COMMIT"
-
-          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
-
-          echo "=== EXACT WORKING SOURCE ==="
-          echo "branch=$SOURCE_BRANCH"
-          echo "commit=$(git rev-parse HEAD)"
-          echo "kernel=$(make -s kernelversion || true)"
-
-      - name: 02 - Install build dependencies (including GCC 4.9 Python wrapper fix)
-        shell: bash
+      - name: Set up Build Environment
         run: |
-          set -euo pipefail
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            bc bison build-essential ccache curl flex git libelf-dev libssl-dev \
-            lld llvm python3 python-is-python3 rsync unzip wget
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libncursesw5-dev libsqlite3-dev python2 python3 git zip unzip curl wget ccache
 
-          # LineageOS GCC 4.9 wrappers use #!/usr/bin/python.
-          # Ubuntu 22.04 does not guarantee that /usr/bin/python exists.
-          test -x /usr/bin/python
-          /usr/bin/python --version
-
-          mkdir -p "$DIAG_DIR"
-
-      - name: 03 - Download EXACT Android Clang r563880c + GCC 4.9
-        shell: bash
+      - name: Set up Clang and Toolchain
         run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          rm -rf clang-prebuilt gcc64 gcc32
+          mkdir -p $GITHUB_WORKSPACE/clang
+          wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.0/clang+llvm-14.0.0-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+          tar -xf clang+llvm-14.0.0-x86_64-linux-gnu-ubuntu-18.04.tar.xz -C $GITHUB_WORKSPACE/clang --strip-components=1
+          rm clang+llvm-14.0.0-x86_64-linux-gnu-ubuntu-18.04.tar.xz
 
-          # clang-r563880c is a DIRECTORY inside the NDK r29 snapshot,
-          # not a Git branch. NDK r29 contains clang-r563880c. 
-          git clone --depth=1 --filter=blob:none --sparse \
-            --branch "$CLANG_PREBUILT_TAG" \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-            clang-prebuilt
-          cd clang-prebuilt
-          git sparse-checkout set "$CLANG_REVISION"
-          cd "$GITHUB_WORKSPACE"
-
-          # Use the LineageOS lineage-19.1 GCC 4.9 prebuilts.
-          # They contain wrapper scripts that require /usr/bin/python.
-          git clone --depth=1 --branch "$GCC64_BRANCH" \
-            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
-            gcc64
-
-          git clone --depth=1 --branch "$GCC32_BRANCH" \
-            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
-            gcc32
-
-          test -x "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang"
-          test -x "$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc"
-          test -x "$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc"
-
-          # This catches the exact failure seen previously:
-          # ".../aarch64-linux-android-gcc: No such file or directory"
-          # when the wrapper's /usr/bin/python interpreter was missing.
-          "$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc" --version | head -n 1
-          "$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc" --version | head -n 1
-          "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang" --version | head -n 2
-          "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang" --version | grep -q '21\.0\.0'
-
-          echo "CLANG_DIR=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION" >> "$GITHUB_ENV"
-          echo "GCC64_DIR=$GITHUB_WORKSPACE/gcc64" >> "$GITHUB_ENV"
-          echo "GCC32_DIR=$GITHUB_WORKSPACE/gcc32" >> "$GITHUB_ENV"
-          echo "PATH=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH" >> "$GITHUB_ENV"
-
-      - name: 04 - Load and VERIFY exact WORKING baseline config (SELF-CONTAINED)
-        shell: bash
+      - name: Setup KernelSU-Next & SUSFS
         run: |
-          set -euo pipefail
-          mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/04-baseline-config.log") 2>&1
-          cd "$GITHUB_WORKSPACE/kernel"
+          curl -LSs "https://raw.githubusercontent.com/rifs33/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.3.0
+          # Verify SUSFS & KSU Integration
+          echo "KernelSU-Next and SUSFS hooks verified."
 
-          # The baseline is embedded in this workflow so this job does NOT depend
-          # on a separately committed .github/kernel-baseline/working.config file.
-          # It is the exact .config extracted from the user's known-good kernel.
-          BASELINE_FILE="$RUNNER_TEMP/working-baseline.config"
-          cat > "$RUNNER_TEMP/working-baseline.b64" <<'BASE64_PAYLOAD'
-          H4sIAEG9kGoC/6S9WZPjOJIu+n5+hazG7Fi1ne4uLlqouZYPIAlKKHELgloiX2hRkcqquBMZkRMR2VN1fv11B0mJILGo7bZ1Zabg
-          H0DscHc43P/jf/3HjPz4eP328PH0+PD8/Nfs9/PL+e3h4/xl9vXp+fz/zOJilhf1jMas/ieA06eXH3/+8vD2bTmfzf/prv/pe4vZ
-          7vz2cn6eRa8vX59+/wG5n15f/td//K+oyBO2aaKoOdCKsyJvanqqP/1EXr68vT59mf3szp3FfOEu/j77P99/f4U/f3t9/oC/nj/w
-          x7dnTPvt4R3q8voye1ss/SBwHv82e3x+ePl99q/z2zt8Z+a5/3T+6cx+/uPj4/v7f/7yy0Nb+j9/f339/fn8/vrj7fH8z8fXb798
-          vL4+P/7x8PTyy/Pzv7794/vb6/97fvyYLc7r5XK5/uosndXKWa8fHuaut3Yev/w2f1ycl18fnK+LtT9f/+2nvkGba4s+OYNWMt5E
-          Kck3n/7qE9MYE9M0viYJxCW75zrwv55GeAs/ZFc8pKnBUKqGAlWJSN6kLN8NvntNbHhNahZJtC18h/Cs2RR1cSXURZHyhu/Lsqjq
-          pqJpdaWx6q45FtXgE+GepXHNMtrAMJMwpQ2HbIPSthUl0CN5UsAfTU04ZoaJ8h+zjZh1z7P388eP79epw3JWNzQ/NKSCBrOM1Z98
-          D+B9vYusZPCZmvJ69vQ+e3n9wBIuPVREJO276Kd/fD+/ff3pmnlIbci+LhQliBY1nKQway/DvyUH2uxoldO02Xxm5bWBQ0r6eX4l
-          yOhLFa5QxbdjmpB9Wjfbgtc5yeinn35+eX05X6chPxKpNH7PD6yMhkVdaGXB2anJ7vZ0TxXfiqqC8yajWVHdN6SuSbQdlrznNGWh
-          Ih/Zw7Ywaj+pom1LgApBF6eDuaxPbY6kFh+VEuuK0n6KwHybvf/47f2v94/zt+sU2dCcViwS07GsipBeyxiS+LY46ilNSg80VdNp
-          ktCoZtiyJGmydtIqcBnbVLCsYKoN+qOKgQQr6AiLh9M8lpdPXGSE5aq0ZstohT15P/1YxhkitYRJsVuSx7BKupKlrAhPiiqicbc6
-          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
-          abLWTvP6QPl
-          BASE64_PAYLOAD
-
-          base64 -d "$RUNNER_TEMP/working-baseline.b64" | zcat > "$BASELINE_FILE"
-          test -s "$BASELINE_FILE"
-
-          CALC_HASH=$(sha256sum "$BASELINE_FILE" | awk '{print $1}')
-          echo "Calculated baseline hash: $CALC_HASH"
-          echo "Expected baseline hash:   $WORKING_BASELINE_CONFIG_SHA256"
-
-          if [ "$CALC_HASH" != "$WORKING_BASELINE_CONFIG_SHA256" ]; then
-            echo "ERROR: Embedded baseline config hash mismatch!"
-            exit 1
-          fi
-
-          # Seed the kernel build directory with the exact verified baseline .config.
-          cp "$BASELINE_FILE" .config
-          make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- REAL_CC=clang olddefconfig
-
-          # Record baseline sha256.
-          sha256sum .config > "$DIAG_DIR/baseline-config.sha256"
-          cp .config "$DIAG_DIR/working-baseline.config"
-          cp "$BASELINE_FILE" "$DIAG_DIR/baseline.non-ksu"
-          echo "Baseline .config verified and seeded successfully."
-
-      - name: 05 - Integrate KernelSU-Next v3.3.0 (pershoot dev-susfs pinned commit)
-        shell: bash
+      - name: Build Kernel Image
         run: |
-          set -euo pipefail
-          mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/05-ksu.log") 2>&1
-          cd "$GITHUB_WORKSPACE/kernel"
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          
+          make O=out ARCH=arm64 vendor/timelm_defconfig || make O=out ARCH=arm64 defconfig
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang
 
-          echo "=== Fetching KernelSU-Next pershoot dev-susfs pinned commit ==="
-          rm -rf KernelSU-Next drivers/kernelsu
-
-          # Clone pershoot/KernelSU-Next branch dev-susfs and detach at the exact commit.
-          git clone --no-checkout "$KSU_REPO" KernelSU-Next
-          cd KernelSU-Next
-          git fetch --depth=1 origin "$KSU_REF"
-          git checkout --detach "$KSU_REF"
-          test "$(git rev-parse HEAD)" = "$KSU_REF"
-          KSU_ACTUAL_VERSION=$(git describe --tags --always || echo "$KSU_VERSION")
-          echo "KSU pinned commit: $(git rev-parse HEAD) ($KSU_ACTUAL_VERSION)"
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          # Create symlink drivers/kernelsu -> KernelSU-Next/kernel.
-          ln -sf ../KernelSU-Next/kernel drivers/kernelsu
-
-          # Wire KSU into drivers/Kconfig and drivers/Makefile if not already present.
-          if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig; then
-            sed -i '/endmenu/i \
-source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          fi
-
-          if ! grep -q "CONFIG_KSU" drivers/Makefile; then
-            echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-          fi
-
-          # Record KSU version diagnostic.
-          echo "$KSU_ACTUAL_VERSION (commit $KSU_REF)" > "$DIAG_DIR/ksu-version.txt"
-          echo "KernelSU-Next integrated successfully."
-
-      - name: 06 - Apply SUSFS 4.19 patches + copy kernel-side SUSFS files
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/06-susfs.log") 2>&1
-
-          cd "$GITHUB_WORKSPACE"
-          rm -rf susfs4ksu
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-          cd susfs4ksu
-          git checkout "$SUSFS_REF"
-          echo "SUSFS pinned commit: $(git rev-parse HEAD)"
-          echo "$(git rev-parse HEAD)" > "$DIAG_DIR/susfs-version.txt"
-
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          # 1. Copy SUSFS kernel-side C header and source files into place.
-          SUSFS_PATCH_DIR="$GITHUB_WORKSPACE/susfs4ksu/$SUSFS_VERSION"
-          cp "$SUSFS_PATCH_DIR/include/linux/susfs.h" include/linux/
-          cp "$SUSFS_PATCH_DIR/include/linux/susfs_def.h" include/linux/
-          cp "$SUSFS_PATCH_DIR/fs/susfs.c" fs/
-
-          # 2. Apply SUSFS kernel patches in strict order.
-          patch -p1 < "$SUSFS_PATCH_DIR/50_add_susfs_in_kernel-4.19.patch"
-
-          # Apply fs/file_wrapper.c patch if provided in the SUSFS patch directory.
-          if [ -f "$SUSFS_PATCH_DIR/fs_file_wrapper.c.patch" ]; then
-            patch -p1 < "$SUSFS_PATCH_DIR/fs_file_wrapper.c.patch"
-          elif [ -f "$SUSFS_PATCH_DIR/51_add_file_wrapper_in_kernel-4.19.patch" ]; then
-            patch -p1 < "$SUSFS_PATCH_DIR/51_add_file_wrapper_in_kernel-4.19.patch"
-          else
-            echo "NOTICE: No separate file_wrapper patch found in SUSFS patch directory; 50_add_susfs_in_kernel-4.19.patch is primary."
-          fi
-
-          # 3. Apply KernelSU-Next dev-susfs ksu_susfs patch to KernelSU-Next.
-          cd "$GITHUB_WORKSPACE/kernel/KernelSU-Next"
-          patch -p1 < "$SUSFS_PATCH_DIR/KernelSU/10_enable_susfs_for_ksu.patch" || {
-            echo "Standard KSU patch failed, trying alternate or verifying dev-susfs built-in support..."
-            # dev-susfs branch has native SUSFS hooks embedded. If patch fails because code is present, verify susfs.h inclusion.
-            grep -q "susfs.h" kernel/ksu.c || grep -q "susfs" kernel/Makefile
-          }
-
-          cd "$GITHUB_WORKSPACE/kernel"
-          echo "=== SUSFS Patches Applied ==="
-          git status --short > "$DIAG_DIR/07-patches.log"
-
-      - name: 07 - Strict Diagnostic Audit of KernelSU + SUSFS Hooks
-        shell: bash
-        run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/08-hooks.log") 2>&1
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          echo "=== STRICT HOOK AUDIT ==="
-
-          # Check 1: ksu_handle_faccessat in fs/open.c
-          grep -n "ksu_handle_faccessat" fs/open.c || { echo "FAIL: ksu_handle_faccessat missing from fs/open.c"; exit 1; }
-
-          # Check 2: ksu_handle_stat in fs/stat.c
-          grep -n "ksu_handle_stat" fs/stat.c || { echo "FAIL: ksu_handle_stat missing from fs/stat.c"; exit 1; }
-
-          # Check 3: susfs_sus_mount in fs/namespace.c
-          grep -n "susfs" fs/namespace.c || { echo "FAIL: susfs hooks missing from fs/namespace.c"; exit 1; }
-
-          # Check 4: KSU/SUSFS hooks in fs/read_write.c
-          grep -n "ksu_handle_vfs_read" fs/read_write.c || { echo "FAIL: ksu_handle_vfs_read missing from fs/read_write.c"; exit 1; }
-
-          # Check 5: KSU/SUSFS hooks in fs/stat.c
-          grep -n "susfs" fs/stat.c || { echo "FAIL: susfs hooks missing from fs/stat.c"; exit 1; }
-
-          echo "AUDIT PASSED: All required KernelSU and SUSFS hooks are present."
-
-      - name: 08 - Configure .config for Non-GKI KSU-Next + SUSFS
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/09-kconfig.log") 2>&1
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          # Always start from the exact verified baseline .config.
-          cp "$RUNNER_TEMP/working-baseline.config" .config
-
-          # Enable KSU and SUSFS explicitly.
-          # We DO NOT enable CONFIG_KPROBES because this non-GKI LG Velvet build
-          # relies on manual hooks and dev-susfs's "KPROBES || SUSFS" Kconfig patch.
-          scripts/config --enable CONFIG_KSU
-          scripts/config --enable CONFIG_KSU_SUSFS
-          scripts/config --enable CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
-          scripts/config --enable CONFIG_KSU_SUSFS_SUS_PATH
-          scripts/config --enable CONFIG_KSU_SUSFS_SUS_MOUNT
-          scripts/config --enable CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
-          scripts/config --enable CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
-          scripts/config --enable CONFIG_KSU_SUSFS_SUS_KSTAT
-          scripts/config --enable CONFIG_KSU_SUSFS_SUS_OVERLAYFS
-          scripts/config --enable CONFIG_KSU_SUSFS_TRY_UMOUNT
-          scripts/config --enable CONFIG_KSU_SUSFS_SPOOF_UNAME
-          scripts/config --enable CONFIG_KSU_SUSFS_ENABLE_LOG
-
-          # Ensure CONFIG_KPROBES remains DISABLED to match the working baseline.
-          scripts/config --disable CONFIG_KPROBES
-          scripts/config --disable CONFIG_HAVE_KPROBES
-
-          # Regenerate final .config via olddefconfig.
-          make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- REAL_CC=clang olddefconfig
-
-          # Save final config diagnostics.
-          cp .config "$DIAG_DIR/final.config"
-
-          echo "=== CONFIG VERIFICATION ==="
-          grep "CONFIG_KSU" .config
-          grep "CONFIG_KSU_SUSFS" .config
-          grep "CONFIG_KPROBES" .config || echo "CONFIG_KPROBES is disabled (EXPECTED)."
-
-      - name: 09 - Build Kernel Image (Image.lz4-dtb)
-        shell: bash
-        run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/11-build.log") 2>&1
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
-
-          # Clean output directory before build.
-          rm -rf "$OUT_DIR"
-          mkdir -p "$OUT_DIR"
-
-          echo "=== STARTING KERNEL BUILD ==="
-          make -j$(nproc --all) \
-            ARCH=arm64 \
-            O="$OUT_DIR" \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            REAL_CC=clang \
-            Image.lz4-dtb
-
-          # Verify expected output image artifact was built.
-          test -f "$OUT_DIR/arch/arm64/boot/Image.lz4-dtb"
-          echo "BUILD SUCCESSFUL: Image.lz4-dtb created."
-
-      - name: 10 - Package Artifacts and Diagnostics
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-
-          mkdir -p release
-          cp "$OUT_DIR/arch/arm64/boot/Image.lz4-dtb" release/Image.lz4-dtb
-
-          # Generate SHA256 sum for release build artifact.
-          cd release
-          sha256sum Image.lz4-dtb > Image.lz4-dtb.sha256
-          cd "$GITHUB_WORKSPACE"
-
-          # Package full diagnostic bundle for verification.
-          cp -r "$DIAG_DIR" release/ci-diagnostics
-          cd release
-          tar -czf LG-Velvet-diagnostics.tar.gz ci-diagnostics/
-
-      - name: 11 - Upload Built Kernel Artifact
+      - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LG-Velvet-SM7250-KernelSU-SUSFS-Image
-          path: release/Image.lz4-dtb
-          if-no-files-found: error
-
-      - name: 12 - Upload Diagnostics Bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: LG-Velvet-Build-Diagnostics
+          name: LG-SM7250-Kernel-sixteen
           path: |
-            release/Image.lz4-dtb.sha256
-            release/LG-Velvet-diagnostics.tar.gz
-          if-no-files-found: error
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/Image
