@@ -54,6 +54,7 @@ jobs:
       # CONFIG_KSU_SUSFS=y.
       KSU_REF: 26fded805206ae4542f4745e09cc465412994492
       SUSFS_VERSION: kernel-4.19
+      SUSFS_REF: 001e69919c6271f690fd00b17e4c721c9e599152
 
       # Exact toolchain family used by the current WORKING build.
       CLANG_REVISION: clang-r563880c
@@ -837,6 +838,7 @@ jobs:
           fi
 
           SUSFS_COMMIT="$(git -C susfs4ksu rev-parse HEAD)"
+          test "$SUSFS_COMMIT" = "$SUSFS_REF"
           echo "susfs_branch=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
           echo "susfs_commit=$SUSFS_COMMIT" | tee -a "$DIAG_DIR/susfs-version.txt"
 
@@ -918,59 +920,69 @@ jobs:
             fi
 
             # 1) Vendor cmdline.c keeps LGE's updated_command_line logic.
-            # Insert only the SUSFS spoof hook; do not replace vendor behavior.
+            # Insert the official SUSFS hook at the output point, AFTER the
+            # existing LGE boot-mode adjustment. Do not replace vendor behavior.
             python3 - <<'PY'
           from pathlib import Path
           p = Path("fs/proc/cmdline.c")
           s = p.read_text()
-          marker = "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG"
-          if marker not in s:
-              anchor = "#include <linux/seq_file.h>"
-              pos = s.find(anchor)
-              if pos < 0:
-                  raise SystemExit("cmdline.c seq_file include anchor not found")
-              end = s.find("\n", pos) + 1
-              inc = ("#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n"
-                     "extern int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);\n"
-                     "#endif\n")
-              s = s[:end] + inc + s[end:]
 
-          hook = "susfs_spoof_cmdline_or_bootconfig(m)"
-          if hook not in s:
-              needle = "static int cmdline_proc_show(struct seq_file *m, void *v)"
-              pos = s.find(needle)
-              if pos < 0:
-                  raise SystemExit("cmdline_proc_show declaration not found")
-              brace = s.find("{", pos)
-              if brace < 0:
-                  raise SystemExit("cmdline_proc_show opening brace not found")
-              insert = ("\n#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n"
-                        "    if (!susfs_spoof_cmdline_or_bootconfig(m)) {\n"
-                        "        seq_putc(m, '\\n');\n"
-                        "        return 0;\n"
-                        "    }\n"
-                        "#endif")
-              s = s[:brace+1] + insert + s[brace+1:]
+          inc = """#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          extern int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);
+          #endif
+          """
+          if "extern int susfs_spoof_cmdline_or_bootconfig" not in s:
+              anchor = "#include <linux/seq_file.h>\n"
+              if anchor not in s:
+                  raise SystemExit("cmdline.c seq_file include anchor not found")
+              s = s.replace(anchor, anchor + inc, 1)
+
+          hook = """#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+              if (!susfs_spoof_cmdline_or_bootconfig(m)) {
+                  seq_putc(m, '\\n');
+                  return 0;
+              }
+          #endif
+          """
+          if "susfs_spoof_cmdline_or_bootconfig(m)" not in s:
+              anchor = "\tseq_puts(m, updated_command_line);\n"
+              if anchor not in s:
+                  raise SystemExit("cmdline.c updated_command_line output anchor not found")
+              s = s.replace(anchor, hook + anchor, 1)
+
           p.write_text(s)
           PY
 
-            # 2) task_mmu.c missed the SUS_KSTAT extern declaration hunk.
-            # The later SUS_KSTAT body hunks already applied successfully;
-            # add only the missing declaration before show_map_vma().
+            # 2) task_mmu.c differs in the include block and in the
+            # show_map_vma declaration location. Recreate BOTH missing
+            # upstream hunks against the actual LG source.
             python3 - <<'PY'
           from pathlib import Path
           p = Path("fs/proc/task_mmu.c")
           s = p.read_text()
-          marker = "susfs_sus_ino_for_show_map_vma"
-          if marker not in s:
+
+          if "#include <linux/susfs_def.h>" not in s:
+              anchor = "#include <linux/mm_inline.h>\n"
+              if anchor not in s:
+                  raise SystemExit("task_mmu.c mm_inline include anchor not found")
+              inc = """#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          #include <linux/susfs_def.h>
+          #endif
+          """
+              s = s.replace(anchor, anchor + inc, 1)
+
+          decl = """#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          extern void susfs_sus_ino_for_show_map_vma(unsigned long ino, dev_t *out_dev, unsigned long *out_ino);
+          #endif
+
+          """
+          if "extern void susfs_sus_ino_for_show_map_vma" not in s:
               needle = "static void\nshow_map_vma("
               pos = s.find(needle)
               if pos < 0:
                   raise SystemExit("task_mmu.c show_map_vma anchor not found")
-              decl = ("#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
-                      "extern void susfs_sus_ino_for_show_map_vma(unsigned long ino, dev_t *out_dev, unsigned long *out_ino);\n"
-                      "#endif\n\n")
               s = s[:pos] + decl + s[pos:]
+
           p.write_text(s)
           PY
 
@@ -1007,8 +1019,23 @@ jobs:
           # Required SUSFS symbols/fields must now exist in the exact vendor
           # source. This catches an incomplete/manual patch before compilation.
           grep -q 'susfs_spoof_cmdline_or_bootconfig' fs/proc/cmdline.c
-          grep -q 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/proc/task_mmu.c
+          grep -q '#include <linux/susfs_def.h>' fs/proc/task_mmu.c
+          grep -q 'susfs_sus_ino_for_show_map_vma' fs/proc/task_mmu.c
           grep -q 'susfs_mnt_id_backup' include/linux/mount.h
+
+          # Exact vendor-layout sanity checks: preserve LGE cmdline behavior and
+          # do not allow the SUSFS hook to bypass the charger-mode adjustment.
+          grep -q 'proc_cmdline_set("androidboot.mode", "charger")' fs/proc/cmdline.c
+          grep -q 'seq_puts(m, updated_command_line);' fs/proc/cmdline.c
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path("fs/proc/cmdline.c").read_text()
+          hook = s.index("susfs_spoof_cmdline_or_bootconfig(m)")
+          charger = s.index('proc_cmdline_set("androidboot.mode", "charger")')
+          output = s.index("seq_puts(m, updated_command_line);")
+          if not (charger < hook < output):
+              raise SystemExit("cmdline SUSFS hook is not between LGE adjustment and command-line output")
+          PY
           test -f fs/susfs.c
           test -f fs/sus_su.c
           test -f include/linux/susfs.h
