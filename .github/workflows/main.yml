@@ -943,7 +943,34 @@ jobs:
           # The patch is a complete kernel-side SUSFS backport. Do not copy the
           # old simonpunk 1.x files and do not apply the legacy KernelSU SUSFS patch.
           # KSU-Next v3.3.0 already supplies the SUSFS-aware KernelSU side.
-          patch --batch --forward --fuzz=3 -p1 < "$PATCH_FILE"
+          # The LG SM7250 sixteen tree uses the newer fs_context-based
+          # vfs_kern_mount() implementation. The upstream Non-GKI 4.19
+          # backport has one obsolete SUS_MOUNT-only hunk for the older
+          # vfs_kern_mount() body. SUS_MOUNT is intentionally disabled in
+          # this exact working configuration, so that hunk must be omitted;
+          # every other SUSFS hunk is applied unchanged.
+          FILTERED_PATCH="$GITHUB_WORKSPACE/susfs-backport/susfs_patch_to_4.19_lg_sm7250.patch"
+          awk '
+            BEGIN { skip=0 }
+            /^diff --git / { skip=0 }
+            /^@@ -953,6 \+1109,15 @@ vfs_kern_mount/ {
+              skip=1
+              print "# SUSFS 2.2.0: omitted obsolete SUS_MOUNT-only vfs_kern_mount hunk for LG SM7250 sixteen"
+              next
+            }
+            skip && /^@@ / { skip=0 }
+            skip && /^diff --git / { skip=0 }
+            !skip { print }
+          ' "$PATCH_FILE" > "$FILTERED_PATCH"
+
+          test -s "$FILTERED_PATCH"
+          grep -q 'fs/namespace.c' "$FILTERED_PATCH"
+          if grep -q '^@@ -953,6 +1109,15 @@ vfs_kern_mount' "$FILTERED_PATCH"; then
+            echo "::error::Obsolete SUS_MOUNT vfs_kern_mount hunk was not removed."
+            exit 1
+          fi
+
+          patch --batch --forward --fuzz=3 -p1 < "$FILTERED_PATCH"
 
           # A partial patch is worse than a failed build. Rejects are fatal.
           if find . -type f -name '*.rej' -print -quit | grep -q .; then
