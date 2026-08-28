@@ -42,7 +42,7 @@ jobs:
       DEFCONFIG: ${{ github.event_name == 'workflow_dispatch' && inputs.defconfig || 'vendor/caymanlm_defconfig' }}
 
       # ONLY these two functional additions are intended.
-      KSU_VERSION: v0.9.5
+      KSU_VERSION: latest
       SUSFS_VERSION: latest
 
       # Exact toolchain family used by the current WORKING build.
@@ -717,18 +717,28 @@ jobs:
           exec > >(tee "$DIAG_DIR/05-ksu.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # v0.9.5 is the last official KernelSU release supporting non-GKI.
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
-            | bash -s "$KSU_VERSION"
+          # KernelSU-Next: resolve the newest stable v* tag and use the
+          # upstream KernelSU-Next setup script. No other build inputs change.
+          KSU_NEXT_TAG="$(git ls-remote --tags --refs \
+            https://github.com/KernelSU-Next/KernelSU-Next.git 'v*' |
+            awk -F/ '{print $3}' | sort -V | tail -1)"
+          test -n "$KSU_NEXT_TAG"
+          echo "KernelSU-Next latest tag=$KSU_NEXT_TAG"
 
-          test -d KernelSU/kernel
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/$KSU_NEXT_TAG/kernel/setup.sh" \
+            -o "$RUNNER_TEMP/ksun-setup.sh"
+          chmod +x "$RUNNER_TEMP/ksun-setup.sh"
+          bash "$RUNNER_TEMP/ksun-setup.sh" "$KSU_NEXT_TAG"
+
+          test -d KernelSU-Next/kernel
           test -e drivers/kernelsu/Kconfig
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
           grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
 
-          cd KernelSU
-          test "$(git describe --tags --exact-match 2>/dev/null || true)" = "$KSU_VERSION"
-          git describe --tags --always
+          cd KernelSU-Next
+          test "$(git rev-parse --verify HEAD)" = "$(git rev-parse "$KSU_NEXT_TAG^{commit}")"
+          echo "ksun_tag=$KSU_NEXT_TAG" | tee "$DIAG_DIR/ksun-version.txt"
+          echo "ksun_commit=$(git rev-parse HEAD)" | tee -a "$DIAG_DIR/ksun-version.txt"
 
       - name: 06 - Download and VERIFY SUSFS latest for kernel 4.19
         shell: bash
@@ -739,7 +749,17 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           rm -rf susfs4ksu
 
-          git clone --depth=1 --branch "$SUSFS_VERSION" \
+          # Resolve the newest SUSFS release tag from the upstream SUSFS
+          # repository instead of relying on a branch named "latest".
+          SUSFS_TAG="$(git ls-remote --tags --refs \
+            https://gitlab.com/simonpunk/susfs4ksu.git 'refs/tags/*' |
+            sed 's#.*refs/tags/##' |
+            grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' |
+            sort -V | tail -1)"
+          test -n "$SUSFS_TAG"
+          echo "Resolved SUSFS latest tag=$SUSFS_TAG"
+
+          git clone --depth=1 --branch "$SUSFS_TAG" \
             https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
 
           test -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
@@ -750,7 +770,7 @@ jobs:
           test -f susfs4ksu/kernel_patches/include/linux/susfs.h
           test -f susfs4ksu/kernel_patches/include/linux/sus_su.h
 
-          echo "susfs_tag=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
+          echo "susfs_tag=$SUSFS_TAG" | tee "$DIAG_DIR/susfs-version.txt"
           echo "susfs_commit=$(git -C susfs4ksu rev-parse HEAD)" | tee -a "$DIAG_DIR/susfs-version.txt"
 
       - name: 07 - Apply SUSFS latest safely for this WORKING 4.19 source (sanitized patch)
@@ -769,7 +789,7 @@ jobs:
           # SUS_MOUNT is explicitly disabled in Step 09. SUSFS itself documents
           # non-GKI bootloop risk for its mount-id reordering feature. Therefore
           # namespace.c is intentionally excluded while all other SUSFS changes
-          # are applied from the official 1.4.2-kernel-4.19 patch.
+          # are applied from the official latest SUSFS 4.19 patch.
 
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" fs/susfs.c
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
