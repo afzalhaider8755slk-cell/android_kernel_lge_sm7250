@@ -1005,9 +1005,10 @@ jobs:
           # tolerated fuzz explicit instead of relying on patch(1)'s implicit
           # default. The four vendor-layout files are still excluded and handled
           # source-aware below.
-          PATCH_FUZZ=2
-          echo "Applying SUSFS vendor-neutral patch with explicit fuzz limit: $PATCH_FUZZ"
-          patch --forward --batch --fuzz="$PATCH_FUZZ" -p1 \
+          PATCH_FUZZ=0
+          echo "Applying SUSFS vendor-neutral patch with STRICT fuzz limit: $PATCH_FUZZ"
+          echo "Whitespace-only context differences are normalized with patch -l; no context lines may be dropped."
+          patch --forward --batch --fuzz=0 -l -p1 \
             < "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"
 
           # A successful patch command is necessary but not sufficient: never
@@ -1464,7 +1465,7 @@ jobs:
 
           echo "PASS: SUSFS kernel-4.19 patch applied with no reject/backup files."
           echo "PASS: three known LG Velvet vendor-layout files were integrated source-aware."
-          echo "PASS: only the explicit patch fuzz limit ($PATCH_FUZZ) was permitted for generic-context drift."
+          echo "PASS: patch fuzz is strictly disabled (0); only whitespace-equivalent context is accepted."
           echo "PASS: legacy KernelSU SUSFS patch was NOT applied."
           echo "PASS: fs/namespace.c SUS_MOUNT patch remains excluded."
           echo "PASS: legacy KernelSU SUSFS patch was NOT applied."
