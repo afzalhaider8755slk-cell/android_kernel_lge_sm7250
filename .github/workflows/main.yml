@@ -1207,8 +1207,21 @@ jobs:
               raise SystemExit("ERROR: file_wrapper still references f_op->iopoll")
           if "fp->f_op->remap_file_range" in final:
               raise SystemExit("ERROR: file_wrapper still references f_op->remap_file_range")
-          if "REMAP_FILE_DEDUP" in final:
-              raise SystemExit("ERROR: file_wrapper still references REMAP_FILE_DEDUP")
+          # REMAP_FILE_DEDUP may remain in upstream comments inside the
+          # disabled remap wrapper. That is harmless and must not fail the
+          # verification. The actual VFS member reference above is the
+          # authoritative compile check.
+          remap_code = []
+          in_disabled_remap = False
+          for line in final.splitlines():
+              if "LG 4.19: remap_file_range disabled" in line:
+                  in_disabled_remap = True
+              if not in_disabled_remap:
+                  remap_code.append(line)
+              if in_disabled_remap and line.strip() == "#endif":
+                  in_disabled_remap = False
+          if "REMAP_FILE_DEDUP" in "\n".join(remap_code):
+              raise SystemExit("ERROR: active file_wrapper code still references REMAP_FILE_DEDUP")
 
           # Keep the vendor fs.h untouched; verify the expected absence.
           if re.search(r'\(\*iopoll\)\s*\(', h):
