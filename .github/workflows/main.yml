@@ -950,27 +950,55 @@ jobs:
           # this exact working configuration, so that hunk must be omitted;
           # every other SUSFS hunk is applied unchanged.
           FILTERED_PATCH="$GITHUB_WORKSPACE/susfs-backport/susfs_patch_to_4.19_lg_sm7250.patch"
-          # Remove ONLY the SUS_MOUNT-only vfs_kern_mount hunk.
-          # The SUSFS v2.2.0 patch currently uses @@ -953,7 +1109,22 @@ here;
-          # the previous workflow matched the wrong header and therefore did
-          # NOT remove the failing hunk. Match the function context instead.
-          awk '
-            BEGIN { skip=0; removed=0 }
-            /^diff --git / { skip=0 }
-            /^@@ .* @@ vfs_kern_mount\(/ {
-              skip=1
-              removed=1
-              print "# SUSFS 2.2.0: omitted obsolete SUS_MOUNT-only vfs_kern_mount hunk for LG SM7250 sixteen"
-              next
-            }
-            skip && /^@@ / { skip=0 }
-            !skip { print }
-            END { if (!removed) exit 2 }
-          ' "$PATCH_FILE" > "$FILTERED_PATCH"
+          # The LG SM7250 `sixteen` tree is 4.19.325, but its
+          # fs/namespace.c has a newer fs_context-based vfs_kern_mount()
+          # implementation than the old SUS_MOUNT hunk in the generic 4.19
+          # backport. That hunk is SUS_MOUNT-only, and SUS_MOUNT is deliberately
+          # disabled for this non-GKI build. Remove that ONE hunk by its function
+          # context, not by a brittle line-number/header match.
+          FILTERED_PATCH="$GITHUB_WORKSPACE/susfs-backport/susfs_patch_to_4.19_lg_sm7250.patch"
+          python3 - "$PATCH_FILE" "$FILTERED_PATCH" <<'PY'
+          from pathlib import Path
+          import sys
+
+          src = Path(sys.argv[1]).read_text().splitlines(True)
+          out = []
+          i = 0
+          removed = False
+
+          while i < len(src):
+              line = src[i]
+              if line.startswith("diff --git "):
+                  # Copy the file header normally.
+                  out.append(line)
+                  i += 1
+                  continue
+
+              # Only remove the hunk whose @@ header is explicitly about
+              # vfs_kern_mount. Do not touch any other namespace.c hunk.
+              if line.startswith("@@ ") and "vfs_kern_mount" in line:
+                  removed = True
+                  i += 1
+                  while i < len(src):
+                      if src[i].startswith("@@ ") or src[i].startswith("diff --git "):
+                          break
+                      i += 1
+                  continue
+
+              out.append(line)
+              i += 1
+
+          if not removed:
+              raise SystemExit("ERROR: expected SUS_MOUNT-only vfs_kern_mount hunk was not found")
+          Path(sys.argv[2]).write_text(
+              "# SUSFS 2.2.0: omitted obsolete SUS_MOUNT-only vfs_kern_mount hunk for LG SM7250 sixteen\n"
+              + "".join(out)
+          )
+          PY
 
           test -s "$FILTERED_PATCH"
-          grep -q 'diff --git a/fs/namespace.c b/fs/namespace.c' "$FILTERED_PATCH"
-          if grep -Eq '^@@ .* @@ vfs_kern_mount\(' "$FILTERED_PATCH"; then
+          grep -q 'fs/namespace.c' "$FILTERED_PATCH"
+          if grep -Eq '^@@ .*vfs_kern_mount' "$FILTERED_PATCH"; then
             echo "::error::Obsolete SUS_MOUNT vfs_kern_mount hunk was not removed."
             exit 1
           fi
