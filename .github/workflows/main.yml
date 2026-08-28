@@ -46,6 +46,13 @@ jobs:
       KSU_VERSION: v3.3.0
       KSU_REPO: https://github.com/pershoot/KernelSU-Next.git
       KSU_BRANCH: dev-susfs
+      # Pin the SUSFS-compatible dev-susfs commit that is still tagged v3.3.0.
+      # Do NOT checkout the upstream v3.3.0 tag itself: that tag's Kconfig
+      # requires KPROBES, while this non-GKI LG build intentionally keeps
+      # CONFIG_KPROBES disabled. The pinned dev-susfs commit has the proper
+      # "KPROBES || SUSFS" dependency and excludes KPROBE hook objects when
+      # CONFIG_KSU_SUSFS=y.
+      KSU_REF: 26fded805206ae4542f4745e09cc465412994492
       SUSFS_VERSION: kernel-4.19
 
       # Exact toolchain family used by the current WORKING build.
@@ -730,9 +737,15 @@ jobs:
           # For KernelSU-Next + SUSFS, use the SUSFS-compatible KernelSU-Next
           # tree directly. The v3.3.0 tag on pershoot/dev-susfs is the
           # stable-compatible tree used by current KSU-Next + SUSFS builds.
+          # The upstream v3.3.0 release tag is NOT the SUSFS/non-KPROBE tree.
+          # Use pershoot's dev-susfs branch and pin the known v3.3.0-tagged
+          # SUSFS-compatible commit instead.
           curl --fail --location --proto '=https' -LSs \
             "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" \
-            | bash -s "$KSU_VERSION"
+            | bash -s "$KSU_BRANCH"
+
+          git -C KernelSU-Next/kernel fetch --depth=50 origin "$KSU_REF"
+          git -C KernelSU-Next/kernel checkout --detach "$KSU_REF"
 
           test -d KernelSU-Next/kernel
           test -d KernelSU-Next/.git
@@ -770,16 +783,23 @@ jobs:
           EXPECTED_KSU_REPO="${KSU_REPO%.git}"
           test "$ACTUAL_KSU_REPO" = "$EXPECTED_KSU_REPO"
 
-          KSU_VERSION_RESOLVED="$(git -C KernelSU-Next describe --tags --exact-match 2>/dev/null || true)"
           KSU_COMMIT="$(git -C KernelSU-Next rev-parse HEAD)"
 
-          # The requested stable tag must resolve exactly. Do not silently fall
-          # back to the dev branch if the tag is unavailable.
+          # The pinned SUSFS-compatible commit must still resolve to the
+          # v3.3.0 release line. Do not silently move to a different release.
+          KSU_VERSION_RESOLVED="$(git -C KernelSU-Next describe --tags --abbrev=0 "$KSU_COMMIT" 2>/dev/null || true)"
           test "$KSU_VERSION_RESOLVED" = "$KSU_VERSION"
+          test "$KSU_COMMIT" = "$KSU_REF"
+
+          # Critical non-KPROBE compatibility checks from the actual KSU source.
+          grep -q '^[[:space:]]*depends on KPROBES || SUSFS$' KernelSU-Next/kernel/Kconfig
+          grep -q '^ifneq ($(strip $(CONFIG_KSU_SUSFS)),y)$' KernelSU-Next/kernel/Kbuild
+          grep -q '^ifeq ($(strip $(CONFIG_KPROBES)),y)$' KernelSU-Next/kernel/Kbuild
 
           echo "ksu_repo=$KSU_REPO" | tee "$DIAG_DIR/ksu-version.txt"
           echo "ksu_branch=$KSU_BRANCH" | tee -a "$DIAG_DIR/ksu-version.txt"
           echo "ksu_tag=$KSU_VERSION_RESOLVED" | tee -a "$DIAG_DIR/ksu-version.txt"
+          echo "ksu_ref=$KSU_REF" | tee -a "$DIAG_DIR/ksu-version.txt"
           echo "ksu_commit=$KSU_COMMIT" | tee -a "$DIAG_DIR/ksu-version.txt"
 
           echo "KSU_VERSION_RESOLVED=$KSU_VERSION_RESOLVED" >> "$GITHUB_ENV"
@@ -1037,7 +1057,10 @@ jobs:
           esac
 
           test -n "${KSU_VERSION_RESOLVED:-}"
+          test "$KSU_VERSION_RESOLVED" = "$KSU_VERSION"
+          test "$KSU_COMMIT" = "$KSU_REF"
           echo "KernelSU-Next tag: $KSU_VERSION_RESOLVED"
+          echo "KernelSU-Next ref: $KSU_REF"
           echo "KernelSU-Next commit: $KSU_COMMIT"
 
           echo "PASS: KernelSU-Next identity verified."
@@ -1254,13 +1277,15 @@ jobs:
           grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
 
-          # Compare every non-KSU config symbol against the exact working
-          # baseline. Any drift outside CONFIG_KSU* stops the build.
+          # Compare every non-KSU/non-SUSFS config symbol against the exact
+          # working baseline. CONFIG_SUSFS is our integration marker and is
+          # intentionally new; any other drift stops the build.
           normalize_config() {
             sed -E \
               -e '/^[[:space:]]*#/d' \
               -e '/^[[:space:]]*$/d' \
               -e '/^CONFIG_KSU([_=]|$)/d' \
+              -e '/^CONFIG_SUSFS([_=]|$)/d' \
               -e '/^CONFIG_CC_/d' \
               -e '/^CONFIG_CLANG_/d' \
               -e '/^CONFIG_GCC_/d' \
@@ -1294,7 +1319,7 @@ jobs:
           grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_LOCALVERSION="-perf"$' "$OUT_DIR/.config"
 
-          echo "PASS: no non-KSU configuration drift."
+          echo "PASS: no non-KSU/non-SUSFS configuration drift."
           echo "PASS: KPROBES remains disabled; no KPROBE config was added."
 
       - name: 10 - Verify source scope (only KSU/SUSFS integration files changed)
