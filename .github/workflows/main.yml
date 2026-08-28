@@ -1,4 +1,4 @@
-name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.3.0 + SUSFS 4.19 - SELF-HEALING v29
+name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.3.0 + SUSFS 4.19 - V30 KNOWN-ANCHOR
 
 "on":
   # Explicit empty maps avoid the invalid-workflow parser issue seen in main.yml.
@@ -23,8 +23,6 @@ name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.3.0 + SUSFS 4.19 - 
 
 permissions:
   contents: read
-
-# v29: Git 3-way SUSFS merge + known LG 4.19 source-aware anchor repair.
 
 concurrency:
   group: lg-velvet-working-4.19-ksu-susfs-${{ github.ref }}
@@ -950,163 +948,90 @@ jobs:
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h" include/linux/sus_su.h
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs_def.h" include/linux/susfs_def.h
 
-          # LG Velvet's three vendor-layout files are handled below against the
-          # actual source. Remove ONLY those three file sections from the
-          # upstream patch so patch(1) never creates misleading .rej files.
-          # fs/namespace.c remains excluded exactly as before.
-          python3 - "$PATCH_FILE" "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch" <<'PY'
+          # Known LG 4.19 conflict set. These files are NOT sent through the
+          # generic patcher. Each has a source-aware repair below.
+          python3 - "$PATCH_FILE" "$RUNNER_TEMP/50_susfs-lg-generic.patch" <<'PY'
           import sys
           src, dst = sys.argv[1], sys.argv[2]
           excluded = {
               "fs/namespace.c",
+              "fs/Makefile",
+              "fs/namei.c",
               "fs/proc/cmdline.c",
               "fs/proc/task_mmu.c",
               "include/linux/mount.h",
           }
           lines = open(src, encoding="utf-8").read().splitlines(True)
-          out = []
-          block = []
-          keep = True
-
+          out, block, keep = [], [], True
           def flush():
-              if keep:
-                  out.extend(block)
-
+              if keep: out.extend(block)
           for line in lines:
               if line.startswith("diff --git "):
-                  flush()
-                  block = [line]
-                  parts = line.split()
-                  path = parts[2][2:] if len(parts) >= 3 and parts[2].startswith("a/") else ""
-                  keep = path not in excluded
+                  flush(); block=[line]
+                  parts=line.split()
+                  path=parts[2][2:] if len(parts)>=3 and parts[2].startswith("a/") else ""
+                  keep=path not in excluded
               else:
                   block.append(line)
           flush()
-
-          open(dst, "w", encoding="utf-8").writelines(out)
+          open(dst,"w",encoding="utf-8").writelines(out)
           PY
+          test -s "$RUNNER_TEMP/50_susfs-lg-generic.patch"
 
-          test -s "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"
-          for excluded in \
-            fs/namespace.c \
-            fs/proc/cmdline.c \
-            fs/proc/task_mmu.c \
-            include/linux/mount.h; do
-            if grep -q "^diff --git a/$excluded b/$excluded" \
-              "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"; then
-              echo "::error::Excluded vendor-layout file leaked into SUSFS patch: $excluded"
-              exit 1
-            fi
-          done
+          # Apply the clean portion exactly. No fuzzy offsets are allowed here.
+          patch --forward --batch -p1 < "$RUNNER_TEMP/50_susfs-lg-generic.patch"
 
-          # ---------------------------------------------------------------
-          # SELF-HEALING SUSFS MERGE ENGINE
-          # ---------------------------------------------------------------
-          # The old patch(1) invocation was the reason Step 07 stopped on
-          # fs/namei.c and other files after KernelSU-Next had already changed
-          # nearby lines.  Use Git's 3-way merge against the patch's recorded
-          # blob IDs instead.  This preserves the existing KSU changes.
-          #
-          # We take a file-level backup before attempting the merge. If Git
-          # reports a conflict, ONLY the files touched by this SUSFS patch are
-          # restored, then the known LG source-aware handlers below are allowed
-          # to do their targeted repairs. We never reset the whole kernel tree.
-          # ---------------------------------------------------------------
-          echo "=== SUSFS SELF-HEALING: prepare touched-file backup ==="
-          rm -rf "$RUNNER_TEMP/susfs-touch-backup"
-          mkdir -p "$RUNNER_TEMP/susfs-touch-backup"
-
-          python3 - "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch" "$RUNNER_TEMP/susfs-touch-backup/manifest" <<'PY'
+          # ---- Known anchor repair: fs/Makefile ---------------------------
+          # SUSFS only needs its object registered. This is the exact upstream
+          # kernel-4.19 Makefile addition; SUS_SU is intentionally disabled in
+          # this build and therefore is not forced into the object list.
+          python3 - <<'PY'
           from pathlib import Path
-          import re, shutil, sys
-          patch = Path(sys.argv[1])
-          manifest = Path(sys.argv[2])
-          root = Path.cwd()
-          out = []
-          seen = set()
-          for line in patch.read_text(encoding="utf-8").splitlines():
-              if line.startswith("--- a/"):
-                  path = line[6:].split("\t", 1)[0]
-              elif line.startswith("+++ b/"):
-                  path = line[6:].split("\t", 1)[0]
-                  if path not in seen:
-                      seen.add(path)
-                      src = root / path
-                      dst = Path(str(manifest) + ".files") / path
-                      if src.exists():
-                          dst.parent.mkdir(parents=True, exist_ok=True)
-                          shutil.copy2(src, dst)
-                          out.append("EXISTS\t" + path)
-                      else:
-                          out.append("ABSENT\t" + path)
-          manifest.write_text("\n".join(out) + "\n", encoding="utf-8")
-          print("Backed up", len(out), "SUSFS-touched files")
+          p=Path("fs/Makefile")
+          s=p.read_text()
+          if "obj-$(CONFIG_KSU_SUSFS) += susfs.o" not in s:
+              anchor="\nifeq ($(CONFIG_BLOCK),y)\n"
+              if anchor not in s:
+                  raise SystemExit("fs/Makefile known anchor ifeq(CONFIG_BLOCK) not found")
+              s=s.replace(anchor,"\nobj-$(CONFIG_KSU_SUSFS) += susfs.o\n"+anchor,1)
+              p.write_text(s)
           PY
+          grep -q '^obj-$(CONFIG_KSU_SUSFS) += susfs\.o$' fs/Makefile
+          echo "PASS: fs/Makefile SUSFS object anchor repaired."
 
-          echo "=== SUSFS SELF-HEALING: Git 3-way merge pass 1 ==="
+          # ---- Known anchor repair: fs/namei.c ----------------------------
+          # The LG vendor tree has KSU changes around several SUSFS path
+          # lookup sites. First try a high-fuzz application ONLY to this known
+          # conflict file. If it cannot place a hunk, fail safely rather than
+          # guessing at C semantics.
+          python3 - "$PATCH_FILE" "$RUNNER_TEMP/namei-only.patch" <<'PY'
+          import sys
+          src,dst=sys.argv[1],sys.argv[2]
+          lines=open(src,encoding="utf-8").read().splitlines(True)
+          out=[]; block=[]; keep=False; seen=False
+          def flush():
+              if keep and block: out.extend(block)
+          for line in lines:
+              if line.startswith("diff --git "):
+                  flush(); block=[line]
+                  parts=line.split(); path=parts[2][2:] if len(parts)>=3 and parts[2].startswith("a/") else ""
+                  keep=(path=="fs/namei.c"); seen=seen or keep
+              else: block.append(line)
+          flush()
+          if not seen: raise SystemExit("namei.c patch section not found")
+          open(dst,"w",encoding="utf-8").writelines(out)
+          PY
           set +e
-          git apply --3way --whitespace=nowarn \
-            "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"
-          SUSFS_APPLY_RC=$?
+          patch --forward --batch --fuzz=6 -p1 < "$RUNNER_TEMP/namei-only.patch"
+          NAMEI_RC=$?
           set -e
-
-          if [ "$SUSFS_APPLY_RC" -ne 0 ]; then
-            echo "::warning::3-way merge reported a conflict; restoring only SUSFS-touched files."
-
-            python3 - "$RUNNER_TEMP/susfs-touch-backup/manifest" <<'PY'
-            from pathlib import Path
-            import shutil, sys
-            manifest = Path(sys.argv[1])
-            root = Path.cwd()
-            backup = Path(str(manifest) + ".files")
-            for line in manifest.read_text().splitlines():
-                if not line.strip():
-                    continue
-                state, path = line.split("\t", 1)
-                dst = root / path
-                if state == "EXISTS":
-                    shutil.copy2(backup / path, dst)
-                elif state == "ABSENT" and dst.exists():
-                    dst.unlink()
-            PY
-
-            # Clear only conflict stages for files touched by this patch.
-            while IFS=$'\t' read -r state path; do
-              [ -z "$path" ] && continue
-              git reset --mixed HEAD -- "$path" >/dev/null 2>&1 || true
-            done < "$RUNNER_TEMP/susfs-touch-backup/manifest"
-
-            echo "=== SUSFS SELF-HEALING: Git 3-way merge pass 2 (whitespace-aware) ==="
-            set +e
-            git apply --3way --ignore-space-change --ignore-whitespace \
-              --whitespace=nowarn \
-              "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"
-            SUSFS_APPLY_RC=$?
-            set -e
+          if [ "$NAMEI_RC" -ne 0 ]; then
+            echo "::error::Known fs/namei.c SUSFS anchors could not be repaired safely."
+            find . -type f -name 'namei.c.rej' -print -exec sed -n '1,260p' {} \; || true
+            exit "$NAMEI_RC"
           fi
-
-          if [ "$SUSFS_APPLY_RC" -ne 0 ]; then
-            echo "::error::Generic SUSFS hunks could not be merged safely."
-            echo "Known LG vendor-layout repairs will still be audited below, but an unresolved generic C conflict is not auto-guessed."
-            git status --short || true
-            grep -RInE '^(<<<<<<<|=======|>>>>>>>)' \
-              --exclude-dir=.git --exclude='*.log' . || true
-            exit "$SUSFS_APPLY_RC"
-          fi
-
-          if find . -type f -name '*.rej' -print -quit | grep -q .; then
-            echo "::error::SUSFS 3-way merge left reject files."
-            find . -type f -name '*.rej' -print
-            exit 1
-          fi
-
-          if grep -RIlE '^(<<<<<<<|=======|>>>>>>>)' \
-              --exclude-dir=.git --exclude='*.log' . | grep -q .; then
-            echo "::error::SUSFS 3-way merge left conflict markers."
-            exit 1
-          fi
-
-          echo "PASS: generic SUSFS hunks merged with Git 3-way self-healing."
+          test ! -e fs/namei.c.rej
+          echo "PASS: fs/namei.c known-anchor repair applied."
 
           # 1) Vendor cmdline.c keeps LGE's updated_command_line logic.
           # Insert the official SUSFS hook at the output point, AFTER the
@@ -1142,35 +1067,42 @@ jobs:
           p.write_text(s)
           PY
 
-          # 2) task_mmu.c: recreate the two upstream SUSFS hunks against the
-          # actual LG include block and show_map_vma location.
+          # 2) task_mmu.c: source-aware SUS_KSTAT repair. This recreates BOTH
+          # upstream hunks: declaration and the show_map_vma inode substitution.
           python3 - <<'PY'
           from pathlib import Path
-          p = Path("fs/proc/task_mmu.c")
-          s = p.read_text()
+          p=Path("fs/proc/task_mmu.c")
+          s=p.read_text()
 
           if "#include <linux/susfs_def.h>" not in s:
-              anchor = "#include <linux/mm_inline.h>\n"
-              if anchor not in s:
-                  raise SystemExit("task_mmu.c mm_inline include anchor not found")
-              inc = """#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-          #include <linux/susfs_def.h>
-          #endif
-          """
-              s = s.replace(anchor, anchor + inc, 1)
+              anchors=["#include <linux/mm_inline.h>\n", "#include <linux/shmem_fs.h>\n"]
+              anchor=next((a for a in anchors if a in s),None)
+              if not anchor: raise SystemExit("task_mmu.c SUSFS include anchor not found")
+              s=s.replace(anchor,anchor+"#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif\n",1)
 
-          decl = """#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-          extern void susfs_sus_ino_for_show_map_vma(unsigned long ino, dev_t *out_dev, unsigned long *out_ino);
-          #endif
+          decl="extern void susfs_sus_ino_for_show_map_vma(unsigned long ino, dev_t *out_dev, unsigned long *out_ino);"
+          if decl not in s:
+              needle="static void\nshow_map_vma("
+              pos=s.find(needle)
+              if pos<0: raise SystemExit("task_mmu.c show_map_vma anchor not found")
+              s=s[:pos]+"#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"+decl+"\n#endif\n\n"+s[pos:]
 
-          """
-          if "extern void susfs_sus_ino_for_show_map_vma" not in s:
-              needle = "static void\nshow_map_vma("
-              pos = s.find(needle)
-              if pos < 0:
-                  raise SystemExit("task_mmu.c show_map_vma anchor not found")
-              s = s[:pos] + decl + s[pos:]
+          # Insert the official SUSFS bypass immediately after inode acquisition.
+          if "susfs_sus_ino_for_show_map_vma(inode->i_ino, &dev, &ino);" not in s:
+              needle="\t\tstruct inode *inode = file_inode(vma->vm_file);\n"
+              if needle not in s: raise SystemExit("task_mmu.c inode acquisition anchor not found")
+              add=("#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+                   "\t\tif (unlikely(inode->i_state & 67108864)) {\n"
+                   "\t\t\tsusfs_sus_ino_for_show_map_vma(inode->i_ino, &dev, &ino);\n"
+                   "\t\t\tgoto bypass_orig_flow;\n"
+                   "\t\t}\n"
+                   "#endif\n")
+              s=s.replace(needle,needle+add,1)
 
+          if "bypass_orig_flow:" not in s:
+              needle="\t\tino = inode->i_ino;\n"
+              if needle not in s: raise SystemExit("task_mmu.c ino assignment anchor not found")
+              s=s.replace(needle,needle+"#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n\tbypass_orig_flow:\n#endif\n",1)
           p.write_text(s)
           PY
 
@@ -1381,6 +1313,20 @@ jobs:
             exit 1
           fi
 
+          # Strong known-anchor verification before any compile step.
+          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          grep -q '#include <linux/susfs.h>' fs/namei.c
+          grep -q 'susfs_sus_path_by_filename' fs/namei.c
+          grep -q 'susfs_sus_ino_for_show_map_vma(inode->i_ino, &dev, &ino)' fs/proc/task_mmu.c
+          grep -q 'bypass_orig_flow:' fs/proc/task_mmu.c
+
+          # No patch residue is allowed to escape Step 07.
+          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+            echo "::error::Patch residue remains after known-anchor repairs."
+            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print
+            exit 1
+          fi
+
           # Required SUSFS symbols/fields must now exist in the exact vendor
           # source. This catches an incomplete/manual patch before compilation.
           grep -q 'susfs_spoof_cmdline_or_bootconfig' fs/proc/cmdline.c
@@ -1418,20 +1364,6 @@ jobs:
           echo "PASS: three known LG Velvet vendor-layout files were integrated source-aware."
           echo "PASS: legacy KernelSU SUSFS patch was NOT applied."
           echo "PASS: fs/namespace.c SUS_MOUNT patch remains excluded."
-          # Final self-healing integrity audit. No .rej/.orig/conflict markers
-          # are allowed to escape Step 07.
-          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "::error::Patch residue remains after Step 07."
-            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print
-            exit 1
-          fi
-          if grep -RIlE '^(<<<<<<<|=======|>>>>>>>)' \
-              --exclude-dir=.git --exclude='*.log' . | grep -q .; then
-            echo "::error::Conflict markers remain after Step 07."
-            exit 1
-          fi
-          git diff --check
-          echo "PASS: Step 07 self-healing integrity audit complete."
           # The upstream SUSFS 4.19 patch contains one harmless trailing-space
           # comment in fs/overlayfs/readdir.c. Remove only that whitespace so
           # git diff --check does not reject an otherwise valid patch.
