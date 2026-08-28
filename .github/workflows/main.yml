@@ -864,65 +864,70 @@ jobs:
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h" include/linux/sus_su.h
           cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs_def.h" include/linux/susfs_def.h
 
-          # This LG Velvet 4.19 source has a vendor-specific fs/namespace.c.
-          # Keep the namespace part disabled exactly as in the previous
-          # working non-KPROBE configuration.
-          python3 - "$PATCH_FILE" "$RUNNER_TEMP/50_susfs-no-namespace.patch" <<'PY'
+          # LG Velvet's three vendor-layout files are handled below against the
+          # actual source. Remove ONLY those three file sections from the
+          # upstream patch so patch(1) never creates misleading .rej files.
+          # fs/namespace.c remains excluded exactly as before.
+          python3 - "$PATCH_FILE" "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch" <<'PY'
           import sys
           src, dst = sys.argv[1], sys.argv[2]
-          text = open(src, encoding="utf-8").read().splitlines(True)
-          out, skip = [], False
-          for line in text:
-              if line.startswith("diff --git a/fs/namespace.c b/fs/namespace.c"):
-                  skip = True
-                  continue
-              if skip and line.startswith("diff --git "):
-                  skip = False
-              if not skip:
-                  out.append(line)
+          excluded = {
+              "fs/namespace.c",
+              "fs/proc/cmdline.c",
+              "fs/proc/task_mmu.c",
+              "include/linux/mount.h",
+          }
+          lines = open(src, encoding="utf-8").read().splitlines(True)
+          out = []
+          block = []
+          keep = True
+
+          def flush():
+              if keep:
+                  out.extend(block)
+
+          for line in lines:
+              if line.startswith("diff --git "):
+                  flush()
+                  block = [line]
+                  parts = line.split()
+                  path = parts[2][2:] if len(parts) >= 3 and parts[2].startswith("a/") else ""
+                  keep = path not in excluded
+              else:
+                  block.append(line)
+          flush()
+
           open(dst, "w", encoding="utf-8").writelines(out)
           PY
 
-          test -s "$RUNNER_TEMP/50_susfs-no-namespace.patch"
-          ! grep -q '^diff --git a/fs/namespace.c b/fs/namespace.c' \
-            "$RUNNER_TEMP/50_susfs-no-namespace.patch"
-
-          # The upstream patch is based on a stock 4.19 layout. This vendor
-          # source differs in exactly three small places. Let patch apply all
-          # matching hunks, then repair ONLY the three known vendor-layout
-          # hunks below. Any other reject is a hard failure.
-          set +e
-          patch --forward --batch -p1 < "$RUNNER_TEMP/50_susfs-no-namespace.patch"
-          PATCH_RC=$?
-          set -e
-
-          REJECTS="$(find . -type f -name '*.rej' -print)"
-          if [ -n "$REJECTS" ]; then
-            echo "Detected SUSFS reject files:"
-            printf '%s\n' "$REJECTS"
-
-            EXPECTED_REJECTS=$(
-              printf '%s\n' "$REJECTS" |
-              sed 's#^./##' |
-              sort
-            )
-            EXPECTED=$(
-              printf '%s\n' \
-                fs/proc/cmdline.c.rej \
-                fs/proc/task_mmu.c.rej \
-                include/linux/mount.h.rej |
-              sort
-            )
-
-            if [ "$EXPECTED_REJECTS" != "$EXPECTED" ]; then
-              echo "::error::Unexpected SUSFS patch reject(s)."
+          test -s "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"
+          for excluded in \
+            fs/namespace.c \
+            fs/proc/cmdline.c \
+            fs/proc/task_mmu.c \
+            include/linux/mount.h; do
+            if grep -q "^diff --git a/$excluded b/$excluded" \
+              "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"; then
+              echo "::error::Excluded vendor-layout file leaked into SUSFS patch: $excluded"
               exit 1
             fi
+          done
 
-            # 1) Vendor cmdline.c keeps LGE's updated_command_line logic.
-            # Insert the official SUSFS hook at the output point, AFTER the
-            # existing LGE boot-mode adjustment. Do not replace vendor behavior.
-            python3 - <<'PY'
+          # Apply every upstream SUSFS hunk that matches the exact LG source.
+          # The four source-specific files above are deliberately applied by
+          # source-aware code below; no .rej files are expected from this step.
+          patch --forward --batch -p1 < "$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch"
+
+          if find . -type f -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::Unexpected SUSFS patch reject(s) outside the source-aware files."
+            find . -type f -name '*.rej' -print
+            exit 1
+          fi
+
+          # 1) Vendor cmdline.c keeps LGE's updated_command_line logic.
+          # Insert the official SUSFS hook at the output point, AFTER the
+          # existing LGE boot-mode adjustment. Do not replace vendor behavior.
+          python3 - <<'PY'
           from pathlib import Path
           p = Path("fs/proc/cmdline.c")
           s = p.read_text()
@@ -953,10 +958,9 @@ jobs:
           p.write_text(s)
           PY
 
-            # 2) task_mmu.c differs in the include block and in the
-            # show_map_vma declaration location. Recreate BOTH missing
-            # upstream hunks against the actual LG source.
-            python3 - <<'PY'
+          # 2) task_mmu.c: recreate the two upstream SUSFS hunks against the
+          # actual LG include block and show_map_vma location.
+          python3 - <<'PY'
           from pathlib import Path
           p = Path("fs/proc/task_mmu.c")
           s = p.read_text()
@@ -986,9 +990,9 @@ jobs:
           p.write_text(s)
           PY
 
-            # 3) Preserve the vendor mount.h layout and use KABI slot 4 only
-            # for SUSFS, wherever the existing reserve(4) line occurs.
-            python3 - <<'PY'
+          # 3) Preserve the vendor mount.h layout and use KABI slot 4 only
+          # for SUSFS, wherever the existing reserve(4) line occurs.
+          python3 - <<'PY'
           from pathlib import Path
           p = Path("include/linux/mount.h")
           s = p.read_text()
@@ -1005,9 +1009,6 @@ jobs:
               s = s[:pos] + repl + s[pos+len(needle):]
           p.write_text(s)
           PY
-
-            rm -f fs/proc/cmdline.c.rej fs/proc/task_mmu.c.rej include/linux/mount.h.rej
-          fi
 
           find . -type f -name '*.orig' -delete
           if find . -type f -name '*.rej' -print -quit | grep -q .; then
@@ -1042,13 +1043,17 @@ jobs:
           test -f include/linux/sus_su.h
           test -f include/linux/susfs_def.h
 
-          # A non-zero patch status is acceptable only when the three
-          # explicitly handled vendor-layout rejects were produced.
-          if [ "$PATCH_RC" -ne 0 ] && [ -z "$REJECTS" ]; then
-            echo "::error::SUSFS patch failed without one of the expected vendor-layout rejects."
-            exit 1
-          fi
+          # The upstream SUSFS 4.19 patch contains one harmless trailing-space
+          # comment in fs/overlayfs/readdir.c. Remove only that whitespace so
+          # git diff --check does not reject an otherwise valid patch.
+          sed -i 's/[[:space:]]\+$//' fs/overlayfs/readdir.c
 
+          git diff --check
+
+          echo "PASS: SUSFS kernel-4.19 patch applied with zero rejects."
+          echo "PASS: three known LG Velvet vendor-layout files were integrated source-aware."
+          echo "PASS: legacy KernelSU SUSFS patch was NOT applied."
+          echo "PASS: fs/namespace.c SUS_MOUNT patch remains excluded."
           # The upstream SUSFS 4.19 patch contains one harmless trailing-space
           # comment in fs/overlayfs/readdir.c. Remove only that whitespace so
           # git diff --check does not reject an otherwise valid patch.
