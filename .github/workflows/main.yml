@@ -950,22 +950,27 @@ jobs:
           # this exact working configuration, so that hunk must be omitted;
           # every other SUSFS hunk is applied unchanged.
           FILTERED_PATCH="$GITHUB_WORKSPACE/susfs-backport/susfs_patch_to_4.19_lg_sm7250.patch"
+          # Remove ONLY the SUS_MOUNT-only vfs_kern_mount hunk.
+          # The SUSFS v2.2.0 patch currently uses @@ -953,7 +1109,22 @@ here;
+          # the previous workflow matched the wrong header and therefore did
+          # NOT remove the failing hunk. Match the function context instead.
           awk '
-            BEGIN { skip=0 }
+            BEGIN { skip=0; removed=0 }
             /^diff --git / { skip=0 }
-            /^@@ -953,6 \+1109,15 @@ vfs_kern_mount/ {
+            /^@@ .* @@ vfs_kern_mount\(/ {
               skip=1
+              removed=1
               print "# SUSFS 2.2.0: omitted obsolete SUS_MOUNT-only vfs_kern_mount hunk for LG SM7250 sixteen"
               next
             }
             skip && /^@@ / { skip=0 }
-            skip && /^diff --git / { skip=0 }
             !skip { print }
+            END { if (!removed) exit 2 }
           ' "$PATCH_FILE" > "$FILTERED_PATCH"
 
           test -s "$FILTERED_PATCH"
-          grep -q 'fs/namespace.c' "$FILTERED_PATCH"
-          if grep -q '^@@ -953,6 +1109,15 @@ vfs_kern_mount' "$FILTERED_PATCH"; then
+          grep -q 'diff --git a/fs/namespace.c b/fs/namespace.c' "$FILTERED_PATCH"
+          if grep -Eq '^@@ .* @@ vfs_kern_mount\(' "$FILTERED_PATCH"; then
             echo "::error::Obsolete SUS_MOUNT vfs_kern_mount hunk was not removed."
             exit 1
           fi
