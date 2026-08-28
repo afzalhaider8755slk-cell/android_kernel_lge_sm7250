@@ -1211,15 +1211,35 @@ jobs:
           # disabled remap wrapper. That is harmless and must not fail the
           # verification. The actual VFS member reference above is the
           # authoritative compile check.
+          # Verify REMAP_FILE_DEDUP only by real preprocessor scope.
+          # The remap wrapper contains its own nested #if/#endif blocks, so a
+          # simple "first #endif closes the disabled block" check is incorrect
+          # and caused the previous Step 07 false failure.
           remap_code = []
           in_disabled_remap = False
+          disabled_depth = 0
           for line in final.splitlines():
-              if "LG 4.19: remap_file_range disabled" in line:
-                  in_disabled_remap = True
+              stripped = line.strip()
               if not in_disabled_remap:
-                  remap_code.append(line)
-              if in_disabled_remap and line.strip() == "#endif":
-                  in_disabled_remap = False
+                  if "LG 4.19: remap_file_range disabled" in line:
+                      in_disabled_remap = True
+                      disabled_depth = 1
+                  else:
+                      remap_code.append(line)
+                  continue
+
+              # We are inside the outer #if 0. Track nested preprocessor
+              # conditionals until the matching outer #endif is reached.
+              if re.match(r'^#\s*(if|ifdef|ifndef)\b', stripped):
+                  disabled_depth += 1
+              elif re.match(r'^#\s*endif\b', stripped):
+                  disabled_depth -= 1
+                  if disabled_depth == 0:
+                      in_disabled_remap = False
+
+          if in_disabled_remap:
+              raise SystemExit("ERROR: remap_file_range disabled block is not preprocessor-balanced")
+
           if "REMAP_FILE_DEDUP" in "\n".join(remap_code):
               raise SystemExit("ERROR: active file_wrapper code still references REMAP_FILE_DEDUP")
 
