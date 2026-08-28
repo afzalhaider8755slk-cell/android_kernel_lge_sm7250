@@ -1105,6 +1105,77 @@ jobs:
           grep -Eq '^[[:space:]]*#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT$' KernelSU-Next/kernel/hook/setuid_hook.c
           grep -Eq '^[[:space:]]*#endif$' KernelSU-Next/kernel/hook/setuid_hook.c
           echo "PASS: setuid_hook SUS_MOUNT-only helper call is guarded; SUS_MOUNT remains disabled."
+          
+          # Exact compatibility fix for this LG 4.19 vendor tree:
+          # its include/linux/fs.h does not expose file_operations.iopoll,
+          # remap_file_range, or REMAP_FILE_DEDUP. KernelSU-Next's generic
+          # file_wrapper.c references those VFS hooks unconditionally.
+          # Do NOT modify the vendor fs.h ABI and do NOT add substitute APIs.
+          # Keep the wrapper code intact, but compile out only VFS operations
+          # that this exact vendor fs.h does not provide.
+          FILE_WRAPPER_C="KernelSU-Next/kernel/infra/file_wrapper.c"
+          FS_H="include/linux/fs.h"
+          test -f "$FILE_WRAPPER_C"
+          test -f "$FS_H"
+          python3 - "$FILE_WRAPPER_C" "$FS_H" <<'PY'
+          from pathlib import Path
+          import sys, re
+          fw = Path(sys.argv[1])
+          fs = Path(sys.argv[2])
+          s = fw.read_text()
+          h = fs.read_text()
+
+          has_iopoll = bool(re.search(r'\(\*iopoll\)\s*\(', h))
+          has_remap = bool(re.search(r'\(\*remap_file_range\)\s*\(', h))
+          has_dedup = 'REMAP_FILE_DEDUP' in h
+
+          if not has_iopoll:
+              marker = '/* LG 4.19: file_wrapper iopoll unavailable */'
+              if marker not in s:
+                  start = s.find('#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)')
+                  if start < 0:
+                      raise SystemExit("ksu_wrapper_iopoll version guard not found")
+                  end = s.find('#endif', start)
+                  if end < 0:
+                      raise SystemExit("ksu_wrapper_iopoll version guard end not found")
+                  end += len('#endif')
+                  s = (s[:start] + '#if 0\n' + marker + '\n' +
+                       s[start:end] + '\n#endif\n' + s[end:])
+              target = '    p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;'
+              if target in s:
+                  s = s.replace(
+                      target,
+                      '#if 0 /* LG 4.19: file_operations has no iopoll */\n'
+                      + target + '\n#endif',
+                      1)
+
+          if not has_remap or not has_dedup:
+              marker = '/* LG 4.19: file_wrapper remap_file_range unavailable */'
+              if marker not in s:
+                  start = s.find('static loff_t ksu_wrapper_remap_file_range(')
+                  end = s.find('\n}\nstatic int ksu_wrapper_fadvise', start)
+                  if start < 0 or end < 0:
+                      raise SystemExit("ksu_wrapper_remap_file_range block not found")
+                  end += 2
+                  s = (s[:start] + '#if 0\n' + marker + '\n' +
+                       s[start:end] + '\n#endif\n' + s[end:])
+              old = ('    p->ops.remap_file_range =\n'
+                     '        fp->f_op->remap_file_range ? '
+                     'ksu_wrapper_remap_file_range : NULL;')
+              if old in s:
+                  s = s.replace(
+                      old,
+                      '#if 0 /* LG 4.19: file_operations has no remap_file_range */\n'
+                      + old + '\n#endif',
+                      1)
+
+          fw.write_text(s)
+          print(f"detected iopoll={has_iopoll} remap_file_range={has_remap} "
+                f"REMAP_FILE_DEDUP={has_dedup}")
+          PY
+          grep -q 'LG 4.19: file_wrapper iopoll unavailable' "$FILE_WRAPPER_C"
+          grep -q 'LG 4.19: file_wrapper remap_file_range unavailable' "$FILE_WRAPPER_C"
+          echo "PASS: file_wrapper VFS hooks are limited to the operations actually present in the LG 4.19 fs.h."
 
           # 3) Preserve the vendor mount.h layout and use KABI slot 4 only
           # for SUSFS, wherever the existing reserve(4) line occurs.
