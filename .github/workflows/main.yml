@@ -968,32 +968,41 @@ jobs:
           grep -Eq '^[[:space:]]*#endif$' "$SUCOMPAT_C"
           echo "PASS: sucompat SUS_MOUNT-only proc-umount calls are guarded; SUS_MOUNT remains disabled."
           # LG 4.19 compatibility fix for KernelSU-Next pkg_observer.
-          #
-          # IMPORTANT:
-          # - Do NOT touch the already-completed mount.h/minmax/seccomp fixes.
-          # - Do NOT modify vendor include/linux/fsnotify_backend.h.
-          # - Only adapt KernelSU-Next's observer to the fsnotify_ops API that
-          #   actually exists in this 4.19 tree.
-          #
-          # KernelSU-Next v3.3.0 uses handle_inode_event(), but this LG 4.19
-          # fsnotify_ops exposes only handle_event(). Merely renaming the
-          # designator is unsafe because the callback signatures differ.
+          # Idempotent: if the 4.19 form is already present, leave it untouched.
           PKG_OBSERVER_C="KernelSU-Next/kernel/manager/pkg_observer.c"
           test -f "$PKG_OBSERVER_C"
           python3 - "$PKG_OBSERVER_C" <<'PY'
           from pathlib import Path
+          import re
           import sys
 
           p = Path(sys.argv[1])
           s = p.read_text()
 
-          import re
+          already_fixed = (
+              re.search(r'\.handle_event\s*=\s*ksu_handle_event\s*,', s) and
+              re.search(r'static\s+int\s+ksu_handle_event\s*\(\s*struct\s+fsnotify_group\s*\*group', s)
+          )
 
-          legacy_func = '''static int ksu_handle_event(struct fsnotify_group *group,
-                                struct inode *inode, u32 mask,
-                                const void *data, int data_type,
-                                const unsigned char *file_name, u32 cookie,
-                                struct fsnotify_iter_info *iter_info)
+          if already_fixed:
+              print("PASS: pkg_observer already uses the LG 4.19 handle_event API; untouched.")
+          else:
+              modern = re.search(
+                  r'static\s+int\s+ksu_handle_inode_event\s*\(.*?\n\s*\}\s*\n'
+                  r'\s*static\s+const\s+struct\s+fsnotify_ops\s+ksu_ops\s*=\s*\{'
+                  r'.*?\.handle_inode_event\s*=\s*ksu_handle_inode_event\s*,\s*\n\s*\};',
+                  s, re.S)
+              if not modern:
+                  raise SystemExit(
+                      "ERROR: pkg_observer is neither already-fixed 4.19 form nor a recognizable "
+                      "KernelSU-Next handle_inode_event form; refusing blind edits."
+                  )
+
+              legacy = """static int ksu_handle_event(struct fsnotify_group *group,
+                  struct inode *inode, u32 mask,
+                  const void *data, int data_type,
+                  const unsigned char *file_name, u32 cookie,
+                  struct fsnotify_iter_info *iter_info)
           {
               if (!file_name)
                   return 0;
@@ -1007,59 +1016,23 @@ jobs:
           }
           static const struct fsnotify_ops ksu_ops = {
               .handle_event = ksu_handle_event,
-          };'''
-
-          if ".handle_event = ksu_handle_event" in s:
-              print("PASS: pkg_observer already uses the LG 4.19 handle_event API; no rewrite needed.")
-          elif ".handle_inode_event = ksu_handle_inode_event" in s:
-              pattern = re.compile(
-                  r"static int ksu_handle_inode_event\(.*?\n"
-                  r"static const struct fsnotify_ops ksu_ops = \{\s*"
-                  r"\.handle_inode_event = ksu_handle_inode_event,\s*"
-                  r"\};",
-                  re.S,
-              )
-              s2, count = pattern.subn(legacy_func, s, count=1)
-              if count != 1:
-                  raise SystemExit(
-                      "Found handle_inode_event but could not isolate its complete "
-                      "function/ops block; refusing an unsafe blind rewrite."
-                  )
-              p.write_text(s2)
-              print("PASS: adapted pkg_observer from handle_inode_event to the native LG 4.19 handle_event API.")
-          else:
-              raise SystemExit(
-                  "pkg_observer has neither the already-fixed handle_event form nor "
-                  "the expected KernelSU-Next handle_inode_event form."
-              )
-
-          if ".handle_event = ksu_handle_event" in s:
-              print("PASS: pkg_observer already uses the LG 4.19 handle_event API; no rewrite needed.")
-          elif ".handle_inode_event = ksu_handle_inode_event" in s:
-              if modern_func not in s:
-                  raise SystemExit(
-                      "Found handle_inode_event but the expected KernelSU-Next v3.3.0 "
-                      "source block does not match; refusing an unsafe blind rewrite."
-                  )
-              s = s.replace(modern_func, legacy_func, 1)
+          };"""
+              s = s[:modern.start()] + legacy + s[modern.end():]
               p.write_text(s)
-              print("PASS: adapted pkg_observer from handle_inode_event to the native LG 4.19 handle_event API.")
-          else:
-              raise SystemExit(
-                  "pkg_observer has neither the already-fixed handle_event form nor "
-                  "the expected KernelSU-Next handle_inode_event form."
-              )
+              print("PASS: adapted pkg_observer to native LG 4.19 handle_event API.")
 
           s = p.read_text()
-          if ".handle_inode_event = ksu_handle_inode_event" in s:
-              raise SystemExit("Incompatible handle_inode_event assignment remains.")
-          if ".handle_event = ksu_handle_event" not in s:
-              raise SystemExit("LG 4.19 handle_event assignment is missing.")
-          if "static int ksu_handle_event(struct fsnotify_group *group" not in s:
-              raise SystemExit("LG 4.19 handle_event function is missing.")
+          if re.search(r'\.handle_inode_event\s*=\s*ksu_handle_inode_event', s):
+              raise SystemExit("ERROR: incompatible handle_inode_event assignment remains.")
+          if not re.search(r'\.handle_event\s*=\s*ksu_handle_event\s*,', s):
+              raise SystemExit("ERROR: LG 4.19 handle_event assignment is missing.")
+          if not re.search(r'static\s+int\s+ksu_handle_event\s*\(\s*struct\s+fsnotify_group\s*\*group', s):
+              raise SystemExit("ERROR: LG 4.19 callback function is missing.")
+          if "packages.list detected:" in s:
+              raise SystemExit("ERROR: obsolete/malformed packages.list diagnostic string remains.")
           if "file_name[13] == '\\0'" not in s:
-              raise SystemExit("packages.list exact-name guard is missing.")
-          print("PASS: pkg_observer 4.19 fsnotify callback audit completed.")
+              raise SystemExit("ERROR: packages.list exact-name guard is missing.")
+          print("PASS: pkg_observer 4.19 compatibility + syntax audit completed.")
           PY
 
       - name: 06 - Download and VERIFY SUSFS kernel-4.19 latest branch
@@ -2273,7 +2246,16 @@ jobs:
           ! grep -q 'handle_inode_event = ksu_handle_inode_event' "$PKG_OBSERVER_C"
           grep -q 'handle_event = ksu_handle_event' "$PKG_OBSERVER_C"
           grep -q 'static int ksu_handle_event(struct fsnotify_group *group' "$PKG_OBSERVER_C"
-          ! grep -q 'pr_info("packages.list detected: %d$' "$PKG_OBSERVER_C"
+          python3 - "$PKG_OBSERVER_C" <<'PY'
+          from pathlib import Path
+          import sys
+          s = Path(sys.argv[1]).read_text()
+          if 'pr_info("packages.list detected: %d\n", mask);' in s:
+              raise SystemExit("ERROR: malformed packages.list pr_info string remains")
+          if 'pr_info("packages.list detected: %d\n", mask);' in s:
+              raise SystemExit("ERROR: malformed packages.list pr_info string remains")
+          print("PASS: no malformed packages.list pr_info string remains.")
+          PY
 
           if git diff --name-only -- include/linux/fsnotify_backend.h | grep -q .; then
             echo "::error::Vendor fsnotify_backend.h was modified."
