@@ -946,7 +946,7 @@ jobs:
                   raise SystemExit("cmdline_proc_show opening brace not found")
               insert = ("\n#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n"
                         "    if (!susfs_spoof_cmdline_or_bootconfig(m)) {\n"
-                        "        seq_putc(m, '\n');\n"
+                        "        seq_putc(m, '\\n');\n"
                         "        return 0;\n"
                         "    }\n"
                         "#endif")
