@@ -807,6 +807,24 @@ jobs:
           echo "KSU_COMMIT=$KSU_COMMIT" >> "$GITHUB_ENV"
 
           echo "PASS: KernelSU-Next SUSFS-compatible repository detected."
+          # Compile fix for this exact 4.19 + Clang combination:
+          # sulog.h declares __init/__exit but is included directly by sulog.c,
+          # so it must include linux/init.h itself. This is the upstream fix for
+          # the exact "variable has incomplete type 'void'" error seen with Clang.
+          SULOG_H="KernelSU-Next/kernel/drivers/kernelsu/feature/sulog.h"
+          test -f "$SULOG_H"
+          if ! grep -q '^#include <linux/init.h>$' "$SULOG_H"; then
+            python3 - "$SULOG_H" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          s = "#include <linux/init.h>\n" + s
+          p.write_text(s)
+          PY
+          fi
+          grep -q '^#include <linux/init.h>$' "$SULOG_H"
+          echo "PASS: sulog.h directly includes linux/init.h for Clang 4.19 build compatibility."
           echo "PASS: exact stable tag = $KSU_VERSION_RESOLVED"
           echo "PASS: no legacy KernelSU SUSFS patch will be applied."
 
