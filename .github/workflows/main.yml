@@ -1241,7 +1241,6 @@ jobs:
             --disable CONFIG_KSU_SUSFS_SUS_PATH \
             --enable CONFIG_KSU_SUSFS_SUS_KSTAT \
             --enable CONFIG_KSU_SUSFS_SPOOF_UNAME \
-            --enable CONFIG_KSU_SUSFS_TRY_UMOUNT \
             --enable CONFIG_KSU_SUSFS_ENABLE_LOG \
             --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
             --disable CONFIG_KSU_SUSFS_SUS_SU
@@ -1305,10 +1304,10 @@ jobs:
           grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS_SPOOF_UNAME=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$OUT_DIR/.config"
+          ! grep -q '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
+          ! grep -q '^CONFIG_KSU_SUSFS_SUS_SU=y$' "$OUT_DIR/.config"
 
           # Compare every non-KSU/non-SUSFS config symbol against the exact
           # working baseline. CONFIG_SUSFS is our integration marker and is
@@ -1465,7 +1464,7 @@ jobs:
           grep -q '^CONFIG_SUSFS=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
+          ! grep -q '^CONFIG_KSU_SUSFS_SUS_SU=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
 
           # Absolutely critical: the working kernel's KPROBES state is unchanged.
