@@ -829,6 +829,25 @@ jobs:
           fi
           grep -q '^#include <linux/init.h>$' "$SULOG_H"
           echo "PASS: sulog.h directly includes linux/init.h for Clang 4.19 build compatibility."
+
+          # Exact 4.19 compatibility fix for KernelSU-Next v3.3.0: this source
+          # includes linux/minmax.h in sucompat.c, but the LG 4.19 tree does not
+          # provide that header. The pinned sucompat.c does not use min/max APIs,
+          # so remove only this invalid include; do not add a new kernel header.
+          SUCOMPAT_C="KernelSU-Next/kernel/feature/sucompat.c"
+          test -f "$SUCOMPAT_C"
+          python3 - "$SUCOMPAT_C" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          bad = "#include <linux/minmax.h>\n"
+          if bad in s:
+              s = s.replace(bad, "", 1)
+              p.write_text(s)
+          PY
+          ! grep -q '^#include <linux/minmax.h>$' "$SUCOMPAT_C"
+          echo "PASS: removed only unavailable linux/minmax.h from sucompat.c for this 4.19 tree."
           echo "PASS: exact stable tag = $KSU_VERSION_RESOLVED"
           echo "PASS: no legacy KernelSU SUSFS patch will be applied."
 
