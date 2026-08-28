@@ -1074,6 +1074,38 @@ jobs:
           p.write_text(s)
           PY
 
+          # 4) CONFIG_KSU_SUSFS_SUS_MOUNT is intentionally disabled in this
+          # non-GKI build. The pinned KernelSU-Next SUSFS branch leaves
+          # susfs_set_current_proc_umounted() in setuid_hook.c under the broader
+          # CONFIG_KSU_SUSFS branch, but that helper is only declared when
+          # CONFIG_KSU_SUSFS_SUS_MOUNT is enabled. Guard only that unavailable
+          # call; do not enable SUS_MOUNT and do not change the surrounding
+          # setuid/umount logic.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("KernelSU-Next/kernel/hook/setuid_hook.c")
+          s = p.read_text()
+          target = "    susfs_set_current_proc_umounted();\n"
+          if "LG 4.19: SUS_MOUNT-only proc-umount marker" not in s:
+              if target not in s:
+                  raise SystemExit("setuid_hook.c SUS_MOUNT proc-umount call not found")
+              s = s.replace(
+                  target,
+                  "    /* LG 4.19: SUS_MOUNT-only proc-umount marker */\n"
+                  "    #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+                  + target
+                  + "    #endif\n",
+                  1,
+              )
+              p.write_text(s)
+          if "LG 4.19: SUS_MOUNT-only proc-umount marker" not in p.read_text():
+              raise SystemExit("setuid_hook.c SUS_MOUNT guard insertion failed")
+          PY
+          grep -q 'LG 4.19: SUS_MOUNT-only proc-umount marker' KernelSU-Next/kernel/hook/setuid_hook.c
+          grep -Eq '^[[:space:]]*#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT$' KernelSU-Next/kernel/hook/setuid_hook.c
+          grep -Eq '^[[:space:]]*#endif$' KernelSU-Next/kernel/hook/setuid_hook.c
+          echo "PASS: setuid_hook SUS_MOUNT-only helper call is guarded; SUS_MOUNT remains disabled."
+
           # 3) Preserve the vendor mount.h layout and use KABI slot 4 only
           # for SUSFS, wherever the existing reserve(4) line occurs.
           python3 - <<'PY'
