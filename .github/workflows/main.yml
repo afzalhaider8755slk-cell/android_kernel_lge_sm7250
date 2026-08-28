@@ -1415,6 +1415,70 @@ jobs:
         { echo "LG 4.19 seccomp compatibility audit"; echo "KSU app profile: $KSU_APP"; echo "Vendor header: $SEC_HDR"; if grep -qE '\bfilter_count\b' "$SEC_HDR"; then echo "filter_count: PRESENT"; else echo "filter_count: ABSENT; KSU-local no-op applied"; fi; echo "Vendor seccomp ABI/header modification: NOT USED"; } > "$DIAG_DIR/10B-seccomp-filter-count-audit.txt"
         echo "PASS: 4.19 seccomp filter_count compatibility audit completed."
         echo "PASS: earlier SUSFS/KSU/VFS fixes were not modified by this step."
+    - name: 10C - Guard KernelSU SELinux rules for legacy 4.19
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/kernel"
+        
+        RULES=""
+        for candidate in "drivers/kernelsu/selinux/rules.c" "KernelSU-Next/kernel/selinux/rules.c"; do
+          if [ -f "$candidate" ]; then RULES="$candidate"; break; fi
+        done
+        test -n "$RULES"
+        
+        if grep -q 'selinux_state\.policy' "$RULES" &&
+           grep -q 'selinux_state\.policy_mutex' "$RULES"; then
+          if ! grep -q 'LG 4.19: KernelSU SELinux policy compatibility guard' "$RULES"; then
+            python3 - "$RULES" <<'PY'
+        from pathlib import Path
+        import sys
+        p = Path(sys.argv[1])
+        s = p.read_text()
+        needle = 'struct selinux_policy *backup_sepolicy;'
+        guard = """/* LG 4.19: KernelSU SELinux policy compatibility guard */
+        #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+        """
+        if needle not in s:
+            raise SystemExit("ERROR: expected KernelSU SELinux rules anchor not found; refusing broad patch.")
+        s = s.replace(needle, guard + needle, 1)
+        stub = """
+        #else /* LG 4.19 compatibility */
+        void apply_kernelsu_rules(void)
+        {
+            pr_info("KernelSU: SELinux policy-rule helper disabled on legacy LG 4.19 ABI\\n");
+        }
+        int handle_sepolicy(void __user *user_data, u64 data_len)
+        {
+            return -EOPNOTSUPP;
+        }
+        #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0) */
+        """
+        s = s.rstrip() + "\n" + stub
+        p.write_text(s)
+        PY
+            echo "PATCHED: $RULES (legacy 4.19 SELinux ABI guard)"
+          fi
+        fi
+        
+        if git status --short -- security/selinux include/uapi/selinux.h 2>/dev/null | grep -q .; then
+          echo "::error::Vendor SELinux source/header changed; refusing to continue."
+          git status --short -- security/selinux include/uapi/selinux.h
+          exit 1
+        fi
+        
+        mkdir -p "$DIAG_DIR"
+        {
+          echo "LG 4.19 KernelSU SELinux compatibility audit"
+          echo "rules.c: $RULES"
+          if grep -q 'LG 4.19: KernelSU SELinux policy compatibility guard' "$RULES"; then
+            echo "legacy SELinux ABI guard: PRESENT"
+          else
+            echo "legacy SELinux ABI guard: NOT NEEDED"
+          fi
+          echo "vendor SELinux ABI modification: NOT USED"
+        } > "$DIAG_DIR/10C-selinux-4.19-audit.txt"
+        echo "PASS: legacy 4.19 SELinux compatibility audit completed."
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
@@ -1462,8 +1526,10 @@ jobs:
             echo
             if grep -q 'no member named.*filter_count' "$LOG"; then
               echo "RESULT: KNOWN FAILURE — KSU app_profile.c still references unavailable 4.19 filter_count."
+            elif grep -qE 'selinux/rules\.c:.*no member named .policy|selinux/rules\.c:.*no member named .policy_mutex|selinux/rules\.c:.*incomplete definition of type .struct selinux_policy' "$LOG"; then
+              echo "RESULT: KNOWN FAILURE — KernelSU SELinux rules are using the newer selinux_state ABI on LG 4.19."
             elif grep -qE '(^|[^[:alpha:]])error:' "$LOG"; then
-              echo "RESULT: DIFFERENT BUILD ERROR — do not mislabel it as filter_count."
+              echo "RESULT: DIFFERENT BUILD ERROR — not one of the audited seccomp/SELinux compatibility failures."
             else
               echo "RESULT: no compiler error signature found in the captured build log."
             fi
