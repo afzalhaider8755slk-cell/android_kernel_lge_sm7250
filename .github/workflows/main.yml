@@ -967,6 +967,89 @@ jobs:
           grep -Eq '^[[:space:]]*#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT$' "$SUCOMPAT_C"
           grep -Eq '^[[:space:]]*#endif$' "$SUCOMPAT_C"
           echo "PASS: sucompat SUS_MOUNT-only proc-umount calls are guarded; SUS_MOUNT remains disabled."
+          # Exact LG 4.19 fsnotify compatibility fix:
+          # KernelSU-Next v3.3.0's pkg_observer.c uses the newer
+          # fsnotify_ops.handle_inode_event callback. This LG 4.19 tree
+          # exposes only the legacy fsnotify_ops.handle_event callback.
+          # Do not modify the vendor fsnotify ABI/header; adapt only the
+          # KernelSU observer to the callback ABI actually provided here.
+          PKG_OBSERVER_C="KernelSU-Next/kernel/manager/pkg_observer.c"
+          test -f "$PKG_OBSERVER_C"
+          python3 - "$PKG_OBSERVER_C" <<'PY'
+          from pathlib import Path
+          import sys
+          
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          
+          old_func = """static int ksu_handle_inode_event(struct fsnotify_mark *mark, u32 mask,
+                                  struct inode *inode, struct inode *dir,
+                                  const struct qstr *file_name, u32 cookie)
+          {
+              if (!file_name)
+                  return 0;
+              if (mask & FS_ISDIR)
+                  return 0;
+              if (file_name->len == 13 && !memcmp(file_name->name, "packages.list", 13)) {
+                  pr_info("packages.list detected: %d\\n", mask);
+                  track_throne(false);
+              }
+              return 0;
+          }
+          static const struct fsnotify_ops ksu_ops = {
+              .handle_inode_event = ksu_handle_inode_event,
+          };"""
+          
+          new_func = """/*
+           * LG 4.19 fsnotify compatibility:
+           * this kernel has the legacy handle_event() callback and does not provide
+           * fsnotify_ops.handle_inode_event. The observer is attached to the
+           * /data/system directory, so file_name is the child entry that changed.
+           */
+          static int ksu_handle_event(struct fsnotify_group *group, struct inode *inode,
+                            u32 mask, const void *data, int data_type,
+                            const unsigned char *file_name, u32 cookie,
+                            struct fsnotify_iter_info *iter_info)
+          {
+              if (!file_name)
+                  return 0;
+              if (mask & FS_ISDIR)
+                  return 0;
+              if (strlen((const char *)file_name) == 13 &&
+                  !memcmp(file_name, "packages.list", 13)) {
+                  pr_info("packages.list detected: %d\\n", mask);
+                  track_throne(false);
+              }
+              return 0;
+          }
+          
+          static const struct fsnotify_ops ksu_ops = {
+              .handle_event = ksu_handle_event,
+          };"""
+          
+          if old_func not in s:
+              if "LG 4.19 fsnotify compatibility:" not in s:
+                  raise SystemExit("Expected KernelSU-Next v3.3.0 pkg_observer callback block was not found")
+          else:
+              s = s.replace(old_func, new_func, 1)
+              p.write_text(s)
+          
+          s = p.read_text()
+          if ".handle_inode_event = ksu_handle_inode_event" in s:
+              raise SystemExit("legacy-incompatible handle_inode_event callback remains")
+          if ".handle_event = ksu_handle_event" not in s:
+              raise SystemExit("LG 4.19 handle_event callback was not installed")
+          if "const unsigned char *file_name" not in s:
+              raise SystemExit("legacy fsnotify file_name argument is missing")
+          if 'memcmp(file_name, "packages.list", 13)' not in s:
+              raise SystemExit("packages.list detection was not preserved")
+          PY
+          
+          ! grep -q '\.handle_inode_event = ksu_handle_inode_event' "$PKG_OBSERVER_C"
+          grep -q '\.handle_event = ksu_handle_event' "$PKG_OBSERVER_C"
+          grep -q 'const unsigned char \*file_name' "$PKG_OBSERVER_C"
+          grep -q 'memcmp(file_name, "packages.list", 13)' "$PKG_OBSERVER_C"
+          echo "PASS: KernelSU pkg_observer adapted to the LG 4.19 legacy fsnotify_ops.handle_event ABI; vendor fsnotify headers remain untouched."
           echo "PASS: exact stable tag = $KSU_VERSION_RESOLVED"
           echo "PASS: no legacy KernelSU SUSFS patch will be applied."
 
