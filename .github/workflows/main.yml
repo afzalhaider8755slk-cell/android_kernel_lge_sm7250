@@ -1376,19 +1376,45 @@ jobs:
         \ exist.\ntest -f fs/susfs.c\ntest -f include/linux/susfs.h\ntest -d KernelSU-Next/kernel\n"
     - name: 10B - Verify current 4.19 compile fix only
       shell: bash
-      run: "set -euo pipefail\ncd \"$GITHUB_WORKSPACE/kernel\"\n\nSECCOMP_CACHE_C=\"\
-        KernelSU-Next/kernel/infra/seccomp_cache.c\"\ntest -f \"$SECCOMP_CACHE_C\"\
-        \ngrep -q 'LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility' \"$SECCOMP_CACHE_C\"\
-        \ngrep -q '#define SECCOMP_ARCH_NATIVE_NR NR_syscalls' \"$SECCOMP_CACHE_C\"\
-        \n\n# Never solve this KSU compatibility issue by changing the vendor\n# arm64\
-        \ seccomp ABI/header.\nif [ -f \"arch/arm64/include/asm/seccomp.h\" ]; then\n\
-        \  if grep -q 'LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility'            \
-        \   \"arch/arm64/include/asm/seccomp.h\"; then\n    echo \"::error::Vendor\
-        \ arm64 seccomp header was modified for the KSU compatibility fix.\"\n   \
-        \ exit 1\n  fi\nfi\n\necho \"PASS: current seccomp_cache.c compile failure\
-        \ is fixed locally.\"\necho \"PASS: previously completed SUSFS/KSU/VFS fixes\
-        \ are left untouched.\"\necho \"PASS: vendor arm64 seccomp header remains\
-        \ untouched.\"\n"
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/kernel"
+        SECCOMP_CACHE_C="KernelSU-Next/kernel/infra/seccomp_cache.c"
+        test -f "$SECCOMP_CACHE_C"
+        grep -q 'LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility' "$SECCOMP_CACHE_C"
+        grep -q '#define SECCOMP_ARCH_NATIVE_NR NR_syscalls' "$SECCOMP_CACHE_C"
+
+        # LG 4.19 lacks seccomp.filter_count. Do not modify the vendor ABI;
+        # patch only the KSU-local bookkeeping write.
+        KSU_APP="drivers/kernelsu/policy/app_profile.c"
+        if [ ! -f "$KSU_APP" ]; then KSU_APP="KernelSU-Next/kernel/policy/app_profile.c"; fi
+        test -f "$KSU_APP"
+        SEC_HDR="include/linux/seccomp.h"
+        test -f "$SEC_HDR"
+
+        if grep -qE '\bfilter_count\b' "$SEC_HDR"; then
+          echo "PASS: vendor seccomp struct provides filter_count; no source patch required."
+        else
+          echo "INFO: vendor 4.19 seccomp struct lacks filter_count; applying narrow KSU-local fix."
+          python3 -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); s=p.read_text(); old="atomic_set(&current->seccomp.filter_count, 0);"; new="/* LG 4.19: seccomp.filter_count is unavailable; no-op. */"; (p.write_text(s.replace(old,new,1)) if old in s else None); print("PATCHED:",p) if old in s else print("PASS: no current->seccomp.filter_count reference in",p) if "current->seccomp.filter_count" not in s else (_ for _ in ()).throw(SystemExit("ERROR: unexpected filter_count form; refusing broad patch."))' "$KSU_APP"
+        fi
+
+        if ! grep -qE '\bfilter_count\b' "$SEC_HDR"; then
+          if grep -RIn --include='*.c' --include='*.h' 'current->seccomp.filter_count' drivers/kernelsu KernelSU-Next/kernel 2>/dev/null; then
+            echo "::error::Unfixed KSU seccomp.filter_count reference remains for LG 4.19."
+            exit 1
+          fi
+        fi
+
+        if [ -f "arch/arm64/include/asm/seccomp.h" ] && grep -q 'LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility' "arch/arm64/include/asm/seccomp.h"; then
+          echo "::error::Vendor arm64 seccomp header was modified; refusing to continue."
+          exit 1
+        fi
+
+        mkdir -p "$DIAG_DIR"
+        { echo "LG 4.19 seccomp compatibility audit"; echo "KSU app profile: $KSU_APP"; echo "Vendor header: $SEC_HDR"; if grep -qE '\bfilter_count\b' "$SEC_HDR"; then echo "filter_count: PRESENT"; else echo "filter_count: ABSENT; KSU-local no-op applied"; fi; echo "Vendor seccomp ABI/header modification: NOT USED"; } > "$DIAG_DIR/10B-seccomp-filter-count-audit.txt"
+        echo "PASS: 4.19 seccomp filter_count compatibility audit completed."
+        echo "PASS: earlier SUSFS/KSU/VFS fixes were not modified by this step."
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
@@ -1414,6 +1440,39 @@ jobs:
         \ \"$GITHUB_WORKSPACE/Image\"\n\n# DTB/DTBO are intentionally not copied into\
         \ the kernel artifact.\n# The user's known-good stock DTB/DTBO remain the\
         \ device boot assets.\n"
+    - name: 11A - Build-error audit (always)
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$DIAG_DIR"
+        LOG="$DIAG_DIR/11-build.log"
+        AUDIT="$DIAG_DIR/11-build-error-audit.txt"
+        {
+          echo "LG Velvet kernel build-error audit"
+          echo "================================"
+          if [ -f "$LOG" ]; then
+            echo "Build log: PRESENT"
+            echo
+            echo "Known seccomp.filter_count failures:"
+            grep -n -C 3 'filter_count' "$LOG" || true
+            echo
+            echo "Terminal build errors:"
+            grep -n -E 'make: \\*\\\*\\\*|Error: Process completed|error:' "$LOG" | tail -n 30 || true
+            echo
+            if grep -q 'no member named.*filter_count' "$LOG"; then
+              echo "RESULT: KNOWN FAILURE — KSU app_profile.c still references unavailable 4.19 filter_count."
+            elif grep -qE '(^|[^[:alpha:]])error:' "$LOG"; then
+              echo "RESULT: DIFFERENT BUILD ERROR — do not mislabel it as filter_count."
+            else
+              echo "RESULT: no compiler error signature found in the captured build log."
+            fi
+          else
+            echo "Build log: NOT PRESENT."
+            echo "RESULT: build did not produce a log; no compiler classification available."
+          fi
+        } | tee "$AUDIT"
+
     - name: 12 - Final safety checks
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/12-safety.log\"\
