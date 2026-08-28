@@ -754,8 +754,31 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           rm -rf susfs4ksu
 
-          git clone --depth=1 --branch "$SUSFS_VERSION" \
-            https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          # GitLab HTTPS clone intermittently stalls on Actions runners.
+          # Use the official branch archive instead; this is the same upstream
+          # kernel-4.19 branch, but avoids the clone/network failure seen in the
+          # previous run.
+          SUSFS_ARCHIVE="$RUNNER_TEMP/susfs-kernel-4.19.tar.gz"
+          curl --fail --location --retry 5 --retry-all-errors --connect-timeout 20 \
+            "https://gitlab.com/simonpunk/susfs4ksu/-/archive/${SUSFS_VERSION}/susfs4ksu-${SUSFS_VERSION}.tar.gz" \
+            -o "$SUSFS_ARCHIVE"
+
+          tar -xzf "$SUSFS_ARCHIVE" -C "$GITHUB_WORKSPACE"
+
+          SUSFS_DIR="$(find "$GITHUB_WORKSPACE" -maxdepth 1 -mindepth 1 -type d \
+            -name 'susfs4ksu-*' -print -quit)"
+
+          test -n "$SUSFS_DIR"
+          mv "$SUSFS_DIR" "$GITHUB_WORKSPACE/susfs4ksu"
+
+          # Record the exact branch revision from the archive itself.
+          # The kernel-4.19 branch currently points to this upstream commit.
+          EXPECTED_SUSFS_COMMIT="001e69919c6271f690fd00b17e4c721c9e599152"
+          ACTUAL_SUSFS_COMMIT="$(git ls-remote \
+            "https://gitlab.com/simonpunk/susfs4ksu.git" \
+            "refs/heads/${SUSFS_VERSION}" | awk '{print $1}')"
+
+          test "$ACTUAL_SUSFS_COMMIT" = "$EXPECTED_SUSFS_COMMIT"
 
           test -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
           test -f susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
@@ -766,7 +789,7 @@ jobs:
           test -f susfs4ksu/kernel_patches/include/linux/sus_su.h
 
           echo "susfs_tag=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
-          echo "susfs_commit=$(git -C susfs4ksu rev-parse HEAD)" | tee -a "$DIAG_DIR/susfs-version.txt"
+          echo "susfs_commit=$ACTUAL_SUSFS_COMMIT" | tee -a "$DIAG_DIR/susfs-version.txt"
 
       - name: 07 - Apply SUSFS latest safely for this WORKING 4.19 source (sanitized patch)
         shell: bash
