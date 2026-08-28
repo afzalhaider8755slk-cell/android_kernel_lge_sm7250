@@ -918,78 +918,79 @@ jobs:
             fi
 
             # 1) Vendor cmdline.c keeps LGE's updated_command_line logic.
-            # Insert SUSFS spoofing without replacing that vendor behavior.
+            # Insert only the SUSFS spoof hook; do not replace vendor behavior.
             python3 - <<'PY'
           from pathlib import Path
           p = Path("fs/proc/cmdline.c")
           s = p.read_text()
-          anchor = "#include <linux/seq_file.h>\n"
-          inc = """#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          extern int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);
-          #endif
-          """
-          if "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG" not in s:
-              if anchor not in s:
-                  raise SystemExit("cmdline.c anchor not found")
-              s = s.replace(anchor, anchor + inc, 1)
+          marker = "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG"
+          if marker not in s:
+              anchor = "#include <linux/seq_file.h>"
+              pos = s.find(anchor)
+              if pos < 0:
+                  raise SystemExit("cmdline.c seq_file include anchor not found")
+              end = s.find("\n", pos) + 1
+              inc = ("#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n"
+                     "extern int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);\n"
+                     "#endif\n")
+              s = s[:end] + inc + s[end:]
 
-          old = """static int cmdline_proc_show(struct seq_file *m, void *v)
-          {
-          """
-          new = """static int cmdline_proc_show(struct seq_file *m, void *v)
-          {
-          #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-              if (!susfs_spoof_cmdline_or_bootconfig(m)) {
-                  seq_putc(m, '\\n');
-                  return 0;
-              }
-          #endif
-          """
-          if "susfs_spoof_cmdline_or_bootconfig(m)" not in s:
-              if old not in s:
-                  raise SystemExit("cmdline_proc_show anchor not found")
-              s = s.replace(old, new, 1)
+          hook = "susfs_spoof_cmdline_or_bootconfig(m)"
+          if hook not in s:
+              needle = "static int cmdline_proc_show(struct seq_file *m, void *v)"
+              pos = s.find(needle)
+              if pos < 0:
+                  raise SystemExit("cmdline_proc_show declaration not found")
+              brace = s.find("{", pos)
+              if brace < 0:
+                  raise SystemExit("cmdline_proc_show opening brace not found")
+              insert = ("\n#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n"
+                        "    if (!susfs_spoof_cmdline_or_bootconfig(m)) {\n"
+                        "        seq_putc(m, '\n');\n"
+                        "        return 0;\n"
+                        "    }\n"
+                        "#endif")
+              s = s[:brace+1] + insert + s[brace+1:]
           p.write_text(s)
           PY
 
-            # 2) task_mmu.c only missed the SUS_KSTAT header include.
+            # 2) task_mmu.c missed the SUS_KSTAT extern declaration hunk.
+            # The later SUS_KSTAT body hunks already applied successfully;
+            # add only the missing declaration before show_map_vma().
             python3 - <<'PY'
           from pathlib import Path
           p = Path("fs/proc/task_mmu.c")
           s = p.read_text()
-          anchor = "#include <linux/mm_inline.h>\n"
-          inc = """#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-          #include <linux/susfs_def.h>
-          #endif
-          """
-          if "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT" not in s:
-              if anchor not in s:
-                  raise SystemExit("task_mmu.c include anchor not found")
-              s = s.replace(anchor, anchor + inc, 1)
+          marker = "susfs_sus_ino_for_show_map_vma"
+          if marker not in s:
+              needle = "static void\nshow_map_vma("
+              pos = s.find(needle)
+              if pos < 0:
+                  raise SystemExit("task_mmu.c show_map_vma anchor not found")
+              decl = ("#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+                      "extern void susfs_sus_ino_for_show_map_vma(unsigned long ino, dev_t *out_dev, unsigned long *out_ino);\n"
+                      "#endif\n\n")
+              s = s[:pos] + decl + s[pos:]
           p.write_text(s)
           PY
 
-            # 3) This vendor mount.h places the KABI reserve block after
-            # mnt_flags/data. Replace ONLY reserve slot 4 with the SUSFS
-            # backup field, preserving the vendor layout.
+            # 3) Preserve the vendor mount.h layout and use KABI slot 4 only
+            # for SUSFS, wherever the existing reserve(4) line occurs.
             python3 - <<'PY'
           from pathlib import Path
           p = Path("include/linux/mount.h")
           s = p.read_text()
-          old = """\tANDROID_KABI_RESERVE(4);
-          } __randomize_layout;
-          """
-          new = """#ifdef CONFIG_KSU_SUSFS
-          \tANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);
-          #else
-          \tANDROID_KABI_RESERVE(4);
-          #endif
-          } __randomize_layout;
-          """
           if "susfs_mnt_id_backup" not in s:
-              if old not in s:
-                  raise SystemExit("mount.h reserve(4) anchor not found")
-              s = s.replace(old, new, 1)
+              needle = "\tANDROID_KABI_RESERVE(4);"
+              pos = s.find(needle)
+              if pos < 0:
+                  raise SystemExit("mount.h ANDROID_KABI_RESERVE(4) not found")
+              repl = ("#ifdef CONFIG_KSU_SUSFS\n"
+                      "\tANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);\n"
+                      "#else\n"
+                      "\tANDROID_KABI_RESERVE(4);\n"
+                      "#endif")
+              s = s[:pos] + repl + s[pos+len(needle):]
           p.write_text(s)
           PY
 
