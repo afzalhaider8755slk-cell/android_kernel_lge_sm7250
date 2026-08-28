@@ -1,5 +1,5 @@
 name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.2.0-legacy + SUSFS 4.19
-true:
+"on":
   push: null
   workflow_dispatch:
     inputs:
