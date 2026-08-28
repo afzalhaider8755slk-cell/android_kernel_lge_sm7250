@@ -849,6 +849,50 @@ jobs:
           ! grep -q '^#include <linux/minmax.h>$' "$SUCOMPAT_C"
           echo "PASS: removed only unavailable linux/minmax.h from sucompat.c for this 4.19 tree."
 
+          # Exact LG SM7250 / Android 4.19 compatibility fix:
+          # KernelSU-Next v3.3.0's seccomp cache uses
+          # SECCOMP_ARCH_NATIVE_NR, but this vendor 4.19 arm64 seccomp
+          # header does not export that newer helper macro. The kernel's
+          # native syscall count is already provided as NR_syscalls.
+          #
+          # Keep the compatibility alias local to KSU's seccomp-cache
+          # translation unit. Do NOT modify the vendor seccomp ABI/header.
+          SECCOMP_CACHE_C="KernelSU-Next/kernel/infra/seccomp_cache.c"
+          test -f "$SECCOMP_CACHE_C"
+          python3 - "$SECCOMP_CACHE_C" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+
+          marker = "LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility"
+          if marker not in s:
+              compat = """/*
+           * LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility
+           *
+           * This vendor Android 4.19 arm64 tree exposes the native syscall
+           * count as NR_syscalls instead of exporting the newer
+           * SECCOMP_ARCH_NATIVE_NR helper macro. Keep the compatibility
+           * shim local to KSU; do not modify the vendor seccomp ABI/header.
+           */
+          #if defined(CONFIG_ARM64) && !defined(SECCOMP_ARCH_NATIVE_NR)
+          #include <asm/unistd.h>
+          #define SECCOMP_ARCH_NATIVE_NR NR_syscalls
+          #endif
+
+          """
+              s = compat + s
+              p.write_text(s)
+
+          if "#define SECCOMP_ARCH_NATIVE_NR NR_syscalls" not in s:
+              raise SystemExit("Expected 4.19 seccomp compatibility definition is missing")
+          PY
+
+          grep -q 'LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility' "$SECCOMP_CACHE_C"
+          grep -q '#define SECCOMP_ARCH_NATIVE_NR NR_syscalls' "$SECCOMP_CACHE_C"
+          echo "PASS: seccomp_cache.c uses a local 4.19 arm64 SECCOMP_ARCH_NATIVE_NR compatibility alias."
+
           # Exact compile fix for this build's intentional configuration:
           # CONFIG_KSU_SUSFS_SUS_MOUNT is disabled. KernelSU-Next v3.3.0
           # references the SUS_MOUNT-only proc-umount helpers from sucompat.c
@@ -1982,6 +2026,30 @@ jobs:
           test -f fs/susfs.c
           test -f include/linux/susfs.h
           test -d KernelSU-Next/kernel
+
+      - name: 10B - Verify current 4.19 compile fix only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          SECCOMP_CACHE_C="KernelSU-Next/kernel/infra/seccomp_cache.c"
+          test -f "$SECCOMP_CACHE_C"
+          grep -q 'LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility' "$SECCOMP_CACHE_C"
+          grep -q '#define SECCOMP_ARCH_NATIVE_NR NR_syscalls' "$SECCOMP_CACHE_C"
+
+          # Never solve this KSU compatibility issue by changing the vendor
+          # arm64 seccomp ABI/header.
+          if [ -f "arch/arm64/include/asm/seccomp.h" ]; then
+            if grep -q 'LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility'               "arch/arm64/include/asm/seccomp.h"; then
+              echo "::error::Vendor arm64 seccomp header was modified for the KSU compatibility fix."
+              exit 1
+            fi
+          fi
+
+          echo "PASS: current seccomp_cache.c compile failure is fixed locally."
+          echo "PASS: previously completed SUSFS/KSU/VFS fixes are left untouched."
+          echo "PASS: vendor arm64 seccomp header remains untouched."
 
       - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
         shell: bash
