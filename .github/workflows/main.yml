@@ -742,6 +742,25 @@ jobs:
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
           grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
 
+          # pershoot/dev-susfs Kconfig permits KSU without KPROBES when
+          # the kernel exposes its SUSFS integration marker. This exact
+          # LG 4.19 build is the non-KPROBE/manual-hook path.
+          if ! grep -q '^config SUSFS$' drivers/Kconfig; then
+            python3 - <<'PYK'
+          from pathlib import Path
+          p = Path('drivers/Kconfig')
+          s = p.read_text()
+          anchor = 'source "drivers/kernelsu/Kconfig"'
+          marker = 'config SUSFS\n\tbool "SUSFS integration marker"\n\tdefault y\n\n'
+          if 'config SUSFS' not in s:
+          if anchor not in s:
+          raise SystemExit('KernelSU Kconfig source anchor not found')
+          s = s.replace(anchor, marker + anchor, 1)
+          p.write_text(s)
+          PYK
+          fi
+          grep -q '^config SUSFS$' drivers/Kconfig
+
           KSU_VERSION_RESOLVED="$(git -C KernelSU-Next describe --tags --exact-match 2>/dev/null || true)"
           KSU_COMMIT="$(git -C KernelSU-Next rev-parse HEAD)"
 
@@ -1160,6 +1179,9 @@ jobs:
             --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
             --disable CONFIG_KSU_SUSFS_SUS_SU
 
+          # Make the pershoot SUSFS dependency gate explicit.
+          scripts/config --file "$OUT_DIR/.config" --enable SUSFS
+
           # SUS_PATH compatibility:
           # SUSFS latest-kernel-4.19 writes new->user->android_kabi_reserved1
           # when CONFIG_KSU_SUSFS_SUS_PATH=y. The exact LG WORKING 4.19 source
@@ -1210,6 +1232,7 @@ jobs:
 
           cp "$OUT_DIR/.config" "$DIAG_DIR/final.config"
 
+          grep -q '^CONFIG_SUSFS=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set$' "$OUT_DIR/.config"
@@ -1370,6 +1393,7 @@ jobs:
           test -f "$OUT_DIR/.config"
           test -f "$OUT_DIR/arch/arm64/boot/Image"
 
+          grep -q '^CONFIG_SUSFS=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
@@ -1410,6 +1434,37 @@ jobs:
             echo "=== IMAGE ==="
             ls -lh "$OUT_DIR/arch/arm64/boot/Image"
           } | tee "$DIAG_DIR/final-report.txt"
+
+      - name: 12B - Prepare OrangeFox recovery ZIP artifact (prebuilt, optional)
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/orangefox-artifact"
+          # Do not fabricate a recovery image from a kernel-only build.
+          # A real OrangeFox ZIP must come from a recovery/device tree.
+          # Commit the known-good flashable package at this path if you want
+          # it included automatically in the final GitHub artifact.
+          FOX_SRC="$GITHUB_WORKSPACE/recovery/orangefox/LG-Velvet-OrangeFox-Recovery-FLASHABLE.zip"
+          if [ -f "$FOX_SRC" ]; then
+            cp -f "$FOX_SRC" "$GITHUB_WORKSPACE/orangefox-artifact/LG-Velvet-OrangeFox-Recovery-FLASHABLE.zip"
+            sha256sum "$GITHUB_WORKSPACE/orangefox-artifact/LG-Velvet-OrangeFox-Recovery-FLASHABLE.zip" | tee "$GITHUB_WORKSPACE/orangefox-artifact/OrangeFox.sha256"
+            echo "PASS: OrangeFox flashable ZIP staged for artifact upload."
+          else
+            echo "INFO: OrangeFox ZIP not present at recovery/orangefox/LG-Velvet-OrangeFox-Recovery-FLASHABLE.zip; kernel build continues."
+          fi
+
+      - name: 14 - Upload RAW kernel Image + OrangeFox ZIP (only on success)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LG-Velvet-4.19-KSU-Next-SUSFS-Kernel-and-Recovery-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ github.workspace }}/Image
+            ${{ github.workspace }}/kernel/out/.config
+            ${{ github.workspace }}/orangefox-artifact/**
 
       - name: 13 - Package diagnostics (ALWAYS)
         if: always()
@@ -1469,17 +1524,6 @@ jobs:
           rm -f "$GITHUB_WORKSPACE/LG-Velvet-diagnostics.tar.gz"
           tar -czf "$GITHUB_WORKSPACE/LG-Velvet-diagnostics.tar.gz" -C "$DIAG_DIR" .
           test -s "$GITHUB_WORKSPACE/LG-Velvet-diagnostics.tar.gz"
-
-      - name: 14 - Upload RAW kernel Image (only on success)
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: LG-Velvet-Stock-WORKING-4.19-KSU-SUSFS-NonGKI-sixteen
-          if-no-files-found: error
-          retention-days: 14
-          path: |
-            ${{ github.workspace }}/Image
-            ${{ github.workspace }}/kernel/out/.config
 
       - name: 15 - Upload COMPLETE diagnostics (ALWAYS)
         if: always()
