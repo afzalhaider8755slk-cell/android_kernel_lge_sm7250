@@ -972,6 +972,11 @@ jobs:
             exit 1
           fi
 
+          # The upstream SUSFS 4.19 patch contains one harmless trailing-space
+          # comment in fs/overlayfs/readdir.c. Remove only that whitespace so
+          # git diff --check does not reject an otherwise valid patch.
+          sed -i 's/[[:space:]]\+$//' fs/overlayfs/readdir.c
+
           git diff --check
 
           echo "PASS: SUSFS kernel-4.19 patch applied."
