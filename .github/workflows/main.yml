@@ -1479,6 +1479,60 @@ jobs:
           echo "vendor SELinux ABI modification: NOT USED"
         } > "$DIAG_DIR/10C-selinux-4.19-audit.txt"
         echo "PASS: legacy 4.19 SELinux compatibility audit completed."
+    - name: 10D - Guard KernelSU SELinux sepolicy engine for legacy 4.19
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/kernel"
+
+        POLICY=""
+        for candidate in "drivers/kernelsu/selinux/sepolicy.c" "KernelSU-Next/kernel/selinux/sepolicy.c"; do
+          if [ -f "$candidate" ]; then POLICY="$candidate"; break; fi
+        done
+        test -n "$POLICY"
+
+        # KernelSU-Next v3.3.0 sepolicy.c expects newer SELinux policydb
+        # internals. LG's 4.19 vendor policydb has an older layout.
+        # Only the KernelSU-local engine is compiled out on 4.19.
+        if ! grep -q 'LG 4.19: KernelSU sepolicy engine compatibility guard' "$POLICY"; then
+          python3 - "$POLICY" <<'PY2'
+        from pathlib import Path
+        import sys
+        p = Path(sys.argv[1])
+        s = p.read_text()
+        if 'LINUX_VERSION_CODE' not in s or '#include <linux/version.h>' not in s:
+            raise SystemExit('ERROR: sepolicy.c version guard prerequisites not found; refusing broad patch.')
+        marker = '#define KSU_SUPPORT_ADD_TYPE'
+        if marker not in s:
+            raise SystemExit('ERROR: expected KernelSU sepolicy.c marker not found; refusing broad patch.')
+        guard = marker + "\n\n/* LG 4.19: KernelSU sepolicy engine compatibility guard */\n#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)"
+        s = s.replace(marker, guard, 1)
+        s = s.rstrip() + "\n\n#else /* LG 4.19 compatibility: vendor policydb layout is incompatible */\n/* Intentionally empty: rules.c is separately guarded on legacy 4.19. */\n#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0) */\n"
+        p.write_text(s)
+        PY2
+          echo "PATCHED: $POLICY (legacy 4.19 SELinux policydb guard)"
+        fi
+
+        if git status --short -- security/selinux include/uapi/selinux.h 2>/dev/null | grep -q .; then
+          echo "::error::Vendor SELinux source/header changed; refusing to continue."
+          git status --short -- security/selinux include/uapi/selinux.h
+          exit 1
+        fi
+
+        mkdir -p "$DIAG_DIR"
+        {
+          echo "LG Velvet 4.19 KernelSU SELinux sepolicy compatibility audit"
+          echo "sepolicy.c: $POLICY"
+          if grep -q 'LG 4.19: KernelSU sepolicy engine compatibility guard' "$POLICY"; then
+            echo "legacy policydb guard: PRESENT"
+            echo "4.19 behavior: KernelSU-local sepolicy engine compiled out"
+          else
+            echo "legacy policydb guard: NOT PRESENT"
+          fi
+          echo "vendor SELinux ABI modification: NOT USED"
+          echo "reason: v3.3.0 sepolicy.c expects newer policydb structures absent on LG 4.19"
+        } > "$DIAG_DIR/10D-selinux-sepolicy-4.19-audit.txt"
+        echo "PASS: legacy 4.19 KernelSU sepolicy engine compatibility audit completed."
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
