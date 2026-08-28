@@ -1,4 +1,4 @@
-name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.3.0 (SUSFS-compatible) + SUSFS 4.19
+name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.2.0-legacy + SUSFS 4.19
 
 on:
   # Automatic run: any commit/upload to this repository triggers the build.
@@ -41,12 +41,13 @@ jobs:
       SOURCE_COMMIT: 6f4cab15a4e8f5e3400e95d17517fd8b24b37b49
       DEFCONFIG: ${{ github.event_name == 'workflow_dispatch' && inputs.defconfig || 'vendor/caymanlm_defconfig' }}
 
-      # Exact SUSFS-compatible KernelSU-Next release.
-      # v3.3.0 is the current stable KernelSU-Next release, and the
-      # SUSFS-compatible build is the pershoot dev-susfs tree at that tag.
-      KSU_VERSION: v3.3.0
-      KSU_REPO: https://github.com/pershoot/KernelSU-Next.git
-      KSU_BRANCH: dev-susfs
+      # Latest stable KernelSU-Next line compatible with this 4.19 non-GKI
+      # build while preserving the WORKING kernel's KPROBES=disabled state.
+      # v3.3.0 requires KPROBES for CONFIG_KSU; v3.2.0-legacy provides
+      # CONFIG_KSU_MANUAL_HOOK and is the compatible stable legacy tag.
+      KSU_VERSION: v3.2.0-legacy
+      KSU_REPO: https://github.com/KernelSU-Next/KernelSU-Next.git
+      KSU_BRANCH: legacy
       SUSFS_VERSION: kernel-4.19
 
       # Exact toolchain family used by the current WORKING build.
@@ -713,7 +714,7 @@ jobs:
           echo "PASS: baseline SHA256 matches $WORKING_BASELINE_CONFIG_SHA256"
           echo "PASS: KPROBES remains disabled in pristine baseline."
 
-      - name: 05 - Integrate KernelSU-Next v3.3.0 SUSFS-compatible tree
+      - name: 05 - Integrate KernelSU-Next v3.2.0-legacy SUSFS-compatible tree
         shell: bash
         run: |
           set -euo pipefail
@@ -728,11 +729,11 @@ jobs:
           # KernelSU kernel layout, which is exactly why Step 07 produced
           # "No file to patch" and large numbers of rejected hunks.
           #
-          # For KernelSU-Next + SUSFS, use the SUSFS-compatible KernelSU-Next
-          # tree directly. The v3.3.0 tag on pershoot/dev-susfs is the
-          # stable-compatible tree used by current KSU-Next + SUSFS builds.
+          # For this exact 4.19 non-GKI WORKING kernel, use the official
+          # KernelSU-Next legacy setup path. The stable v3.2.0-legacy tag
+          # supports CONFIG_KSU_MANUAL_HOOK, so KPROBES can remain disabled.
           curl --fail --location --proto '=https' -LSs \
-            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" \
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/legacy/kernel/setup.sh" \
             | bash -s "$KSU_VERSION"
 
           test -d KernelSU-Next/kernel
@@ -757,7 +758,7 @@ jobs:
           echo "KSU_COMMIT=$KSU_COMMIT" >> "$GITHUB_ENV"
 
           echo "PASS: KernelSU-Next SUSFS-compatible repository detected."
-          echo "PASS: exact stable tag = $KSU_VERSION_RESOLVED"
+          echo "PASS: exact compatible stable legacy tag = $KSU_VERSION_RESOLVED"
           echo "PASS: no legacy KernelSU SUSFS patch will be applied."
 
       - name: 06 - Download and VERIFY SUSFS kernel-4.19 latest branch
@@ -1010,6 +1011,8 @@ jobs:
           test -n "${KSU_VERSION_RESOLVED:-}"
           echo "KernelSU-Next tag: $KSU_VERSION_RESOLVED"
           echo "KernelSU-Next commit: $KSU_COMMIT"
+          test "$KSU_VERSION_RESOLVED" = "$KSU_VERSION"
+          grep -q 'CONFIG_KSU_MANUAL_HOOK' KernelSU-Next/kernel/Kconfig
 
           echo "PASS: KernelSU-Next identity verified."
       - name: 08 - Add required manual KernelSU-Next hooks WITHOUT enabling KPROBES
@@ -1150,8 +1153,11 @@ jobs:
 
           # These are the intended functional configuration additions.
           # KPROBES stays exactly as the supplied WORKING kernel: disabled.
+          # Legacy KernelSU-Next provides the manual hook mode needed for this
+          # 4.19 non-GKI tree, so enable it explicitly.
           scripts/config --file "$OUT_DIR/.config" \
             --enable CONFIG_KSU \
+            --enable CONFIG_KSU_MANUAL_HOOK \
             --enable CONFIG_KSU_SUSFS \
             --disable CONFIG_KSU_SUSFS_SUS_PATH \
             --enable CONFIG_KSU_SUSFS_SUS_KSTAT \
@@ -1196,6 +1202,8 @@ jobs:
           cp "$OUT_DIR/.config" "$DIAG_DIR/final.config"
 
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KSU_KPROBES_HOOK is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y$' "$OUT_DIR/.config"
@@ -1354,6 +1362,8 @@ jobs:
           test -f "$OUT_DIR/arch/arm64/boot/Image"
 
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KSU_KPROBES_HOOK is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
