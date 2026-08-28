@@ -748,19 +748,22 @@ jobs:
           if ! grep -q '^config SUSFS$' drivers/Kconfig; then
             python3 - <<'PYK'
           from pathlib import Path
-          p = Path('drivers/Kconfig')
+
+          p = Path("drivers/Kconfig")
           s = p.read_text()
           anchor = 'source "drivers/kernelsu/Kconfig"'
           marker = 'config SUSFS\n\tbool "SUSFS integration marker"\n\tdefault y\n\n'
-          if 'config SUSFS' not in s:
-          if anchor not in s:
-          raise SystemExit('KernelSU Kconfig source anchor not found')
-          s = s.replace(anchor, marker + anchor, 1)
-          p.write_text(s)
+
+          if "config SUSFS" not in s:
+              if anchor not in s:
+                  raise SystemExit("KernelSU Kconfig source anchor not found")
+              s = s.replace(anchor, marker + anchor, 1)
+              p.write_text(s)
           PYK
           fi
           grep -q '^config SUSFS$' drivers/Kconfig
 
+          test "$(git -C KernelSU-Next config --get remote.origin.url)" = "$KSU_REPO"
           KSU_VERSION_RESOLVED="$(git -C KernelSU-Next describe --tags --exact-match 2>/dev/null || true)"
           KSU_COMMIT="$(git -C KernelSU-Next rev-parse HEAD)"
 
