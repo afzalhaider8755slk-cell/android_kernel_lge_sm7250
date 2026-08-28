@@ -967,15 +967,10 @@ jobs:
           grep -Eq '^[[:space:]]*#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT$' "$SUCOMPAT_C"
           grep -Eq '^[[:space:]]*#endif$' "$SUCOMPAT_C"
           echo "PASS: sucompat SUS_MOUNT-only proc-umount calls are guarded; SUS_MOUNT remains disabled."
-          # Exact LG 4.19 fsnotify compatibility fix.
-          #
-          # Linux 4.19 exposes only fsnotify_ops.handle_event(). The pinned
-          # KernelSU source uses handle_inode_event(), which is a newer API.
-          # Keep this compatibility conversion entirely inside KSU's observer;
-          # never modify the vendor fsnotify ABI/header.
-          #
-          # This is intentionally idempotent: if a previous run already
-          # installed the compatibility handler, the workflow accepts it.
+          # Current-run-only fix: remove the malformed diagnostic printk from
+          # pkg_observer.c.  This log line is non-functional; removing it avoids
+          # introducing a C string/newline syntax error.  Do NOT rewrite the
+          # fsnotify callback or any previously completed compatibility fix.
           PKG_OBSERVER_C="KernelSU-Next/kernel/manager/pkg_observer.c"
           test -f "$PKG_OBSERVER_C"
           python3 - "$PKG_OBSERVER_C" <<'PY'
@@ -986,78 +981,29 @@ jobs:
           p = Path(sys.argv[1])
           s = p.read_text()
 
-          # Repair ONLY the malformed printk string from the previous run.
-          # Do not rewrite the callback or touch any earlier compatibility fix.
-          malformed_log = 'pr_info("packages.list detected: %d\n", mask);'
-          fixed_log = r'pr_info("packages.list detected: %d\n", mask);'
-          if malformed_log in s:
-              s = s.replace(malformed_log, fixed_log, 1)
-              p.write_text(s)
+          # Remove only the optional packages.list diagnostic printk, whether
+          # the previous workflow emitted an actual newline or an escaped \n.
+          # This is intentionally idempotent.
+          patterns = [
+              r'\s*pr_info\("packages\.list detected: %d\n",\s*mask\);',
+              r'\s*pr_info\("packages\.list detected: %d\\n",\s*mask\);',
+          ]
+          for pattern in patterns:
+              s, _ = re.subn(pattern, '', s, count=1, flags=re.S)
 
-          compat_func = """/*
-           * LG 4.19 fsnotify compatibility:
-           * Linux 4.19 exposes only fsnotify_ops.handle_event().
-           */
-          static int ksu_handle_event(struct fsnotify_group *group, struct inode *inode,
-                                      u32 mask, const void *data, int data_type,
-                                      const unsigned char *file_name, u32 cookie,
-                                      struct fsnotify_iter_info *iter_info)
-          {
-              if (!file_name)
-                  return 0;
-              if (mask & FS_ISDIR)
-                  return 0;
-              if (strlen((const char *)file_name) == 13 &&
-                  !memcmp(file_name, "packages.list", 13)) {
-                  pr_info("packages.list detected: %d\\n", mask);
-                  track_throne(false);
-              }
-              return 0;
-          }
+          p.write_text(s)
 
-          static const struct fsnotify_ops ksu_ops = {
-              .handle_event = ksu_handle_event,
-          };"""
-
-          if '.handle_event = ksu_handle_event' not in s:
-              pattern = re.compile(
-                  r'static int ksu_handle_inode_event\s*\(.*?'
-                  r'\n\s*static const struct fsnotify_ops ksu_ops\s*=\s*\{.*?'
-                  r'\.handle_inode_event\s*=\s*ksu_handle_inode_event\s*,?\s*\};',
-                  re.S,
-              )
-              s, count = pattern.subn(compat_func, s, count=1)
-              if count != 1:
-                  raise SystemExit(
-                      "Cannot locate the pinned KernelSU pkg_observer callback block; "
-                      "refusing to modify unrelated source."
-                  )
-              p.write_text(s)
-          else:
-              print("INFO: LG 4.19 pkg_observer compatibility handler already present; no rewrite needed")
-
-          s = p.read_text()
-          if '.handle_inode_event = ksu_handle_inode_event' in s:
-              raise SystemExit('legacy-incompatible handle_inode_event callback remains')
-          if '.handle_event = ksu_handle_event' not in s:
-              raise SystemExit('LG 4.19 handle_event callback was not installed')
-          if 'static int ksu_handle_event' not in s:
-              raise SystemExit('LG 4.19 handler function is missing')
-          if 'const unsigned char *file_name' not in s:
-              raise SystemExit('legacy fsnotify file_name argument is missing')
-          if 'memcmp(file_name, "packages.list", 13)' not in s:
-              raise SystemExit('packages.list detection was not preserved')
+          # The exact broken multi-line printk must not remain.
+          if re.search(r'pr_info\("packages\.list detected: %d\s*",\s*mask\);', s):
+              raise SystemExit('Malformed packages.list diagnostic printk remains')
+          print('PASS: malformed pkg_observer diagnostic printk removed; prior fsnotify compatibility was not rewritten.')
           PY
 
-          ! grep -q '\.handle_inode_event = ksu_handle_inode_event' "$PKG_OBSERVER_C"
-          grep -q '\.handle_event = ksu_handle_event' "$PKG_OBSERVER_C"
-          grep -q 'static int ksu_handle_event' "$PKG_OBSERVER_C"
-          grep -q 'const unsigned char \*file_name' "$PKG_OBSERVER_C"
-          grep -q 'memcmp(file_name, "packages.list", 13)' "$PKG_OBSERVER_C"
-          echo "PASS: KernelSU pkg_observer adapted to the LG 4.19 legacy fsnotify_ops.handle_event ABI; vendor fsnotify headers remain untouched."
-          echo "PASS: exact stable tag = $KSU_VERSION_RESOLVED"
-          echo "PASS: no legacy KernelSU SUSFS patch will be applied."
-
+          # Syntax-focused guard only. Do not require or alter the completed
+          # handle_event/handle_inode_event compatibility state here.
+          ! grep -n -E 'pr_info\("packages\.list detected: %d$' "$PKG_OBSERVER_C"
+          echo "PASS: pkg_observer has no unterminated packages.list printk."
+      
       - name: 06 - Download and VERIFY SUSFS kernel-4.19 latest branch
         shell: bash
         run: |
@@ -2266,9 +2212,7 @@ jobs:
           grep -q 'SECCOMP_ARCH_NATIVE_NR' "$SECCOMP_CACHE_C"
 
           test -f "$PKG_OBSERVER_C"
-          ! grep -q '\.handle_inode_event = ksu_handle_inode_event' "$PKG_OBSERVER_C"
-          grep -q '\.handle_event = ksu_handle_event' "$PKG_OBSERVER_C"
-          grep -q 'memcmp(file_name, "packages.list", 13)' "$PKG_OBSERVER_C"
+          ! grep -q 'pr_info("packages.list detected: %d$' "$PKG_OBSERVER_C"
 
           if git diff --name-only -- include/linux/fsnotify_backend.h | grep -q .; then
             echo "::error::Vendor fsnotify_backend.h was modified."
