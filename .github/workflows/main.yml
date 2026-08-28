@@ -763,10 +763,18 @@ jobs:
           fi
           grep -q '^config SUSFS$' drivers/Kconfig
 
-          test "$(git -C KernelSU-Next config --get remote.origin.url)" = "$KSU_REPO"
+          # setup.sh clones the pershoot repository using a URL without ".git".
+          # Normalize both URLs before comparing; a literal string comparison
+          # incorrectly rejects a valid clone even though the repository is correct.
+          ACTUAL_KSU_REPO="$(git -C KernelSU-Next config --get remote.origin.url | sed -E 's#/$##; s#\\.git$##')"
+          EXPECTED_KSU_REPO="${KSU_REPO%.git}"
+          test "$ACTUAL_KSU_REPO" = "$EXPECTED_KSU_REPO"
+
           KSU_VERSION_RESOLVED="$(git -C KernelSU-Next describe --tags --exact-match 2>/dev/null || true)"
           KSU_COMMIT="$(git -C KernelSU-Next rev-parse HEAD)"
 
+          # The requested stable tag must resolve exactly. Do not silently fall
+          # back to the dev branch if the tag is unavailable.
           test "$KSU_VERSION_RESOLVED" = "$KSU_VERSION"
 
           echo "ksu_repo=$KSU_REPO" | tee "$DIAG_DIR/ksu-version.txt"
