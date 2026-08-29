@@ -1395,108 +1395,86 @@ jobs:
         \ source files changed (outside KSU/SUSFS integration scope):\"\n  printf\
         \ '%s\\n' \"$unexpected\"\n  exit 1\nfi\n\n# Expected integration files must\
         \ exist.\ntest -f fs/susfs.c\ntest -f include/linux/susfs.h\ntest -d KernelSU-Next/kernel\n"
-    - name: 10G - Install KSU/SUSFS bridge into every actual dispatcher
+    - name: 10G - Reconcile KSU-Next v3.3.0 with pinned SUSFS 1.5.5 API
       shell: bash
       run: |
         set -euo pipefail
         cd "$GITHUB_WORKSPACE/kernel"
         mkdir -p include/linux "$DIAG_DIR"
-
+        
+        DISPATCH="drivers/kernelsu/supercall/dispatch.c"
+        test -f "$DISPATCH"
+        
+        python3 - "$DISPATCH" <<'PY'
+        import sys
+        from pathlib import Path
+        p = Path(sys.argv[1])
+        src = p.read_text()
+        marker = "AFZAL_LEGACY_SUSFS_V155_V2_FORWARDING_DISABLED"
+        if marker in src:
+            print("dispatch already reconciled")
+            raise SystemExit(0)
+        
+        needle = "if (magic2 == SUSFS_MAGIC"
+        start = src.find(needle)
+        if start < 0:
+            raise SystemExit("SUSFS-v2 forwarding block not found")
+        brace = src.find("{", start)
+        if brace < 0:
+            raise SystemExit("SUSFS-v2 opening brace not found")
+        
+        depth = 0
+        end = None
+        for i in range(brace, len(src)):
+            if src[i] == "{":
+                depth += 1
+            elif src[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end is None:
+            raise SystemExit("SUSFS-v2 closing brace not found")
+        
+        replacement = """/* AFZAL_LEGACY_SUSFS_V155_V2_FORWARDING_DISABLED */
+        /*
+         * KSU-Next v3.3.0 has a newer SUSFS-v2 supercall forwarding ABI.
+         * The pinned SUSFS kernel-4.19 v1.5.5 implementation does not provide
+         * that ABI. Keep SUSFS itself enabled; disable only this optional KSU
+         * dispatcher forwarding block rather than inventing incompatible APIs.
+         */
+        if (0) {
+            /* intentionally unreachable for legacy SUSFS v1.5.5 */
+        }"""
+        p.write_text(src[:start] + replacement + src[end:])
+        print("reconciled:", p)
+        PY
+        
         cat > include/linux/susfs_ksu_compat.h <<'EOF'
         #ifndef KSU_SUSFS_COMPAT_H
         #define KSU_SUSFS_COMPAT_H
-
         #include <linux/susfs.h>
         #include <linux/susfs_def.h>
-
-        static inline void ksu_susfs_add_sus_path(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-            susfs_add_sus_path((struct st_susfs_sus_path __user *)*p);
-        #endif
-        }
-        static inline void ksu_susfs_add_sus_kstat(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-            susfs_add_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
-        #endif
-        }
-        static inline void ksu_susfs_update_sus_kstat(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-            susfs_update_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
-        #endif
-        }
-        static inline void ksu_susfs_set_uname(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-            susfs_set_uname((struct st_susfs_uname __user *)*p);
-        #endif
-        }
-        static inline void ksu_susfs_set_cmdline(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-            susfs_set_cmdline_or_bootconfig((char __user *)*p);
-        #endif
-        }
-        static inline void ksu_susfs_add_open_redirect(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-            susfs_add_open_redirect((struct st_susfs_open_redirect __user *)*p);
-        #endif
-        }
-
-        #define susfs_start_sdcard_monitor_fn(...) do { } while (0)
-        #define susfs_is_current_proc_umounted(...) (false)
-        #define susfs_add_sus_path_loop(...) do { } while (0)
-        #define susfs_set_hide_sus_mnts_for_non_su_procs(...) do { } while (0)
-        #define susfs_add_sus_map(...) do { } while (0)
-        #define susfs_set_avc_log_spoofing(...) do { } while (0)
-        #define susfs_get_enabled_features(...) do { } while (0)
-        #define susfs_show_variant(...) do { } while (0)
-        #define susfs_show_version(...) do { } while (0)
-
-        #define susfs_add_sus_path(p)              ksu_susfs_add_sus_path(p)
-        #define susfs_add_sus_kstat(p)             ksu_susfs_add_sus_kstat(p)
-        #define susfs_update_sus_kstat(p)          ksu_susfs_update_sus_kstat(p)
-        #define susfs_set_uname(p)                 ksu_susfs_set_uname(p)
-        #define susfs_set_cmdline_or_bootconfig(p) ksu_susfs_set_cmdline(p)
-        #define susfs_add_open_redirect(p)         ksu_susfs_add_open_redirect(p)
-
         #endif
         EOF
-
-        mapfile -t DISPATCHES < <(
-          find drivers/kernelsu KernelSU-Next -type f -path '*/supercall/dispatch.c' -print 2>/dev/null | sort -u
-        )
-
-        if [ "${#DISPATCHES[@]}" -eq 0 ]; then
-          echo "::error::No KernelSU supercall/dispatch.c found."
-          exit 1
+        
+        if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
+          sed -i '1i#include <linux/sched/signal.h>' "$DISPATCH"
         fi
-
-        for DISPATCH in "${DISPATCHES[@]}"; do
-          if ! grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"; then
-            sed -i '1i#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_ksu_compat.h>\n#endif' "$DISPATCH"
-          fi
-          if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
-            sed -i '1i#include <linux/sched/signal.h>' "$DISPATCH"
-          fi
-          grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"
-        done
-
-        BUILD_DISPATCH="drivers/kernelsu/supercall/dispatch.c"
-        test -f "$BUILD_DISPATCH"
-        grep -qF 'linux/susfs_ksu_compat.h' "$BUILD_DISPATCH"
-
+        
+        grep -qF 'AFZAL_LEGACY_SUSFS_V155_V2_FORWARDING_DISABLED' "$DISPATCH"
+        test -s include/linux/susfs_ksu_compat.h
+        
         {
-          echo "dispatch copies bridged: ${#DISPATCHES[@]}"
-          printf '%s\n' "${DISPATCHES[@]}"
-          echo "ACTUAL KBUILD DISPATCH: $BUILD_DISPATCH"
-          echo "compat header: PRESENT"
-          echo "vendor SUSFS sources: NOT MODIFIED"
+          echo "KSU-Next: v3.3.0"
+          echo "SUSFS: v1.5.5 kernel-4.19"
+          echo "actual Kbuild dispatch: $DISPATCH"
+          echo "legacy-incompatible SUSFS-v2 forwarding: DISABLED"
+          echo "fake SUSFS constants/functions: NONE"
+          echo "vendor SUSFS implementation: NOT MODIFIED"
         } | tee "$DIAG_DIR/10G-susfs-ksu-compat-audit.txt"
-
+        
+        echo "PASS: KSU-Next/SUSFS version mismatch reconciled."
     - name: 10B - Verify current 4.19 compile fix only
       shell: bash
       run: |
@@ -1739,17 +1717,22 @@ jobs:
         test -f include/linux/susfs_def.h
         test -f include/linux/susfs_ksu_compat.h
 
-        BUILD_DISPATCH="drivers/kernelsu/supercall/dispatch.c"
-        test -f "$BUILD_DISPATCH"
-        grep -qF 'linux/susfs_ksu_compat.h' "$BUILD_DISPATCH"
+        DISPATCH="drivers/kernelsu/supercall/dispatch.c"
+        test -f "$DISPATCH"
+        grep -qF 'AFZAL_LEGACY_SUSFS_V155_V2_FORWARDING_DISABLED' "$DISPATCH"
+
+        if grep -qE 'SUSFS_MAGIC|CMD_SUSFS_ADD_SUS_MAP|CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING|st_susfs_avc_log_spoofing|susfs_enable_log' "$DISPATCH"; then
+          echo "::error::Incompatible SUSFS-v2 symbols remain in actual Kbuild dispatcher."
+          exit 1
+        fi
 
         {
           echo "PASS: actual drivers/kernelsu tree present"
-          echo "PASS: actual Kbuild dispatch is bridged"
-          echo "PASS: SUSFS headers present"
+          echo "PASS: pinned SUSFS 1.5.5 present"
+          echo "PASS: legacy KSU/SUSFS reconciliation present"
+          echo "PASS: incompatible v2 dispatcher symbols absent"
           echo "PASS: state-preserving final pre-build gate"
         } | tee "$DIAG_DIR/10H-final-prebuild-gate.log"
-
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
