@@ -1,4 +1,4 @@
-name: LG Velvet KSU SUSFS NonGKI 4.19 - Safe AutoFix v32
+name: LG Velvet KSU SUSFS NonGKI 4.19 - Safe AutoFix v33
 
 on:
   workflow_dispatch:
@@ -108,12 +108,16 @@ jobs:
           Path(sys.argv[2]).write_text("".join(out))
           PY
           ! grep -q '^diff --git a/fs/namespace.c b/fs/namespace.c' ci-diagnostics/susfs-no-namespace.patch
-          patch --dry-run -p1 -F3 --forward < ci-diagnostics/susfs-no-namespace.patch 2>&1 | tee ci-diagnostics/08-susfs-dry-run.log
-          patch -p1 -F3 --forward < ci-diagnostics/susfs-no-namespace.patch 2>&1 | tee ci-diagnostics/08-susfs-apply.log
-          if find . -type f \( -name '*.rej' -o -name '*.orig' \) | grep -q .; then
-            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print
+          patch --dry-run --no-backup-if-mismatch -p1 -F3 --forward < ci-diagnostics/susfs-no-namespace.patch 2>&1 | tee ci-diagnostics/08-susfs-dry-run.log
+          ! grep -qE 'FAILED|Reversed \(or previously applied\) patches detected' ci-diagnostics/08-susfs-dry-run.log
+          patch --no-backup-if-mismatch -p1 -F3 --forward < ci-diagnostics/susfs-no-namespace.patch 2>&1 | tee ci-diagnostics/08-susfs-apply.log
+          ! grep -qE 'FAILED|Reversed \(or previously applied\) patches detected' ci-diagnostics/08-susfs-apply.log
+          if find . -type f -name '*.rej' | grep -q .; then
+            find . -type f -name '*.rej' -print
             exit 1
           fi
+          # Fuzz is recorded but is not treated as a failure; rejected hunks are.
+          grep -E 'fuzz|FAILED|patching file' ci-diagnostics/08-susfs-apply.log > ci-diagnostics/08-susfs-summary.txt || true
           test -f fs/susfs.c
           test -f include/linux/susfs_def.h
           grep -F 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
