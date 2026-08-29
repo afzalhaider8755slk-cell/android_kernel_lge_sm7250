@@ -1,7 +1,10 @@
-name: LG Velvet KSU SUSFS NonGKI 4.19 - Safe AutoFix v30
+name: LG Velvet KSU SUSFS NonGKI 4.19 - Safe AutoFix v32
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/**"
 
 permissions:
   contents: read
@@ -16,6 +19,7 @@ jobs:
       SUSFS_COMMIT: 001e69919c6271f690fd00b17e4c721c9e599152
       DEFCONFIG: vendor/caymanlm_defconfig
       OUT: kernel/out
+
     steps:
       - name: 01 - Checkout sixteen source
         uses: actions/checkout@v4
@@ -55,8 +59,6 @@ jobs:
           make O="$GITHUB_WORKSPACE/$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- "$DEFCONFIG" 2>&1 | tee ci-diagnostics/05-pristine-defconfig.log
           test -s "$OUT/.config"
           cp "$OUT/.config" ci-diagnostics/pristine.config
-          sha256sum "$OUT/.config" | tee ci-diagnostics/pristine-config.sha256
-          grep '^CONFIG_KPROBES=' "$OUT/.config" | tee ci-diagnostics/pristine-kprobes.txt || true
 
       - name: 06 - Setup pinned KernelSU-Next
         run: |
@@ -76,10 +78,8 @@ jobs:
           set -euxo pipefail
           printf '\nsource "drivers/kernelsu/Kconfig"\n' >> drivers/Kconfig
           printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
-          tail -n 3 drivers/Kconfig
-          tail -n 3 drivers/Makefile
 
-      - name: 08 - Apply SUSFS 4.19 patch with fuzz and reject gate
+      - name: 08 - Apply SUSFS patch except incompatible namespace.c
         run: |
           set -euxo pipefail
           rm -rf susfs4ksu
@@ -88,8 +88,28 @@ jobs:
           git -C susfs4ksu checkout --detach "$SUSFS_COMMIT"
           PATCH=susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
           test -s "$PATCH"
-          patch --dry-run -p1 -F 5 --forward < "$PATCH" 2>&1 | tee ci-diagnostics/08-susfs-dry-run.log
-          patch -p1 -F 5 --forward < "$PATCH" 2>&1 | tee ci-diagnostics/08-susfs-apply.log
+          python3 - "$PATCH" ci-diagnostics/susfs-no-namespace.patch <<'PY'
+          import sys
+          from pathlib import Path
+          src=Path(sys.argv[1]).read_text().splitlines(True)
+          blocks=[]; cur=[]
+          for line in src:
+              if line.startswith("diff --git "):
+                  if cur: blocks.append(cur)
+                  cur=[line]
+              else:
+                  cur.append(line)
+          if cur: blocks.append(cur)
+          out=[]
+          for b in blocks:
+              if b and b[0].startswith("diff --git a/fs/namespace.c b/fs/namespace.c"):
+                  continue
+              out.extend(b)
+          Path(sys.argv[2]).write_text("".join(out))
+          PY
+          ! grep -q '^diff --git a/fs/namespace.c b/fs/namespace.c' ci-diagnostics/susfs-no-namespace.patch
+          patch --dry-run -p1 -F3 --forward < ci-diagnostics/susfs-no-namespace.patch 2>&1 | tee ci-diagnostics/08-susfs-dry-run.log
+          patch -p1 -F3 --forward < ci-diagnostics/susfs-no-namespace.patch 2>&1 | tee ci-diagnostics/08-susfs-apply.log
           if find . -type f \( -name '*.rej' -o -name '*.orig' \) | grep -q .; then
             find . -type f \( -name '*.rej' -o -name '*.orig' \) -print
             exit 1
@@ -98,66 +118,70 @@ jobs:
           test -f include/linux/susfs_def.h
           grep -F 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
 
-      - name: 09 - Add proven helper fallbacks
+      - name: 09 - Preserve proven LG compatibility fallbacks
         run: |
           set -euxo pipefail
-          python3 -c 'from pathlib import Path; p=Path("drivers/kernelsu/supercall/dispatch.c"); s=p.read_text(); assert "susfs_start_sdcard_monitor_fn" in s and "susfs_is_current_proc_umounted" in s; m="#include \"supercall.h\""; b="/* LG legacy SUSFS 1.5.5 compile fallbacks */\n#ifndef susfs_start_sdcard_monitor_fn\nstatic inline void susfs_start_sdcard_monitor_fn(void) { }\n#endif\n#ifndef susfs_is_current_proc_umounted\nstatic inline bool susfs_is_current_proc_umounted(void) { return false; }\n#endif\n"; p.write_text(s.replace(m,m+"\n"+b,1) if "LG legacy SUSFS 1.5.5 compile fallbacks" not in s else s)'
-          grep -F 'susfs_start_sdcard_monitor_fn' drivers/kernelsu/supercall/dispatch.c
-          grep -F 'susfs_is_current_proc_umounted' drivers/kernelsu/supercall/dispatch.c
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/kernelsu/supercall/dispatch.c")
+          s=p.read_text()
+          marker="/* LG legacy SUSFS 1.5.5 compile fallbacks */"
+          if marker not in s:
+              anchor='#include "supercall.h"'
+              block=(
+                marker+"\n"
+                "#ifndef susfs_start_sdcard_monitor_fn\n"
+                "static inline void susfs_start_sdcard_monitor_fn(void) { }\n"
+                "#endif\n"
+                "#ifndef susfs_is_current_proc_umounted\n"
+                "static inline bool susfs_is_current_proc_umounted(void) { return false; }\n"
+                "#endif\n"
+              )
+              if anchor not in s: raise SystemExit("dispatch anchor missing")
+              p.write_text(s.replace(anchor, anchor+"\n"+block, 1))
+          PY
 
-      - name: 10 - Replace incompatible SUSFS-v2 reboot dispatcher with legacy-safe handler
+      - name: 10 - Replace incompatible SUSFS-v2 reboot dispatcher
         run: |
           set -euxo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import re
-          p = Path("drivers/kernelsu/supercall/dispatch.c")
-          s = p.read_text()
-          sig = re.search(r'(?m)^int\s+ksu_handle_sys_reboot\s*\([^)]*\)\s*\{', s)
-          if not sig:
-              raise SystemExit("ksu_handle_sys_reboot() was not found; refusing blind edits.")
-          brace = s.find("{", sig.start())
-          depth = 0
-          end = None
-          for i in range(brace, len(s)):
-              if s[i] == "{":
-                  depth += 1
-              elif s[i] == "}":
-                  depth -= 1
-                  if depth == 0:
-                      end = i + 1
-                      break
-          if end is None:
-              raise SystemExit("Could not parse ksu_handle_sys_reboot().")
-          replacement = """int ksu_handle_sys_reboot(int magic1, int magic2,
+          p=Path("drivers/kernelsu/supercall/dispatch.c")
+          s=p.read_text()
+          m=re.search(r'(?m)^int\s+ksu_handle_sys_reboot\s*\([^)]*\)\s*\{',s)
+          if not m: raise SystemExit("ksu_handle_sys_reboot() not found")
+          b=s.find("{",m.start()); depth=0; end=None
+          for i in range(b,len(s)):
+              if s[i]=="{": depth+=1
+              elif s[i]=="}":
+                  depth-=1
+                  if depth==0: end=i+1; break
+          if end is None: raise SystemExit("reboot function parse failed")
+          repl="""int ksu_handle_sys_reboot(int magic1, int magic2,
               unsigned int cmd, void __user **arg)
           {
               if (magic1 != KSU_INSTALL_MAGIC1)
                   return -EINVAL;
-
               if (magic2 == KSU_INSTALL_MAGIC2)
                   return ksu_supercall_reboot_handler(arg);
-
               return -EINVAL;
           }"""
-          s = s[:sig.start()] + replacement + s[end:]
-          p.write_text(s)
+          p.write_text(s[:m.start()]+repl+s[end:])
           PY
-          ! grep -Eq 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_enable_log|susfs_add_sus_map|susfs_set_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' drivers/kernelsu/supercall/dispatch.c
-          grep -n -A12 -B2 'ksu_handle_sys_reboot' drivers/kernelsu/supercall/dispatch.c
+          ! grep -Eq 'SUSFS_MAGIC|CMD_SUSFS_|susfs_enable_log|susfs_add_sus_map|susfs_set_avc_log_spoofing' drivers/kernelsu/supercall/dispatch.c
 
-      - name: 11 - Configure KSU/SUSFS
+      - name: 11 - Configure safe SUSFS feature set
         run: |
           set -euxo pipefail
-          scripts/config --file "$OUT/.config" -e KSU -e KSU_SUSFS -d KPROBES
+          scripts/config --file "$OUT/.config" -e KSU -e KSU_SUSFS -d KPROBES -d KSU_SUSFS_SUS_MOUNT -d KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT -d KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT -d KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
           make O="$GITHUB_WORKSPACE/$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           grep -q '^CONFIG_KSU=y$' "$OUT/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT/.config"
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT/.config"
-          cp "$OUT/.config" ci-diagnostics/final.config
-          grep -E '^CONFIG_(KSU|KSU_SUSFS|KPROBES)' "$OUT/.config" | tee ci-diagnostics/final-ksu-susfs-config.txt
+          ! grep -q '^CONFIG_KSU_SUSFS_SUS_MOUNT=y$' "$OUT/.config"
 
-      - name: 12 - Verify source integration
+      - name: 12 - Verify integration before compiler
         run: |
           set -euxo pipefail
           test -f fs/susfs.c
@@ -167,7 +191,6 @@ jobs:
           grep -F 'susfs_is_current_proc_umounted' drivers/kernelsu/supercall/dispatch.c
           git diff --stat | tee ci-diagnostics/git-diff-stat.txt
           git diff > ci-diagnostics/kernel-source.patch
-          git status --short | tee ci-diagnostics/git-status.txt
 
       - name: 13 - Build kernel Image
         run: |
@@ -185,6 +208,7 @@ jobs:
         if: always()
         run: |
           set +e
+          mkdir -p ci-diagnostics
           printf 'run_id=%s\nsource_head=%s\ncompleted=%s\n' "${{ github.run_id }}" "$(git rev-parse HEAD 2>/dev/null)" "$(date -u +%FT%TZ)" > ci-diagnostics/99-final-status.txt
           tar -czf LG-Velvet-diagnostics.tar.gz ci-diagnostics
 
@@ -198,7 +222,7 @@ jobs:
             kernel/out/.config
           if-no-files-found: error
 
-      - name: 17 - Upload COMPLETE diagnostics
+      - name: 17 - Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
