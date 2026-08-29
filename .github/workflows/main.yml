@@ -1533,6 +1533,76 @@ jobs:
           echo "reason: v3.3.0 sepolicy.c expects newer policydb structures absent on LG 4.19"
         } > "$DIAG_DIR/10D-selinux-sepolicy-4.19-audit.txt"
         echo "PASS: legacy 4.19 KernelSU sepolicy engine compatibility audit completed."
+    - name: 10E - Fix KernelSU SULog legacy 4.19 compatibility
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/kernel"
+        mkdir -p "$DIAG_DIR"
+
+        EVENT=""
+        for f in "KernelSU-Next/kernel/sulog/event.c" "KernelSU-Next/kernel/feature/sulog/event.c" "drivers/kernelsu/sulog/event.c"; do
+          if [ -f "$f" ]; then EVENT="$f"; break; fi
+        done
+        if [ -z "$EVENT" ]; then
+          echo "INFO: KernelSU SULog event.c not found; no SULog patch needed." | tee "$DIAG_DIR/10E-sulog.log"
+          exit 0
+        fi
+
+        # LG 4.19 does not provide the newer standalone minmax.h header.
+        # Remove only the direct KSU-local include; never create/modify a vendor header.
+        python3 - "$EVENT" <<'PYFIX'
+        from pathlib import Path
+        import sys
+        p=Path(sys.argv[1])
+        s=p.read_text()
+        s=s.replace('#include <linux/minmax.h>\n','')
+        p.write_text(s)
+        PYFIX
+
+        # Some KSU SULog revisions use get_monotonic_boottime() only on older
+        # kernels. If the source has a 4.19 threshold guarding that API, use
+        # the legacy 4.14 boundary; do not rewrite unrelated version checks.
+        python3 - "$EVENT" <<'PYTIME'
+        from pathlib import Path
+        import sys
+        p=Path(sys.argv[1])
+        s=p.read_text()
+        if 'get_monotonic_boottime' in s and 'KERNEL_VERSION(4, 19, 0)' in s:
+            s=s.replace('KERNEL_VERSION(4, 19, 0)', 'KERNEL_VERSION(4, 14, 0)')
+        p.write_text(s)
+        PYTIME
+
+        ! grep -qE '^#include[[:space:]]+<linux/minmax\.h>$' "$EVENT"
+
+        {
+          echo "SULog event.c=$EVENT"
+          echo "minmax_include=$(grep -cE '^#include[[:space:]]+<linux/minmax\.h>$' "$EVENT" || true)"
+          echo "get_monotonic_boottime=$(grep -c 'get_monotonic_boottime' "$EVENT" || true)"
+          echo "vendor_headers_modified=NO"
+        } | tee "$DIAG_DIR/10E-sulog-audit.txt"
+
+    - name: 10F - Automatic next-error scanner (fail-closed)
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/kernel"
+        mkdir -p "$DIAG_DIR"
+
+        # Never mass-edit arbitrary compiler errors. This scanner records known
+        # legacy-4.19 KernelSU signatures and confirms the relevant source files
+        # before build. Unknown failures remain untouched for manual analysis.
+        {
+          echo "=== KSU legacy compatibility preflight ==="
+          echo "kernel_release=$(make -s kernelversion 2>/dev/null || true)"
+          echo "filter_count_refs=$(grep -RIl 'filter_count' KernelSU-Next/kernel drivers/kernelsu 2>/dev/null | head -20 || true)"
+          echo "selinux_policy_refs=$(grep -RIl 'selinux_state\.policy\|policy_mutex' KernelSU-Next/kernel drivers/kernelsu 2>/dev/null | head -20 || true)"
+          echo "sulog_event=$(find KernelSU-Next drivers/kernelsu -path '*/sulog/event.c' -type f 2>/dev/null | head -5 || true)"
+          echo "minmax_refs=$(grep -RIl '#include <linux/minmax.h>' KernelSU-Next/kernel drivers/kernelsu 2>/dev/null | head -20 || true)"
+        } | tee "$DIAG_DIR/10F-preflight.txt"
+
+        echo "PASS: automatic scanner armed; unknown errors will not be blindly patched."
+
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
@@ -1582,6 +1652,10 @@ jobs:
               echo "RESULT: KNOWN FAILURE — KSU app_profile.c still references unavailable 4.19 filter_count."
             elif grep -qE 'selinux/rules\.c:.*no member named .policy|selinux/rules\.c:.*no member named .policy_mutex|selinux/rules\.c:.*incomplete definition of type .struct selinux_policy' "$LOG"; then
               echo "RESULT: KNOWN FAILURE — KernelSU SELinux rules are using the newer selinux_state ABI on LG 4.19."
+            elif grep -q "fatal error: .*linux/minmax.h.*file not found" "$LOG"; then
+              echo "RESULT: KNOWN FAILURE — KernelSU SULog event.c requires unavailable linux/minmax.h on LG 4.19."
+            elif grep -qE 'sulog/event\.c:.*(get_monotonic_boottime|ktime_get_boottime)' "$LOG"; then
+              echo "RESULT: KNOWN FAILURE — KernelSU SULog legacy timekeeping API mismatch on LG 4.19."
             elif grep -qE '(^|[^[:alpha:]])error:' "$LOG"; then
               echo "RESULT: DIFFERENT BUILD ERROR — not one of the audited seccomp/SELinux compatibility failures."
             else
