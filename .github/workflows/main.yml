@@ -1,4 +1,4 @@
-name: LG Velvet KSU SUSFS NonGKI 4.19 - Safe AutoFix
+name: LG Velvet KSU SUSFS NonGKI 4.19 - Safe AutoFix v27
 
 on:
   workflow_dispatch:
@@ -13,34 +13,34 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       SOURCE_BRANCH: sixteen
-      SOURCE_COMMIT: 6f4cab15a4e8f5e3400e95d17517fd8b24b37b49
       DEFCONFIG: vendor/caymanlm_defconfig
       KSU_VERSION: v3.3.0
       KSU_REF: 26fded805206ae4542f4745e09cc465412994492
       KSU_REPO: https://github.com/pershoot/KernelSU-Next.git
-      KSU_BRANCH: dev-susfs
       SUSFS_VERSION: kernel-4.19
       SUSFS_REF: 001e69919c6271f690fd00b17e4c721c9e599152
-      BASELINE_SHA256: 8b931841bcfcfad0b8ed596fbc156e67a6da8f32f226753ffabc89c907accffa
+      OVERLAY_REPO: https://github.com/afzalhaider8755slk-cell/vendor_hardware_overlay.git
+      OVERLAY_BRANCH: pie
       DIAG_DIR: ${{ github.workspace }}/ci-diagnostics
       OUT_DIR: ${{ github.workspace }}/kernel/out
 
     steps:
-      - name: 01 - Checkout exact source
+      - name: 01 - Checkout current sixteen source
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.SOURCE_COMMIT }}
+          ref: ${{ env.SOURCE_BRANCH }}
           fetch-depth: 1
 
-      - name: 02 - Install build dependencies
+      - name: 02 - Install build dependencies and ARM64 toolchain
         shell: bash
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y bc bison flex build-essential ccache libssl-dev \
-            libelf-dev libdw-dev device-tree-compiler python3 python3-pip git rsync zip unzip
+          sudo apt-get install -y bc bison flex build-essential ccache libssl-dev libelf-dev libdw-dev \
+            device-tree-compiler python3 python3-pip git rsync zip unzip \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu clang lld llvm
 
-      - name: 03 - Prepare diagnostics
+      - name: 03 - Prepare diagnostics and prove source state
         shell: bash
         run: |
           set -uo pipefail
@@ -49,91 +49,124 @@ jobs:
             echo "=== WORKFLOW DIAGNOSTIC CONTEXT ==="
             date -u +%FT%TZ
             echo "run_id=${{ github.run_id }}"
-            echo "sha=${{ github.sha }}"
-            echo "source_commit=$SOURCE_COMMIT"
+            echo "workflow_sha=${{ github.sha }}"
+            echo "source_branch=$SOURCE_BRANCH"
+            echo "source_head=$(git rev-parse HEAD)"
             echo "ksu=$KSU_VERSION $KSU_REF"
             echo "susfs=$SUSFS_VERSION $SUSFS_REF"
-          } > "$DIAG_DIR/00-workflow-context.txt"
+            echo "overlay=$OVERLAY_REPO ($OVERLAY_BRANCH)"
+          } | tee "$DIAG_DIR/00-workflow-context.txt"
+          git status --short | tee "$DIAG_DIR/00-git-status.txt"
+          git rev-parse HEAD > "$DIAG_DIR/source-head.txt"
 
-      - name: 04 - Load and verify pristine baseline config
+      - name: 04 - Restore missing kernel tool-version helper BEFORE defconfig
         shell: bash
         run: |
           set -euxo pipefail
-          test -f "$GITHUB_WORKSPACE/arch/arm64/configs/$DEFCONFIG"
-          make O="$OUT_DIR" ARCH=arm64 "$DEFCONFIG"
-          sha256sum "$OUT_DIR/.config" | tee "$DIAG_DIR/baseline-config.sha256"
-          test "$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')" = "$BASELINE_SHA256"
+          f="$GITHUB_WORKSPACE/scripts/min-tool-version.sh"
+          if [ ! -f "$f" ]; then
+            cat > "$f" <<'EOF'
+          #!/bin/sh
+          # SPDX-License-Identifier: GPL-2.0-only
+          set -e
+          if [ $# != 1 ]; then
+            echo "Usage: $0 toolname" >&2
+            exit 1
+          fi
+          case "$1" in
+            binutils) echo 2.23.0 ;;
+            gcc) echo 5.1.0 ;;
+            icc) echo 16.0.3 ;;
+            llvm) echo 10.0.1 ;;
+            *) echo "$1: unknown tool" >&2; exit 1 ;;
+          esac
+          EOF
+          fi
+          chmod +x "$f"
+          test -x "$f"
+          "$f" binutils
+          "$f" gcc
+          "$f" llvm
+          ls -l "$f" | tee "$DIAG_DIR/min-tool-version.txt"
+
+      - name: 05 - Validate assembler path before kernel integration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -x scripts/as-version.sh
+          test -x scripts/min-tool-version.sh
+          command -v as
+          as --version | head -n 3
+          command -v aarch64-linux-gnu-as
+          aarch64-linux-gnu-as --version | head -n 3
+          clang --version | head -n 3
+          ./scripts/as-version.sh as | tee "$DIAG_DIR/as-version-check.txt"
+
+      - name: 06 - Generate and preserve pristine baseline config
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          test -f "arch/arm64/configs/$DEFCONFIG"
+          make O="$OUT_DIR" ARCH=arm64 "$DEFCONFIG" 2>&1 | tee "$DIAG_DIR/06-pristine-defconfig.log"
+          test -s "$OUT_DIR/.config"
+          sha256sum "$OUT_DIR/.config" | tee "$DIAG_DIR/pristine-config.sha256"
+          cp "$OUT_DIR/.config" "$DIAG_DIR/pristine.config"
           grep -Eq '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
 
-      - name: 05 - Setup KernelSU-Next and SUSFS legacy tree
+      - name: 07 - Setup KernelSU-Next pinned tree
         shell: bash
         run: |
           set -euxo pipefail
           rm -rf KernelSU-Next
-          git clone "$KSU_REPO" KernelSU-Next
+          git clone --filter=blob:none "$KSU_REPO" KernelSU-Next
           cd KernelSU-Next
           git fetch --depth=1 origin "$KSU_REF"
           git checkout --detach "$KSU_REF"
           cd "$GITHUB_WORKSPACE"
           test -f KernelSU-Next/kernel/Makefile
           test -f KernelSU-Next/kernel/Kconfig
-
           rm -rf drivers/kernelsu
           mkdir -p drivers
           ln -s "$GITHUB_WORKSPACE/KernelSU-Next/kernel" "$GITHUB_WORKSPACE/drivers/kernelsu"
+          git -C KernelSU-Next rev-parse HEAD | tee "$DIAG_DIR/07-ksu-head.txt"
 
-          # Do not copy or invent a SUSFS-v2 dispatcher. This build uses the
-          # pinned legacy kernel-4.19 SUSFS ABI and KernelSU-Next integration.
-          grep -Rqs 'SUSFS_MAGIC\|CMD_SUSFS_' drivers/kernelsu/supercall/dispatch.c && {
-            echo 'ERROR: incompatible SUSFS-v2 dispatcher detected before build.'
-            exit 1
-          } || true
-
-      - name: 06 - Preserve required LG 4.19 compatibility fixes
+      - name: 08 - Preserve LG 4.19 compatibility fixes
         shell: bash
         run: |
           set -euxo pipefail
-          # Apply only idempotent, source-proven compatibility edits.
-          # 1) sulog.h must directly include linux/init.h.
           f=drivers/kernelsu/sulog.h
           if [ -f "$f" ] && ! grep -q '^#include <linux/init.h>$' "$f"; then
             sed -i '1i#include <linux/init.h>' "$f"
           fi
-
-          # 2) 4.19 has no linux/minmax.h in the affected KernelSU compatibility file.
           f=drivers/kernelsu/sucompat.c
           if [ -f "$f" ]; then
             sed -i '/^[[:space:]]*#include[[:space:]]*[<"]linux\/minmax\.h[>"][[:space:]]*$/d' "$f"
           fi
-
-          # 3) Ensure seccomp compatibility alias exists only when missing.
           f=drivers/kernelsu/seccomp_cache.c
           if [ -f "$f" ] && ! grep -q 'SECCOMP_ARCH_NATIVE_NR' "$f"; then
             sed -i '1i#ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR AUDIT_ARCH_AARCH64\n#endif' "$f"
           fi
 
-      - name: 07 - Install narrow SUSFS legacy helper fallbacks
+      - name: 09 - Install only the two proven SUSFS helper fallbacks
         shell: bash
         run: |
           set -euxo pipefail
           f=drivers/kernelsu/supercall/dispatch.c
           test -f "$f"
-
-          # The pinned SUSFS 1.5.5 4.19 tree does not declare these optional
-          # helpers. Provide compile-safe fallbacks, but never fake SUSFS-v2 APIs.
           if ! grep -q 'static inline void susfs_start_sdcard_monitor_fn' "$f"; then
             sed -i '1i#ifndef susfs_start_sdcard_monitor_fn\nstatic inline void susfs_start_sdcard_monitor_fn(void) {}\n#endif\n#ifndef susfs_is_current_proc_umounted\nstatic inline bool susfs_is_current_proc_umounted(void) { return false; }\n#endif' "$f"
           fi
+          grep -q 'susfs_start_sdcard_monitor_fn' "$f"
+          grep -q 'susfs_is_current_proc_umounted' "$f"
 
-      - name: 08 - Fix incompatible SUSFS-v2 reboot dispatcher
+      - name: 10 - Replace incompatible SUSFS-v2 reboot dispatcher
         shell: bash
         run: |
           set -euxo pipefail
           f=drivers/kernelsu/supercall/dispatch.c
           test -f "$f"
-
-          # Replace ONLY the incompatible SUSFS-v2 reboot forwarding function.
-          # This keeps the pinned legacy SUSFS 1.5.5 ABI and normal KSU flow.
           python3 - "$f" <<'PYFIX'
           import sys
           from pathlib import Path
@@ -157,53 +190,94 @@ jobs:
                       break
           if end is None:
               raise SystemExit('function closing brace not found')
-          replacement = "int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)\n{\n    if (magic1 != KSU_INSTALL_MAGIC1)\n        return -EINVAL;\n\n    if (magic2 == KSU_INSTALL_MAGIC2)\n        return ksu_supercall_reboot_handler(arg);\n\n    return ksu_handle_toolkit_reboot(magic2, cmd, *arg);\n}"
-          s = s[:pos] + replacement + s[end:]
-          p.write_text(s)
+          replacement = '''int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
+          {
+              if (magic1 != KSU_INSTALL_MAGIC1)
+                  return -EINVAL;
+
+              if (magic2 == KSU_INSTALL_MAGIC2)
+                  return ksu_supercall_reboot_handler(arg);
+
+              return ksu_handle_toolkit_reboot(magic2, cmd, *arg);
+          }'''
+          p.write_text(s[:pos] + replacement + s[end:])
           PYFIX
-
-          grep -q 'int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user \*\*arg)' "$f"
-          ! grep -Eq 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' "$f"
+          grep -q 'ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user \\*\\*arg)' "$f"
           grep -q 'ksu_supercall_reboot_handler(arg)' "$f"
-          grep -q 'ksu_handle_toolkit_reboot(magic2, cmd, \*arg)' "$f"
+          grep -q 'ksu_handle_toolkit_reboot(magic2, cmd, \\*arg)' "$f"
+          if grep -Eq 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' "$f"; then
+            echo 'ERROR: incompatible SUSFS-v2 dispatcher tokens remain'
+            exit 1
+          fi
 
-      - name: 09 - Fix workflow integration Kconfig/Makefile idempotently
+      - name: 11 - Integrate KernelSU deterministically
         shell: bash
         run: |
           set -euxo pipefail
-          # The previous run reached this state but never compiled. Make the
-          # integration deterministic and avoid duplicate entries.
-          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || \
-            sed -i '/^endmenu$/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          grep -q '^obj-$(CONFIG_KSU) += kernelsu/$' drivers/Makefile || \
-            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || sed -i '/^endmenu$/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q '^obj-$(CONFIG_KSU) += kernelsu/$' drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          git diff --stat | tee "$DIAG_DIR/11-patch-stat.txt"
+          git diff --name-only | tee "$DIAG_DIR/11-patch-files.txt"
+          test -n "$(git diff --name-only)"
 
-      - name: 10 - Final pre-build audit (never abort on missing optional text)
+      - name: 12 - Verify source patches actually landed
+        shell: bash
+        run: |
+          set -euxo pipefail
+          f=drivers/kernelsu/supercall/dispatch.c
+          test -f "$f"
+          grep -q 'susfs_start_sdcard_monitor_fn' "$f"
+          grep -q 'susfs_is_current_proc_umounted' "$f"
+          grep -q 'ksu_supercall_reboot_handler(arg)' "$f"
+          grep -q 'ksu_handle_toolkit_reboot(magic2, cmd, *arg)' "$f"
+          if grep -Eq 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' "$f"; then
+            echo 'ERROR: SUSFS-v2 ABI still present'
+            exit 1
+          fi
+          grep -n 'susfs_start_sdcard_monitor_fn\|susfs_is_current_proc_umounted\|ksu_handle_sys_reboot\|ksu_supercall_reboot_handler\|ksu_handle_toolkit_reboot' "$f" | tee "$DIAG_DIR/12-dispatch-verification.txt"
+
+      - name: 13 - Checkout vendor hardware overlay for provenance only
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf vendor_hardware_overlay
+          git clone --depth=1 "$OVERLAY_REPO" vendor_hardware_overlay
+          git -C vendor_hardware_overlay rev-parse HEAD | tee "$DIAG_DIR/13-overlay-head.txt"
+          test -d vendor_hardware_overlay/LG
+          echo 'Overlay is provenance-only; no overlay files are injected into the kernel tree.'
+
+      - name: 14 - Restore pristine config and final pre-build audit
         shell: bash
         run: |
           set -uo pipefail
+          cp "$DIAG_DIR/pristine.config" "$OUT_DIR/.config"
           f=drivers/kernelsu/supercall/dispatch.c
           {
             echo '=== FINAL PRE-BUILD AUDIT ==='
+            echo "source_head=$(git rev-parse HEAD)"
             echo "dispatch=$f"
-            grep -n 'susfs_start_sdcard_monitor_fn\|susfs_is_current_proc_umounted' "$f" || true
+            test -x scripts/min-tool-version.sh || exit 1
+            test -s "$OUT_DIR/.config" || exit 1
             if grep -Eq 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' "$f"; then
-              echo 'FAIL: incompatible SUSFS-v2 token present'
+              echo 'FAIL: incompatible SUSFS-v2 ABI token present'
               exit 1
             fi
-            echo 'PASS: no incompatible SUSFS-v2 dispatcher ABI tokens'
-            echo 'PASS: compiler may now be invoked'
-          } 2>&1 | tee "$DIAG_DIR/10-final-prebuild-audit.log"
+            echo 'PASS: missing tool helper fixed'
+            echo 'PASS: pristine config preserved'
+            echo 'PASS: legacy SUSFS dispatcher guard passed'
+          } 2>&1 | tee "$DIAG_DIR/14-final-prebuild-audit.log"
 
-      - name: 11 - Build kernel (real compiler gate)
+      - name: 15 - Build kernel with explicit ARM64 LLVM toolchain
         shell: bash
         run: |
           set -o pipefail
-          mkdir -p "$OUT_DIR"
-          make O="$OUT_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" "$DEFCONFIG" 2>&1 | tee "$DIAG_DIR/11-defconfig.log"
-          make O="$OUT_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" 2>&1 | tee "$DIAG_DIR/11-build.log"
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make O="$OUT_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" 2>&1 | tee "$DIAG_DIR/15-build.log"
 
-      - name: 12 - Verify output
+      - name: 16 - Verify kernel output
         if: success()
         shell: bash
         run: |
@@ -211,42 +285,39 @@ jobs:
           test -s "$OUT_DIR/arch/arm64/boot/Image"
           cp "$OUT_DIR/arch/arm64/boot/Image" "$GITHUB_WORKSPACE/Image"
           sha256sum "$GITHUB_WORKSPACE/Image" | tee "$DIAG_DIR/Image.sha256"
+          ls -lh "$GITHUB_WORKSPACE/Image"
 
-      - name: 13 - Package diagnostics ALWAYS
+      - name: 17 - Package diagnostics ALWAYS
         if: always()
         shell: bash
         run: |
           set +e
           mkdir -p "$DIAG_DIR"
           {
+            echo '=== FINAL WORKFLOW STATUS ==='
+            date -u +%FT%TZ
             echo "run_id=${{ github.run_id }}"
-            echo "source_commit=$SOURCE_COMMIT"
-            echo "ksu_ref=$KSU_REF"
-            echo "susfs_ref=$SUSFS_REF"
-          } > "$DIAG_DIR/build-metadata.txt"
-          [ -f "$OUT_DIR/.config" ] && cp "$OUT_DIR/.config" "$DIAG_DIR/final-or-last.config"
-          [ -d "$GITHUB_WORKSPACE/.git" ] && {
-            git status --short > "$DIAG_DIR/git-status.txt" 2>&1 || true
-            git diff --stat > "$DIAG_DIR/git-diff-stat.txt" 2>&1 || true
-            git diff --name-only > "$DIAG_DIR/git-diff-files.txt" 2>&1 || true
-            git diff --binary > "$DIAG_DIR/kernel-source.patch" 2>&1 || true
-          }
-          echo "Diagnostics generated at $(date -u +%FT%TZ)" > "$DIAG_DIR/ARTIFACT-READY.txt"
+            echo "source_head=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+            git diff --stat 2>/dev/null || true
+            git diff --name-only 2>/dev/null || true
+          } > "$DIAG_DIR/99-final-status.txt"
           cd "$GITHUB_WORKSPACE"
-          tar -czf LG-Velvet-diagnostics.tar.gz -C "$DIAG_DIR" . || true
+          rm -f LG-Velvet-diagnostics.tar.gz
+          tar -czf LG-Velvet-diagnostics.tar.gz -C "$DIAG_DIR" .
+          test -s LG-Velvet-diagnostics.tar.gz
 
-      - name: 14 - Upload kernel Image
+      - name: 18 - Upload kernel Image
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: LG-Velvet-Stock-WORKING-4.19-KSU-SUSFS-NonGKI-sixteen
+          name: LG-Velvet-KSU-SUSFS-NonGKI-sixteen-Image
           if-no-files-found: error
           retention-days: 14
           path: |
             ${{ github.workspace }}/Image
             ${{ github.workspace }}/kernel/out/.config
 
-      - name: 15 - Upload COMPLETE diagnostics
+      - name: 19 - Upload COMPLETE diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
