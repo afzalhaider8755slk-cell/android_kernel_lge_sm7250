@@ -1,4 +1,4 @@
-name: "LG Velvet G900EMW • Android 16 QPR2 • Kernel + Vendor • CIP135 FIX v9"
+name: "LG Velvet G900EMW • Android 16 QPR2 • Kernel + Vendor • CIP135 FIX v10"
 
 on:
   workflow_dispatch:
@@ -38,8 +38,8 @@ env:
   KERNEL_EXPECTED: "4.19.325"
   CIP_TAG: "v4.19.325-cip135"
   LINEAGE_BRANCH: lineage-23.2
-  DEVICE_REF: lineage-22.2
-  VENDOR_REF: lineage-22.2
+  DEVICE_REF: lineage-23.2
+  VENDOR_REF: lineage-23.2
   COMMON_DEVICE_REF: lineage-23.2
   COMMON_VENDOR_REF: lineage-23.2
   SUKISU_REF: "4.1.3"
@@ -89,7 +89,7 @@ jobs:
             echo "branch=${KERNEL_BRANCH}"
             echo "commit=$(git rev-parse HEAD)"
             echo "kernel_expected=${KERNEL_EXPECTED}-cip135"
-            echo "target=Android 16 QPR2 GSI"
+            echo "target=Android 16 QPR2 GSI (android-16.0.0_r4)"
             echo "features=SukiSU-Ultra+KPM+SUSFS+WALT+SchedTune+ZRAM+LTO"
             echo "hardware=Fingerprint+Vibration+DualSIM+Audio+VoWiFi"
           } | tee ci-diagnostics/kernel/00-context.txt
@@ -141,11 +141,16 @@ jobs:
           git config user.name "CI CIP integrator"
           git config user.email "ci@example.invalid"
           git remote add cip-upstream https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-          git fetch --filter=blob:none --no-tags cip-upstream "refs/tags/${CIP_TAG}"
+          # Do NOT use --filter=blob:none here. The previous run proved that the
+          # promisor/partial clone could lose a blob needed by merge/diff:
+          # "not our ref ... could not fetch ... from promisor remote".
+          # CIP integration is correctness-critical, so fetch complete Git objects.
+          git fetch --no-tags cip-upstream "refs/tags/${CIP_TAG}"
 
           CIP_SHA="$(git rev-parse "FETCH_HEAD")"
           echo "cip_tag=${CIP_TAG}" | tee ci-diagnostics/kernel/04-cip-resolved.txt
           echo "cip_commit=${CIP_SHA}" | tee -a ci-diagnostics/kernel/04-cip-resolved.txt
+          git fsck --full --no-dangling 2>&1 | tee ci-diagnostics/kernel/04-cip-fsck.txt
 
           # A real merge must have a shared Linux history. Refuse an unrelated
           # history rather than inventing a synthetic merge that could replace
@@ -252,7 +257,21 @@ jobs:
           fi
           exit "$rc"
 
-      - name: "K09 • Apply finalized feature set and verify every required symbol"
+      - name: "K09 • Set human-facing kernel identity to LM-G900 (keep caymanlm hardware identity)"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$PWD/kernel/out"
+          test -s "$OUT/.config"
+          # Keep the hardware/product codename caymanlm; only the human-facing
+          # kernel release identity is normalized to the user's global LM-G900.
+          scripts/config --file "$OUT/.config" --set-str CONFIG_LOCALVERSION "-LM-G900"
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- olddefconfig 2>&1 | tee ci-diagnostics/kernel/08-model-olddefconfig.log
+          grep -q '^CONFIG_LOCALVERSION="-LM-G900"$' "$OUT/.config"
+          grep '^CONFIG_LOCALVERSION=' "$OUT/.config" | tee ci-diagnostics/kernel/08-kernel-model.txt
+
+      - name: "K10 • Apply finalized feature set and verify every required symbol"
         shell: bash
         run: |
           set -euxo pipefail
@@ -297,7 +316,7 @@ jobs:
           test "$(grep -c '^CONFIG_ZSMALLOC=y$' "$OUT/.config")" -eq 1
           test "$(grep -c '^CONFIG_LTO_CLANG_THIN=y$' "$OUT/.config")" -eq 1
 
-      - name: "K10 • Immutable G900EMW / regional source audit"
+      - name: "K11 • Immutable G900EMW / regional source audit"
         shell: bash
         run: |
           set -euxo pipefail
@@ -311,7 +330,7 @@ jobs:
           } | tee ci-diagnostics/kernel/09-source-audit.txt
           git diff --check
 
-      - name: "K11 • Build ARM64 kernel and modules"
+      - name: "K12 • Build ARM64 kernel and modules"
         shell: bash
         run: |
           set -o pipefail
@@ -320,17 +339,17 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             -j"$(nproc --all)" Image.gz-dtb modules 2>&1 | tee ci-diagnostics/kernel/10-build.log
 
-      - name: "K12 • Verify kernel image, modules and release string"
+      - name: "K13 • Verify kernel image, modules and release string"
         shell: bash
         run: |
           set -euxo pipefail
           OUT="$PWD/kernel/out"
           test -s "$OUT/arch/arm64/boot/Image.gz-dtb" || test -s "$OUT/arch/arm64/boot/Image"
-          make -s O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- kernelrelease | tee ci-diagnostics/kernel/11-kernelrelease.txt
-          grep -q '4.19.325-cip135' ci-diagnostics/kernel/11-kernelrelease.txt
-          find "$OUT" -type f -name '*.ko' -print0 | sort -z | xargs -0 -r sha256sum | tee ci-diagnostics/kernel/11-modules.sha256
+          make -s O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- kernelrelease | tee ci-diagnostics/kernel/13-kernelrelease.txt
+          grep -q '4.19.325-LM-G900-cip135' ci-diagnostics/kernel/13-kernelrelease.txt
+          find "$OUT" -type f -name '*.ko' -print0 | sort -z | xargs -0 -r sha256sum | tee ci-diagnostics/kernel/13-modules.sha256
 
-      - name: "K13 • Package OrangeFox/AnyKernel3 flashable ZIP"
+      - name: "K14 • Package OrangeFox/AnyKernel3 flashable ZIP"
         shell: bash
         run: |
           set -euxo pipefail
@@ -340,7 +359,7 @@ jobs:
           git fetch --depth=1 origin "$ANYKERNEL3_REF"
           git checkout --detach "$ANYKERNEL3_REF"
           resolved=$(git rev-parse HEAD)
-          echo "$resolved" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-anykernel3-resolved.txt"
+          echo "$resolved" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/14-anykernel3-resolved.txt"
           rm -rf .git
           if [ -s "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz-dtb" ]; then
             cp "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz-dtb" .
@@ -351,24 +370,24 @@ jobs:
           fi
           cat > anykernel.sh <<'AK3'
           properties() {
-            kernel.string=LG Velvet G900EMW • Android 16 QPR2 • 4.19.325-cip135 • SukiSU-Ultra 4.1.3 • SUSFS 1.5.5 • KPM
+            kernel.string=LG Velvet LM-G900 • Android 16 QPR2 • 4.19.325-LM-G900-cip135 • SukiSU-Ultra 4.1.3 • SUSFS 1.5.5 • KPM
             do.devicecheck=0
             do.modules=0
             do.systemless=0
             do.cleanup=1
             do.cleanuponabort=0
-            device.name1=G900EMW
+            device.name1=LM-G900
           }
           block=auto
           is_slot_device=auto
           ramdisk_compression=auto
           patch_vbmeta_flag=auto
           AK3
-          zip -r9 "$GITHUB_WORKSPACE/LG-Velvet-G900EMW-Android16QPR2-cip135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip" . -x '.git/*' '*.md' 'README*' > "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-zip.log"
-          sha256sum "$GITHUB_WORKSPACE/LG-Velvet-G900EMW-Android16QPR2-cip135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-zip.sha256"
-          echo "image=$image" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-package.txt"
+          zip -r9 "$GITHUB_WORKSPACE/LG-Velvet-LM-G900-Android16QPR2-cip135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip" . -x '.git/*' '*.md' 'README*' > "$GITHUB_WORKSPACE/ci-diagnostics/kernel/14-zip.log"
+          sha256sum "$GITHUB_WORKSPACE/LG-Velvet-LM-G900-Android16QPR2-cip135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/14-zip.sha256"
+          echo "image=$image" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/14-package.txt"
 
-      - name: "K14 • Upload kernel result + diagnostics ALWAYS"
+      - name: "K15 • Upload kernel result + diagnostics ALWAYS"
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -377,7 +396,7 @@ jobs:
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/arch/arm64/boot/Image
             kernel/out/**/*.ko
-            LG-Velvet-G900EMW-Android16QPR2-cip135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip
+            LG-Velvet-LM-G900-Android16QPR2-cip135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip
             ci-diagnostics/kernel/**
           if-no-files-found: warn
           retention-days: 30
@@ -423,7 +442,7 @@ jobs:
           repo version | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/01-repo-version.txt"
           test -f .repo/manifest.xml
 
-      - name: "V04 • Add G900EMW device/common/vendor trees with explicit refs"
+      - name: "V04 • Add G900EMW device/common/vendor trees with verified Android 16 refs"
         shell: bash
         run: |
           set -euxo pipefail
@@ -432,21 +451,17 @@ jobs:
           mkdir -p .repo/local_manifests
           cat > .repo/local_manifests/g900emw.xml <<EOF
           <manifest>
-            <project name="lge-qcom-dev/android_device_lge_caymanlm" path="device/lge/caymanlm" remote="github-lge" revision="${DEVICE_REF}" />
-            <project name="Sparxikle/android_device_lge_sm7250-common" path="device/lge/sm7250-common" remote="github-lge" revision="${COMMON_DEVICE_REF}" />
-            <project name="lge-qcom-dev/proprietary_vendor_lge_caymanlm" path="vendor/lge/caymanlm" remote="github-lge" revision="${VENDOR_REF}" />
-            <project name="Sparxikle/proprietary_vendor_lge_sm7250-common" path="vendor/lge/sm7250-common" remote="github-lge" revision="${COMMON_VENDOR_REF}" />
+            <!-- Lineage 23.2 already defines the github remote in default.xml. -->
+            <project name="lge-qcom-dev/android_device_lge_caymanlm" path="device/lge/caymanlm" remote="github" revision="${DEVICE_REF}" />
+            <project name="Sparxikle/android_device_lge_sm7250-common" path="device/lge/sm7250-common" remote="github" revision="${COMMON_DEVICE_REF}" />
+            <project name="lge-qcom-dev/proprietary_vendor_lge_caymanlm" path="vendor/lge/caymanlm" remote="github" revision="${VENDOR_REF}" />
+            <project name="Sparxikle/proprietary_vendor_lge_sm7250-common" path="vendor/lge/sm7250-common" remote="github" revision="${COMMON_VENDOR_REF}" />
           </manifest>
           EOF
-          # The local manifest above needs a GitHub remote declaration.
-          python3 - <<'PY'
-          p='.repo/manifests/default.xml'
-          print('manifest branch:', open('.repo/manifest.xml').read().strip())
-          PY
-          sed -i '/<remote name="github"/d' .repo/local_manifests/g900emw.xml
-          sed -i '2i\            <remote name="github-lge" fetch="https://github.com/" />' .repo/local_manifests/g900emw.xml
           cat .repo/local_manifests/g900emw.xml | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/02-local-manifest.xml"
+          repo forall -c 'git config remote.origin.promisor false || true; git config remote.origin.partialclonefilter "" || true'
           repo sync -c --force-sync --no-clone-bundle --no-tags -j2 2>&1 | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/03-repo-sync.log"
+          test "${PIPESTATUS[0]}" -eq 0
 
       - name: "V05 • Verify source refs and Android 16 QPR2 product tree"
         shell: bash
@@ -462,6 +477,7 @@ jobs:
           test -f device/lge/caymanlm/AndroidProducts.mk
           test -f device/lge/caymanlm/lineage_caymanlm.mk
           test -f vendor/lge/caymanlm/Android.bp || test -f vendor/lge/caymanlm/Android.mk
+          grep -q 'android-16.0.0_r4' .repo/manifest.xml || grep -q 'android16-qpr2' .repo/manifest.xml || true
           {
             echo "device_ref=${DEVICE_REF}"
             echo "vendor_ref=${VENDOR_REF}"
@@ -470,7 +486,46 @@ jobs:
             echo "target=lineage_caymanlm-userdebug"
           } | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/05-context.txt"
 
-      - name: "V06 • Prepare Android build environment"
+      - name: "V06 • Normalize global model identity to LM-G900 (preserve caymanlm codename)"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/android"
+          test -f device/lge/caymanlm/lineage_caymanlm.mk
+          cp device/lge/caymanlm/lineage_caymanlm.mk "$GITHUB_WORKSPACE/ci-diagnostics/vendor/06-lineage_caymanlm.mk.before"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("device/lge/caymanlm/lineage_caymanlm.mk")
+          s = p.read_text()
+          import re
+          s2, n = re.subn(r'(?m)^PRODUCT_MODEL := .*$', 'PRODUCT_MODEL := LM-G900', s, count=1)
+          if n != 1:
+              raise SystemExit("PRODUCT_MODEL line not found exactly once")
+          p.write_text(s2)
+          PY
+
+          # Use the Android build system's vendor-property mechanism instead of
+          # editing generated build.prop files. This keeps the source auditable
+          # and produces the property in vendor/build.prop.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("device/lge/caymanlm/lineage_caymanlm.mk")
+          s = p.read_text()
+          anchor = "PRODUCT_MODEL := LM-G900"
+          addition = (
+              anchor + "\n"
+              "PRODUCT_VENDOR_PROPERTIES += \\\n"
+              "    ro.product.vendor.model=LM-G900 \\\n"
+              "    ro.vendor.product.model=LM-G900"
+          )
+          if "ro.product.vendor.model=LM-G900" not in s:
+              s = s.replace(anchor, addition, 1)
+          p.write_text(s)
+          PY
+
+          grep -nE '^PRODUCT_MODEL := LM-G900$|^PRODUCT_VENDOR_PROPERTIES|ro\.product\.vendor\.model=LM-G900|ro\.vendor\.product\.model=LM-G900'             device/lge/caymanlm/lineage_caymanlm.mk | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/06-model-source.txt"
+
+      - name: "V07 • Prepare Android build environment"
         shell: bash
         run: |
           set -euxo pipefail
@@ -479,7 +534,7 @@ jobs:
           source build/envsetup.sh 2>&1 | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/06-envsetup.log"
           lunch lineage_caymanlm-userdebug 2>&1 | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/06-lunch.log"
 
-      - name: "V07 • Audit fingerprint / vibration / Dual-SIM / audio / IMS / VoWiFi"
+      - name: "V08 • Audit fingerprint / vibration / Dual-SIM / audio / IMS / VoWiFi"
         shell: bash
         run: |
           set -euxo pipefail
@@ -497,7 +552,7 @@ jobs:
             grep -RInE 'VoWiFi|VOWIFI|IWLAN|epdg|ims|wfc|wifi.?calling' device/lge vendor/lge 2>/dev/null | head -300 || true
           } | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/07-hardware-audit.txt"
 
-      - name: "V08 • Build vendor.img only — do not rebuild kernel"
+      - name: "V09 • Build vendor.img only — do not rebuild kernel"
         shell: bash
         run: |
           set -o pipefail
@@ -506,7 +561,7 @@ jobs:
           lunch lineage_caymanlm-userdebug
           m vendorimage -j"$(nproc --all)" 2>&1 | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/08-vendor-build.log"
 
-      - name: "V09 • Verify vendor.img and VINTF payload"
+      - name: "V10 • Verify vendor.img, VINTF payload, and LM-G900 model identity"
         shell: bash
         run: |
           set -euxo pipefail
@@ -514,9 +569,17 @@ jobs:
           test -s out/target/product/caymanlm/vendor.img
           file out/target/product/caymanlm/vendor.img | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/09-vendor-file.txt"
           sha256sum out/target/product/caymanlm/vendor.img | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/09-vendor.sha256"
-          find out/target/product/caymanlm -maxdepth 3 -type f \( -name '*manifest*.xml' -o -name '*matrix*.xml' \) -print | sort | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/09-vintf-files.txt"
+          find out/target/product/caymanlm -maxdepth 3 -type f \( -name '*manifest*.xml' -o -name '*matrix*.xml' \) -print | sort | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/10-vintf-files.txt"
+          find out/target/product/caymanlm -type f -name 'build.prop' -print | sort | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/10-build-prop-files.txt"
+          grep -RInE '^(ro\.product\.model|ro\.product\.vendor\.model|ro\.vendor\.product\.model)=' out/target/product/caymanlm --include='build.prop' 2>/dev/null | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/10-model-properties.txt" || true
+          grep -RInE '^ro\.product\.vendor\.model=LM-G900$|^ro\.vendor\.product\.model=LM-G900$' out/target/product/caymanlm/vendor/build.prop 2>/dev/null | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/10-model-verified.txt"
+          test "$(grep -c '^ro\.product\.vendor\.model=LM-G900$' out/target/product/caymanlm/vendor/build.prop)" -ge 1
+          if grep -RInE '^(ro\.product\.vendor\.model|ro\.vendor\.product\.model)=LM-G900N$' out/target/product/caymanlm/vendor/build.prop 2>/dev/null; then
+            echo "::error::LM-G900N leaked into generated vendor build.prop."
+            exit 1
+          fi
 
-      - name: "V10 • Upload vendor result + diagnostics ALWAYS"
+      - name: "V11 • Upload vendor result + diagnostics ALWAYS"
         if: always()
         uses: actions/upload-artifact@v4
         with:
