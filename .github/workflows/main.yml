@@ -1,4 +1,4 @@
-name: "LG Velvet G900EMW • 4.19.325-CIP135 • SukiSU-Ultra 4.1.3 • SUSFS 1.5.5 • KPM"
+name: "LG Velvet G900EMW • 4.19.325-CIP135 • SukiSU-Ultra 4.1.3 • SUSFS 1.5.5 • KPM • v5"
 
 on:
   workflow_dispatch:
@@ -14,6 +14,8 @@ env:
   KERNEL_DEFCONFIG: vendor/caymanlm_defconfig
   CIP_BASE: 4.19.325
   CIP_VERSION: 4.19.325-cip135
+  CIP_TARBALL_SHA256: 6e3e5003854bd28e7f3b4880ab5f779e4e31ac7d4770f2fd1035a9b51c0d53e9
+  BASE_TARBALL_SHA256: 607bed7de5cda31a443df4c8a78dbe5e8a9ad31afde2a4d28fe99ab4730e8de1
   SUKISU_REF: 3f602b5
   SUKISU_VERSION: 4.1.3
   SUSFS_REF: 001e69919c6271f690fd00b17e4c721c9e599152
@@ -70,15 +72,21 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          test -f arch/arm64/configs/${KERNEL_DEFCONFIG##*/}
+          DEFCONFIG_PATH="arch/arm64/configs/${KERNEL_DEFCONFIG}"
+          echo "defconfig_path=${DEFCONFIG_PATH}" | tee ci-diagnostics/04-defconfig-path.txt
+          test -f "${DEFCONFIG_PATH}"
+          test -s "${DEFCONFIG_PATH}"
+          sha256sum "${DEFCONFIG_PATH}" | tee ci-diagnostics/04-defconfig.sha256
           mkdir -p kernel/out
-          make O=kernel/out ARCH=arm64 ${KERNEL_DEFCONFIG} 2>&1 | tee ci-diagnostics/04-baseline-config.log
+          make O=kernel/out ARCH=arm64 "${KERNEL_DEFCONFIG}" 2>&1 | tee ci-diagnostics/04-baseline-config.log
           cp kernel/out/.config ci-diagnostics/working-baseline.config
           sha256sum kernel/out/.config | tee ci-diagnostics/baseline-config.sha256
           grep -E '^(CONFIG_(ARM64|CPU|ARCH_QCOM|LGE|MSM|SCHED|CPU_FREQ|ZRAM|ZSMALLOC|LTO|KALLSYMS|SECURITY|DM_VERITY|FS_VERITY|BPF|OVERLAY_FS|TMPFS))' \
             kernel/out/.config > ci-diagnostics/baseline-feature-snapshot.txt || true
+          git ls-files --error-unmatch "${DEFCONFIG_PATH}" >/dev/null
+          git diff --exit-code -- "${DEFCONFIG_PATH}"
 
-      - name: 05 • Fetch official CIP135 + upstream 4.19.325
+      - name: 05 • Fetch official CIP135 + upstream 4.19.325 and build a clean relative delta
         shell: bash
         run: |
           set -euxo pipefail
@@ -100,16 +108,42 @@ jobs:
             -o "$RUNNER_TEMP/base-sha256sums.asc" \
             "https://cdn.kernel.org/pub/linux/kernel/v4.x/sha256sums.asc"
 
-          grep "linux-cip-${CIP_VERSION}.tar.xz" "$RUNNER_TEMP/cip-sha256sums.asc" > "$RUNNER_TEMP/cip.sha256"
-          grep "linux-${CIP_BASE}.tar.xz" "$RUNNER_TEMP/base-sha256sums.asc" > "$RUNNER_TEMP/base.sha256"
-
+          grep -F "linux-cip-${CIP_VERSION}.tar.xz" "$RUNNER_TEMP/cip-sha256sums.asc" > "$RUNNER_TEMP/cip.sha256"
+          grep -F "linux-${CIP_BASE}.tar.xz" "$RUNNER_TEMP/base-sha256sums.asc" > "$RUNNER_TEMP/base.sha256"
+          test -s "$RUNNER_TEMP/cip.sha256"
+          test -s "$RUNNER_TEMP/base.sha256"
           (cd "$RUNNER_TEMP" && sha256sum -c cip.sha256)
           (cd "$RUNNER_TEMP" && sha256sum -c base.sha256)
+          echo "${CIP_TARBALL_SHA256}  $RUNNER_TEMP/linux-cip.tar.xz" | sha256sum -c -
+          echo "${BASE_TARBALL_SHA256}  $RUNNER_TEMP/linux-base.tar.xz" | sha256sum -c -
 
           tar -xJf "$RUNNER_TEMP/linux-cip.tar.xz" --strip-components=1 -C "$RUNNER_TEMP/cip"
           tar -xJf "$RUNNER_TEMP/linux-base.tar.xz" --strip-components=1 -C "$RUNNER_TEMP/cip-base"
 
-          diff -urN "$RUNNER_TEMP/cip-base" "$RUNNER_TEMP/cip" > ci-diagnostics/cip135.patch || true
+          test -f "$RUNNER_TEMP/cip/Makefile"
+          test -f "$RUNNER_TEMP/cip-base/Makefile"
+          echo "CIP_RELEASE=$(cat "$RUNNER_TEMP/cip/Makefile" | sed -n '1,8p')" > ci-diagnostics/cip-release-snippet.txt
+
+          # IMPORTANT: create a relative diff. The previous workflow used
+          # absolute /runner paths, which made patch path handling ambiguous.
+          # The relative prefixes cip-base/ and cip/ are intentionally chosen
+          # so patch -p1 maps them to the LG tree.
+          set +e
+          (cd "$RUNNER_TEMP" && diff -urN cip-base cip > "$GITHUB_WORKSPACE/ci-diagnostics/cip135.patch")
+          diff_rc=$?
+          set -e
+          test "$diff_rc" -eq 1
+          test -s ci-diagnostics/cip135.patch
+
+          # Verify the patch has no absolute runner paths and has normal
+          # two-tree unified-diff headers.
+          if grep -nE '^--- (/|/home/|/runner/)|^\+\+\+ (/|/home/|/runner/)' \
+              ci-diagnostics/cip135.patch > ci-diagnostics/cip135-absolute-paths.txt; then
+            echo "::error::CIP135 patch contains absolute paths."
+            exit 1
+          fi
+          grep -m1 '^--- cip-base/' ci-diagnostics/cip135.patch
+          grep -m1 '^+++ cip/' ci-diagnostics/cip135.patch
           wc -c ci-diagnostics/cip135.patch | tee ci-diagnostics/cip135.patch.size
           sha256sum ci-diagnostics/cip135.patch | tee ci-diagnostics/cip135.patch.sha256
 
@@ -138,7 +172,7 @@ jobs:
               test -f "$file"
               echo "WIGGLE $file" | tee -a ci-diagnostics/06-cip135-wiggle.log
               wiggle --replace --no-backup "$file" "$rej" \
-                2>&1 | tee -a ci-diagnostics/06-cip135-wiggle.log || true
+                2>&1 | tee -a ci-diagnostics/06-cip135-wiggle.log
             done < <(find . -type f -name '*.rej' | sort)
           fi
 
@@ -214,7 +248,7 @@ jobs:
             file="${rej%.rej}"
             test -f "$file"
             wiggle --replace --no-backup "$file" "$rej" \
-              2>&1 | tee -a ci-diagnostics/08-susfs-wiggle.log || true
+              2>&1 | tee -a ci-diagnostics/08-susfs-wiggle.log
           done < <(find . -type f -name '*.rej' | sort)
 
           find . -type f -name '*.orig' -delete
