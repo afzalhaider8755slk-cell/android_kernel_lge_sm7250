@@ -376,11 +376,11 @@ jobs:
         \nrm -rf cip132 cip135\ncurl -L --fail --retry 3 -o cip132.tar.xz https://cdn.kernel.org/pub/linux/kernel/projects/cip/4.19/linux-cip-4.19.325-cip132.tar.xz\n\
         curl -L --fail --retry 3 -o cip135.tar.xz https://cdn.kernel.org/pub/linux/kernel/projects/cip/4.19/linux-cip-4.19.325-cip135.tar.xz\n\
         mkdir -p cip132 cip135\ntar -xJf cip132.tar.xz --strip-components=1 -C cip132\ntar -xJf cip135.tar.xz --strip-components=1\
-        \ -C cip135\ncd \"$GITHUB_WORKSPACE/kernel\"\npython3 - <<'PY2'\nimport pathlib, subprocess\nA=pathlib.Path('/github/workspace/cip132');\
-        \ B=pathlib.Path('/github/workspace/cip135'); O=pathlib.Path('/github/workspace/ci-diagnostics/cip135.patch')\nfiles=set()\n\
+        \ -C cip135\ncd \"$GITHUB_WORKSPACE/kernel\"\npython3 - <<'PY2'\nimport os, pathlib, subprocess\nWS=pathlib.Path(os.environ['GITHUB_WORKSPACE']); A=WS/'cip132';\
+        \ B=WS/'cip135'; O=WS/'ci-diagnostics'/'cip135.patch'; O.parent.mkdir(parents=True, exist_ok=True)\nfiles=set()\n\
         for base in (A,B):\n    for p in base.rglob('*'):\n        if p.is_file(): files.add(p.relative_to(base).as_posix())\n\
         out=[]\nfor f in sorted(files):\n    a=A/f; b=B/f\n    if a.exists() and b.exists():\n        r=subprocess.run(['diff','-u','--label','a/'+f,'--label','b/'+f,str(a),str(b)],text=True,capture_output=True)\n\
-        \        if r.returncode==1: out.append(r.stdout)\nO.write_text(''.join(out))\nprint('patch bytes',O.stat().st_size)\n\
+        \        if r.returncode==1: out.append(r.stdout)\nO.write_text(''.join(out), encoding='utf-8')\nprint('patch bytes',O.stat().st_size)\n\
         PY2\nif [ -s \"$DIAG_DIR/cip135.patch\" ]; then\n  set +e\ngit apply --3way --whitespace=nowarn \"$DIAG_DIR/cip135.patch\"\
         \ 2>&1 | tee \"$DIAG_DIR/cip135-apply.log\"\n  rc=${PIPESTATUS[0]}\n  set -e\n  if [ \"$rc\" -ne 0 ]; then\n    git\
         \ status --short | tee \"$DIAG_DIR/cip135-status.txt\"\n    echo '::error::CIP135 delta could not be merged cleanly\
