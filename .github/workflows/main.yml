@@ -24,6 +24,27 @@ concurrency:
   group: lg-velvet-working-4.19-ksu-susfs-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  workflow-syntax-preflight:
+    name: Workflow YAML syntax preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate workflow YAML structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import yaml
+          from pathlib import Path
+          p = Path(".github/workflows/main.yml")
+          if not p.exists():
+              # The repository workflow itself is the file being executed; if
+              # it is unavailable in checkout, GitHub has already parsed it.
+              print("Workflow file not present in checkout; GitHub parser accepted this workflow.")
+              raise SystemExit(0)
+          yaml.safe_load(p.read_text(encoding="utf-8"))
+          print("PASS: workflow YAML parses successfully.")
+          PY
   build:
     name: Build WORKING 4.19 Non-GKI + KSU + SUSFS - V31 FILE_WRAPPER AUDIT
     runs-on: ubuntu-22.04
@@ -1415,10 +1436,9 @@ jobs:
         { echo "LG 4.19 seccomp compatibility audit"; echo "KSU app profile: $KSU_APP"; echo "Vendor header: $SEC_HDR"; if grep -qE '\bfilter_count\b' "$SEC_HDR"; then echo "filter_count: PRESENT"; else echo "filter_count: ABSENT; KSU-local no-op applied"; fi; echo "Vendor seccomp ABI/header modification: NOT USED"; } > "$DIAG_DIR/10B-seccomp-filter-count-audit.txt"
         echo "PASS: 4.19 seccomp filter_count compatibility audit completed."
         echo "PASS: earlier SUSFS/KSU/VFS fixes were not modified by this step."
-
-test -f "$GITHUB_WORKSPACE/kernel/include/linux/susfs_ksu_compat.h"
-grep -q "linux/susfs_ksu_compat.h" "$GITHUB_WORKSPACE/kernel/KernelSU-Next/kernel/supercall/dispatch.c"
-echo "PASS: SUSFS v1.5.5/v2 API bridge remains present after all fixes."
+        test -f "$GITHUB_WORKSPACE/kernel/include/linux/susfs_ksu_compat.h"
+        grep -q "linux/susfs_ksu_compat.h" "$GITHUB_WORKSPACE/kernel/KernelSU-Next/kernel/supercall/dispatch.c"
+        echo "PASS: SUSFS v1.5.5/v2 API bridge remains present after all fixes."
     - name: 10C - Guard KernelSU SELinux rules for legacy 4.19
       shell: bash
       run: |
