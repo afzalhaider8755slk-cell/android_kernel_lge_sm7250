@@ -1395,6 +1395,115 @@ jobs:
         \ source files changed (outside KSU/SUSFS integration scope):\"\n  printf\
         \ '%s\\n' \"$unexpected\"\n  exit 1\nfi\n\n# Expected integration files must\
         \ exist.\ntest -f fs/susfs.c\ntest -f include/linux/susfs.h\ntest -d KernelSU-Next/kernel\n"
+    - name: 10G - Bridge KernelSU-Next SUSFS v2 API to LG 4.19 SUSFS
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/kernel"
+        mkdir -p include/linux "$DIAG_DIR"
+
+        # Resolve the real checked-out KernelSU source. In this tree
+        # drivers/kernelsu is normally the symlink/integration point, while
+        # KernelSU-Next/kernel is the repository path. Do not assume one.
+        DISPATCH="$(find drivers/kernelsu KernelSU-Next/kernel -type f \
+          -path '*/supercall/dispatch.c' -print -quit 2>/dev/null || true)"
+        if [ -z "$DISPATCH" ]; then
+          echo "::error::KernelSU supercall/dispatch.c was not found."
+          exit 1
+        fi
+        echo "dispatch=$DISPATCH"
+
+        cat > include/linux/susfs_ksu_compat.h <<'EOF'
+        #ifndef KSU_SUSFS_COMPAT_H
+        #define KSU_SUSFS_COMPAT_H
+        #include <linux/susfs.h>
+
+        static inline void ksu_susfs_add_sus_path(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+          susfs_add_sus_path((struct st_susfs_sus_path __user *)*p);
+        #endif
+        }
+        static inline void ksu_susfs_add_sus_kstat(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          susfs_add_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
+        #endif
+        }
+        static inline void ksu_susfs_update_sus_kstat(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+          susfs_update_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
+        #endif
+        }
+        static inline void ksu_susfs_set_uname(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+          susfs_set_uname((struct st_susfs_uname __user *)*p);
+        #endif
+        }
+        static inline void ksu_susfs_set_cmdline(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          susfs_set_cmdline_or_bootconfig((char __user *)*p);
+        #endif
+        }
+        static inline void ksu_susfs_add_open_redirect(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+          susfs_add_open_redirect((struct st_susfs_open_redirect __user *)*p);
+        #endif
+        }
+
+        #ifndef susfs_start_sdcard_monitor_fn
+        #define susfs_start_sdcard_monitor_fn() do { } while (0)
+        #endif
+        #ifndef susfs_is_current_proc_umounted
+        #define susfs_is_current_proc_umounted() (false)
+        #endif
+
+        #define susfs_add_sus_path(p) ksu_susfs_add_sus_path(p)
+        #define susfs_add_sus_path_loop(p) do { } while (0)
+        #define susfs_set_hide_sus_mnts_for_non_su_procs(p) do { } while (0)
+        #define susfs_add_sus_kstat(p) ksu_susfs_add_sus_kstat(p)
+        #define susfs_update_sus_kstat(p) ksu_susfs_update_sus_kstat(p)
+        #define susfs_set_uname(p) ksu_susfs_set_uname(p)
+        #define susfs_enable_log(p) susfs_set_log(true)
+        #define susfs_set_cmdline_or_bootconfig(p) ksu_susfs_set_cmdline(p)
+        #define susfs_add_open_redirect(p) ksu_susfs_add_open_redirect(p)
+        #define susfs_add_sus_map(p) do { } while (0)
+        #define susfs_set_avc_log_spoofing(p) do { } while (0)
+        #define susfs_get_enabled_features(p) do { } while (0)
+        #define susfs_show_variant(p) do { } while (0)
+        #define susfs_show_version(p) do { } while (0)
+        #endif
+        EOF
+
+        # Include the bridge exactly once. Do not depend on a particular
+        # include name existing in the upstream file.
+        if ! grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"; then
+          sed -i '1a\
+        #ifdef CONFIG_KSU_SUSFS\
+        #include <linux/susfs_ksu_compat.h>\
+        #endif' "$DISPATCH"
+        fi
+
+        # Linux 4.19 tasklist/task_pgrp/task_session declarations.
+        if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
+          sed -i '1a#include <linux/sched/signal.h>' "$DISPATCH"
+        fi
+
+        grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"
+        grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"
+        test -s include/linux/susfs_ksu_compat.h
+
+        {
+          echo "SUSFS/KSU compatibility bridge: PRESENT"
+          echo "dispatch=$DISPATCH"
+          echo "scheduler include: PRESENT"
+          echo "vendor SELinux/security headers: UNTOUCHED"
+        } | tee "$DIAG_DIR/10G-susfs-ksu-compat-audit.txt"
+        echo "PASS: SUSFS/KSU legacy bridge installed."
     - name: 10B - Verify current 4.19 compile fix only
       shell: bash
       run: |
@@ -1436,9 +1545,6 @@ jobs:
         { echo "LG 4.19 seccomp compatibility audit"; echo "KSU app profile: $KSU_APP"; echo "Vendor header: $SEC_HDR"; if grep -qE '\bfilter_count\b' "$SEC_HDR"; then echo "filter_count: PRESENT"; else echo "filter_count: ABSENT; KSU-local no-op applied"; fi; echo "Vendor seccomp ABI/header modification: NOT USED"; } > "$DIAG_DIR/10B-seccomp-filter-count-audit.txt"
         echo "PASS: 4.19 seccomp filter_count compatibility audit completed."
         echo "PASS: earlier SUSFS/KSU/VFS fixes were not modified by this step."
-        test -f "$GITHUB_WORKSPACE/kernel/include/linux/susfs_ksu_compat.h"
-        grep -q "linux/susfs_ksu_compat.h" "$GITHUB_WORKSPACE/kernel/KernelSU-Next/kernel/supercall/dispatch.c"
-        echo "PASS: SUSFS v1.5.5/v2 API bridge remains present after all fixes."
     - name: 10C - Guard KernelSU SELinux rules for legacy 4.19
       shell: bash
       run: |
@@ -1627,115 +1733,30 @@ jobs:
 
         echo "PASS: automatic scanner armed; unknown errors will not be blindly patched."
 
-    - name: 10G - Bridge KernelSU-Next SUSFS v2 API to LG 4.19 SUSFS
+    - name: 10H - Final pre-build gate (state-preserving)
       shell: bash
       run: |
         set -euo pipefail
         cd "$GITHUB_WORKSPACE/kernel"
-        mkdir -p include/linux "$DIAG_DIR"
+        mkdir -p "$DIAG_DIR"
 
-        # Resolve the real checked-out KernelSU source. In this tree
-        # drivers/kernelsu is normally the symlink/integration point, while
-        # KernelSU-Next/kernel is the repository path. Do not assume one.
-        DISPATCH="$(find drivers/kernelsu KernelSU-Next/kernel -type f \
-          -path '*/supercall/dispatch.c' -print -quit 2>/dev/null || true)"
-        if [ -z "$DISPATCH" ]; then
-          echo "::error::KernelSU supercall/dispatch.c was not found."
-          exit 1
-        fi
-        echo "dispatch=$DISPATCH"
+        test -d KernelSU-Next/kernel
+        test -f fs/susfs.c
+        test -f include/linux/susfs.h
+        test -f include/linux/susfs_def.h
+        test -f include/linux/susfs_ksu_compat.h
 
-        cat > include/linux/susfs_ksu_compat.h <<'EOF'
-        #ifndef KSU_SUSFS_COMPAT_H
-        #define KSU_SUSFS_COMPAT_H
-        #include <linux/susfs.h>
+        grep -RqsF 'linux/susfs_ksu_compat.h' KernelSU-Next/kernel drivers/kernelsu 2>/dev/null
+        grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
 
-        static inline void ksu_susfs_add_sus_path(void __user **p)
+        # Do not re-apply any source patch here. This is verification only.
         {
-        #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-          susfs_add_sus_path((struct st_susfs_sus_path __user *)*p);
-        #endif
-        }
-        static inline void ksu_susfs_add_sus_kstat(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-          susfs_add_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
-        #endif
-        }
-        static inline void ksu_susfs_update_sus_kstat(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-          susfs_update_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
-        #endif
-        }
-        static inline void ksu_susfs_set_uname(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-          susfs_set_uname((struct st_susfs_uname __user *)*p);
-        #endif
-        }
-        static inline void ksu_susfs_set_cmdline(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          susfs_set_cmdline_or_bootconfig((char __user *)*p);
-        #endif
-        }
-        static inline void ksu_susfs_add_open_redirect(void __user **p)
-        {
-        #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-          susfs_add_open_redirect((struct st_susfs_open_redirect __user *)*p);
-        #endif
-        }
-
-        #ifndef susfs_start_sdcard_monitor_fn
-        #define susfs_start_sdcard_monitor_fn() do { } while (0)
-        #endif
-        #ifndef susfs_is_current_proc_umounted
-        #define susfs_is_current_proc_umounted() (false)
-        #endif
-
-        #define susfs_add_sus_path(p) ksu_susfs_add_sus_path(p)
-        #define susfs_add_sus_path_loop(p) do { } while (0)
-        #define susfs_set_hide_sus_mnts_for_non_su_procs(p) do { } while (0)
-        #define susfs_add_sus_kstat(p) ksu_susfs_add_sus_kstat(p)
-        #define susfs_update_sus_kstat(p) ksu_susfs_update_sus_kstat(p)
-        #define susfs_set_uname(p) ksu_susfs_set_uname(p)
-        #define susfs_enable_log(p) susfs_set_log(true)
-        #define susfs_set_cmdline_or_bootconfig(p) ksu_susfs_set_cmdline(p)
-        #define susfs_add_open_redirect(p) ksu_susfs_add_open_redirect(p)
-        #define susfs_add_sus_map(p) do { } while (0)
-        #define susfs_set_avc_log_spoofing(p) do { } while (0)
-        #define susfs_get_enabled_features(p) do { } while (0)
-        #define susfs_show_variant(p) do { } while (0)
-        #define susfs_show_version(p) do { } while (0)
-        #endif
-        EOF
-
-        # Include the bridge exactly once. Do not depend on a particular
-        # include name existing in the upstream file.
-        if ! grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"; then
-          sed -i '1a\
-        #ifdef CONFIG_KSU_SUSFS\
-        #include <linux/susfs_ksu_compat.h>\
-        #endif' "$DISPATCH"
-        fi
-
-        # Linux 4.19 tasklist/task_pgrp/task_session declarations.
-        if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
-          sed -i '1a#include <linux/sched/signal.h>' "$DISPATCH"
-        fi
-
-        grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"
-        grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"
-        test -s include/linux/susfs_ksu_compat.h
-
-        {
-          echo "SUSFS/KSU compatibility bridge: PRESENT"
-          echo "dispatch=$DISPATCH"
-          echo "scheduler include: PRESENT"
-          echo "vendor SELinux/security headers: UNTOUCHED"
-        } | tee "$DIAG_DIR/10G-susfs-ksu-compat-audit.txt"
-        echo "PASS: SUSFS/KSU legacy bridge installed."
+          echo "PASS: KernelSU tree present"
+          echo "PASS: SUSFS tree present"
+          echo "PASS: KSU/SUSFS compatibility bridge present"
+          echo "PASS: baseline KPROBES state preserved"
+          echo "PASS: state-preserving pre-build gate"
+        } | tee "$DIAG_DIR/10H-final-prebuild-gate.log"
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
@@ -1800,7 +1821,9 @@ jobs:
             fi
           else
             echo "Build log: NOT PRESENT."
-            echo "RESULT: build did not produce a log; no compiler classification available."
+            echo "RESULT: build did not produce a log.
+This means the compiler was not reached; inspect the last pre-build gate/step
+rather than inventing or reverting a compiler fix."
           fi
         } | tee "$AUDIT"
 
