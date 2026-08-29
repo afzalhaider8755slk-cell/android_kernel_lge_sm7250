@@ -1,4 +1,4 @@
-name: "LG Velvet G900EMW • 4.19.325-CIP135 • SukiSU-Ultra 4.1.3 • SUSFS 1.5.5 • KPM • v5"
+name: "LG Velvet G900EMW • 4.19.325-CIP135 • SukiSU-Ultra 4.1.3 • SUSFS 1.5.5 • KPM • v6"
 
 on:
   workflow_dispatch:
@@ -49,7 +49,8 @@ jobs:
             libssl-dev libelf-dev libdw-dev dwarves \
             python3 python3-pip rsync patch wiggle \
             zip unzip xz-utils curl wget git \
-            device-tree-compiler cpio
+            device-tree-compiler cpio \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       - name: 03 • Prepare diagnostics
         shell: bash
@@ -68,6 +69,35 @@ jobs:
           git status --short > ci-diagnostics/git-status-before.txt
           git log -1 --decorate --oneline > ci-diagnostics/source.txt
 
+      - name: 03b • Prepare exact Android LLVM toolchain before any Kconfig
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLANG_DIR="$RUNNER_TEMP/clang"
+          rm -rf "$CLANG_DIR" "$RUNNER_TEMP/clang-repo"
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            "$RUNNER_TEMP/clang-repo" \
+            2>&1 | tee ci-diagnostics/03b-clang-clone.log
+          git -C "$RUNNER_TEMP/clang-repo" fetch --depth=1 origin "$CLANG_REPO_COMMIT"
+          git -C "$RUNNER_TEMP/clang-repo" checkout --detach "$CLANG_REPO_COMMIT"
+          test -d "$RUNNER_TEMP/clang-repo/$CLANG_REV"
+          mkdir -p "$CLANG_DIR"
+          cp -a "$RUNNER_TEMP/clang-repo/$CLANG_REV/." "$CLANG_DIR/"
+          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+          {
+            echo "CLANG_DIR=$CLANG_DIR"
+            "$CLANG_DIR/bin/clang" --version | head -n 1
+            "$CLANG_DIR/bin/ld.lld" --version | head -n 1
+            aarch64-linux-gnu-as --version | head -n 1
+          } | tee ci-diagnostics/03b-toolchain-version.txt
+          # This LG tree contains the Kconfig-time assembler checker but not
+          # the helper introduced with that backport. We deliberately use the
+          # Clang integrated assembler, so the checker exits via its supported
+          # LLVM path and never falls through to the missing helper.
+          test -x "$CLANG_DIR/bin/clang"
+          test -x "$CLANG_DIR/bin/ld.lld"
+
       - name: 04 • Restore pristine LG defconfig and prove source state
         shell: bash
         run: |
@@ -78,7 +108,16 @@ jobs:
           test -s "${DEFCONFIG_PATH}"
           sha256sum "${DEFCONFIG_PATH}" | tee ci-diagnostics/04-defconfig.sha256
           mkdir -p kernel/out
-          make O=kernel/out ARCH=arm64 "${KERNEL_DEFCONFIG}" 2>&1 | tee ci-diagnostics/04-baseline-config.log
+          {
+            echo "CC=$(command -v clang)"
+            echo "LD=$(command -v ld.lld)"
+            echo "CROSS_COMPILE=$(command -v aarch64-linux-gnu-as)"
+            echo "LLVM_IAS=1"
+          } | tee ci-diagnostics/04-toolchain-selection.txt
+          make O=kernel/out ARCH=arm64 \
+            LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            "${KERNEL_DEFCONFIG}" 2>&1 | tee ci-diagnostics/04-baseline-config.log
           cp kernel/out/.config ci-diagnostics/working-baseline.config
           sha256sum kernel/out/.config | tee ci-diagnostics/baseline-config.sha256
           grep -E '^(CONFIG_(ARM64|CPU|ARCH_QCOM|LGE|MSM|SCHED|CPU_FREQ|ZRAM|ZSMALLOC|LTO|KALLSYMS|SECURITY|DM_VERITY|FS_VERITY|BPF|OVERLAY_FS|TMPFS))' \
@@ -330,7 +369,9 @@ jobs:
 
           # Keep the existing LG hardware/vendor choices from the pristine
           # defconfig. Do not substitute another device defconfig.
-          yes "" | make O="$OUT" ARCH=arm64 olddefconfig \
+          yes "" | make O="$OUT" ARCH=arm64 \
+            LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- olddefconfig \
             2>&1 | tee ci-diagnostics/09-olddefconfig.log
 
           cp "$OUT/.config" ci-diagnostics/final.config
@@ -358,7 +399,7 @@ jobs:
             echo "=== source ==="
             git rev-parse HEAD
             echo "=== kernel release ==="
-            make -s O=kernel/out ARCH=arm64 kernelversion
+            make -s O=kernel/out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- kernelversion
             echo "=== SukiSU ==="
             grep -R "VERSION_TAG" drivers/kernelsu KernelSU 2>/dev/null | head -20 || true
             echo "=== KPM/SUSFS symbols ==="
@@ -372,16 +413,8 @@ jobs:
         run: |
           set -euxo pipefail
           CLANG_DIR="$RUNNER_TEMP/clang"
-          rm -rf "$CLANG_DIR"
-          mkdir -p "$CLANG_DIR"
-
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-            "$RUNNER_TEMP/clang-repo" \
-            2>&1 | tee ci-diagnostics/11-clang-clone.log
-          git -C "$RUNNER_TEMP/clang-repo" fetch --depth=1 origin "$CLANG_REPO_COMMIT"
-          git -C "$RUNNER_TEMP/clang-repo" checkout --detach "$CLANG_REPO_COMMIT"
-          cp -a "$RUNNER_TEMP/clang-repo/$CLANG_REV/." "$CLANG_DIR/"
+          test -x "$CLANG_DIR/bin/clang"
+          test -x "$CLANG_DIR/bin/ld.lld"
           "$CLANG_DIR/bin/clang" --version | tee ci-diagnostics/11-clang-version.txt
 
           export PATH="$CLANG_DIR/bin:$PATH"
@@ -393,7 +426,8 @@ jobs:
 
           mkdir -p kernel/out
           make -C . O=kernel/out ARCH=arm64 \
-            CC=clang LLVM=1 LLVM_IAS=1 \
+            CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
             -j"$(nproc --all)" \
             Image.gz-dtb modules \
             2>&1 | tee ci-diagnostics/11-build.log
@@ -485,7 +519,7 @@ jobs:
             echo "cip=${CIP_VERSION}"
             echo "sukisu=${SUKISU_VERSION}@${SUKISU_REF}"
             echo "susfs=${SUSFS_VERSION}@${SUSFS_REF}"
-            echo "kernelversion=$(make -s O=kernel/out ARCH=arm64 kernelversion 2>/dev/null || true)"
+            echo "kernelversion=$(make -s O=kernel/out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- kernelversion 2>/dev/null || true)"
             echo "timestamp=$(date -u +%FT%TZ)"
           } > ci-diagnostics/final-report.txt
 
