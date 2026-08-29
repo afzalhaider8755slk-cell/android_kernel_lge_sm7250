@@ -1,548 +1,549 @@
-name: LG Velvet G900EMW — Android 16 QPR2 Kernel + Vendor (independent)
+name: "LG Velvet G900EMW • Android 16 QPR2 • Kernel + Vendor • v8"
 
 on:
   workflow_dispatch:
     inputs:
-      kernel_source_commit:
-        description: Exact known-good kernel commit; blank = branch HEAD
-        required: false
-        default: ''
-      android_manifest_url:
-        description: Android 16/Lineage manifest URL
+      build_kernel:
+        description: "Build kernel"
         required: true
-        default: https://github.com/LineageOS/android.git
-      android_manifest_branch:
-        description: Android 16 manifest branch
+        default: true
+        type: boolean
+      build_vendor:
+        description: "Build vendor.img"
         required: true
-        default: lineage-23.2
-      device_branch:
-        description: Device-tree branch/ref (must actually exist)
-        required: true
-        default: lineage-23.2
-      vendor_branch:
-        description: Vendor-tree branch/ref (must actually exist)
-        required: true
-        default: lineage-23.2
+        default: true
+        type: boolean
   push:
-    branches: [sixteen]
+    branches: ["sixteen"]
+    paths:
+      - ".github/workflows/**"
+      - "arch/arm64/configs/vendor/caymanlm_defconfig"
+      - "drivers/**"
+      - "fs/**"
+      - "include/**"
+      - "kernel/**"
+      - "sound/**"
+      - "techpack/**"
+      - "Makefile"
+      - "localversion-*"
 
 permissions:
   contents: read
-  actions: read
-
-concurrency:
-  group: g900emw-android16-kernel-vendor-${{ github.ref }}
-  cancel-in-progress: false
 
 env:
   DEVICE: G900EMW
   CODENAME: caymanlm
   KERNEL_BRANCH: sixteen
   DEFCONFIG: vendor/caymanlm_defconfig
-  ARCH: arm64
-  KERNEL_OUT: ${{ github.workspace }}/kernel/out
-  DIAG_ROOT: ${{ github.workspace }}/ci-diagnostics
-
-  # Pinned, reproducible root stack.
-  SUKISU_REPO: https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
-  SUKISU_REF: 3f602b5
-  SUKISU_VERSION: 4.1.3
-  SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
-  SUSFS_REF: 001e69919c6271f690fd00b17e4c721c9e599152
-  SUSFS_VERSION: 1.5.5
-
+  KERNEL_EXPECTED: "4.19.325"
+  CIP_TAG: "v4.19.325-cip135"
+  LINEAGE_BRANCH: lineage-23.2
+  DEVICE_REF: lineage-22.2
+  VENDOR_REF: lineage-22.2
+  COMMON_DEVICE_REF: lineage-23.2
+  COMMON_VENDOR_REF: lineage-23.2
+  SUKISU_REF: "4.1.3"
+  SUSFS_REF: "001e69919c6271f690fd00b17e4c721c9e599152"
+  SUSFS_BRANCH: kernel-4.19
+  ANYKERNEL3_REF: dca9dc370838d919d56c1f59ec78b27a14a72c68
+  ANDROID_MANIFEST: https://github.com/LineageOS/android.git
   DEVICE_REPO: https://github.com/lge-qcom-dev/android_device_lge_caymanlm.git
-  COMMON_DEVICE_REPO: https://github.com/lge-qcom-dev/android_device_lge_sm7250-common.git
+  COMMON_DEVICE_REPO: https://github.com/Sparxikle/android_device_lge_sm7250-common.git
   VENDOR_REPO: https://github.com/lge-qcom-dev/proprietary_vendor_lge_caymanlm.git
-  COMMON_VENDOR_REPO: https://github.com/lge-qcom-dev/proprietary_vendor_lge_sm7250-common.git
-  TARGET_PRODUCT: lineage_caymanlm
-  TARGET_VARIANT: userdebug
+  COMMON_VENDOR_REPO: https://github.com/Sparxikle/proprietary_vendor_lge_sm7250-common.git
 
 jobs:
   kernel:
-    name: KERNEL — 4.19.325 + SukiSU-Ultra 4.1.3 + SUSFS 1.5.5 + KPM
+    if: ${{ github.event_name == 'push' || inputs.build_kernel }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 180
     steps:
-      - name: Checkout exact kernel source
+      - name: "K01 • Checkout exact kernel source"
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.kernel_source_commit != '' && inputs.kernel_source_commit || github.ref_name }}
+          ref: ${{ env.KERNEL_BRANCH }}
           fetch-depth: 0
 
-      - name: Install kernel dependencies
+      - name: "K02 • Install kernel dependencies"
         shell: bash
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          sudo apt-get install -y \
             bc bison flex build-essential ccache clang lld llvm \
-            libssl-dev libelf-dev libdw-dev device-tree-compiler \
-            python3 python-is-python3 git rsync zip unzip dwarves curl patch
-          test -x /usr/bin/python
+            libssl-dev libelf-dev libdw-dev dwarves \
+            python3 python3-pip rsync patch git curl wget unzip zip xz-utils \
+            device-tree-compiler cpio \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gawk file
 
-      - name: Initialize diagnostics
+      - name: "K03 • Create numbered diagnostics workspace"
         shell: bash
         run: |
-          set -uo pipefail
-          mkdir -p "$DIAG_ROOT/kernel" "$KERNEL_OUT" "$GITHUB_WORKSPACE/artifacts/kernel"
+          set +e
+          mkdir -p ci-diagnostics/kernel
           {
-            echo "device=$DEVICE"
-            echo "codename=$CODENAME"
-            echo "kernel_branch=$KERNEL_BRANCH"
-            echo "kernel_commit=$(git rev-parse HEAD)"
-            echo "defconfig=$DEFCONFIG"
-            echo "kernel_target=Android 16 QPR2 GSI"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "device=${DEVICE}"
+            echo "codename=${CODENAME}"
+            echo "branch=${KERNEL_BRANCH}"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "kernel_expected=${KERNEL_EXPECTED}-cip135"
+            echo "target=Android 16 QPR2 GSI"
             echo "features=SukiSU-Ultra+KPM+SUSFS+WALT+SchedTune+ZRAM+LTO"
             echo "hardware=Fingerprint+Vibration+DualSIM+Audio+VoWiFi"
-            date -u +%FT%TZ
-          } | tee "$DIAG_ROOT/kernel/00-context.txt"
+          } | tee ci-diagnostics/kernel/00-context.txt
+          git status --short | tee ci-diagnostics/kernel/00-git-status-before.txt
+          git log -1 --decorate --oneline | tee ci-diagnostics/kernel/00-source.txt
 
-      - name: Select deterministic LLVM toolchain
+      - name: "K04 • Pin and verify LLVM toolchain"
         shell: bash
         run: |
           set -euxo pipefail
-          command -v clang
-          command -v ld.lld
-          command -v llvm-ar
-          command -v llvm-nm
-          clang --version | head -n 2 | tee "$DIAG_ROOT/kernel/01-toolchain.txt"
-          ld.lld --version | head -n 1 | tee -a "$DIAG_ROOT/kernel/01-toolchain.txt"
-          echo "LLVM=1" >> "$DIAG_ROOT/kernel/01-toolchain.txt"
-          echo "LLVM_IAS=1" >> "$DIAG_ROOT/kernel/01-toolchain.txt"
+          CLANG_DIR="$RUNNER_TEMP/clang"
+          rm -rf "$CLANG_DIR"
+          mkdir -p "$CLANG_DIR"
+          command -v clang | tee ci-diagnostics/kernel/01-clang-path.txt
+          clang --version | tee ci-diagnostics/kernel/01-clang-version.txt
+          ld.lld --version | tee ci-diagnostics/kernel/01-lld-version.txt
+          aarch64-linux-gnu-as --version | head -n 1 | tee ci-diagnostics/kernel/01-as-version.txt
+          test -x "$(command -v clang)"
+          test -x "$(command -v ld.lld)"
 
-          # Legacy LG 4.19 trees sometimes miss the helper used by as-version.sh.
-          # Restore only the missing helper; never overwrite an existing source file.
-          if test -f scripts/as-version.sh && ! test -f scripts/min-tool-version.sh; then
-            printf '%s\n' \
-              '#!/bin/sh' 'set -e' 'case "$1" in' \
-              '  binutils) echo 2.25.0 ;;' \
-              '  gcc) echo 5.1.0 ;;' \
-              '  llvm) echo 10.0.1 ;;' \
-              '  *) echo "$1: unknown tool" >&2; exit 1 ;;' \
-              'esac' > scripts/min-tool-version.sh
-          fi
-          test -f scripts/as-version.sh
-          test -f scripts/min-tool-version.sh
-          chmod +x scripts/as-version.sh scripts/min-tool-version.sh
-
-      - name: Generate pristine baseline config
-        shell: bash
-        run: |
-          set -euxo pipefail
-          CFG_SRC="arch/arm64/configs/$DEFCONFIG"
-          test -s "$CFG_SRC"
-          sha256sum "$CFG_SRC" | tee "$DIAG_ROOT/kernel/02-defconfig.sha256"
-          make O="$KERNEL_OUT" ARCH="$ARCH" \
-            LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
-            "$DEFCONFIG" 2>&1 | tee "$DIAG_ROOT/kernel/03-defconfig.log"
-          cp "$KERNEL_OUT/.config" "$DIAG_ROOT/kernel/working.config"
-
-      - name: Integrate SukiSU-Ultra 4.1.3 deterministically
-        shell: bash
-        run: |
-          set -euxo pipefail
-          rm -rf SukiSU-Ultra drivers/kernelsu
-          git clone --filter=blob:none --no-checkout "$SUKISU_REPO" SukiSU-Ultra
-          git -C SukiSU-Ultra fetch --depth=1 origin "$SUKISU_REF"
-          git -C SukiSU-Ultra checkout --detach "$SUKISU_REF"
-          test "$(git -C SukiSU-Ultra rev-parse HEAD)" = "$SUKISU_REF"
-          test -f SukiSU-Ultra/kernel/Kconfig
-          test -f SukiSU-Ultra/kernel/Makefile
-          git -C SukiSU-Ultra rev-parse HEAD | tee "$DIAG_ROOT/kernel/04-sukisu-ref.txt"
-
-          mkdir -p drivers
-          ln -s "$PWD/SukiSU-Ultra/kernel" drivers/kernelsu
-          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || \
-            sed -i '/^endmenu$/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          grep -q '^obj-$(CONFIG_KSU) += kernelsu/$' drivers/Makefile || \
-            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
-
-      - name: Apply SUSFS 1.5.5 only after exact dry-run match
-        shell: bash
-        run: |
-          set -euxo pipefail
-          rm -rf susfs
-          git clone --filter=blob:none --no-checkout "$SUSFS_REPO" susfs
-          git -C susfs fetch --depth=1 origin "$SUSFS_REF"
-          git -C susfs checkout --detach "$SUSFS_REF"
-          test -f susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch
-          git -C susfs rev-parse HEAD | tee "$DIAG_ROOT/kernel/05-susfs-ref.txt"
-
-          # Never accept fuzz, partial application, or a different 4.19 patch set.
-          patch --dry-run --batch --forward --fuzz=0 -p1 \
-            < susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch \
-            2>&1 | tee "$DIAG_ROOT/kernel/06-susfs-dry-run.log"
-          patch --batch --forward --fuzz=0 -p1 \
-            < susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch \
-            2>&1 | tee "$DIAG_ROOT/kernel/07-susfs-apply.log"
-
-          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "::error::Patch reject/orig files remain after SUSFS application"
-            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print
-            exit 1
-          fi
-
-      - name: Configure the finalized feature set
-        shell: bash
-        run: |
-          set -euxo pipefail
-          CFG="$KERNEL_OUT/.config"
-          test -x scripts/config
-
-          # Android 16/GSI-relevant filesystem/security requirements.
-          scripts/config --file "$CFG" \
-            --enable BPF --enable BPF_SYSCALL --enable BPF_JIT \
-            --enable CGROUP_BPF \
-            --enable OVERLAY_FS \
-            --enable TMPFS --enable TMPFS_XATTR \
-            --enable SECURITY --enable SECURITY_SELINUX \
-            --enable DM_VERITY --enable DM_VERITY_FEC --enable FS_VERITY \
-            --enable ZRAM --enable ZSMALLOC \
-            --enable KALLSYMS --enable KALLSYMS_ALL
-
-          # Performance features explicitly approved for this build.
-          test "$(grep -c '^config SCHED_WALT$' kernel/Kconfig 2>/dev/null || true)" -ge 0
-          scripts/config --file "$CFG" --enable SCHED_WALT
-          scripts/config --file "$CFG" --enable SCHED_TUNE
-
-          # KSU/SUSFS/KPM: require the symbols instead of silently ignoring them.
-          scripts/config --file "$CFG" --enable KSU
-          scripts/config --file "$CFG" --enable KSU_MANUAL_HOOK
-          scripts/config --file "$CFG" --enable KPM
-          scripts/config --file "$CFG" --enable KALLSYMS --enable KALLSYMS_ALL
-
-          # LTO: use ThinLTO when this exact 4.19 tree exposes it, otherwise fail
-          # instead of silently falling back to LTO_NONE.
-          if grep -q '^config LTO_CLANG_THIN' init/Kconfig arch/arm64/Kconfig* 2>/dev/null; then
-            scripts/config --file "$CFG" --disable LTO_NONE --enable LTO_CLANG --enable LTO_CLANG_THIN
-          elif grep -q '^config LTO_CLANG$' init/Kconfig 2>/dev/null; then
-            scripts/config --file "$CFG" --disable LTO_NONE --enable LTO_CLANG
-          else
-            echo "::error::This kernel source does not expose a usable Clang LTO option"
-            exit 1
-          fi
-
-          # Preserve stock KPROBES state; non-GKI SukiSU uses manual hooks.
-          scripts/config --file "$CFG" --disable KPROBES
-
-          make O="$KERNEL_OUT" ARCH="$ARCH" \
-            LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm olddefconfig \
-            2>&1 | tee "$DIAG_ROOT/kernel/08-olddefconfig.log"
-
-          cp "$CFG" "$DIAG_ROOT/kernel/final.config"
-
-      - name: Hard-gate every finalized kernel feature
-        shell: bash
-        run: |
-          set -euxo pipefail
-          CFG="$KERNEL_OUT/.config"
-          req() { grep -q "^$1=y$" "$CFG" || { echo "::error::Missing $1"; exit 1; }; }
-          off() { grep -q "^# $1 is not set$" "$CFG" || { echo "::error::$1 must remain disabled"; exit 1; }; }
-
-          req CONFIG_KSU
-          req CONFIG_KSU_MANUAL_HOOK
-          req CONFIG_KPM
-          req CONFIG_KALLSYMS
-          req CONFIG_KALLSYMS_ALL
-          req CONFIG_SUSFS
-          req CONFIG_KSU_SUSFS
-          req CONFIG_SCHED_WALT
-          req CONFIG_SCHED_TUNE
-          req CONFIG_ZRAM
-          req CONFIG_ZSMALLOC
-          req CONFIG_BPF
-          req CONFIG_BPF_SYSCALL
-          req CONFIG_OVERLAY_FS
-          req CONFIG_TMPFS
-          req CONFIG_SECURITY_SELINUX
-          req CONFIG_DM_VERITY
-          req CONFIG_FS_VERITY
-          off CONFIG_KPROBES
-
-          if grep -q '^CONFIG_LTO_CLANG_THIN=y$' "$CFG" || grep -q '^CONFIG_LTO_CLANG=y$' "$CFG"; then
-            echo 'LTO=enabled'
-          else
-            echo '::error::LTO is not enabled'; exit 1
-          fi
-
-          grep -E '^(CONFIG_KSU|CONFIG_KPM|CONFIG_KALLSYMS|CONFIG_KALLSYMS_ALL|CONFIG_SUSFS|CONFIG_KSU_SUSFS|CONFIG_SCHED_WALT|CONFIG_SCHED_TUNE|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_LTO_)' "$CFG" \
-            | tee "$DIAG_ROOT/kernel/09-final-feature-config.txt"
-
-      - name: Build kernel and modules
+      - name: "K05 • Baseline defconfig — diagnose before modifications"
         shell: bash
         run: |
           set -o pipefail
-          make O="$KERNEL_OUT" ARCH="$ARCH" \
-            LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
-            -j"$(nproc)" Image modules 2>&1 | tee "$DIAG_ROOT/kernel/10-build.log"
+          mkdir -p kernel/out
+          DEF="arch/arm64/configs/${DEFCONFIG}"
+          test -s "$DEF"
+          sha256sum "$DEF" | tee ci-diagnostics/kernel/02-defconfig.sha256
+          make O=kernel/out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- \
+            "$DEFCONFIG" 2>&1 | tee ci-diagnostics/kernel/03-defconfig.log
+          rc=${PIPESTATUS[0]}
+          cp kernel/out/.config ci-diagnostics/kernel/working-baseline.config 2>/dev/null || true
+          exit "$rc"
 
-      - name: Verify and package kernel
-        if: success()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          IMAGE="$KERNEL_OUT/arch/arm64/boot/Image"
-          test -s "$IMAGE"
-          file "$IMAGE" | tee "$DIAG_ROOT/kernel/11-image-file.txt"
-          sha256sum "$IMAGE" | tee "$DIAG_ROOT/kernel/11-image.sha256"
-          cp "$IMAGE" "$GITHUB_WORKSPACE/artifacts/kernel/Image"
-          cp "$KERNEL_OUT/.config" "$GITHUB_WORKSPACE/artifacts/kernel/final.config"
-
-          rm -rf AnyKernel3
-          git clone --filter=blob:none --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          cp "$IMAGE" AnyKernel3/Image
-          cat > AnyKernel3/anykernel.sh <<'AK'
-          properties() { '
-          kernel.string=LG Velvet G900EMW Android 16 QPR2 4.19.325 SukiSU-Ultra 4.1.3 KPM SUSFS 1.5.5
-          do.devicecheck=1
-          do.modules=1
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=caymanlm
-          device.name2=G900EMW
-          '; }
-          block=auto;
-          is_slot_device=auto;
-          AK
-          (cd AnyKernel3 && zip -r9 "$GITHUB_WORKSPACE/artifacts/kernel/G900EMW-Android16-QPR2-Kernel-OrangeFox-Flashable.zip" . -x '.git/*' 'README.md' '*placeholder')
-          sha256sum "$GITHUB_WORKSPACE/artifacts/kernel/G900EMW-Android16-QPR2-Kernel-OrangeFox-Flashable.zip" | tee "$DIAG_ROOT/kernel/12-anykernel.sha256"
-
-      - name: Upload kernel artifact ALWAYS
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: G900EMW-kernel-${{ github.run_id }}
-          path: |
-            ci-diagnostics/kernel/**
-            artifacts/kernel/**
-            kernel/out/.config
-            kernel/out/arch/arm64/boot/Image
-          if-no-files-found: warn
-          retention-days: 14
-
-  vendor:
-    name: VENDOR — Android 16 QPR2 vendor.img (independent)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 240
-    steps:
-      - name: Prepare vendor diagnostics
-        shell: bash
-        run: |
-          set -uo pipefail
-          mkdir -p "$DIAG_ROOT/vendor" android
-          {
-            echo "device=$DEVICE"
-            echo "target=$TARGET_PRODUCT-$TARGET_VARIANT"
-            echo "manifest=${{ inputs.android_manifest_branch || 'lineage-23.2' }}"
-            echo "device_ref=${{ inputs.device_branch || 'lineage-23.2' }}"
-            echo "vendor_ref=${{ inputs.vendor_branch || 'lineage-23.2' }}"
-            echo "priority=Fingerprint+Vibration+DualSIM+Audio+VoWiFi"
-            date -u +%FT%TZ
-          } | tee "$DIAG_ROOT/vendor/00-context.txt"
-
-      - name: Install Android build dependencies
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            bc bison build-essential ccache curl flex git gperf \
-            lib32readline-dev lib32z1-dev libelf-dev liblz4-tool \
-            libncurses-dev libssl-dev libxml2-utils lzop \
-            pngcrush rsync schedtool squashfs-tools unzip xsltproc \
-            zip zstd python3 python3-pip python3-venv device-tree-compiler lzip
-
-      - name: Bootstrap repo with stable launcher and verify manifest branch
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd android
-          git clone --depth=1 https://gerrit.googlesource.com/git-repo repo
-          export PATH="$PWD/repo:$PATH"
-          # IMPORTANT: repo launcher branch is stable; manifest branch is separate.
-          # This fixes the previous 'unknown branch main' launcher failure.
-          python3 repo/repo init --repo-rev=stable \
-            -u "${{ inputs.android_manifest_url || 'https://github.com/LineageOS/android.git' }}" \
-            -b "${{ inputs.android_manifest_branch || 'lineage-23.2' }}" --depth=1 \
-            2>&1 | tee "$DIAG_ROOT/vendor/01-repo-init.log"
-
-      - name: Preflight device/vendor refs before repo sync
-        shell: bash
-        run: |
-          set -euxo pipefail
-          DEVICE_REF="${{ inputs.device_branch || 'lineage-23.2' }}"
-          VENDOR_REF="${{ inputs.vendor_branch || 'lineage-23.2' }}"
-          check_ref() {
-            local url="$1" ref="$2" label="$3"
-            git ls-remote --exit-code --heads --tags "$url" "$ref" >/dev/null \
-              || { echo "::error::$label ref '$ref' does not exist at $url"; exit 1; }
-          }
-          check_ref "$DEVICE_REPO" "$DEVICE_REF" device-tree
-          check_ref "$COMMON_DEVICE_REPO" "$DEVICE_REF" common-device-tree
-          check_ref "$VENDOR_REPO" "$VENDOR_REF" vendor-tree
-          check_ref "$COMMON_VENDOR_REPO" "$VENDOR_REF" common-vendor-tree
-          {
-            echo "device_ref=$DEVICE_REF"
-            echo "vendor_ref=$VENDOR_REF"
-            git ls-remote "$DEVICE_REPO" "$DEVICE_REF" | head -n 1
-            git ls-remote "$VENDOR_REPO" "$VENDOR_REF" | head -n 1
-          } | tee "$DIAG_ROOT/vendor/02-ref-preflight.txt"
-
-      - name: Add G900EMW device/vendor local manifest
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd android
-          mkdir -p .repo/local_manifests
-          cat > .repo/local_manifests/g900emw.xml <<XML
-          <manifest>
-            <remote name="github" fetch="https://github.com/" />
-            <project name="lge-qcom-dev/android_device_lge_caymanlm" path="device/lge/caymanlm" remote="github" revision="${{ inputs.device_branch || 'lineage-23.2' }}" />
-            <project name="lge-qcom-dev/android_device_lge_sm7250-common" path="device/lge/sm7250-common" remote="github" revision="${{ inputs.device_branch || 'lineage-23.2' }}" />
-            <project name="lge-qcom-dev/proprietary_vendor_lge_caymanlm" path="vendor/lge/caymanlm" remote="github" revision="${{ inputs.vendor_branch || 'lineage-23.2' }}" />
-            <project name="lge-qcom-dev/proprietary_vendor_lge_sm7250-common" path="vendor/lge/sm7250-common" remote="github" revision="${{ inputs.vendor_branch || 'lineage-23.2' }}" />
-          </manifest>
-          XML
-          export PATH="$PWD/repo:$PATH"
-          repo sync -c --force-sync --no-clone-bundle --no-tags \
-            --partial-clone --clone-filter=blob:limit=10m -j"$(nproc)" \
-            2>&1 | tee "$DIAG_ROOT/vendor/03-repo-sync.log"
-
-      - name: Verify exact device/vendor trees
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd android
-          test -f device/lge/caymanlm/BoardConfig.mk
-          test -f device/lge/caymanlm/device.mk
-          test -f device/lge/sm7250-common/BoardConfigCommon.mk
-          test -f vendor/lge/caymanlm/caymanlm-vendor.mk
-          test -d vendor/lge/caymanlm/proprietary/vendor
-          {
-            echo "device=$(git -C device/lge/caymanlm rev-parse HEAD)"
-            echo "common_device=$(git -C device/lge/sm7250-common rev-parse HEAD)"
-            echo "vendor=$(git -C vendor/lge/caymanlm rev-parse HEAD)"
-            echo "common_vendor=$(git -C vendor/lge/sm7250-common rev-parse HEAD)"
-            find vendor/lge/caymanlm/proprietary/vendor -type f | wc -l
-          } | tee "$DIAG_ROOT/vendor/04-tree-state.txt"
-
-      - name: Mandatory hardware and VoWiFi audit
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd android
-          {
-            echo '=== Fingerprint ==='
-            grep -RniE 'fingerprint|biometric|egis|goodix|fpc' device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm | head -250 || true
-            echo '=== Vibration ==='
-            grep -RniE 'vibrator|haptic|haptics' device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm | head -250 || true
-            echo '=== Dual SIM / Radio ==='
-            grep -RniE 'dsds|dual.?sim|subscription|radio|ril|ims' device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm | head -300 || true
-            echo '=== Audio ==='
-            grep -RniE 'audio|tinyalsa|audio_policy|mixer|snd|sound' device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm | head -300 || true
-            echo '=== Wi-Fi Calling / IMS ==='
-            grep -RniE 'vowifi|wifi.?calling|ims|volte|iwlan|ePDG|epdg|carrierconfig' device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm | head -400 || true
-            echo '=== VINTF ==='
-            find device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm -type f \
-              \( -name '*manifest*.xml' -o -name '*compatibility*.xml' -o -name 'vintf*.xml' \) -print | sort
-          } | tee "$DIAG_ROOT/vendor/05-hardware-vowifi-audit.txt"
-
-          test -f device/lge/sm7250-common/framework_compatibility_matrix.xml
-          test -f vendor/lge/caymanlm/caymanlm-vendor.mk
-
-      - name: Android 16 VINTF/API audit
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd android
-          {
-            grep -RnsE 'ro.vendor.api_level|ro.vndk.version|BOARD_VNDK_VERSION|VNDK' \
-              device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm || true
-            grep -RnsE 'manifest|compatibility_matrix|vintf' \
-              device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm | head -400 || true
-          } | tee "$DIAG_ROOT/vendor/06-vintf-api-audit.txt"
-
-      - name: Build vendor.img
-        shell: bash
-        run: |
-          set -o pipefail
-          cd android
-          source build/envsetup.sh
-          lunch "${TARGET_PRODUCT}-${TARGET_VARIANT}" 2>&1 | tee "$GITHUB_WORKSPACE/$DIAG_ROOT/vendor/07-lunch.log"
-          m vendorimage -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/$DIAG_ROOT/vendor/08-vendorimage.log"
-
-      - name: Verify vendor.img and package
-        if: success()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd android
-          IMG="out/target/product/$CODENAME/vendor.img"
-          test -s "$IMG"
-          file "$IMG" | tee "$GITHUB_WORKSPACE/$DIAG_ROOT/vendor/09-vendor-file.txt"
-          sha256sum "$IMG" | tee "$GITHUB_WORKSPACE/$DIAG_ROOT/vendor/09-vendor.sha256"
-          mkdir -p "$GITHUB_WORKSPACE/artifacts/vendor"
-          cp "$IMG" "$GITHUB_WORKSPACE/artifacts/vendor/G900EMW-Android16-QPR2-vendor.img"
-          (cd "$GITHUB_WORKSPACE/artifacts/vendor" && zip -9 G900EMW-Android16-QPR2-vendor.img.zip G900EMW-Android16-QPR2-vendor.img)
-
-      - name: Upload vendor artifact ALWAYS
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: G900EMW-vendor-${{ github.run_id }}
-          path: |
-            ci-diagnostics/vendor/**
-            artifacts/vendor/**
-            android/out/target/product/caymanlm/vendor.img
-          if-no-files-found: warn
-          retention-days: 14
-
-  bundle:
-    name: BUNDLE — independent kernel/vendor collection
-    runs-on: ubuntu-24.04
-    needs: [kernel, vendor]
-    if: always()
-    steps:
-      - name: Download kernel result if present
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          pattern: G900EMW-kernel-*
-          path: collected/kernel
-          merge-multiple: true
-      - name: Download vendor result if present
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          pattern: G900EMW-vendor-*
-          path: collected/vendor
-          merge-multiple: true
-      - name: Create status report
+      - name: "K06 • Integrate official CIP135 with a real 3-way merge"
         shell: bash
         run: |
           set -u
-          mkdir -p collected/report
+          mkdir -p ci-diagnostics/kernel
+          work="$RUNNER_TEMP/cip"
+          rm -rf "$work"
+          git clone --filter=blob:none --no-checkout https://gitlab.com/cip-project/cip-kernel/linux-cip.git "$work" \
+            2>&1 | tee ci-diagnostics/kernel/04-cip-clone.log
+          git -C "$work" fetch --depth=1 origin "refs/tags/${CIP_TAG}"
+          git -C "$work" checkout --detach "${CIP_TAG}"
+          git -C "$work" rev-parse HEAD | tee ci-diagnostics/kernel/04-cip-resolved.txt
+
+          base="$RUNNER_TEMP/linux-4.19.325"
+          cip="$RUNNER_TEMP/linux-cip135"
+          rm -rf "$base" "$cip"
+          mkdir -p "$base" "$cip"
+          curl -L --fail --retry 5 --retry-all-errors \
+            -o "$RUNNER_TEMP/linux-4.19.325.tar.xz" \
+            https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.19.325.tar.xz
+          tar -xJf "$RUNNER_TEMP/linux-4.19.325.tar.xz" --strip-components=1 -C "$base"
+          git -C "$work" archive "$CIP_TAG" | tar -x -C "$cip"
+
+          : > ci-diagnostics/kernel/05-cip-merge-conflicts.txt
+          : > ci-diagnostics/kernel/05-cip-merged-files.txt
+          : > ci-diagnostics/kernel/05-cip-skipped-files.txt
+
+          mapfile -t files < <(python3 -c 'import os,sys,hashlib; a,b=sys.argv[1:3]; ps=set(); [ps.add(os.path.relpath(os.path.join(r,f),a)) for r,_,fs in os.walk(a) for f in fs]; [ps.add(os.path.relpath(os.path.join(r,f),b)) for r,_,fs in os.walk(b) for f in fs]; print("\n".join(p for p in sorted(ps) if (not os.path.exists(os.path.join(a,p)) or not os.path.exists(os.path.join(b,p)) or (not os.path.isdir(os.path.join(a,p)) and not os.path.isdir(os.path.join(b,p)) and hashlib.sha256(open(os.path.join(a,p),"rb").read()).digest()!=hashlib.sha256(open(os.path.join(b,p),"rb").read()).digest()))))' "$base" "$cip")
+          conflicts=0
+          for f in "${files[@]}"; do
+            if [ ! -e "$cip/$f" ]; then
+              if [ -f "$base/$f" ] && [ -f "$GITHUB_WORKSPACE/$f" ]; then
+                if cmp -s "$base/$f" "$GITHUB_WORKSPACE/$f"; then
+                  rm -f "$GITHUB_WORKSPACE/$f"
+                  echo "$f (deleted by CIP)" >> ci-diagnostics/kernel/05-cip-merged-files.txt
+                else
+                  echo "$f (delete-vs-local-change)" >> ci-diagnostics/kernel/05-cip-merge-conflicts.txt
+                  conflicts=$((conflicts+1))
+                fi
+              fi
+              continue
+            fi
+            if [ -f "$base/$f" ] && [ -f "$GITHUB_WORKSPACE/$f" ]; then
+              mkdir -p "$RUNNER_TEMP/merge/$(dirname "$f")"
+              cp "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/merge/$f"
+              cp "$base/$f" "$RUNNER_TEMP/merge/$f.base"
+              cp "$work/$f" "$RUNNER_TEMP/merge/$f.theirs"
+              if git merge-file -p "$RUNNER_TEMP/merge/$f" "$RUNNER_TEMP/merge/$f.base" "$RUNNER_TEMP/merge/$f.theirs" > "$GITHUB_WORKSPACE/$f.new"; then
+                mv "$GITHUB_WORKSPACE/$f.new" "$GITHUB_WORKSPACE/$f"
+                echo "$f" >> ci-diagnostics/kernel/05-cip-merged-files.txt
+              else
+                echo "$f" >> ci-diagnostics/kernel/05-cip-merge-conflicts.txt
+                rm -f "$GITHUB_WORKSPACE/$f.new"
+                conflicts=$((conflicts+1))
+              fi
+            elif [ ! -e "$GITHUB_WORKSPACE/$f" ] && [ -e "$work/$f" ]; then
+              mkdir -p "$GITHUB_WORKSPACE/$(dirname "$f")"
+              cp -a "$work/$f" "$GITHUB_WORKSPACE/$f"
+              echo "$f (new)" >> ci-diagnostics/kernel/05-cip-merged-files.txt
+            else
+              echo "$f" >> ci-diagnostics/kernel/05-cip-skipped-files.txt
+            fi
+          done
+          echo "conflicts=$conflicts" | tee ci-diagnostics/kernel/05-cip-merge-status.txt
+          if [ "$conflicts" -ne 0 ]; then
+            echo "::error::CIP135 has real source conflicts; no conflict was silently skipped. See 05-cip-merge-conflicts.txt."
+            exit 1
+          fi
+          test -s "$work/localversion-cip"
+          cp "$work/localversion-cip" localversion-cip
+          cat localversion-cip | tee ci-diagnostics/kernel/05-localversion-cip.txt
+          git diff --check
+
+      - name: "K07 • Integrate pinned SukiSU-Ultra 4.1.3 builtin"
+        shell: bash
+        run: |
+          set -o pipefail
+          curl -LSs --fail --retry 5 --retry-all-errors \
+            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_REF}/kernel/setup.sh" \
+            -o ci-diagnostics/kernel/06-sukisu-setup.sh
+          chmod +x ci-diagnostics/kernel/06-sukisu-setup.sh
+          sha256sum ci-diagnostics/kernel/06-sukisu-setup.sh | tee ci-diagnostics/kernel/06-sukisu-setup.sha256
+          bash ci-diagnostics/kernel/06-sukisu-setup.sh builtin 2>&1 | tee ci-diagnostics/kernel/06-sukisu.log
+
+      - name: "K08 • Apply SUSFS 1.5.5 kernel-4.19 patch and resolve only real rejects"
+        shell: bash
+        run: |
+          set -u
+          work="$RUNNER_TEMP/susfs"
+          rm -rf "$work"
+          git clone --depth=1 --branch "$SUSFS_BRANCH" https://gitlab.com/simonpunk/susfs4ksu.git "$work" \
+            2>&1 | tee ci-diagnostics/kernel/07-susfs-clone.log
+          git -C "$work" fetch --depth=1 origin "$SUSFS_REF"
+          git -C "$work" checkout --detach "$SUSFS_REF"
+          cp "$work/kernel_patches/50_add_susfs_in_kernel-4.19.patch" ci-diagnostics/kernel/07-susfs.patch
+          rsync -a "$work/kernel_patches/fs/" fs/
+          rsync -a "$work/kernel_patches/include/linux/" include/linux/
+          set +e
+          patch -p1 --forward --batch --fuzz=0 < ci-diagnostics/kernel/07-susfs.patch 2>&1 | tee ci-diagnostics/kernel/07-susfs-patch.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          find . -type f -name '*.orig' -delete
+          find . -type f -name '*.rej' -print | tee ci-diagnostics/kernel/07-susfs-rejects.txt
+          if [ -s ci-diagnostics/kernel/07-susfs-rejects.txt ]; then
+            echo "::error::SUSFS produced unresolved rejects; nothing was discarded."
+            exit 1
+          fi
+          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' --include='*.c' --include='*.h' --include='Kconfig*' . > ci-diagnostics/kernel/07-susfs-conflicts.txt; then
+            echo "::error::SUSFS left conflict markers."
+            exit 1
+          fi
+          exit "$rc"
+
+      - name: "K09 • Apply finalized feature set and verify every required symbol"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$PWD/kernel/out"
+          test -f "$OUT/.config"
+          scripts/config --file "$OUT/.config" \
+            -e CONFIG_KSU \
+            -e CONFIG_KPM \
+            -e CONFIG_KALLSYMS \
+            -e CONFIG_KALLSYMS_ALL \
+            -e CONFIG_SCHED_WALT \
+            -e CONFIG_SCHED_TUNE \
+            -e CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
+            -e CONFIG_ZRAM \
+            -e CONFIG_ZSMALLOC \
+            -e CONFIG_LTO_CLANG \
+            -e CONFIG_LTO_CLANG_THIN \
+            -e CONFIG_RANDOMIZE_BASE \
+            -e CONFIG_STACKPROTECTOR_STRONG \
+            -e CONFIG_HARDENED_USERCOPY \
+            -e CONFIG_SLAB_FREELIST_RANDOM \
+            -e CONFIG_SLAB_FREELIST_HARDENED \
+            -e CONFIG_DM_VERITY \
+            -e CONFIG_DM_VERITY_FEC \
+            -e CONFIG_FS_VERITY \
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_OVERLAY_FS \
+            -e CONFIG_TMPFS_XATTR \
+            -e CONFIG_TMPFS_POSIX_ACL
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- olddefconfig 2>&1 | tee ci-diagnostics/kernel/08-olddefconfig.log
+          cp "$OUT/.config" ci-diagnostics/kernel/final.config
+          grep -E '^(CONFIG_(KSU|KPM|KALLSYMS|KALLSYMS_ALL|SCHED_WALT|SCHED_TUNE|CPU_FREQ_GOV_SCHEDUTIL|ZRAM|ZSMALLOC|LTO_CLANG|LTO_CLANG_THIN|DM_VERITY|DM_VERITY_FEC|FS_VERITY|BPF|BPF_JIT|OVERLAY_FS|TMPFS_XATTR|TMPFS_POSIX_ACL))=' "$OUT/.config" | tee ci-diagnostics/kernel/08-final-feature-check.txt
+          test "$(grep -c '^CONFIG_KPM=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_KALLSYMS=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_KALLSYMS_ALL=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_KSU=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_SCHED_WALT=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_SCHED_TUNE=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_ZRAM=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_ZSMALLOC=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_LTO_CLANG_THIN=y$' "$OUT/.config")" -eq 1
+
+      - name: "K10 • Immutable G900EMW / regional source audit"
+        shell: bash
+        run: |
+          set -euxo pipefail
           {
-            echo 'LG Velvet G900EMW — Android 16 QPR2 build'
-            echo 'kernel_job=${{ needs.kernel.result }}'
-            echo 'vendor_job=${{ needs.vendor.result }}'
-            echo
-            echo 'Kernel and vendor are independent. Re-running one does not rebuild the other.'
-            echo
-            find collected -type f -printf '%p\n' | sort
-          } | tee collected/report/combined-status.txt
-      - name: Upload combined bundle
+            echo "=== source commit ==="; git rev-parse HEAD
+            echo "=== kernel version ==="; make -s O=kernel/out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- kernelversion
+            echo "=== regional contamination audit ==="
+            grep -RInE 'G900N|VZW|SPRINT|DCM_JP|SB_JP' arch/arm64/configs drivers include 2>/dev/null || true
+            echo "=== KPM/SUSFS symbols ==="
+            grep -RInE 'CONFIG_KPM|CONFIG_KSU_SUSFS' drivers/kernelsu KernelSU 2>/dev/null | head -100 || true
+          } | tee ci-diagnostics/kernel/09-source-audit.txt
+          git diff --check
+
+      - name: "K11 • Build ARM64 kernel and modules"
+        shell: bash
+        run: |
+          set -o pipefail
+          export PATH="/usr/lib/llvm-18/bin:$PATH"
+          make O=kernel/out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            -j"$(nproc --all)" Image.gz-dtb modules 2>&1 | tee ci-diagnostics/kernel/10-build.log
+
+      - name: "K12 • Verify kernel image, modules and release string"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$PWD/kernel/out"
+          test -s "$OUT/arch/arm64/boot/Image.gz-dtb" || test -s "$OUT/arch/arm64/boot/Image"
+          make -s O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- kernelrelease | tee ci-diagnostics/kernel/11-kernelrelease.txt
+          grep -q '4.19.325-cip135' ci-diagnostics/kernel/11-kernelrelease.txt
+          find "$OUT" -type f -name '*.ko' -print0 | sort -z | xargs -0 -r sha256sum | tee ci-diagnostics/kernel/11-modules.sha256
+
+      - name: "K13 • Package OrangeFox/AnyKernel3 flashable ZIP"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf "$RUNNER_TEMP/AnyKernel3"
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$RUNNER_TEMP/AnyKernel3"
+          cd "$RUNNER_TEMP/AnyKernel3"
+          git fetch --depth=1 origin "$ANYKERNEL3_REF"
+          git checkout --detach "$ANYKERNEL3_REF"
+          resolved=$(git rev-parse HEAD)
+          echo "$resolved" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-anykernel3-resolved.txt"
+          rm -rf .git
+          if [ -s "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz-dtb" .
+            image=Image.gz-dtb
+          else
+            cp "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image" .
+            image=Image
+          fi
+          cat > anykernel.sh <<'AK3'
+          properties() {
+            kernel.string=LG Velvet G900EMW • Android 16 QPR2 • 4.19.325-cip135 • SukiSU-Ultra 4.1.3 • SUSFS 1.5.5 • KPM
+            do.devicecheck=0
+            do.modules=0
+            do.systemless=0
+            do.cleanup=1
+            do.cleanuponabort=0
+            device.name1=G900EMW
+          }
+          block=auto
+          is_slot_device=auto
+          ramdisk_compression=auto
+          patch_vbmeta_flag=auto
+          AK3
+          zip -r9 "$GITHUB_WORKSPACE/LG-Velvet-G900EMW-Android16QPR2-cip135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip" . -x '.git/*' '*.md' 'README*' > "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-zip.log"
+          sha256sum "$GITHUB_WORKSPACE/LG-Velvet-G900EMW-Android16QPR2-cip135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-zip.sha256"
+          echo "image=$image" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-package.txt"
+
+      - name: "K14 • Upload kernel result + diagnostics ALWAYS"
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: G900EMW-complete-build-${{ github.run_id }}
-          path: collected/**
+          name: "G900EMW-KERNEL-${{ github.run_id }}"
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/**/*.ko
+            LG-Velvet-G900EMW-Android16QPR2-cip135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip
+            ci-diagnostics/kernel/**
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 30
+
+  vendor:
+    if: ${{ github.event_name == 'push' || inputs.build_vendor }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: "V01 • Checkout workflow source"
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.KERNEL_BRANCH }}
+          fetch-depth: 1
+
+      - name: "V02 • Install Android 16 build dependencies"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            git-core gnupg flex bison build-essential zip curl zlib1g-dev libc6-dev-i386 \
+            libncurses5 libncurses5-dev x11proto-core-dev libx11-dev libreadline-dev \
+            libgl1-mesa-dev xsltproc unzip fontconfig python3 python3-pip rsync \
+            bc ccache lz4 lzop liblz4-tool libxml2-utils pngcrush schedtool
+
+      - name: "V03 • Initialize official repo correctly — no invalid --repo-rev=stable"
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/android/bin" "$RUNNER_TEMP/android"
+          mkdir -p ci-diagnostics/vendor
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$RUNNER_TEMP/android/bin/repo" \
+            2>&1 | tee ci-diagnostics/vendor/00-repo-download.log
+          chmod 0755 "$RUNNER_TEMP/android/bin/repo"
+          export PATH="$RUNNER_TEMP/android/bin:$PATH"
+          mkdir -p ci-diagnostics/vendor
+          cd "$RUNNER_TEMP/android"
+          repo init -u "$ANDROID_MANIFEST" -b "$LINEAGE_BRANCH" \
+            2>&1 | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/01-repo-init.log"
+          repo version | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/01-repo-version.txt"
+
+      - name: "V04 • Add G900EMW device/common/vendor trees with explicit refs"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH="$RUNNER_TEMP/android/bin:$PATH"
+          cd "$RUNNER_TEMP/android"
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/g900emw.xml <<EOF
+          <manifest>
+            <project name="lge-qcom-dev/android_device_lge_caymanlm" path="device/lge/caymanlm" remote="github-lge" revision="${DEVICE_REF}" />
+            <project name="Sparxikle/android_device_lge_sm7250-common" path="device/lge/sm7250-common" remote="github-lge" revision="${COMMON_DEVICE_REF}" />
+            <project name="lge-qcom-dev/proprietary_vendor_lge_caymanlm" path="vendor/lge/caymanlm" remote="github-lge" revision="${VENDOR_REF}" />
+            <project name="Sparxikle/proprietary_vendor_lge_sm7250-common" path="vendor/lge/sm7250-common" remote="github-lge" revision="${COMMON_VENDOR_REF}" />
+          </manifest>
+          EOF
+          # The local manifest above needs a GitHub remote declaration.
+          python3 - <<'PY'
+          p='.repo/manifests/default.xml'
+          print('manifest branch:', open('.repo/manifest.xml').read().strip())
+          PY
+          sed -i '/<remote name="github"/d' .repo/local_manifests/g900emw.xml
+          sed -i '2i\            <remote name="github-lge" fetch="https://github.com/" />' .repo/local_manifests/g900emw.xml
+          cat .repo/local_manifests/g900emw.xml | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/02-local-manifest.xml"
+          repo sync -c --force-sync --no-clone-bundle --no-tags -j2 2>&1 | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/03-repo-sync.log"
+
+      - name: "V05 • Verify source refs and Android 16 QPR2 product tree"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH="$RUNNER_TEMP/android/bin:$PATH"
+          cd "$RUNNER_TEMP/android"
+          repo manifest -r > "$GITHUB_WORKSPACE/ci-diagnostics/vendor/04-manifest-revisions.xml"
+          for p in device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm vendor/lge/sm7250-common; do
+            test -d "$p"
+            git -C "$p" rev-parse HEAD
+          done
+          test -f device/lge/caymanlm/AndroidProducts.mk
+          test -f device/lge/caymanlm/lineage_caymanlm.mk
+          test -f vendor/lge/caymanlm/Android.bp || test -f vendor/lge/caymanlm/Android.mk
+          {
+            echo "device_ref=${DEVICE_REF}"
+            echo "vendor_ref=${VENDOR_REF}"
+            echo "common_device_ref=${COMMON_DEVICE_REF}"
+            echo "common_vendor_ref=${COMMON_VENDOR_REF}"
+            echo "target=lineage_caymanlm-userdebug"
+          } | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/05-context.txt"
+
+      - name: "V06 • Prepare Android build environment"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH="$RUNNER_TEMP/android/bin:$PATH"
+          cd "$RUNNER_TEMP/android"
+          source build/envsetup.sh 2>&1 | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/06-envsetup.log"
+          lunch lineage_caymanlm-userdebug 2>&1 | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/06-lunch.log"
+
+      - name: "V07 • Audit fingerprint / vibration / Dual-SIM / audio / IMS / VoWiFi"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/android"
+          {
+            echo "=== Fingerprint ==="
+            grep -RInE 'fingerprint|goodix|fod|biometric' device/lge vendor/lge hardware 2>/dev/null | head -200 || true
+            echo "=== Vibration ==="
+            grep -RInE 'vibrator|haptics|vibra' device/lge vendor/lge hardware 2>/dev/null | head -200 || true
+            echo "=== Dual SIM / RIL ==="
+            grep -RInE 'dsds|dual.?sim|radio|ril|ims' device/lge vendor/lge 2>/dev/null | head -300 || true
+            echo "=== Audio ==="
+            grep -RInE 'audio|audio.primary|audio_policy|mixer_paths' device/lge vendor/lge 2>/dev/null | head -300 || true
+            echo "=== VoWiFi / IWLAN ==="
+            grep -RInE 'VoWiFi|VOWIFI|IWLAN|epdg|ims|wfc|wifi.?calling' device/lge vendor/lge 2>/dev/null | head -300 || true
+          } | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/07-hardware-audit.txt"
+
+      - name: "V08 • Build vendor.img only — do not rebuild kernel"
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP/android"
+          source build/envsetup.sh
+          lunch lineage_caymanlm-userdebug
+          m vendorimage -j"$(nproc --all)" 2>&1 | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/08-vendor-build.log"
+
+      - name: "V09 • Verify vendor.img and VINTF payload"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/android"
+          test -s out/target/product/caymanlm/vendor.img
+          file out/target/product/caymanlm/vendor.img | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/09-vendor-file.txt"
+          sha256sum out/target/product/caymanlm/vendor.img | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/09-vendor.sha256"
+          find out/target/product/caymanlm -maxdepth 3 -type f \( -name '*manifest*.xml' -o -name '*matrix*.xml' \) -print | sort | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/09-vintf-files.txt"
+
+      - name: "V10 • Upload vendor result + diagnostics ALWAYS"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "G900EMW-VENDOR-${{ github.run_id }}"
+          path: |
+            ${{ runner.temp }}/android/out/target/product/caymanlm/vendor.img
+            ci-diagnostics/vendor/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  bundle:
+    if: always() && (needs.kernel.result != 'skipped' || needs.vendor.result != 'skipped')
+    needs: [kernel, vendor]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: "B01 • Download independent kernel/vendor artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          pattern: G900EMW-*
+          path: collected
+          merge-multiple: false
+
+      - name: "B02 • Build final status report"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p final
+          {
+            echo "LG Velvet G900EMW — Android 16 QPR2"
+            echo "kernel_job=${{ needs.kernel.result }}"
+            echo "vendor_job=${{ needs.vendor.result }}"
+            echo "Kernel and vendor are independent; a successful artifact is preserved even when the other job fails."
+            echo "If a failure occurs, the exact numbered setup is visible in that job's log and diagnostic artifact."
+          } | tee final/BUILD-STATUS.txt
+          find collected -type f -print | sort > final/ARTIFACT-LIST.txt
+          tar -czf "G900EMW-complete-diagnostics-${GITHUB_RUN_ID}.tar.gz" collected final
+
+      - name: "B03 • Upload combined diagnostics ALWAYS"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "G900EMW-COMPLETE-${{ github.run_id }}"
+          path: |
+            final/**
+            G900EMW-complete-diagnostics-${{ github.run_id }}.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
