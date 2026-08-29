@@ -1,4 +1,4 @@
-name: LG Velvet KSU SUSFS NonGKI 4.19 - Safe AutoFix v28
+name: LG Velvet KSU SUSFS NonGKI 4.19 - Safe AutoFix v29
 
 on:
   workflow_dispatch:
@@ -117,7 +117,8 @@ jobs:
           test -s "$OUT_DIR/.config"
           sha256sum "$OUT_DIR/.config" | tee "$DIAG_DIR/pristine-config.sha256"
           cp "$OUT_DIR/.config" "$DIAG_DIR/pristine.config"
-          grep -Eq '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
+          echo "Baseline KPROBES state:" | tee "$DIAG_DIR/pristine-kprobes.txt"
+          grep -E '^(CONFIG_KPROBES=|# CONFIG_KPROBES is not set$)' "$OUT_DIR/.config" | tee -a "$DIAG_DIR/pristine-kprobes.txt"
 
       - name: 07 - Setup pinned KernelSU-Next tree
         shell: bash
