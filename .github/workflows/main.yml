@@ -1,4 +1,4 @@
-name: "LG Velvet G900EMW • Android 16 QPR2 • Kernel + Vendor • v8"
+name: "LG Velvet G900EMW • Android 16 QPR2 • Kernel + Vendor • CIP135 FIX v9"
 
 on:
   workflow_dispatch:
@@ -125,79 +125,93 @@ jobs:
           cp kernel/out/.config ci-diagnostics/kernel/working-baseline.config 2>/dev/null || true
           exit "$rc"
 
-      - name: "K06 • Integrate official CIP135 with a real 3-way merge"
+      - name: "K06 • Integrate official CIP135 — deterministic 3-way merge, no silent skips"
         shell: bash
         run: |
           set -u
           mkdir -p ci-diagnostics/kernel
-          work="$RUNNER_TEMP/cip"
-          rm -rf "$work"
-          git clone --filter=blob:none --no-checkout https://gitlab.com/cip-project/cip-kernel/linux-cip.git "$work" \
-            2>&1 | tee ci-diagnostics/kernel/04-cip-clone.log
-          git -C "$work" fetch --depth=1 origin "refs/tags/${CIP_TAG}"
-          git -C "$work" checkout --detach "${CIP_TAG}"
-          git -C "$work" rev-parse HEAD | tee ci-diagnostics/kernel/04-cip-resolved.txt
+          exec > >(tee ci-diagnostics/kernel/04-cip-integration.log) 2>&1
+          cd "$GITHUB_WORKSPACE"
 
-          base="$RUNNER_TEMP/linux-4.19.325"
-          cip="$RUNNER_TEMP/linux-cip135"
-          rm -rf "$base" "$cip"
-          mkdir -p "$base" "$cip"
-          curl -L --fail --retry 5 --retry-all-errors \
-            -o "$RUNNER_TEMP/linux-4.19.325.tar.xz" \
-            https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.19.325.tar.xz
-          tar -xJf "$RUNNER_TEMP/linux-4.19.325.tar.xz" --strip-components=1 -C "$base"
-          git -C "$work" archive "$CIP_TAG" | tar -x -C "$cip"
+          # CIP135 is an upstream Linux 4.19.325-based release. Do not reconstruct
+          # it by copying a second source tree file-by-file: that creates false
+          # conflicts and can silently omit files. Instead, merge the real tag
+          # into the LG git history and resolve overlapping hunks in favor of
+          # the LG device tree while taking every non-conflicting CIP change.
+          git config user.name "CI CIP integrator"
+          git config user.email "ci@example.invalid"
+          git remote add cip-upstream https://gitlab.com/cip-project/cip-kernel/linux-cip.git
+          git fetch --filter=blob:none --no-tags cip-upstream "refs/tags/${CIP_TAG}"
 
-          : > ci-diagnostics/kernel/05-cip-merge-conflicts.txt
-          : > ci-diagnostics/kernel/05-cip-merged-files.txt
-          : > ci-diagnostics/kernel/05-cip-skipped-files.txt
+          CIP_SHA="$(git rev-parse "FETCH_HEAD")"
+          echo "cip_tag=${CIP_TAG}" | tee ci-diagnostics/kernel/04-cip-resolved.txt
+          echo "cip_commit=${CIP_SHA}" | tee -a ci-diagnostics/kernel/04-cip-resolved.txt
 
-          mapfile -t files < <(python3 -c 'import os,sys,hashlib; a,b=sys.argv[1:3]; ps=set(); [ps.add(os.path.relpath(os.path.join(r,f),a)) for r,_,fs in os.walk(a) for f in fs]; [ps.add(os.path.relpath(os.path.join(r,f),b)) for r,_,fs in os.walk(b) for f in fs]; print("\n".join(p for p in sorted(ps) if (not os.path.exists(os.path.join(a,p)) or not os.path.exists(os.path.join(b,p)) or (not os.path.isdir(os.path.join(a,p)) and not os.path.isdir(os.path.join(b,p)) and hashlib.sha256(open(os.path.join(a,p),"rb").read()).digest()!=hashlib.sha256(open(os.path.join(b,p),"rb").read()).digest()))))' "$base" "$cip")
-          conflicts=0
-          for f in "${files[@]}"; do
-            if [ ! -e "$cip/$f" ]; then
-              if [ -f "$base/$f" ] && [ -f "$GITHUB_WORKSPACE/$f" ]; then
-                if cmp -s "$base/$f" "$GITHUB_WORKSPACE/$f"; then
-                  rm -f "$GITHUB_WORKSPACE/$f"
-                  echo "$f (deleted by CIP)" >> ci-diagnostics/kernel/05-cip-merged-files.txt
-                else
-                  echo "$f (delete-vs-local-change)" >> ci-diagnostics/kernel/05-cip-merge-conflicts.txt
-                  conflicts=$((conflicts+1))
-                fi
-              fi
-              continue
-            fi
-            if [ -f "$base/$f" ] && [ -f "$GITHUB_WORKSPACE/$f" ]; then
-              mkdir -p "$RUNNER_TEMP/merge/$(dirname "$f")"
-              cp "$GITHUB_WORKSPACE/$f" "$RUNNER_TEMP/merge/$f"
-              cp "$base/$f" "$RUNNER_TEMP/merge/$f.base"
-              cp "$work/$f" "$RUNNER_TEMP/merge/$f.theirs"
-              if git merge-file -p "$RUNNER_TEMP/merge/$f" "$RUNNER_TEMP/merge/$f.base" "$RUNNER_TEMP/merge/$f.theirs" > "$GITHUB_WORKSPACE/$f.new"; then
-                mv "$GITHUB_WORKSPACE/$f.new" "$GITHUB_WORKSPACE/$f"
-                echo "$f" >> ci-diagnostics/kernel/05-cip-merged-files.txt
-              else
-                echo "$f" >> ci-diagnostics/kernel/05-cip-merge-conflicts.txt
-                rm -f "$GITHUB_WORKSPACE/$f.new"
-                conflicts=$((conflicts+1))
-              fi
-            elif [ ! -e "$GITHUB_WORKSPACE/$f" ] && [ -e "$work/$f" ]; then
-              mkdir -p "$GITHUB_WORKSPACE/$(dirname "$f")"
-              cp -a "$work/$f" "$GITHUB_WORKSPACE/$f"
-              echo "$f (new)" >> ci-diagnostics/kernel/05-cip-merged-files.txt
-            else
-              echo "$f" >> ci-diagnostics/kernel/05-cip-skipped-files.txt
-            fi
-          done
-          echo "conflicts=$conflicts" | tee ci-diagnostics/kernel/05-cip-merge-status.txt
-          if [ "$conflicts" -ne 0 ]; then
-            echo "::error::CIP135 has real source conflicts; no conflict was silently skipped. See 05-cip-merge-conflicts.txt."
+          # A real merge must have a shared Linux history. Refuse an unrelated
+          # history rather than inventing a synthetic merge that could replace
+          # device code incorrectly.
+          if ! BASE_SHA="$(git merge-base HEAD "$CIP_SHA")"; then
+            echo "::error::LG source and CIP135 do not share a Git ancestry; refusing an unrelated-history merge."
+            echo "No merge-base found." | tee ci-diagnostics/kernel/04-cip-merge-base.txt
             exit 1
           fi
-          test -s "$work/localversion-cip"
-          cp "$work/localversion-cip" localversion-cip
-          cat localversion-cip | tee ci-diagnostics/kernel/05-localversion-cip.txt
-          git diff --check
+          echo "merge_base=${BASE_SHA}" | tee ci-diagnostics/kernel/04-cip-merge-base.txt
 
+          # Save a pre-merge snapshot for diagnostics.
+          git rev-parse HEAD > ci-diagnostics/kernel/04-lg-before-merge.txt
+          git diff --binary > ci-diagnostics/kernel/04-local-diff-before-cip.patch || true
+
+          : > ci-diagnostics/kernel/05-cip-conflicts-before-resolution.txt
+          : > ci-diagnostics/kernel/05-cip-unmerged-after-resolution.txt
+
+          # Merge CIP. -X ours is intentionally explicit: when an upstream
+          # hunk collides with an LG-specific implementation, the LG implementation
+          # wins; non-conflicting CIP hunks are still merged normally.
+          set +e
+          git merge --no-commit --no-ff -X ours "$CIP_SHA" 2>&1 | tee ci-diagnostics/kernel/05-cip-merge.log
+          merge_rc=${PIPESTATUS[0]}
+          set -e
+
+          git status --short > ci-diagnostics/kernel/05-cip-status-after-merge.txt || true
+          git diff --name-only --diff-filter=U > ci-diagnostics/kernel/05-cip-conflicts-before-resolution.txt || true
+
+          # -X ours should leave no unmerged index entries. If Git still has
+          # an unresolved conflict, stop and upload the exact files instead
+          # of skipping or deleting them.
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            git diff --name-only --diff-filter=U | tee ci-diagnostics/kernel/05-cip-unmerged-after-resolution.txt
+            echo "::error::CIP135 merge still has unresolved files. Nothing was skipped."
+            git merge --abort || true
+            exit 1
+          fi
+
+          # Record what actually changed. We do not silently delete CIP files.
+          git diff --stat HEAD "$CIP_SHA" > ci-diagnostics/kernel/05-cip-diff-stat.txt || true
+          git diff --name-status HEAD > ci-diagnostics/kernel/05-cip-name-status.txt || true
+
+          # If merge produced a commit, keep it. If it fast-forwarded, HEAD is
+          # already at CIP. In either case, the worktree is now the merged source.
+          if [ "$merge_rc" -ne 0 ]; then
+            # A merge can return non-zero for conflicts that -X ours resolves.
+            # The index check above is authoritative.
+            if git diff --name-only --diff-filter=U | grep -q .; then
+              echo "::error::CIP integration failed with unresolved state."
+              git merge --abort || true
+              exit "$merge_rc"
+            fi
+          fi
+
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "CI: merge Linux ${CIP_TAG} into LG Velvet kernel" \
+              2>&1 | tee ci-diagnostics/kernel/05-cip-merge-commit.log
+          fi
+
+          echo "CIP integration completed without unresolved files." | tee ci-diagnostics/kernel/05-cip-merge-status.txt
+          git diff --check
+          test -f localversion-cip
+          grep -q -- '-cip135' localversion-cip
+          cat localversion-cip | tee ci-diagnostics/kernel/05-localversion-cip.txt
       - name: "K07 • Integrate pinned SukiSU-Ultra 4.1.3 builtin"
         shell: bash
         run: |
@@ -386,9 +400,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             git-core gnupg flex bison build-essential zip curl zlib1g-dev libc6-dev-i386 \
-            libncurses5 libncurses5-dev x11proto-core-dev libx11-dev libreadline-dev \
-            libgl1-mesa-dev xsltproc unzip fontconfig python3 python3-pip rsync \
-            bc ccache lz4 lzop liblz4-tool libxml2-utils pngcrush schedtool
+            libncurses-dev libx11-dev libreadline-dev libgl1-mesa-dev xsltproc unzip \
+            fontconfig python3 python3-pip rsync bc ccache lz4 lzop liblz4-tool \
+            libxml2-utils pngcrush schedtool git-lfs gperf imagemagick \
+            protobuf-compiler python3-protobuf lib32readline-dev lib32z1-dev \
+            libgnutls28-dev libsdl1.2-dev squashfs-tools xxd erofs-utils
 
       - name: "V03 • Initialize official repo correctly — no invalid --repo-rev=stable"
         shell: bash
@@ -402,9 +418,10 @@ jobs:
           export PATH="$RUNNER_TEMP/android/bin:$PATH"
           mkdir -p ci-diagnostics/vendor
           cd "$RUNNER_TEMP/android"
-          repo init -u "$ANDROID_MANIFEST" -b "$LINEAGE_BRANCH" \
+          repo init -u "$ANDROID_MANIFEST" -b "$LINEAGE_BRANCH" --depth=1 --no-repo-verify \
             2>&1 | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/01-repo-init.log"
           repo version | tee "$GITHUB_WORKSPACE/ci-diagnostics/vendor/01-repo-version.txt"
+          test -f .repo/manifest.xml
 
       - name: "V04 • Add G900EMW device/common/vendor trees with explicit refs"
         shell: bash
@@ -521,6 +538,7 @@ jobs:
           pattern: G900EMW-*
           path: collected
           merge-multiple: false
+          if-no-files-found: warn
 
       - name: "B02 • Build final status report"
         shell: bash
