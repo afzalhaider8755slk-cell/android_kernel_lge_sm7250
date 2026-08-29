@@ -1395,7 +1395,7 @@ jobs:
         \ source files changed (outside KSU/SUSFS integration scope):\"\n  printf\
         \ '%s\\n' \"$unexpected\"\n  exit 1\nfi\n\n# Expected integration files must\
         \ exist.\ntest -f fs/susfs.c\ntest -f include/linux/susfs.h\ntest -d KernelSU-Next/kernel\n"
-    - name: 10G - Fix two missing legacy SUSFS/KSU optional helpers
+    - name: 10G - Reconcile actual dispatcher to legacy SUSFS 1.5.5 ABI
       shell: bash
       run: |
         set -euo pipefail
@@ -1405,20 +1405,98 @@ jobs:
         DISPATCH="drivers/kernelsu/supercall/dispatch.c"
         test -f "$DISPATCH"
         
-        # The current diagnostic proves that Kbuild reaches the real dispatcher, but
-        # two legacy SUSFS-optional hooks are not declared by SUSFS 1.5.5:
-        #   susfs_start_sdcard_monitor_fn()
-        #   susfs_is_current_proc_umounted()
-        # These are optional KSU dispatcher helpers, not core SUSFS kernel hooks.
-        # Provide compile-safe no-op fallbacks only for these two absent APIs.
+        # The diagnostic proved the build is compiling this exact file.
+        # KernelSU-Next v3.3.0 contains a SUSFS-v2 reboot dispatcher block, while the
+        # selected SUSFS kernel-4.19 branch is v1.5.5 and exposes the older typed API.
+        # The correct fix is to remove ONLY that optional v2 forwarding block and keep
+        # the normal KernelSU reboot/toolkit handler intact. Do not fabricate SUSFS
+        # constants, structs or functions.
+        python3 - "$DISPATCH" <<'PY'
+        import sys
+        from pathlib import Path
+        
+        p = Path(sys.argv[1])
+        src = p.read_text()
+        
+        start_marker = "#ifdef CONFIG_KSU_SUSFS\n/* susfs reboot commands */"
+        start = src.find(start_marker)
+        if start < 0:
+            # tolerate a version without the comment, but locate the function itself
+            start = src.find("#ifdef CONFIG_KSU_SUSFS\nint ksu_handle_sys_reboot")
+        if start < 0:
+            raise SystemExit("KSU SUSFS reboot dispatcher block not found")
+        
+        fn = src.find("int ksu_handle_sys_reboot", start)
+        if fn < 0:
+            raise SystemExit("ksu_handle_sys_reboot function not found")
+        
+        brace = src.find("{", fn)
+        if brace < 0:
+            raise SystemExit("ksu_handle_sys_reboot opening brace not found")
+        
+        depth = 0
+        end = None
+        for i in range(brace, len(src)):
+            if src[i] == "{":
+                depth += 1
+            elif src[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end is None:
+            raise SystemExit("ksu_handle_sys_reboot closing brace not found")
+        
+        replacement = """int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
+        {
+            if (magic1 != KSU_INSTALL_MAGIC1)
+                return -EINVAL;
+        
+            /*
+             * Legacy SUSFS kernel-4.19 integration does not use the newer SUSFS-v2
+             * reboot-command ABI. Keep KernelSU's own fd install and toolkit magics.
+             */
+            if (magic2 == KSU_INSTALL_MAGIC2)
+                return ksu_supercall_reboot_handler(arg);
+        
+            return ksu_handle_toolkit_reboot(magic2, cmd, *arg);
+        }"""
+        
+        # Preserve the CONFIG_KSU_SUSFS wrapper around the function. Remove any old
+        # trailing duplicate function text only by replacing the function body.
+        src = src[:fn] + replacement + src[end:]
+        
+        # If a stale duplicate SUSFS-v2 block exists after the function, fail early
+        # rather than silently building an inconsistent dispatcher.
+        for token in (
+            "SUSFS_MAGIC",
+            "CMD_SUSFS_ADD_SUS_MAP",
+            "CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING",
+            "st_susfs_avc_log_spoofing",
+            "susfs_enable_log",
+            "susfs_add_sus_map",
+            "susfs_set_avc_log_spoofing",
+            "susfs_get_enabled_features",
+            "susfs_show_variant",
+            "susfs_show_version",
+        ):
+            if token in src:
+                raise SystemExit(f"incompatible SUSFS-v2 token remains in dispatch.c: {token}")
+        
+        p.write_text(src)
+        print("reconciled actual dispatcher:", p)
+        PY
+        
+        # Keep only the two genuinely absent optional KSU helpers needed by the
+        # selected KSU-Next tree. These are not SUSFS-v2 command APIs.
         cat > include/linux/susfs_ksu_compat.h <<'EOF'
-        #ifndef KSU_SUSFS_COMPAT_H
-        #define KSU_SUSFS_COMPAT_H
+        #ifndef KSU_SUSFS_KSU_COMPAT_H
+        #define KSU_SUSFS_KSU_COMPAT_H
         
         #include <linux/susfs.h>
         #include <linux/susfs_def.h>
         
-        /* SUSFS 1.5.5 / kernel-4.19 does not export these newer KSU helpers. */
+        /* Not exported by the pinned SUSFS 1.5.5 kernel-4.19 API. */
         static inline void susfs_start_sdcard_monitor_fn(void)
         {
         }
@@ -1431,31 +1509,31 @@ jobs:
         #endif
         EOF
         
-        # Include the compatibility header unconditionally in the actual dispatcher.
-        # This avoids CONFIG_KSU_SUSFS include-order/config-state differences.
         if ! grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"; then
           sed -i '1i#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
         fi
         
-        if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
-          sed -i '1i#include <linux/sched/signal.h>' "$DISPATCH"
+        grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
+        
+        # Hard proof: the actual file compiled by Kbuild must contain no v2 dispatcher
+        # ABI tokens. This prevents the same 16-error family from recurring.
+        if grep -nE 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_enable_log|susfs_add_sus_map|susfs_set_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' "$DISPATCH"; then
+          echo "::error::Legacy dispatcher still contains incompatible SUSFS-v2 API."
+          exit 1
         fi
         
-        grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
-        grep -qF 'susfs_start_sdcard_monitor_fn' include/linux/susfs_ksu_compat.h
-        grep -qF 'susfs_is_current_proc_umounted' include/linux/susfs_ksu_compat.h
-        
         {
-          echo "KSU-Next: v3.3.0"
-          echo "SUSFS: v1.5.5 kernel-4.19"
           echo "actual Kbuild dispatch: $DISPATCH"
-          echo "missing helper 1: compile-safe no-op fallback"
-          echo "missing helper 2: compile-safe false fallback"
+          echo "KernelSU-Next: v3.3.0"
+          echo "SUSFS: v1.5.5 kernel-4.19"
+          echo "SUSFS-v2 reboot ABI: REMOVED FROM DISPATCHER"
+          echo "KSU_INSTALL_MAGIC2 fd install: PRESERVED"
+          echo "KernelSU toolkit reboot handler: PRESERVED"
           echo "core SUSFS implementation: NOT MODIFIED"
-          echo "new SUSFS-v2 command constants: NOT FABRICATED"
+          echo "fake SUSFS constants/functions: NONE"
         } | tee "$DIAG_DIR/10G-susfs-ksu-compat-audit.txt"
         
-        echo "PASS: two absent optional SUSFS/KSU helpers are safely bridged."
+        echo "PASS: dispatcher reconciled to legacy SUSFS 1.5.5 ABI."
     - name: 10B - Verify current 4.19 compile fix only
       shell: bash
       run: |
@@ -1685,30 +1763,35 @@ jobs:
 
         echo "PASS: automatic scanner armed; unknown errors will not be blindly patched."
 
-    - name: 10H - Final pre-build gate (actual Kbuild path)
+    - name: 10H - Final pre-build gate (actual Kbuild dispatcher)
       shell: bash
       run: |
         set -euo pipefail
         cd "$GITHUB_WORKSPACE/kernel"
         mkdir -p "$DIAG_DIR"
 
-        test -d drivers/kernelsu
-        test -f fs/susfs.c
+        DISPATCH="drivers/kernelsu/supercall/dispatch.c"
+        test -f "$DISPATCH"
         test -f include/linux/susfs.h
         test -f include/linux/susfs_def.h
         test -f include/linux/susfs_ksu_compat.h
 
-        DISPATCH="drivers/kernelsu/supercall/dispatch.c"
-        test -f "$DISPATCH"
         grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
-        grep -qF 'susfs_start_sdcard_monitor_fn' include/linux/susfs_ksu_compat.h
-        grep -qF 'susfs_is_current_proc_umounted' include/linux/susfs_ksu_compat.h
+
+        if grep -nE 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_enable_log|susfs_add_sus_map|susfs_set_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' "$DISPATCH"; then
+          echo "::error::Incompatible SUSFS-v2 dispatcher API is still present."
+          exit 1
+        fi
+
+        grep -qF 'ksu_supercall_reboot_handler(arg)' "$DISPATCH"
+        grep -qF 'ksu_handle_toolkit_reboot(magic2, cmd, *arg)' "$DISPATCH"
 
         {
-          echo "PASS: actual drivers/kernelsu dispatcher present"
-          echo "PASS: compatibility header included unconditionally"
-          echo "PASS: both missing helper fallbacks present"
-          echo "PASS: state-preserving final pre-build gate"
+          echo "PASS: actual drivers/kernelsu/supercall/dispatch.c verified"
+          echo "PASS: no incompatible SUSFS-v2 dispatcher tokens"
+          echo "PASS: KSU fd-install path preserved"
+          echo "PASS: KernelSU toolkit reboot path preserved"
+          echo "PASS: SUSFS 1.5.5 kernel implementation preserved"
         } | tee "$DIAG_DIR/10H-final-prebuild-gate.log"
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
