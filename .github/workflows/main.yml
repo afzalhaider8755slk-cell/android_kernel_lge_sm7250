@@ -861,6 +861,56 @@ jobs:
         \ 'task_work_add(tsk, cb, TWA_RESUME)' \"$ALLOWLIST_C\"\ngrep -q 'task_work_add(tsk,\
         \ cb, true)' \"$ALLOWLIST_C\"\n\necho 'PASS: allowlist.c uses native LG 4.19\
         \ task_work_add(..., true) and includes put_task_struct declaration.'\n"
+    - name: 05B - Fix KernelSU supercall task_work API for native LG 4.19
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$DIAG_DIR"
+        exec > >(tee "$DIAG_DIR/05b-supercall-4.19.log") 2>&1
+        cd "$GITHUB_WORKSPACE/kernel"
+
+        SUPERCALL_C="KernelSU-Next/kernel/supercall/supercall.c"
+        test -f "$SUPERCALL_C"
+
+        # Linux 4.19's task_work_add() takes a bool notify argument.
+        # KernelSU-Next v3.3.0 uses the newer enum argument TWA_RESUME.
+        # Do not modify the vendor task_work API/header. Translate only this
+        # KSU call: TWA_RESUME means "notify on return to userspace", which is
+        # represented by true in the native 4.19 API.
+        python3 - "$SUPERCALL_C" <<'PY'
+        from pathlib import Path
+        import sys
+
+        p = Path(sys.argv[1])
+        s = p.read_text()
+
+        if "TWA_RESUME" in s:
+            old = "task_work_add(current, &tw->cb, TWA_RESUME)"
+            new = "task_work_add(current, &tw->cb, true)"
+            if old not in s:
+                raise SystemExit(
+                    "TWA_RESUME exists in supercall.c but the expected "
+                    "ksu_supercall_reboot_handler call was not found"
+                )
+            s = s.replace(old, new, 1)
+            p.write_text(s)
+
+        if "TWA_RESUME" in s:
+            raise SystemExit("TWA_RESUME remains in KernelSU supercall.c")
+        if "task_work_add(current, &tw->cb, true)" not in s:
+            raise SystemExit("native 4.19 task_work_add(..., true) is missing")
+        PY
+
+        grep -q 'task_work_add(current, &tw->cb, true)' "$SUPERCALL_C"
+        ! grep -q 'TWA_RESUME' "$SUPERCALL_C"
+
+        {
+          echo "PASS: actual KSU supercall source verified"
+          echo "PASS: Linux 4.19 task_work_add(bool) API used"
+          echo "PASS: TWA_RESUME translated only at KSU call site"
+          echo "PASS: vendor task_work.h NOT modified"
+          echo "PASS: reboot fd-install resume notification semantics preserved"
+        } | tee "$DIAG_DIR/05b-supercall-4.19.log"
     - name: 06 - Download and VERIFY SUSFS kernel-4.19 latest branch
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/06-susfs.log\"\
@@ -1783,6 +1833,10 @@ jobs:
         test -f include/linux/susfs.h
         test -f include/linux/susfs_def.h
         test -f include/linux/susfs_ksu_compat.h
+        SUPERCALL_C="KernelSU-Next/kernel/supercall/supercall.c"
+        test -f "$SUPERCALL_C"
+        grep -q 'task_work_add(current, &tw->cb, true)' "$SUPERCALL_C"
+        ! grep -q 'TWA_RESUME' "$SUPERCALL_C"
 
         grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"
         grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
@@ -1810,6 +1864,22 @@ jobs:
           echo "PASS: KernelSU toolkit reboot path preserved"
           echo "PASS: SUSFS 1.5.5 kernel implementation preserved"
         } | tee "$DIAG_DIR/10H-final-prebuild-gate.log"
+    - name: 10I - Pre-build audit for native 4.19 task_work API
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/kernel"
+
+        SUPERCALL_C="KernelSU-Next/kernel/supercall/supercall.c"
+        test -f "$SUPERCALL_C"
+
+        if grep -n 'TWA_RESUME' "$SUPERCALL_C"; then
+          echo "::error::TWA_RESUME is still present in the KSU supercall source; Linux 4.19 uses task_work_add(..., bool)."
+          exit 1
+        fi
+
+        grep -q 'task_work_add(current, &tw->cb, true)' "$SUPERCALL_C"
+        echo "PASS: supercall.c is reconciled to the native Linux 4.19 task_work API."
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
