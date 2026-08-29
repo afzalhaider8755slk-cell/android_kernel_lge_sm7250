@@ -1821,9 +1821,9 @@ jobs:
             fi
           else
             echo "Build log: NOT PRESENT."
-            echo "RESULT: build did not produce a log.
-This means the compiler was not reached; inspect the last pre-build gate/step
-rather than inventing or reverting a compiler fix."
+            echo "RESULT: build did not produce a log."
+            echo "Compiler was not reached; inspect the last pre-build gate/step."
+            echo "Do not invent or revert a compiler fix."
           fi
         } | tee "$AUDIT"
 
