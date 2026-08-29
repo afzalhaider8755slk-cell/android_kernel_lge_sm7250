@@ -1395,63 +1395,57 @@ jobs:
         \ source files changed (outside KSU/SUSFS integration scope):\"\n  printf\
         \ '%s\\n' \"$unexpected\"\n  exit 1\nfi\n\n# Expected integration files must\
         \ exist.\ntest -f fs/susfs.c\ntest -f include/linux/susfs.h\ntest -d KernelSU-Next/kernel\n"
-    - name: 10G - Install non-blocking KSU/SUSFS legacy compatibility bridge
+    - name: 10G - Install KSU/SUSFS bridge into every actual dispatcher
       shell: bash
       run: |
         set -euo pipefail
         cd "$GITHUB_WORKSPACE/kernel"
         mkdir -p include/linux "$DIAG_DIR"
-        
-        DISPATCH="$(find KernelSU-Next drivers/kernelsu -type f -path '*/supercall/dispatch.c' -print -quit 2>/dev/null || true)"
-        if [ -z "$DISPATCH" ]; then
-          echo "::error::KernelSU-Next dispatch.c was not found."
-          exit 1
-        fi
-        
+
         cat > include/linux/susfs_ksu_compat.h <<'EOF'
         #ifndef KSU_SUSFS_COMPAT_H
         #define KSU_SUSFS_COMPAT_H
-        
+
         #include <linux/susfs.h>
         #include <linux/susfs_def.h>
-        
+
         static inline void ksu_susfs_add_sus_path(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-          susfs_add_sus_path((struct st_susfs_sus_path __user *)*p);
+            susfs_add_sus_path((struct st_susfs_sus_path __user *)*p);
         #endif
         }
         static inline void ksu_susfs_add_sus_kstat(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-          susfs_add_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
+            susfs_add_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
         #endif
         }
         static inline void ksu_susfs_update_sus_kstat(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-          susfs_update_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
+            susfs_update_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
         #endif
         }
         static inline void ksu_susfs_set_uname(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-          susfs_set_uname((struct st_susfs_uname __user *)*p);
+            susfs_set_uname((struct st_susfs_uname __user *)*p);
         #endif
         }
         static inline void ksu_susfs_set_cmdline(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          susfs_set_cmdline_or_bootconfig((char __user *)*p);
+            susfs_set_cmdline_or_bootconfig((char __user *)*p);
         #endif
         }
         static inline void ksu_susfs_add_open_redirect(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-          susfs_add_open_redirect((struct st_susfs_open_redirect __user *)*p);
+            susfs_add_open_redirect((struct st_susfs_open_redirect __user *)*p);
         #endif
         }
-        
+
         #define susfs_start_sdcard_monitor_fn(...) do { } while (0)
         #define susfs_is_current_proc_umounted(...) (false)
         #define susfs_add_sus_path_loop(...) do { } while (0)
@@ -1461,38 +1455,48 @@ jobs:
         #define susfs_get_enabled_features(...) do { } while (0)
         #define susfs_show_variant(...) do { } while (0)
         #define susfs_show_version(...) do { } while (0)
-        
-        #define susfs_add_sus_path(p)               ksu_susfs_add_sus_path(p)
-        #define susfs_add_sus_kstat(p)              ksu_susfs_add_sus_kstat(p)
-        #define susfs_update_sus_kstat(p)           ksu_susfs_update_sus_kstat(p)
-        #define susfs_set_uname(p)                  ksu_susfs_set_uname(p)
-        #define susfs_set_cmdline_or_bootconfig(p)  ksu_susfs_set_cmdline(p)
-        #define susfs_add_open_redirect(p)          ksu_susfs_add_open_redirect(p)
-        
+
+        #define susfs_add_sus_path(p)              ksu_susfs_add_sus_path(p)
+        #define susfs_add_sus_kstat(p)             ksu_susfs_add_sus_kstat(p)
+        #define susfs_update_sus_kstat(p)          ksu_susfs_update_sus_kstat(p)
+        #define susfs_set_uname(p)                 ksu_susfs_set_uname(p)
+        #define susfs_set_cmdline_or_bootconfig(p) ksu_susfs_set_cmdline(p)
+        #define susfs_add_open_redirect(p)         ksu_susfs_add_open_redirect(p)
+
         #endif
         EOF
-        
-        if ! grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"; then
-          sed -i '1i#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_ksu_compat.h>\n#endif' "$DISPATCH"
+
+        mapfile -t DISPATCHES < <(
+          find drivers/kernelsu KernelSU-Next -type f -path '*/supercall/dispatch.c' -print 2>/dev/null | sort -u
+        )
+
+        if [ "${#DISPATCHES[@]}" -eq 0 ]; then
+          echo "::error::No KernelSU supercall/dispatch.c found."
+          exit 1
         fi
-        if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
-          sed -i '1i#include <linux/sched/signal.h>' "$DISPATCH"
-        fi
-        
-        test -s include/linux/susfs_ksu_compat.h
-        grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"
-        grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"
-        
+
+        for DISPATCH in "${DISPATCHES[@]}"; do
+          if ! grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"; then
+            sed -i '1i#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_ksu_compat.h>\n#endif' "$DISPATCH"
+          fi
+          if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
+            sed -i '1i#include <linux/sched/signal.h>' "$DISPATCH"
+          fi
+          grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"
+        done
+
+        BUILD_DISPATCH="drivers/kernelsu/supercall/dispatch.c"
+        test -f "$BUILD_DISPATCH"
+        grep -qF 'linux/susfs_ksu_compat.h' "$BUILD_DISPATCH"
+
         {
-          echo "KSU/SUSFS bridge: PRESENT"
-          echo "dispatch=$DISPATCH"
-          echo "susfs.h: PRESENT"
-          echo "susfs_def.h: PRESENT"
-          echo "hard SUSFS symbol-content gate: DISABLED"
-          echo "vendor SUSFS implementation: NOT MODIFIED"
+          echo "dispatch copies bridged: ${#DISPATCHES[@]}"
+          printf '%s\n' "${DISPATCHES[@]}"
+          echo "ACTUAL KBUILD DISPATCH: $BUILD_DISPATCH"
+          echo "compat header: PRESENT"
+          echo "vendor SUSFS sources: NOT MODIFIED"
         } | tee "$DIAG_DIR/10G-susfs-ksu-compat-audit.txt"
-        
-        echo "PASS: non-blocking KSU/SUSFS legacy compatibility bridge installed."
+
     - name: 10B - Verify current 4.19 compile fix only
       shell: bash
       run: |
@@ -1722,30 +1726,30 @@ jobs:
 
         echo "PASS: automatic scanner armed; unknown errors will not be blindly patched."
 
-    - name: 10H - Final pre-build gate (state-preserving)
+    - name: 10H - Final pre-build gate (actual Kbuild path)
       shell: bash
       run: |
         set -euo pipefail
         cd "$GITHUB_WORKSPACE/kernel"
         mkdir -p "$DIAG_DIR"
-        
-        test -d KernelSU-Next/kernel
+
+        test -d drivers/kernelsu
         test -f fs/susfs.c
         test -f include/linux/susfs.h
         test -f include/linux/susfs_def.h
         test -f include/linux/susfs_ksu_compat.h
-        
-        DISPATCH="$(find KernelSU-Next drivers/kernelsu -type f -path '*/supercall/dispatch.c' -print -quit 2>/dev/null || true)"
-        test -n "$DISPATCH"
-        grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"
-        
+
+        BUILD_DISPATCH="drivers/kernelsu/supercall/dispatch.c"
+        test -f "$BUILD_DISPATCH"
+        grep -qF 'linux/susfs_ksu_compat.h' "$BUILD_DISPATCH"
+
         {
-          echo "PASS: KernelSU tree present"
-          echo "PASS: SUSFS tree present"
-          echo "PASS: compatibility bridge present"
-          echo "PASS: dispatch bridge include present"
+          echo "PASS: actual drivers/kernelsu tree present"
+          echo "PASS: actual Kbuild dispatch is bridged"
+          echo "PASS: SUSFS headers present"
           echo "PASS: state-preserving final pre-build gate"
         } | tee "$DIAG_DIR/10H-final-prebuild-gate.log"
+
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
