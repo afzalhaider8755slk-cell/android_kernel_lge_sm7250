@@ -1395,7 +1395,7 @@ jobs:
         \ source files changed (outside KSU/SUSFS integration scope):\"\n  printf\
         \ '%s\\n' \"$unexpected\"\n  exit 1\nfi\n\n# Expected integration files must\
         \ exist.\ntest -f fs/susfs.c\ntest -f include/linux/susfs.h\ntest -d KernelSU-Next/kernel\n"
-    - name: 10G - Reconcile KSU-Next v3.3.0 with pinned SUSFS 1.5.5 API
+    - name: 10G - Fix two missing legacy SUSFS/KSU optional helpers
       shell: bash
       run: |
         set -euo pipefail
@@ -1405,76 +1405,57 @@ jobs:
         DISPATCH="drivers/kernelsu/supercall/dispatch.c"
         test -f "$DISPATCH"
         
-        python3 - "$DISPATCH" <<'PY'
-        import sys
-        from pathlib import Path
-        p = Path(sys.argv[1])
-        src = p.read_text()
-        marker = "AFZAL_LEGACY_SUSFS_V155_V2_FORWARDING_DISABLED"
-        if marker in src:
-            print("dispatch already reconciled")
-            raise SystemExit(0)
-        
-        needle = "if (magic2 == SUSFS_MAGIC"
-        start = src.find(needle)
-        if start < 0:
-            raise SystemExit("SUSFS-v2 forwarding block not found")
-        brace = src.find("{", start)
-        if brace < 0:
-            raise SystemExit("SUSFS-v2 opening brace not found")
-        
-        depth = 0
-        end = None
-        for i in range(brace, len(src)):
-            if src[i] == "{":
-                depth += 1
-            elif src[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i + 1
-                    break
-        if end is None:
-            raise SystemExit("SUSFS-v2 closing brace not found")
-        
-        replacement = """/* AFZAL_LEGACY_SUSFS_V155_V2_FORWARDING_DISABLED */
-        /*
-         * KSU-Next v3.3.0 has a newer SUSFS-v2 supercall forwarding ABI.
-         * The pinned SUSFS kernel-4.19 v1.5.5 implementation does not provide
-         * that ABI. Keep SUSFS itself enabled; disable only this optional KSU
-         * dispatcher forwarding block rather than inventing incompatible APIs.
-         */
-        if (0) {
-            /* intentionally unreachable for legacy SUSFS v1.5.5 */
-        }"""
-        p.write_text(src[:start] + replacement + src[end:])
-        print("reconciled:", p)
-        PY
-        
+        # The current diagnostic proves that Kbuild reaches the real dispatcher, but
+        # two legacy SUSFS-optional hooks are not declared by SUSFS 1.5.5:
+        #   susfs_start_sdcard_monitor_fn()
+        #   susfs_is_current_proc_umounted()
+        # These are optional KSU dispatcher helpers, not core SUSFS kernel hooks.
+        # Provide compile-safe no-op fallbacks only for these two absent APIs.
         cat > include/linux/susfs_ksu_compat.h <<'EOF'
         #ifndef KSU_SUSFS_COMPAT_H
         #define KSU_SUSFS_COMPAT_H
+        
         #include <linux/susfs.h>
         #include <linux/susfs_def.h>
+        
+        /* SUSFS 1.5.5 / kernel-4.19 does not export these newer KSU helpers. */
+        static inline void susfs_start_sdcard_monitor_fn(void)
+        {
+        }
+        
+        static inline bool susfs_is_current_proc_umounted(void)
+        {
+            return false;
+        }
+        
         #endif
         EOF
+        
+        # Include the compatibility header unconditionally in the actual dispatcher.
+        # This avoids CONFIG_KSU_SUSFS include-order/config-state differences.
+        if ! grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"; then
+          sed -i '1i#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
+        fi
         
         if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
           sed -i '1i#include <linux/sched/signal.h>' "$DISPATCH"
         fi
         
-        grep -qF 'AFZAL_LEGACY_SUSFS_V155_V2_FORWARDING_DISABLED' "$DISPATCH"
-        test -s include/linux/susfs_ksu_compat.h
+        grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
+        grep -qF 'susfs_start_sdcard_monitor_fn' include/linux/susfs_ksu_compat.h
+        grep -qF 'susfs_is_current_proc_umounted' include/linux/susfs_ksu_compat.h
         
         {
           echo "KSU-Next: v3.3.0"
           echo "SUSFS: v1.5.5 kernel-4.19"
           echo "actual Kbuild dispatch: $DISPATCH"
-          echo "legacy-incompatible SUSFS-v2 forwarding: DISABLED"
-          echo "fake SUSFS constants/functions: NONE"
-          echo "vendor SUSFS implementation: NOT MODIFIED"
+          echo "missing helper 1: compile-safe no-op fallback"
+          echo "missing helper 2: compile-safe false fallback"
+          echo "core SUSFS implementation: NOT MODIFIED"
+          echo "new SUSFS-v2 command constants: NOT FABRICATED"
         } | tee "$DIAG_DIR/10G-susfs-ksu-compat-audit.txt"
         
-        echo "PASS: KSU-Next/SUSFS version mismatch reconciled."
+        echo "PASS: two absent optional SUSFS/KSU helpers are safely bridged."
     - name: 10B - Verify current 4.19 compile fix only
       shell: bash
       run: |
@@ -1719,18 +1700,14 @@ jobs:
 
         DISPATCH="drivers/kernelsu/supercall/dispatch.c"
         test -f "$DISPATCH"
-        grep -qF 'AFZAL_LEGACY_SUSFS_V155_V2_FORWARDING_DISABLED' "$DISPATCH"
-
-        if grep -qE 'SUSFS_MAGIC|CMD_SUSFS_ADD_SUS_MAP|CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING|st_susfs_avc_log_spoofing|susfs_enable_log' "$DISPATCH"; then
-          echo "::error::Incompatible SUSFS-v2 symbols remain in actual Kbuild dispatcher."
-          exit 1
-        fi
+        grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
+        grep -qF 'susfs_start_sdcard_monitor_fn' include/linux/susfs_ksu_compat.h
+        grep -qF 'susfs_is_current_proc_umounted' include/linux/susfs_ksu_compat.h
 
         {
-          echo "PASS: actual drivers/kernelsu tree present"
-          echo "PASS: pinned SUSFS 1.5.5 present"
-          echo "PASS: legacy KSU/SUSFS reconciliation present"
-          echo "PASS: incompatible v2 dispatcher symbols absent"
+          echo "PASS: actual drivers/kernelsu dispatcher present"
+          echo "PASS: compatibility header included unconditionally"
+          echo "PASS: both missing helper fallbacks present"
           echo "PASS: state-preserving final pre-build gate"
         } | tee "$DIAG_DIR/10H-final-prebuild-gate.log"
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
