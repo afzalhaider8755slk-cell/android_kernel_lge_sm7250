@@ -1417,6 +1417,7 @@ jobs:
         #ifndef KSU_SUSFS_COMPAT_H
         #define KSU_SUSFS_COMPAT_H
         #include <linux/susfs.h>
+        #include <linux/susfs_def.h>
 
         static inline void ksu_susfs_add_sus_path(void __user **p)
         {
@@ -1496,6 +1497,14 @@ jobs:
         grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"
         grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"
         test -s include/linux/susfs_ksu_compat.h
+
+        # v1.5.5 keeps SUSFS command/magic definitions in susfs_def.h on
+        # legacy 4.19 trees; include it directly instead of relying on
+        # susfs.h to transitively expose those definitions.
+        grep -q 'SUSFS_MAGIC' include/linux/susfs_def.h
+        grep -q 'CMD_SUSFS_ADD_SUS_MAP' include/linux/susfs_def.h
+        grep -q 'CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING' include/linux/susfs_def.h
+        grep -q 'st_susfs_avc_log_spoofing' include/linux/susfs_def.h
 
         {
           echo "SUSFS/KSU compatibility bridge: PRESENT"
