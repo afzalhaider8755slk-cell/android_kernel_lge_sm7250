@@ -1,1053 +1,487 @@
-name: LG Velvet G900EMW - CIP135 + SukiSU-Ultra 4.1.3 + SUSFS 1.5.5 + KPM
-'on':
-  push: {}
+name: "LG Velvet G900EMW • 4.19.325-CIP135 • SukiSU-Ultra 4.1.3 • SUSFS 1.5.5 • KPM"
+
+on:
   workflow_dispatch:
-    inputs:
-      source_branch:
-        description: EXACT WORKING kernel branch
-        required: true
-        type: choice
-        options:
-        - sixteen
-        default: sixteen
-      defconfig:
-        description: EXACT WORKING kernel defconfig
-        required: true
-        type: choice
-        options:
-        - vendor/caymanlm_defconfig
-        default: vendor/caymanlm_defconfig
+  push:
+    paths:
+      - ".github/workflows/LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS.yml"
+
 permissions:
   contents: read
-concurrency:
-  group: lg-velvet-g900emw-cip135-sukisu-${{ github.ref }}
-  cancel-in-progress: true
+
+env:
+  KERNEL_BRANCH: sixteen
+  KERNEL_DEFCONFIG: vendor/caymanlm_defconfig
+  CIP_BASE: 4.19.325
+  CIP_VERSION: 4.19.325-cip135
+  SUKISU_REF: 3f602b5
+  SUKISU_VERSION: 4.1.3
+  SUSFS_REF: 001e69919c6271f690fd00b17e4c721c9e599152
+  SUSFS_VERSION: 1.5.5
+  ARCH: arm64
+  CLANG_REV: clang-r563880c
+  CLANG_REPO_COMMIT: b54cd2c8e9e0bb057aef3804d42d39c5ac4674c7
+  ANYKERNEL3_REF: dca9dc370838d919d56c1f59ec78b27a14a72c68
+  # NOTE: the AnyKernel3 ref is verified at checkout time; if upstream moves,
+  # the verification step fails instead of silently selecting a different tree.
+
 jobs:
   build:
-    name: Build G900EMW 4.19.325-cip135 + SukiSU + SUSFS + KPM
-    runs-on: ubuntu-22.04
-    timeout-minutes: 240
-    env:
-      KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
-      SOURCE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || 'sixteen' }}
-      DEFCONFIG: ${{ github.event_name == 'workflow_dispatch' && inputs.defconfig || 'vendor/caymanlm_defconfig' }}
-      KERNEL_VERSION_TARGET: 4.19.325-cip135
-      SUKISU_VERSION: 4.1.3
-      SUKISU_COMMIT: 3f602b5
-      SUSFS_VERSION: 1.5.5
-      SUSFS_REF: 001e69919c6271f690fd00b17e4c721c9e599152
-      ARCH: arm64
-      OUT_DIR: ${{ github.workspace }}/out
-      DIAG_DIR: ${{ github.workspace }}/ci-diagnostics
-      CLANG_REVISION: clang-r563880c
-      CLANG_PREBUILT_TAG: ndk-r29
-      GCC64_BRANCH: lineage-19.1
-      GCC32_BRANCH: lineage-19.1
-      WORKING_BASELINE_CONFIG_SHA256: 8b931841bcfcfad0b8ed596fbc156e67a6da8f32f226753ffabc89c907accffa
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
     steps:
-    - name: 01 - Checkout LG Velvet Global source
-      shell: bash
-      run: 'set -euo pipefail
+      - name: 01 • Checkout exact LG source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.KERNEL_BRANCH }}
+          fetch-depth: 0
 
-        mkdir -p "$DIAG_DIR"
+      - name: 02 • Install build and merge tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex build-essential ccache clang lld llvm \
+            libssl-dev libelf-dev libdw-dev dwarves \
+            python3 python3-pip rsync patch wiggle \
+            zip unzip xz-utils curl wget git \
+            device-tree-compiler cpio
 
-        exec > >(tee "$DIAG_DIR/01-checkout.log") 2>&1
+      - name: 03 • Prepare diagnostics
+        shell: bash
+        run: |
+          set +e
+          mkdir -p ci-diagnostics
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "source_branch=${KERNEL_BRANCH}"
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "cip=${CIP_VERSION}"
+            echo "sukisu=${SUKISU_VERSION} commit=${SUKISU_REF}"
+            echo "susfs=${SUSFS_VERSION} ref=${SUSFS_REF}"
+            echo "features=G900EMW+WALT+SchedTune+ZRAM+LTO+SukiSU-builtin+KPM+SUSFS"
+          } | tee ci-diagnostics/build-info.txt
+          git status --short > ci-diagnostics/git-status-before.txt
+          git log -1 --decorate --oneline > ci-diagnostics/source.txt
 
-        rm -rf "$GITHUB_WORKSPACE/kernel"
+      - name: 04 • Restore pristine LG defconfig and prove source state
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -f arch/arm64/configs/${KERNEL_DEFCONFIG##*/}
+          mkdir -p kernel/out
+          make O=kernel/out ARCH=arm64 ${KERNEL_DEFCONFIG} 2>&1 | tee ci-diagnostics/04-baseline-config.log
+          cp kernel/out/.config ci-diagnostics/working-baseline.config
+          sha256sum kernel/out/.config | tee ci-diagnostics/baseline-config.sha256
+          grep -E '^(CONFIG_(ARM64|CPU|ARCH_QCOM|LGE|MSM|SCHED|CPU_FREQ|ZRAM|ZSMALLOC|LTO|KALLSYMS|SECURITY|DM_VERITY|FS_VERITY|BPF|OVERLAY_FS|TMPFS))' \
+            kernel/out/.config > ci-diagnostics/baseline-feature-snapshot.txt || true
 
-        git clone --depth=1 --branch "$SOURCE_BRANCH" "$KERNEL_REPO" "$GITHUB_WORKSPACE/kernel"
+      - name: 05 • Fetch official CIP135 + upstream 4.19.325
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/cip" "$RUNNER_TEMP/cip-base"
 
-        cd "$GITHUB_WORKSPACE/kernel"
+          curl -L --fail --retry 5 --retry-all-errors \
+            -o "$RUNNER_TEMP/linux-cip.tar.xz" \
+            "https://cdn.kernel.org/pub/linux/kernel/projects/cip/4.19/linux-cip-${CIP_VERSION}.tar.xz"
 
-        echo "branch=$SOURCE_BRANCH" | tee "$DIAG_DIR/source.txt"
+          curl -L --fail --retry 5 --retry-all-errors \
+            -o "$RUNNER_TEMP/linux-base.tar.xz" \
+            "https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-${CIP_BASE}.tar.xz"
 
-        echo "commit=$(git rev-parse HEAD)" | tee -a "$DIAG_DIR/source.txt"
+          curl -L --fail --retry 5 --retry-all-errors \
+            -o "$RUNNER_TEMP/cip-sha256sums.asc" \
+            "https://cdn.kernel.org/pub/linux/kernel/projects/cip/4.19/sha256sums.asc"
 
-        echo "kernel=$(make -s kernelversion || true)" | tee -a "$DIAG_DIR/source.txt"
+          curl -L --fail --retry 5 --retry-all-errors \
+            -o "$RUNNER_TEMP/base-sha256sums.asc" \
+            "https://cdn.kernel.org/pub/linux/kernel/v4.x/sha256sums.asc"
 
-        '
-    - name: 02 - Install build dependencies (including GCC 4.9 Python wrapper fix)
-      shell: bash
-      run: "set -euo pipefail\nsudo apt-get update\nsudo DEBIAN_FRONTEND=noninteractive apt-get install -y \\\n  bc bison\
-        \ build-essential ccache curl flex git libelf-dev libssl-dev \\\n  lld llvm python3 python-is-python3 rsync unzip\
-        \ wget\n\n# LineageOS GCC 4.9 wrappers use #!/usr/bin/python.\n# Ubuntu 22.04 does not guarantee that /usr/bin/python\
-        \ exists.\ntest -x /usr/bin/python\n/usr/bin/python --version\n\nmkdir -p \"$DIAG_DIR\"\n"
-    - name: 03 - Download EXACT Android Clang r563880c + GCC 4.9
-      shell: bash
-      run: "set -euo pipefail\ncd \"$GITHUB_WORKSPACE\"\nrm -rf clang-prebuilt gcc64 gcc32\n\n# clang-r563880c is a DIRECTORY\
-        \ inside the NDK r29 snapshot,\n# not a Git branch. NDK r29 contains clang-r563880c. \ngit clone --depth=1 --filter=blob:none\
-        \ --sparse \\\n  --branch \"$CLANG_PREBUILT_TAG\" \\\n  https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86\
-        \ \\\n  clang-prebuilt\ncd clang-prebuilt\ngit sparse-checkout set \"$CLANG_REVISION\"\ncd \"$GITHUB_WORKSPACE\"\n\
-        \n# Use the LineageOS lineage-19.1 GCC 4.9 prebuilts.\n# They contain wrapper scripts that require /usr/bin/python.\n\
-        git clone --depth=1 --branch \"$GCC64_BRANCH\" \\\n  https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git\
-        \ \\\n  gcc64\n\ngit clone --depth=1 --branch \"$GCC32_BRANCH\" \\\n  https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git\
-        \ \\\n  gcc32\n\ntest -x \"$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang\"\ntest -x \"$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc\"\
-        \ntest -x \"$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc\"\n\n# This catches the exact failure seen previously:\n\
-        # \".../aarch64-linux-android-gcc: No such file or directory\"\n# when the wrapper's /usr/bin/python interpreter was\
-        \ missing.\n\"$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc\" --version | head -n 1\n\"$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc\"\
-        \ --version | head -n 1\n\"$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang\" --version | head -n 2\n\"\
-        $GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang\" --version | grep -q '21\\.0\\.0'\n\necho \"CLANG_DIR=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION\"\
-        \ >> \"$GITHUB_ENV\"\necho \"GCC64_DIR=$GITHUB_WORKSPACE/gcc64\" >> \"$GITHUB_ENV\"\necho \"GCC32_DIR=$GITHUB_WORKSPACE/gcc32\"\
-        \ >> \"$GITHUB_ENV\"\necho \"PATH=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH\"\
-        \ >> \"$GITHUB_ENV\"\n"
-    - name: 04 - Load exact known-good baseline config
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/04-baseline-config.log\") 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\
-        \n\n# The baseline is embedded in this workflow so this job does NOT depend\n# on a separately committed .github/kernel-baseline/working.config\
-        \ file.\n# It is the exact .config extracted from the user's known-good kernel.\nBASELINE_FILE=\"$RUNNER_TEMP/working-baseline.config\"\
-        \ncat > \"$RUNNER_TEMP/working-baseline.b64\" <<'BASE64_PAYLOAD'\nH4sIAEG9kGoC/6S9WZPjOJIu+n5+hazG7Fi1ne4uLlqouZYPIAlKKHELgloiX2hRkcqquBMZkRMR2VN1fv11B0mJILGo7bZ1Zabg\n\
-        H0DscHc43P/jf/3HjPz4eP328PH0+PD8/Nfs9/PL+e3h4/xl9vXp+fz/zOJilhf1jMas/ieA06eXH3/+8vD2bTmfzf/prv/pe4vZ\n7vz2cn6eRa8vX59+/wG5n15f/td//K+oyBO2aaKoOdCKsyJvanqqP/1EXr68vT59mf3szp3FfOEu/j77P99/f4U/f3t9/oC/nj/w\n\
-        x7dnTPvt4R3q8voye1ss/SBwHv82e3x+ePl99q/z2zt8Z+a5/3T+6cx+/uPj4/v7f/7yy0Nb+j9/f339/fn8/vrj7fH8z8fXb798\nvL4+P/7x8PTyy/Pzv7794/vb6/97fvyYLc7r5XK5/uosndXKWa8fHuaut3Yev/w2f1ycl18fnK+LtT9f/+2nvkGba4s+OYNWMt5E\n\
-        Kck3n/7qE9MYE9M0viYJxCW75zrwv55GeAs/ZFc8pKnBUKqGAlWJSN6kLN8NvntNbHhNahZJtC18h/Cs2RR1cSXURZHyhu/Lsqjq\npqJpdaWx6q45FtXgE+GepXHNMtrAMJMwpQ2HbIPSthUl0CN5UsAfTU04ZoaJ8h+zjZh1z7P388eP79epw3JWNzQ/NKSCBrOM1Z98\n\
-        D+B9vYusZPCZmvJ69vQ+e3n9wBIuPVREJO276Kd/fD+/ff3pmnlIbci+LhQliBY1nKQway/DvyUH2uxoldO02Xxm5bWBQ0r6eX4l\nyOhLFa5QxbdjmpB9Wjfbgtc5yeinn35+eX05X6chPxKpNH7PD6yMhkVdaGXB2anJ7vZ0TxXfiqqC8yajWVHdN6SuSbQdlrznNGWh\n\
-        Ih/Zw7Ywaj+pom1LgApBF6eDuaxPbY6kFh+VEuuK0n6KwHybvf/47f2v94/zt+sU2dCcViwS07GsipBeyxiS+LY46ilNSg80VdNp\nktCoZtiyJGmydtIqcBnbVLCsYKoN+qOKgQQr6AiLh9M8lpdPXGSE5aq0ZstohT15P/1YxhkitYRJsVuSx7BKupKlrAhPiiqicbc6\n\
-        2XD74iWpOFV/TDQZ5ifrih/sDGIGRLC+drzYQ9lNTGoyLUHsFIfJdOjJogAYlrzmo6Jxr4L9a9eEVUHiiPDamFuCialUP32Dw0M1\n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\nDpXxj/vCB2Zxl7ShdYZoH0aMrIkcbB7TQSjeSJZ1IpVHePWMihipQ+p+Y5CYqTZHyaYjI0OSyIZg4k8LiBN+CyRlIScmTFUapxK6\n\
-        s0zxTkMy8BYUnWOrlopu+KaBEuWPR6dN6Ld4M2huA4X5yTNgQuoZiN308o/NCf4nlpf+S9tSY1cpqFDG+nQ6GQHG8SARqQxfJyQy\nV4+waGWsAALWFsB6bgJkB2MLssM+M4xUXNZw0BWG76MnI5g4BgSqpyo9nUL9vErD6G2I2D5zetTdsV8wBubmgjF3RVn7NoBnXp4Z\n\
-        qeryjulW5z7h2yiWDaMvyeMTTYUANh5j+KpKaOJjBIv8gjEUJWQqXS2iLO73V1MR4wCjIwLyzZMvbDHOSmnovlzDL3fn4sl3165h\nNbHStE3nGBzDSCeu4xhqV1PDMuP32cKPAtiQPD3oDjqWRY3rBY4JRGz7Zxz568WfhiWHdVmv5nrEMV65a0Nz9MJXy3hklo2tzALH\n\
-        cfX0/pyCSZ9FzLBFx1s9reBxO6xkpKSVIkWidki1cCBdpdCOVTrGTKM30l1QXVRsmbhhq1k+VYXFmXw3MmDz1EqATOuPXHwmke24\ne3gX+yUjOdnQSkQH0TkWjzG4lXD9QWP1V8TiHt72XIwSWk/I13Sek5Jvi3pUJYzViGzrgWGMMkNF9D7c404Da0SABKYjoSWrRqcP\n\
-        VO20BtpnWhXaUlW+kuXBUGvDsdPFpeyop5KUjCw5r7QD7Z7DDjO0ia0VBrrvpMLoGLpb3ETBnmMqS5Ptk6v6BDmExrISGo3qZrD5\nBCo+fRVDynUIcwQzAJA8rgo44Nsa3IZq8KF6weumwCvJS3gMEd9BOwfC4qgZRC5fdl7cU2kUp8mej7x7tnI2pXTm+uv57Ofk6e18\n\
-        hP/+ptIIJayiaFWlC44uiE1e8Hu1/ePVDuQiN4+cVcuGWWGRx5LIJbTNwwbjBzd7HT9M70TUcoMJv0ZTzpJQm6WmJNOZLGnNtlmp\nJR1OOgrey2ru/zeaN5NQB061rzRQtC1S1dlR76XoH/CzOYjxqEDkbpRZDu0LtWv5aaYLCFdFueLKQdg8XTVoX2T1Tfz0/vH29NsP\n\
-        VFbx/3n6ePxjRgaBvAfwfrDrLdqzyX5A0I1zXFSNP2I+D0Wl46zq+3JbKF3gDsojMSlrecfpklAHVyWsopYC4FyUzANp7fruyZIp\n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\n/T/pURuxjaYCAA==\n\
-        BASE64_PAYLOAD\nsed 's/^          //' \"$RUNNER_TEMP/working-baseline.b64\" | base64 -d | gzip -d > \"$BASELINE_FILE\"\
-        \n\ntest -s \"$BASELINE_FILE\"\nBASELINE_SHA256=\"$(sha256sum \"$BASELINE_FILE\" | awk '{print $1}')\"\necho \"baseline_file=$BASELINE_FILE\"\
-        \ | tee \"$DIAG_DIR/baseline-source.txt\"\necho \"baseline_config_sha256=$BASELINE_SHA256\" | tee \"$DIAG_DIR/baseline-config.sha256\"\
-        \ntest \"$BASELINE_SHA256\" = \"$WORKING_BASELINE_CONFIG_SHA256\"\n\nrm -rf \"$OUT_DIR\"\nmkdir -p \"$OUT_DIR\"\n\
-        cp \"$BASELINE_FILE\" \"$OUT_DIR/.config\"\ncp \"$BASELINE_FILE\" \"$DIAG_DIR/working-baseline.config\"\n\n# Critical\
-        \ stock values BEFORE KSU/SUSFS changes.\ngrep -q '^# CONFIG_KPROBES is not set$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_HAVE_KPROBES=y$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_MODULES=y$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_OVERLAY_FS=y$' \"$OUT_DIR/.config\"\
-        \ngrep -q '^CONFIG_MACH_LITO_CAYMANLM=y$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' \"\
-        $OUT_DIR/.config\"\ngrep -q '^CONFIG_LOCALVERSION=\"-perf\"$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_CC_IS_CLANG=y$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_CLANG_VERSION=210000$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_AS_IS_LLVM=y$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_AS_VERSION=210000$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_LLD_VERSION=210000$'\
-        \ \"$OUT_DIR/.config\"\n\nif grep -Eq '^CONFIG_KSU($|_)' \"$OUT_DIR/.config\"; then\n  echo \"::error::Embedded working\
-        \ baseline already contains KernelSU symbols.\"\n  exit 1\nfi\n\necho \"PASS: exact embedded WORKING .config loaded.\"\
-        \necho \"PASS: baseline SHA256 matches $WORKING_BASELINE_CONFIG_SHA256\"\necho \"PASS: KPROBES remains disabled in\
-        \ pristine baseline.\"\n"
-    - name: 05 - Apply official CIP135 delta while preserving LG source
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/05-cip135.log\") 2>&1\ncd \"$GITHUB_WORKSPACE\"\
-        \nrm -rf cip132 cip135\ncurl -L --fail --retry 3 -o cip132.tar.xz https://cdn.kernel.org/pub/linux/kernel/projects/cip/4.19/linux-cip-4.19.325-cip132.tar.xz\n\
-        curl -L --fail --retry 3 -o cip135.tar.xz https://cdn.kernel.org/pub/linux/kernel/projects/cip/4.19/linux-cip-4.19.325-cip135.tar.xz\n\
-        mkdir -p cip132 cip135\ntar -xJf cip132.tar.xz --strip-components=1 -C cip132\ntar -xJf cip135.tar.xz --strip-components=1\
-        \ -C cip135\ncd \"$GITHUB_WORKSPACE/kernel\"\npython3 - <<'PY2'\nimport os, pathlib, subprocess\nWS=pathlib.Path(os.environ['GITHUB_WORKSPACE']); A=WS/'cip132';\
-        \ B=WS/'cip135'; O=WS/'ci-diagnostics'/'cip135.patch'; O.parent.mkdir(parents=True, exist_ok=True)\nfiles=set()\n\
-        for base in (A,B):\n    for p in base.rglob('*'):\n        if p.is_file(): files.add(p.relative_to(base).as_posix())\n\
-        out=[]\nfor f in sorted(files):\n    a=A/f; b=B/f\n    if a.exists() and b.exists():\n        r=subprocess.run(['diff','-u','--label','a/'+f,'--label','b/'+f,str(a),str(b)],text=True,capture_output=True)\n\
-        \        if r.returncode==1: out.append(r.stdout)\nO.write_text(''.join(out), encoding='utf-8')\nprint('patch bytes',O.stat().st_size)\n\
-        PY2\nif [ -s \"$DIAG_DIR/cip135.patch\" ]; then\n  set +e\ngit apply --3way --whitespace=nowarn \"$DIAG_DIR/cip135.patch\"\
-        \ 2>&1 | tee \"$DIAG_DIR/cip135-apply.log\"\n  rc=${PIPESTATUS[0]}\n  set -e\n  if [ \"$rc\" -ne 0 ]; then\n    git\
-        \ status --short | tee \"$DIAG_DIR/cip135-status.txt\"\n    echo '::error::CIP135 delta could not be merged cleanly\
-        \ into the LG tree.'\n    exit \"$rc\"\n  fi\nfi\nif git status --short -- arch/arm64/boot/dts arch/arm64/configs\
-        \ | grep -q .; then\n  echo '::error::CIP135 touched device-specific DT/defconfig files.'\n  git status --short --\
-        \ arch/arm64/boot/dts arch/arm64/configs\n  exit 1\nfi\necho 'PASS: CIP135 delta applied without DT/defconfig changes.'\n"
-    - name: 06 - Integrate pinned SukiSU-Ultra 4.1.3 builtin
-      shell: bash
-      run: 'set -euo pipefail
+          grep "linux-cip-${CIP_VERSION}.tar.xz" "$RUNNER_TEMP/cip-sha256sums.asc" > "$RUNNER_TEMP/cip.sha256"
+          grep "linux-${CIP_BASE}.tar.xz" "$RUNNER_TEMP/base-sha256sums.asc" > "$RUNNER_TEMP/base.sha256"
 
-        mkdir -p "$DIAG_DIR"
+          (cd "$RUNNER_TEMP" && sha256sum -c cip.sha256)
+          (cd "$RUNNER_TEMP" && sha256sum -c base.sha256)
 
-        exec > >(tee "$DIAG_DIR/06-sukisu.log") 2>&1
+          tar -xJf "$RUNNER_TEMP/linux-cip.tar.xz" --strip-components=1 -C "$RUNNER_TEMP/cip"
+          tar -xJf "$RUNNER_TEMP/linux-base.tar.xz" --strip-components=1 -C "$RUNNER_TEMP/cip-base"
 
-        rm -rf /tmp/SukiSU-Ultra
+          diff -urN "$RUNNER_TEMP/cip-base" "$RUNNER_TEMP/cip" > ci-diagnostics/cip135.patch || true
+          wc -c ci-diagnostics/cip135.patch | tee ci-diagnostics/cip135.patch.size
+          sha256sum ci-diagnostics/cip135.patch | tee ci-diagnostics/cip135.patch.sha256
 
-        git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/SukiSU-Ultra
+      - name: 06 • Apply CIP135 with fuzzy/semantic merge fallback
+        shell: bash
+        run: |
+          set -u
+          rc=0
+          rm -f ./*.rej ./*.orig 2>/dev/null || true
+          find . -name '*.rej' -o -name '*.orig' | xargs -r rm -f
 
-        cd /tmp/SukiSU-Ultra
+          patch -p1 --forward --batch --fuzz=3 < ci-diagnostics/cip135.patch \
+            2>&1 | tee ci-diagnostics/06-cip135-patch.log
+          rc=${PIPESTATUS[0]}
 
-        git fetch --depth=1 origin "$SUKISU_COMMIT"
+          # patch(1) deliberately stops short on vendor-diverged hunks.
+          # wiggle is used only for those rejects; it attempts word-aware
+          # alignment rather than replacing the vendor file wholesale.
+          rej_count=$(find . -type f -name '*.rej' | wc -l)
+          echo "patch_exit=$rc" | tee ci-diagnostics/cip135-apply-status.txt
+          echo "reject_count=$rej_count" | tee -a ci-diagnostics/cip135-apply-status.txt
 
-        git checkout --detach "$SUKISU_COMMIT"
+          if [ "$rej_count" -gt 0 ]; then
+            while IFS= read -r rej; do
+              file="${rej%.rej}"
+              test -f "$file"
+              echo "WIGGLE $file" | tee -a ci-diagnostics/06-cip135-wiggle.log
+              wiggle --replace --no-backup "$file" "$rej" \
+                2>&1 | tee -a ci-diagnostics/06-cip135-wiggle.log || true
+            done < <(find . -type f -name '*.rej' | sort)
+          fi
 
-        test "$(git rev-parse HEAD)" = "$SUKISU_COMMIT"
+          find . -type f -name '*.rej' -print > ci-diagnostics/cip135-remaining-rejects.txt
+          find . -type f -name '*.orig' -delete
 
-        cd "$GITHUB_WORKSPACE/kernel"
+          if grep -RInE '^(<<<<<<<|=======|>>>>>>>|<<<---|\|\|\|\|\|\|\||>>>---)' \
+              --include='*.c' --include='*.h' --include='*.S' --include='*.Kconfig' \
+              --include='Makefile' --include='Kconfig' . \
+              > ci-diagnostics/cip135-conflict-markers.txt; then
+            echo "::error::CIP135 left unresolved conflict markers."
+            exit 1
+          fi
 
-        bash /tmp/SukiSU-Ultra/kernel/setup.sh builtin
+          if [ -s ci-diagnostics/cip135-remaining-rejects.txt ]; then
+            echo "::error::CIP135 still has rejected hunks; see diagnostics."
+            exit 1
+          fi
 
-        find drivers/kernelsu -maxdepth 2 -type f | sort | tee "$DIAG_DIR/sukisu-files.txt"
+          # Record exactly what CIP changed in the vendor tree.
+          git diff --stat > ci-diagnostics/cip135-final-stat.txt || true
+          git diff --check > ci-diagnostics/cip135-diff-check.txt || true
 
-        '
-    - name: 07 - Integrate SUSFS 1.5.5 kernel-4.19
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/07-susfs.log\") 2>&1\nrm -rf /tmp/susfs4ksu\n\
-        git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu\ncd /tmp/susfs4ksu\ngit fetch --depth=1\
-        \ origin \"$SUSFS_REF\"\ngit checkout --detach \"$SUSFS_REF\"\ncd \"$GITHUB_WORKSPACE/kernel\"\ncp -f /tmp/susfs4ksu/kernel_patches/fs/susfs.c\
-        \ fs/susfs.c\ncp -f /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h\n[ -f /tmp/susfs4ksu/kernel_patches/include/linux/susfs_def.h\
-        \ ] && cp -f /tmp/susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h || true\nPATCH=/tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch\n\
-        test -f \"$PATCH\"\nset +e\npatch -p1 --forward --batch < \"$PATCH\" 2>&1 | tee \"$DIAG_DIR/susfs-patch-apply.log\"\
-        \nrc=${PIPESTATUS[0]}\nset -e\nif find . -name '*.rej' -print -quit | grep -q .; then\n  find . -name '*.rej' -print\
-        \ | tee \"$DIAG_DIR/susfs-rejects.txt\"\n  echo '::error::SUSFS patch generated reject files.'\n  exit 1\nfi\nif grep\
-        \ -Eq 'FAILED|saving rejects|Hunk #[0-9]+ FAILED' \"$DIAG_DIR/susfs-patch-apply.log\"; then\n  echo '::error::SUSFS\
-        \ patch reported failed hunks.'\n  exit 1\nfi\nif [ \"$rc\" -ne 0 ]; then echo '::warning::patch returned nonzero\
-        \ but no rejects/failed hunks were reported.'; fi\ntest -f fs/susfs.c\ntest -f include/linux/susfs.h\ngrep -q susfs\
-        \ fs/Makefile\necho 'PASS: SUSFS 1.5.5 integrated.'\n"
-    - name: 08 - Configure FINAL agreed feature set (G900EMW + performance + KPM)
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/08-config.log\") 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\
-        \nBASE64=$(cat <<'EOF_B64'\n          H4sIAEG9kGoC/6S9WZPjOJIu+n5+hazG7Fi1ne4uLlqouZYPIAlKKHELgloiX2hRkcqquBMZkRMR2VN1fv11B0mJILGo7bZ1Zabg\n\
-        \          H0DscHc43P/jf/3HjPz4eP328PH0+PD8/Nfs9/PL+e3h4/xl9vXp+fz/zOJilhf1jMas/ieA06eXH3/+8vD2bTmfzf/prv/pe4vZ\n\
-        \          7vz2cn6eRa8vX59+/wG5n15f/td//K+oyBO2aaKoOdCKsyJvanqqP/1EXr68vT59mf3szp3FfOEu/j77P99/f4U/f3t9/oC/nj/w\n\
-        \          x7dnTPvt4R3q8voye1ss/SBwHv82e3x+ePl99q/z2zt8Z+a5/3T+6cx+/uPj4/v7f/7yy0Nb+j9/f339/fn8/vrj7fH8z8fXb798\n\
-        \          vL4+P/7x8PTyy/Pzv7794/vb6/97fvyYLc7r5XK5/uosndXKWa8fHuaut3Yev/w2f1ycl18fnK+LtT9f/+2nvkGba4s+OYNWMt5E\n\
-        \          Kck3n/7qE9MYE9M0viYJxCW75zrwv55GeAs/ZFc8pKnBUKqGAlWJSN6kLN8NvntNbHhNahZJtC18h/Cs2RR1cSXURZHyhu/Lsqjq\n\
-        \          pqJpdaWx6q45FtXgE+GepXHNMtrAMJMwpQ2HbIPSthUl0CN5UsAfTU04ZoaJ8h+zjZh1z7P388eP79epw3JWNzQ/NKSCBrOM1Z98\n\
-        \          D+B9vYusZPCZmvJ69vQ+e3n9wBIuPVREJO276Kd/fD+/ff3pmnlIbci+LhQliBY1nKQway/DvyUH2uxoldO02Xxm5bWBQ0r6eX4l\n\
-        \          yOhLFa5QxbdjmpB9Wjfbgtc5yeinn35+eX05X6chPxKpNH7PD6yMhkVdaGXB2anJ7vZ0TxXfiqqC8yajWVHdN6SuSbQdlrznNGWh\n\
-        \          Ih/Zw7Ywaj+pom1LgApBF6eDuaxPbY6kFh+VEuuK0n6KwHybvf/47f2v94/zt+sU2dCcViwS07GsipBeyxiS+LY46ilNSg80VdNp\n\
-        \          ktCoZtiyJGmydtIqcBnbVLCsYKoN+qOKgQQr6AiLh9M8lpdPXGSE5aq0ZstohT15P/1YxhkitYRJsVuSx7BKupKlrAhPiiqicbc6\n\
-        \          2XD74iWpOFV/TDQZ5ifrih/sDGIGRLC+drzYQ9lNTGoyLUHsFIfJdOjJogAYlrzmo6Jxr4L9a9eEVUHiiPDamFuCialUP32Dw0M1\n\
-        \          m0SxRU5hUgwKzYtm+xl3m0yM7mVdQGIJXytiFikWR5uLQd8M87SpyT5NdVkGA8c2W5w4oqsqPiymhJWRlTXkyKl6xXeAQ5Hu85pU\n\
-        \          94rPdZjrB/tMUQF5+t6Kyv0v9cP7f80+oNtmcLzO3j8ePt5nD4+Prz9ePp5efh/1H2RoSCTKaKfTpVIHBseITMYRU1QNp5eYIFJB\n\
-        \          /byMtjBhj7gty3tPSyCHTTdnLx8OeYy7Q0Rhm4MSVacFHkd4MErdjImwE6fk3pStOSFxcNBhGiuUdS85k8YR1my/08eM46kZq8cT\n\
-        \          gEldkUi5f0OXMl6k/f4jxq2K9jM+neL9GAP5Wiv4AYc2TOZBK7iEwK14nIQ91iiSRDWnH4DeTdPrMhpQcgrDxukmClM2XM1IS0he\n\
-        \          7OtPy/k0EbZtknxylzKF15d1dOk9pIRFoWQTRAWKKMReHDEzTchyb8AosV37j2mKmF3D5C1spu2avfAbWGgC5w1L6k/uasjG5DB2\n\
-        \          tEnSPd/C7gNHfl2m+42SpWkHOyMnubBLLVheA4NHEjr+oD/eItvFIjbKfsrwxz/OX348n99mX88PHz/ezu/tDtCxAcC7ZqUYYxUv\n\
-        \          gFtzxyryJt9npAkJMLuRNP1lFFTW9YIBI7qpin056LSSbGi7Gw0PGGBUos3oZ88OTdKAfxSrakzbwV+D4U533deH0yam4X5IUy09\n\
-        \          QWiOFatpSKLduDFtN19TE8KqRqZcJ0IChxWcpkcW11vlLgDb5yCvEtJ9tmQxN9GrOCP65iSw2j8PuxwmHafDkxjnO36ko0jNaMuI\n\
-        \          6YGpd6uWDhm7bXNSd1ol+nxhmSi/FipXDC+i3QUj8SHd/C8qmGH1gAFBZhs4Hzgrrml7nNJ8xBNXkKTeq6FbZFJfNK1HxUAdol1Z\n\
-        \          wELAg76Gyqja0B5rIKP0M1Qi1PucjgQBmEgxhZ0+IrVmmlR4qKlEnhQPvIMQvaohv4q/SQYFt0wdCkSXwq5EwUyqNtl4JCtBQggJ\n\
-        \          npSSfs6ItG3HzemzuvoILvQklUQFYm5RAlPBPlOsp5hmRZXBFiV13xjG4R+qQQHGdThtBAOyZ7G7HIyPwMDJGtGyFgoQPBkHu46Y\n\
-        \          yt2P8fk7Kksw2zjrpKHe0BpFkqZjo9X1xEG7sNnDaYKVU+S8QJKWt1exjkKgvPCl0vEz/t3kGRserIOtm6aJWIEDMgGJA9njwZa5\n\
-        \          r+lp9BPW2KCUshjiOdvkJE0Gk1fUc5ggJINhAt9KxwFhAy0IiQ8MKtV1FJcOkpBUFRtulDuE3Gd8mtJIYs4lVTQYVyPKmBLPWiZN\n\
-        \          yjPVGgXKVIzGk/VIYCPp+UmE/TqUz7sEqMiR3PNGFmaQuM9hxA6XAook0XwdS7mgJsXAxpOCyKWcUjiDRb4k1jERKN9duxZamkej\n\
-        \          SQJS6d30nMZURZlQEo3j4Rksliqu/uYiX1737sh1pM1DcECdhrM8v319ffv28PJ4ntF/nV9ACiIgD0UoB4FEOWCyNYVjsjg5+JZU\n\
-        \          asGtbUuPbA4ZjHKhki8PWfuFnj+SvsTTfTg9E2VyxyOJ/aHI1cxCkZUEZlK10xRDVGohLF2uTKGGEaxEBSxeN5cG6xFpyIWgQNBU\n\
-        \          sA0VmY6KahbgaYerGZuHfHJJqpqRVNqRa5oJTgC1pyxh0UhpA4xNwlKJaRW7tjikJVVEthyo+JbzcLjUsmw/gra8bMeMezIJftQd\n\
-        \          aS4thSwDBrbKURABDiRj+Sc3MAHI6ZOnKaEfyktB7g04KO8qXoH8Fu1a2a7j4AfsQZrSDUkb0Uswvw8k3dNPzp9fzg9fnMH/BrrZ\n\
-        \          HXAo04La8kF8T1Ky4VN6deQwfqdouyEx8ETppgDOe5tNNUDSOTNIvOy1fV35FLY9UrbZqtRKfK/4FGzELKyA1WpVBcOp/7nIITUj\n\
-        \          vqdYAGIf6gvZSIxdVk60x1kRU+Agh3M1gTOYkiq9h9+NdICVm1YDLxSb/JOvlr/2QmM61q8J1n4nGGNxYdMJh+XzwwfuftCC5/Nj\n\
-        \          d8dzaWir9o1wLamZ4u7L+YnpySQtmUafJehhlHmBvzACGob1N0BoBavbQK+ijNehHkBP93lhaOPO19NgdsCEi0hpaGS6cXd66pZx\n\
-        \          QwdmNGYwD3cmBC8Mrc8OcGboDua7SGzCo+YWOdFlSJm4TRr3waYwVSGkOewkhv7dkl8N3cejfUj05LvMcw0TKONZsPZXhuLjbLl0\n\
-        \          9PSKktQ4AFDA3Fub6f7aUsOFby5gYaohbL3RlpWGEiip69TUx/f5HQjvtDL1Q045MW0FNV6XnFxDTWu6qQxDycsqNmTe7vPYVMMO\n\
-        \          4OkR+5yVeBGjRxxAaAO53dDME+7vevLnk4EGvZyVE140/IFXF9+/v759DBjOaCAPwY/utocrE/szRyYqRERIpnhShHuVNgMzZXz0\n\
-        \          Xd0lFNLu9qzajbhtZuBSRa3qfaglsuKgpYEko6cRztRTp1O9ImrS8Zj2+Pry8fb6jCrSL29P/2qZ/vYcfPhyRrkAUOcBbDhWUr8C\n\
-        \          1wBcK/A625FaWqppUsOfruNoAZi7H08diDYn5GhP2kL0k/TyiW61gGCS3QakEdEjM1muFX0Tn9+ffn85PryJPgShCv7BNX0XH5sS\n\
-        \          uDhz32mPSlEEHmZ66o5VMpNwmQH05cv316eXcZ0amseCoVRmev+fp4/HP9SzR57uR/g/q6NtTSOdFJpcdfMiGWSI2fnt7eHjYfY/\n\
-        \          r2//9fAG4uiX99m/nh5mH3+cZw/PIJu+PHzA995nX98evp0Rdd06WhGEVrAd77Mm8Ja+ux7LLlfqykidO0s91V3PV56W6nvOaqGl\n\
-        \          zhcrw3fn/lxPdR1vvnIDLdkNgmDla8nzpe952oq5i7k3NxQuyPqqreaes9bmhq6e+8FABxiRA4P0nu55/rDLxlQfvq6nruYLfcm+\n\
-        \          47qDknGtNAlJd0U16FbHtyLWI8RdnMAccS4Qx1kOPsOLCMQHEDmuDAbqkthQ7MZFnTKUdy6fWbpLxwkcz1wb6jpzd9zT850Qy7nM\n\
-        \          pCLFXXYkzfmMmOVcgZEQB9IK0v56+oWeNg9s2T/567Eqoc86VTK0OebBQIlT7iFxgzsUI7n2fiGLJJ2NSOOZ6sY0r8Stz6eLKqI/\n\
-        \          NaUb1FZYEpdvvWlRh7NhKvjXgY5Q8NFNyYpPrhc4A3OKvfIaa1ukFK8Xhfw9MtkYnaZXgrdwRlBfc/C2paiL+QTFyB27rdAsQncH\n\
-        \          2un7YBoJRZ/C1qVtTNs9qAQYK31bMx2gdz2pJU+0bB23n9Ko7rtf9YEEjlpV8Vd7rzLJUeXDhkrW40gLetXAXRu/3W9onYYJV+mx\n\
-        \          kdiUWdwqSxUdExHoXzRppOKSZrwW4owIFSorFNo4JApCA9Xe5BlU8tNaMohEe5ItiYsj6nfSVvulnrm8BEFX1LSsu+v0vrE0Qn2a\n\
-        \          xPKSiqAdjJr36Ihj2xcleEdPVM3zRRXh2ybeZ2oh70TV4nexS+fNZq+2phQ3e8LwANdUUQGPhzrEq2I/Rw1ip6sC1oymmrUjtLVN\n\
-        \          WJFc6JpozKK6qJTqMYGkqQdyFmLG2teG8zCWraLwIvUAczUl98W+1m6sNdls8Eo1jquGhAMRptN+HmI+uADKWM02qN7jJdSjon3l\n\
-        \          4SyCWt1LtToEg5vXwUQ4lg3N9ulI2RyV7qLpLzoUdE5r2LVVlK4Djk1dh5UDE+di9wOUfwX/dGcPb49/PH2cH4FXfHgeGnRIJcAy\n\
-        \          JUkcZtODJFccWVs6YUrbz3k3fm5PimmxZUYz7VDBVEZ74mnTD5MFD3vXHpZjmQ73G7yLgsGQd672QgFvePH6TZXelVXRDd7bdheS\n\
-        \          rfz9CtV8/Y4K0EHzoizGjejTT4+/A//9vfny9P7w2/P503fohHfoicFteQdtkgq4lLAoarwso6oV0COh/a3x6LSM8X37BUETtfDT\n\
-        \          Gja1HUbKEsqFhRDXYcMyOIOsWboFjusEFR/YOXixrzWe7oY97zPAx9oiJEPo6r6AWbAXBuWkgk0vthQY1w2wCFWrbZfW7kBvLm7a\n\
-        \          tjQtWyV/K429/g9IX98eXh5+P387vyhGku95KZnqdgkDo5grl9SR+I6V4qJSveWxEJosFrBKjZI1PKV0oPDvU7prgOv2lgkjEEFT\n\
-        \          F3QkOyoMb6XCLqmdDb0jFXmlbiJlqaMq6CxtgBSlO+nD/d3GVRl1Keh415TFEXe9JGEgcV/vrdVFj4pSdNkYUSSS+VLbkH5xAHSj\n\
-        \          ZnYGg4VWDpwpOKpu1Afk3lK2m1/ZZX5d1ENAY1+ez4MdA40242HhfUpr61GizXbFDqOb3QtoUxyaFE4wjX5SwgF7o9LqwyoSELR7\n\
-        \          pXxwgFyqO4sveorrVotldzW/tC15O//3j/PL41+z98eHZ8koGGsCa+dObiimiLqRuq6a1oRMRR7bi16IWGlFMnJOXJHemytgmTrL\n\
-        \          HyUWZykHblDby5MsuO8IC7LbsxSwDUN94ttzoNUorQ7iKvP2XEIi2dcs1VgRX7pd7iIlou8YDf3SCxp632TtuF/bJ0OEIa8m16V9\n\
-        \          w7n5dTw3Vdo3ALa9Vet6syXvs+xepxMQYjbIAjWsqS6DFip0FH2peACqOSAZtz1KPM+Y2O7Nyik90rheAHdFxe5UlRV9kzy9ffsf\n\
-        \          1Mgqt4GSo4b6OGLo2mRh2Ki9OoEDLspQR1/URVSkBlR5CyqmjbjKT3RrLmFVdgQhEqVcEFPUGBD0ks4eRjEWoquh1iMtE6Q0wg7k\n\
-        \          2qN9MoiOObJ27c29/nTrxGjIlEWRpITZFMUGDcO72k+Gpz7//vYw+9oPUjurh5MaZck9CLifdcxHZ39S3ZfDd3/tbxR/vcXyYuky\n\
-        \          EC978sL1WrLyUVmPcvvPUOUnhlTTNxrdhnqB+tPKTFCZf1tp2VyJk1GbLQrahvpHVeR7NxREKB9bFI0pqu4bEptoODlVgHDInk0A\n\
-        \          aFrSQSat2BL4v+cIjKnXyiK9d31nYQVePxvyybTuX4MORMrzP76cv59fvsgc+1WAaA1ZlF/8dZ+VwCiFVHXmTSxgxGK88qT7XKiH\n\
-        \          UFcQ4euh8WNPZfZdRWslQTKEvWrPhM3Ttih2IyLqqNA0jG32xV5hpgTiQcu/tW/3FI/0kIjGschfDe2LLio0OONrltz3Rt1TAGTs\n\
-        \          VIPKmrdPenld7aO6OW5ZTeUXPAIKQjSMNopJqEPrehKEz3FndGadwyRJohApcMqF8NHWaF5l04lfU6W3dpeiBqgZUzXnOlXM1KG9\n\
-        \          rtSAaN+0dldJ+3JV7s12BrSvc6KsRCO28Xe6ydZ1KGqFxx3S5mufL2tocbGfCi1Cpdqpt1gZNe3bzv55tKK5ne4STp9Uen2jS281\n\
-        \          pti/eGALhd3kiblMFq8XBwVr8o4yQd8U+idFKW5X8it8GVBvWZ4ODzvMkY+uCS6lWB86qVTEV/XAmKg7/XGV470X7gQ7yfZUkDXv\n\
-        \          Jkco45tJgcBrlabcx8rkLNbsTTneINBOIa+Yku3sRmX9ISPlpOy4v4agEZrbDtSqQsXGhY4eHwLgolLsQILU6+VUn5ZsYEcFyLSr\n\
-        \          8awi98DwVVfIEHK1n41SNPLEx1/ApMWDzAU6D2CbTl3gT7TMHb21mpxQfS9k7UWAqtHY1eM7CVXadSOv4USoe/1ddTwNF5iWNM7e\n\
-        \          q0UV2VWkiiZiKo5edAwujmDQgUHqlLRoPDp8/JfDGQZMyaUUWlVFpaic7Jmi+9WyElFx+EfrQ+S/WuuJ72+vX59kBcWlHER3BuBU\n\
-        \          fq7RmurCLob3l5JdFazMDF+kDA978aaDo+X+1UFIN9uH20PXY+3NyvjFhIzZC0lCm7klq7N3W7zqy7yKLh4wlI+Hetzwyes1rf24\n\
-        \          kjIyJBtQUB5Q8mkyxvPmt6AWyxtQfjA3tq2TMpQNQQb/00/vfzwA4KfJB3qttrISsCwyGJm90HnjWx9tJXj7vDoFFnDIpYXyZSI+\n\
-        \          zeMRZzDB7/CSTnp20z3bC7n6rnBAH7nymEBQkt5UrL43ovASMDYigDcs6jrV3V6KV7XdLYbgRSot7BjW+iLap50MH7/TPNJXGkeh\n\
-        \          KEmqefMITIG4acmFgCLtx0oympek3YPf9mLh4e3jCQWTWf3X9+HFl3iDIrKQ+ID6NGkZk6io8itGreNgJwui4ImtjAwOGhumJhWz\n\
-        \          YDISqRE9nccFvyLGThhixncTWexaOMuhqXwfmuuAng4qxptTsLTUdg/lCb2P+btpnFkK4htbx+xTWO+2ceJ721jvQComxh6mCVP3\n\
-        \          LzoAWgaW8gdLTvsFse9MrtNwGWR3naVx65KnuHoMGEx4VrR2L3lRSNdXfXoMImM6eucxgkTJ8LYguWv6VT56Td+rtlv84A1dm4w1\n\
-        \          MLhW6ov76fHrf1/cKkETxxUdHAxX4u4+HEo/fXI4rHmorznh+cAaDeZpu8HwkuXiNNcbDJEaOOGoqbLj8HEwvokVmWGfKY75sGrt\n\
-        \          kykNUQy1htYawQMrI/xGxQI2ul3UU8aZq6M66yS9rW5ZoQOVo9rwJ8e6iuvfskRZCO04UKUwum64Mq+taXtzrPDGW7rB3ezQUDhG\n\
-        \          Q5MYb7ZEqvo8H0ArukFe+0Z0r0W7Dc2FoHEzlBfRrXC0n7sV22mOrXB89hfdN0eUXqGLW4q13ug7Iru9KjEtwn3i3Zphz8Obe7DA\n\
-        \          R4H89h7c3wpFadwKJXjtDlMjYSeVydXF4EBst/TP8+OPD7QqEb4ZZ+Ip8sdg4w1ZnmRoeZVMhEkVCX50z6oH733xrEQ9V79HovTd\n\
-        \          +bJRnRRtsTyqWCnzoy0hY1xlU4Cf6XRwomXZ+dvr21+DW3OFVYbSSvF6edOZKGYk3yt5vKsVZAsZezmTXk+2mov2U6Xw3FYr8GiW\n\
-        \          U9GheH4lHdqLponJ5AQx/eiI688LYSMk1a+r2tDl05WHkkxtlT0hrBXr9pBHO965NFlG2giFX7tye89b27n68u75ysAoXRb000l0\n\
-        \          CrB5IvunubNeqg+5rhUJYelenqIyRSN4TXVWamYopcCQoxWp+kawKvIafQgpTbOIbI9FtIYxSIPKEP5p4PTpc1lobjQ/h3uVJP+Z\n\
-        \          Z72B8NUap3vlm7XnoLq4Lp+wl1C6ESCo1f4MM31fbfA0TYjQvw49bWa9rwFNIf2Fg3iMDMwOLAvZOWXrCoo2BI9uoV6paJQSlml8\n\
-        \          ICS0qmQ9uHAyo0S3txwI6dWnyr2UoLvBXrU8dMmAilXh+U2nnb1YMgC3dOwn4A6fvMusBDonAglxm5FqZ3JuUXampJJngt49Xdcv\n\
-        \          oymfxMAxoo8SdBOQqV0LTTZ9SBP+XjMot3vlMHBEBP1USTdamEj7NLEv5+cPfCuEFhOTDRn6Yyf7fWpTQNQiqgFAUUxieE/dbbok\n\
-        \          rE1yXxd1qhqfU1IN9kX8JXwCjJI6tznDpIu9wCgdhE+8MWPR/YjQ7oMTOLrS5TWL+Lj8sjP8HnTujkq+AbqkvmS1qXZcChdWVDk7\n\
-        \          mTTqrGwNx2SPmJDa6x0aEEVqec4yvMcJUVVFtWugLxcN0sR+w0cliGI7DJE9l41BwLSHxdDiFihlXo5/N/E2KkdfwWQ8CdXWGx2g\n\
-        \          IpWaLmZ8qTRUbUkb5Hxotj+NVkmJ/rVG9qqXHLqqZKK1Sm9MIA4UxY5NVmN5qJmctI91306KvbaRQLtWWjdpGrIduvbChc/l/u7S\n\
-        \          0AeQRrXM2mrL01wktocSerPaV2HTPRVYShCxRi6NkzKrEtsViGY07dku+x4ZIcwFhJSO8+KeM65FVKqScUi6ZLmrKnLUbXyXT8D0\n\
-        \          wrvLwcaCX4F/boaawTEpHF6ZXVKjvTr9CJ84FkX86duEtIV/QfJ1Q70QOPxTvedeIPdhSsyQAwiC3AzJD2Y6Cuk4dcyotLRVJC/M\n\
-        \          iHtKtmYEnO0sL5ilPXFk7bgo3pgBYVgZ2OV2kCd6LTH6Os5JIKpRJ4zI/ec//fTb0+NPcrWyeMGZciKXh+Vwoz4suwMFZaRERRG+\n\
-        \          3keE1rceHplNTGJ5fS0n+9JStTEtb9iZltOtCb+esXIpnyuQyFKiLUW7US01qdatamnZq5bTzWrU+itd9HLnrVBn4ieaKB0uIoXL\n\
-        \          Yluf1iyrWFdIHoM4DwJpTOv7ko7Km55UInmj9GjZjsWEqZDqsg/xUoxPSpyeraNG0M2ySY9tfSwwYNUjNUcwsgKCFHybgsYvyN3L\n\
-        \          B3VZl2gtwjlLxgyeyATycmuWXpOsVIsnAB3b01ySlPdGYcXiDb2CJkZ0wn8CMPBfn/D9vy44x/UjKnGgI3VyhIqUkIyBxNfWxgAA\n\
-        \          tmzUM3LZOvfaU6BQGxtqiX6PzZ8quMqtYY6eKPNciJBS/kR4UobMMT0Ya4jZe8/pikKb0cQZkq7TavjdKx1vW9WHkQRDGVJpvCyh\n\
-        \          xi9yJSLOU/S3raeKWaytqVg3uirUrS03HJxRKX+hp2yG+v4hgUe1JgvwZCmrqabGBJ8YEA0xGZd5oWx9z9eQWBVpKIp4BBIdpkrI\n\
-        \          irEnYXki5FlpG7+y1FabE9mOTSYya9F1Mu3l6+qXir2qF7opox3zHte+xDMt3U26R2fMUg1yMvkt/MUPmeUuWTO5riTVVLlSJ1MM\n\
-        \          SYr5g8mJAjqeGJhWq4D45rmisutrILXHoHGLOV2OSrHHn8RtwPvs8fXbb08v5y+zb694Gfuu2t9PdTM5ua4knAIdWSr54+Ht9/OH\n\
-        \          ZGst5atJtUFxEsO16ETSCVq8DeH7zNLUC/x6tJpQ1xZYUKozfAqszfSYR5oT7YrZpjd3iU5nqMKivlN4NDbXUESfGUCN39eFnVBi\n\
-        \          i82NNTV0s7ysFXlz9GxdWjBJe9gbIT3DYGxTXogN8OY+QIWd2k+CEn1d8AZUTakFAPvUybIMRh7GVZCb5j9Ighnntm4DFEgfaAA6\n\
-        \          9VPXbyHfHj4e/zjrt5AMIz+J+yCUKmw92qJHMQAUiGnABiM63fNa+QRfBS6yTLoRVGLyPLyvKbdVE3C6tyk6uHjDbfu4YYSvoCmz\n\
-        \          q8CV+1t7EU/em7H0oAupoULzqDS2hka5mc7N+dHM096xeg7mCkkt/dmqJW5rNisrkm+opcTUq28sL6X5pt4a62/vBBCZLXTLzGvl\n\
-        \          /lYvYmpXnoyFQhNaI9UpgLKRkwIxvv9RQXa1rANRYO72xTDeiA7h3QDRC7UXoOJEMsIpSbPbwRHNby4a+ejbhqK92TK2X7gmsCKE\n\
-        \          PtGCqqT3MArI5cgzQKTXGArA3vdG11ac1rpbosP06SMr//MGpU2CityKCE3WXBIv2h6dpreswzQ9RtvENnGs8dDepLVkzKUW+Sr6\n\
-        \          K5rqTL4lZCRVYkY4MGkVwWfcKrpaNSAopUK8kmV36GdIZ+VUyYjpHfOxVadLp8qQUJVjbd2QWg/jwrQENfzCHv46kgYlMr/Pxeip\n\
-        \          71XHIrKU9dqzGsCYyx7Va8y29q3MN3JUQylbx0wx7UXtFQodbAdBd2qbXpHjuHbA3u7x+cI4Heazeg4Q3WgC4drWbnn+a3nbAr0u\n\
-        \          xKVmIS5VC1FOvK6kpWKBYrJuhXZrbansuOVoRQy6fTlcFJqhGWDonmme20sw3KvsKJQk7Khtasdgy1ujRTs22+r7aLLY1UVUtf0z\n\
-        \          vDJ2p1JjIEOmc3Rp2UOWt24iS2lVy8ntChuX2i8yU5tyotEJXg+vwXTvLzSShobjddrRgIA61n1NFTchSKyb6WWIGjeqmwoUOF7j\n\
-        \          20AkK3TvmwYgzUk6gLAbEEsbRPDuNtBY0aTCdNytDcZra60PKclv6J6Klum9DRffMGjYusaK6g82awNv+OJIG6aCCDWVGlQaJiwc\n\
-        \          QmOJesBWtsrqgb/eGuDhpinCX6O8Vnr5ra9m3a0Nkrj/xAv/aUkKnPblpjbHODrxEG+rgenLQ8ua9uMjm5xKE/yy1gVIJ7VKG42S\n\
-        \          9eCpDPxqDv4ogY0RdChh82EB41vSboqwTQbjiW+Vpi/2he0QJ2MDMEhSNgOXG25crioQWppKxiTw09M9A0zVW8TJU4dOSUmpCdKw\n\
-        \          hRmgXkLLtDiWms2BUUqxFYu5xlyvf0wlmLK7H+cf56eX33/pHqNJb7s7dLOtQ/nSXiQmPJqm4tOjaarQWtxN0yvpIqpL5EmoSlRk\n\
-        \          r+ldqkgNx/pNkRyFXGv3h3SQR/UdhgKUoqrw9/BpQZ8cV5WiD+66vpl8me9CJBm+Hm2LHZ0WeSe/3Lug8YGHsa3J3Q2giOyopRQj\n\
-        \          ebtNjPSSUUOTryYV04ypJubJpf+n7sJaDfrzw/v709enx6khBwhek29BEnoj0FiL9QjBU+nWGgKSozxymDZSdXRJ2uC9HXlqPSPK\n\
-        \          h81AVfXIoCNu2za5CLiUpzlVe4hgy9VeD4Ttq6CPjOMvCqdoh88jpqRobPLdpYu7ACWl7cVpekZHusOe0IVkk9pDe7GnNnQViSb5\n\
-        \          CBpRoLJTN4sRsBll3JDW9CI05MlYVcn2Sj2Fk6xM9WuSCHG3NtJ1TNmlRdRwGd1Wguk08C15F2IRqupHo2vrCUDL8PYAmLFGen95\n\
-        \          Y27ALsyK2NyLibmXW/s4fIBgXCZM6Yr5sn2yRDoO4kg1K+Icn7XwIj3IQnQIXBcRbhHUTg1Kmh/aaDhqZkfxMGJYf2FSon1PAtNQ\n\
-        \          f5jmXP3JLddvKm1NR0ZiEiL1USGH+mK1KdldVQ8OXfwlnDPvyybjnxbX4JmCwjNpfYk0GFNNsU22ZRP4nqu5NkHEodX3TySHVurZ\n\
-        \          7nL4jjvhwtXbgL05lVwRul2YUI6YBxWmtQPRTcfqhA957xs5FnQ45K6uAZGlcMW8rijJFE5Ihq8q8OXX6G5MTL9Dk6dZZ/M1fDM1\n\
-        \          +zi/f7ScqNRzIFpvqH6HiKsCRrvI2SgkwiB8QlaRWNdZyvAu4dCJA2pQaCwvQ+i8BC+11SIq5MhpqaNtWax0/g4ULn1WVhiLBI2Q\n\
-        \          hoI3TZN6dJvVOt9//nH+eH39+GP25fyvp8ezypMvfjtiYa2b3j2d67qxBeyJRq/X5Y8yz/FPJkRJXMcISMxVPGwjpiNn1UHpsIln\n\
-        \          SBW+mYfdn6BLeZYpkppjlPvrtTMaHUG6i8jSX2siNCaw5CqdOJ00u0glUeNjs2ovKfeOrKKpZHncpzQtq9OnUmGnNrwFEklo9DpK\n\
-        \          4uX9BMQOQ48iGxQvBw448lQkNDjp0LJe2qY6NO7aNIVTCbflKgfuXj1/L/iIonPNLsJ0U+TKKIoXNHp1goaL8PX4Vo9u4nBaZeFS\n\
-        \          o/fUhhA8wbkC1+tjShVRvH7MSar9SlTFZBB8edo27FWdgyCBUE3OjoQctLC4EOFkROieQUiCI4NU1eGS4JPb4fmCvyW3/l0S7iyS\n\
-        \          NqhNZnm5V9e5A6B/DO3OvC41Wy5T83MRLdGaItTc0KieHaRC/z2YzF1CU+aLhT9NRt+s6GaiZRIk3U6HaINLde9/9V9seO46zvDl\n\
-        \          46lsypWPMx6Eg5G5ctQ5Y8AY2m2AAl0bm1wtXpcWKUDHu6pedfQ8Jq/beFADL7hVAaOQpqOXlnhswz65mejU6AE5RuW8vRfLrkNI\n\
-        \          ficIS4sDrXRPx+mV5+iCXIpTS+lOnWQhufgtRBfIT48dcFaMX1/v2+f4Y4MkKbnBx7iffvpp+DrsUGel8oUALMk8JqnkkLWs2uIu\n\
-        \          3tNFBJa+ihff8M+vD1+E2/GrI/U2os3A1ciprsilHKzTGNsMgrUMApyryEPXa5L39rEjh75vU2Te0CXdwO/IoE9wiRjmcQegh0rz\n\
-        \          BKMF4MnRFdO0AezUGmiEEQwV04OFp2iDTwXh93VfFwKnCD4P5MM+hR8kZCmrpZfFnXuboW/MjXTf3zkyYl40SeND/8yXtGyamGVD\n\
-        \          fWlfYnU3STtGsZyODq5FcLcYapkksnSIxEREyBU2rao1j/6xM3JdW18ffjx/iCirT7//eP3xPvvWOpaBWfowe3/6v+f/HAZsIuLo\n\
-        \          abLWTvP6QPlCgW2up45cfVzI6D4ClojWwYhUFMtvACnPPuFC5BKnLhjPgdZTbwGiT7G5v8Spgva3TLLMHbfx7ZsN4yFkDHWhDmjI\n\
-        \          JP0e6kzwVXfWjKJBX+XxLhh2M3UC1W+kW9ZNxyu7sFVEgG6dAm2H4ZalNmCmcfzeS55OMFCEXcZs03dcEnmv4biRxkkNpwnTvD1E\n\
-        \          vQ2NdGLbJtc4Cc3qWBmYZ7AeC0nFWSToKKOu1dbnQEVXSLXkfhwSW8csStKuCH+VEjpvalKatGzht+R4An5n8XAPKNB0BaO3YFjR\n\
-        \          4e0CEFCwGM0BSO2CealbFEKtaXUfk5qMIikie6px6AmjrHKQmu+B0Qs191s9CENAcw51r1npeyfVivxckUG78BfkjGUuTKQeK5gx\n\
-        \          oe5tQf/FmETrpWOE7NVR8npy2npbVKQKf0vtw0TY5Cbltt7p0pGrxGkNq9Ds7zW30PkuNlRf6s5B4rXiCpoQHQJ3PfBUFMUYVa/c\n\
-        \          1VF8iHXXm2K64UWtscK2Bldcnhmt+ueQUVXY8ksvIV3J9wKhSSI9rTXkmW55T++Pqn2exAtvcWrislDLPCKQEa5rzcUtyWtNgHT0\n\
-        \          hcqKaK65YU8ywWepL3YjvvY9PnfUhgRw2qcF36MQDJsHSh5qHRiwF6laUmsDIhUsR8ZfPfxlzNcghhKN+pfx1Fs7jm8geuqFymnO\n\
-        \          i4o3NYAWCzMm3LqrlRkiKrrWKJC2WbT0F+r7+5i7y0BNQs+IrZ66SThZzwNHc59f19D7DY1KvzG4dOSwCFWSTxyVzR2nFAZjoM++\n\
-        \          JEgR72kei1AejeZE27O4jRmM3okkd1FDwpSHGDuME4bkwoBbPXHQe9DYXeGVWrPmhDr3qj4cKzMOODiG0cdzEdWhKtBNmNrVL0OG\n\
-        \          AZYEFp0XVay5pY288THXuoOkIBFkKj6npcBGp/GhfqUvTPTWtacJAU1dBitjIWs/Oi3NgNNpbkSwuG6C9bakXL0WonDlOpM9pwuQ\n\
-        \          9efD+4y9vH+8/UC/ku+z9z9AGPgy+3h7eHnHfps9P72cZ19gE336jv8c9iMMpuZBRb9GU8Z9FJTsIJCw1NsRmn8RnJ1lOn0N8PJx\n\
-        \          fp5lMC/+9+zt/PzwATW/jvcIgvx+3EcAEzQesUSRfICTfpp6LWj7+v6hJUYPb19Un9HiX7+/vcLR9P76NuMf0IKhl8+fo4Jnfxto\n\
-        \          Qy71iyehzEDWOd5pQt1G20LjT5xHTVXzE+40FsRIFd+rFcoK/ot6meq/3x7li4dhDe+qaDKC6K9/KpFc7Nw4Qz8ukq6SwLaGXLpS\n\
-        \          SQMZBsI9Zo8zMkrJ7qaB3gUBFeVNcnk8LqrW1Wn28df38+xnWAb/9ffZx8P3899nUfwPWHx/G3iX7fk4ORDxtmpTNWETO3LBeW3m\n\
-        \          DpXxj/vCB2Zxl7ShdYZoH0aMrIkcbB7TQSjeSJZ1IpVHePWMihipQ+p+Y5CYqTZHyaYjI0OSyIZg4k8LiBN+CyRlIScmTFUapxK6\n\
-        \          s0zxTkMy8BYUnWOrlopu+KaBEuWPR6dN6Ld4M2huA4X5yTNgQuoZiN308o/NCf4nlpf+S9tSY1cpqFDG+nQ6GQHG8SARqQxfJyQy\n\
-        \          V4+waGWsAALWFsB6bgJkB2MLssM+M4xUXNZw0BWG76MnI5g4BgSqpyo9nUL9vErD6G2I2D5zetTdsV8wBubmgjF3RVn7NoBnXp4Z\n\
-        \          qeryjulW5z7h2yiWDaMvyeMTTYUANh5j+KpKaOJjBIv8gjEUJWQqXS2iLO73V1MR4wCjIwLyzZMvbDHOSmnovlzDL3fn4sl3165h\n\
-        \          NbHStE3nGBzDSCeu4xhqV1PDMuP32cKPAtiQPD3oDjqWRY3rBY4JRGz7Zxz568WfhiWHdVmv5nrEMV65a0Nz9MJXy3hklo2tzALH\n\
-        \          cfX0/pyCSZ9FzLBFx1s9reBxO6xkpKSVIkWidki1cCBdpdCOVTrGTKM30l1QXVRsmbhhq1k+VYXFmXw3MmDz1EqATOuPXHwmke24\n\
-        \          e3gX+yUjOdnQSkQH0TkWjzG4lXD9QWP1V8TiHt72XIwSWk/I13Sek5Jvi3pUJYzViGzrgWGMMkNF9D7c404Da0SABKYjoSWrRqcP\n\
-        \          VO20BtpnWhXaUlW+kuXBUGvDsdPFpeyop5KUjCw5r7QD7Z7DDjO0ia0VBrrvpMLoGLpb3ETBnmMqS5Ptk6v6BDmExrISGo3qZrD5\n\
-        \          BCo+fRVDynUIcwQzAJA8rgo44Nsa3IZq8KF6weumwCvJS3gMEd9BOwfC4qgZRC5fdl7cU2kUp8mej7x7tnI2pXTm+uv57Ofk6e18\n\
-        \          hP/+ptIIJayiaFWlC44uiE1e8Hu1/ePVDuQiN4+cVcuGWWGRx5LIJbTNwwbjBzd7HT9M70TUcoMJv0ZTzpJQm6WmJNOZLGnNtlmp\n\
-        \          JR1OOgrey2ru/zeaN5NQB061rzRQtC1S1dlR76XoH/CzOYjxqEDkbpRZDu0LtWv5aaYLCFdFueLKQdg8XTVoX2T1Tfz0/vH29NsP\n\
-        \          VFbx/3n6ePxjRgaBvAfwfrDrLdqzyX5A0I1zXFSNP2I+D0Wl46zq+3JbKF3gDsojMSlrecfpklAHVyWsopYC4FyUzANp7fruyZIp\n\
-        \          BdkOTyGp43nKooJzW9aayhFeSER1rG+nTay5rREZ+SwXChvZZSBseeUAhlkcuK6rvU0rcQr5mpeGID2cNqGtsrAZ5MC2SV+9S46x\n\
-        \          JVsVKWcUwVYWXGbuUt1TyNTVEqiWohsc2yzZA6shN1OkNHkYBLKwMc3cOh+VF0s4n2s40Qy3KI1GLj+pOyPSzbqabYrc1xamERzu\n\
-        \          QUTKxjcbw4y1tcERkS11w5yY82CGPJLjCZEotGU6sL3Ur/V2n6NRGsYn1jznGUIOdki4OVkx1UZpGiRq15Tyc/CU3e2Zzr69J44q\n\
-        \          pmj5lqZcFhS6pKZ2NfrejuybyXML2VozkHkLef9ikSULTDWWS8trQzHiqHLfu3Jx1g0xlo+TNohFqg010ucam5LGqbfTBQ2N0f+3\n\
-        \          uTwKMgU9SauBeta608/Rlkkzp01p8pJ3UiCanDXUWtIWZDQ8z6RTZctOi23sNZuRn/UBALXmVE8unbn2aNnmXJeOL+QTLVG79wHR\n\
-        \          tzRT6qxt6dr25e2eHCmTO8U6V1ngLU4n5fGFwo2ksKc6PRQSDBSNhcYm1KVrtjF20mUZH+0yRVfcXFczIOjyRBrJJnMd9Zr6NbMs\n\
-        \          p4xUBzoKYn7IdDsq32kMQPnu3rN8CL5C8kJauVl6glmv0WCnp4VeTgQqPxrJydFSHxZV8gTb8SCYq1kCJC1cAwm+mGrIn6HUk0aN\n\
-        \          PapPMdmk8sgLftUYzAHx5M2BqjNuyVdz/3TDVznNmHINZveVtKLxt+topkBCSZpbPpeTuvvY9Rhpk9QSIQ/8wLNsPOjYoRqHiPY0\n\
-        \          E/hw2lBrcVWRF9nIv7zllMvVHRj48oOznHo7+1TID8C1SAd4UlQRjaky5tggY7FjssS2LSwbcBfLjuYblsvm31uQnWA6KnvxnuJT\n\
-        \          g4RZZNBWsS89x02Jr7vZu0u1jPddutE+ojnRvNHmoxbZCdUv+CJUqmNEVnBsaM1dWqtxdUCVKtPJ91UsdUS1dOaWeY2eS2sqsU6B\n\
-        \          6681F9ZIqgv1pK8Cd7m2fSzHG0d11fH9b6UkcZIB1yY9MeJ45jXWqcopvVMXiUHvk5TIygeu0YNBOj6TiWzqEODZiLxDRGvP8V1b\n\
-        \          Li4/DeBr3V0Y4+7aMqA849Ic4Fm0dtVrgZYs0l67QTFrV5NREOe2LZMXEWyY0qvTIbUWp4JU1TpD/1T2UZW1dFtSlvcZJamO39/Q\n\
-        \          TPPakHPgHtVrnu0tlbjPi5LfS0OH18CndKMNg9Tnrel2L9/RtimWXHIO1kQlcCdEF+EtJZbZepB3f/jZVMBNq4tDKr7XjUYq/mmx\n\
-        \          R/Y5l+NstSnNcaGbbBeArwEkccx0Ik3JlFeJIPi2evaBmh0Txy9mRFqEt29MJze1GFaHRHNn1hfcZPuT/t2rhMJnXhU1FGeR5QQG\n\
-        \          lmGElweZHlJEqPDU0zuViKILy+19ygavmfkRUiStCI0x1OkGrzaBNLWlZ2yG6XrfAqixHOUc6CRbPaUecAqC1XoZ6gF14PgnLRkG\n\
-        \          He1/TPRgZaJ3KkItIGIRifX17zQoWnpMYPYaio9LZFs9I72OAtc1lzAPzPTlaky/XHSdqBg+yd4tKlOY4boShbjdnI7kXgtJ0Syp\n\
-        \          dh3XjfQY9EGgoXWippUOEoYeI6Q2I1kIUTcgatcMQqlEi8iFrwOir8mdMXvH2xnogh3T04ElMzYT+QA9saauc9JE9KQVgR0frfV1\n\
-        \          2Q94J82pln5iKctht4VdxqvwT9NIgvi8Xi8ylT67LAcPveBHE/JYDnWJiTHF135UThz7EMa0rCxHKGGdIEf8g+RCQtXy5wrZVSaW\n\
-        \          0tvWDpLEs+datkXgak0pT7eDzPhupXWPg0+muUyISC3xj5i2I0c1U4bEEkPV7kelVHUauAtHleiNS0cVQqB8FohU+E+SdvrK4/bv\n\
-        \          rk46wrpxVwGZUqM4EgpqJaWhw+eVQ0I+Cq7ekVp1ZI/QtKAvIwuZovQ4Wy8dd5rOqzUIiMr0QJkOa3ElqTmHlLWSskmXnqPopBw3\n\
-        \          4EDxEdzcw2lyFvFV4CvwFQY5bbYFr9Xdyvchp73dhwki00jKmmyxHDr7E8m5t/JGtQhpuhtagAlclcF63I86hJa8yL0gCOTkXeS5\n\
-        \          a0XTPpN9NZ71os6nwPNdR3Zc2xN3JM2YosPvYBc/HsmonlteTKFwhC7c02jCsHI7+R5ntMLbznHnHdKlav5EWxBVB+nHkSh7cSN0\n\
-        \          jFV37Ai/WgVkrUpBRZOtJeCnwd4RqIud9rUJUJe7VCNQwMx2HVs960zWzYoESyblzXAVZYla6htm7a/ZFKTJPQQrj55OXEKa59ha\n\
-        \          J7wScSaViiuRqI9k2BMzjRFYWTGeKb0HD7+n0PGD/ECrWmO1nR1ZwujJViqNGdHOporIB6tEu2i2VMTh058hYbhTDdNrDf7zfUz4\n\
-        \          +Gj4HLue41paJuQbmst3qHd1jhMJDlVSpeLlvPbl6XV/PWptqlgFUjV0s6oqUQ6LOaMZWh4Kry4DDiFK4wZ45M4MbWCzwLlwY+Zp\n\
-        \          3JhdAL4JgJerk/ja0zLmSlWXIO+Bo+LTmsEuyg+RLtOG5mn/Oom+YDi92fEJPYT83HkZfHr5ffba+gb62+zjFQo4zz7+6FEK+fWo\n\
-        \          6/fshGY6enM7hZ+jwaOgWGGa+PL9x4f26ZvwxTWMew4/e79dUlqS4IinIzfKLQ1dPeqcebQILpw67jLNDtKCMlJX7DQGiUbs389v\n\
-        \          zw8vX2ZPLx/nt68Pj8PYql3uYs/pyNmETEF3V/uT0n+9BOPA+NO8OX1yHW9uxtx/Wi2D8fd+Le7VfkVbMj0oa0kPurOspe/oPfry\n\
-        \          qM0QOF7CQjMHdD6vLpnDglSSTVmfBueyWpc0AJSLRRDcAlJp+q+Qeheqq3AHjKXmpf4A47lLCybu3NFWy2BhRqa7XRibKov6OmVd\n\
-        \          kSBWhcYi+QKscbNyl1ZQMHctfdsuHkuDssD3fDvG923fOq38xdoCirgFUFau55oxOT3Wms3+gkH3xHjcWD7XXQVZQHVxJEdyb0Ht\n\
-        \          811oGdkCtrG5ZVwzr6mLfbTV+X6+IE+19XsRKV33ZJkAYZSZ9l/c3FQacUxvSFmmVFR3oBYXFCh1sV7Nx8n8PielUNRIkt9lj8RQ\n\
-        \          gdLtYZ8G0hjRBWq5YvzYAtDo/S+AqAg1z00ukE2iMQW7InTh1SREk9lAewabRaZxEXOBCcacRBYUZzE9slwXdeuCq7NYxfFcvyZu\n\
-        \          9a8jNyJ0w6qoZUv2NMbGF9yRVBUrLJXMyEYY5liaXJKIFlV4AyokGkuYK6xm+cbaeUcWww8z6POW5tu9ZZIRvnBc14xBlmKv9JV/\n\
-        \          gZxKEivGCpOBedNRxi5aL9SSC7rOyOCKO1WRltUR8cMG7GX7u9WkRDQaVnhIYqUkfQ1Im3ooBg8IW5IDS71R0nYYx0x+5HOhdSpI\n\
-        \          1YOOFsRpxUgKcxU4q/l4FxPbYcsKyl5hBWEiBMmUJqt3GlewA9DdMOzjiBYSTlXE5Ni5HP14/fH4xy+PD399e3h5/vaTqiZZEe9T\n\
-        \          fEdVj+JwXZynROgHqt/4FSWUBH0gb9IiFH6MudJAdQBX91Us28xeCQTV5cdmX24wfKaxaDx12trkRc2Se3WBXYv5cb52HTXrNQX7\n\
-        \          q1uhSe0vNMwaYkHqLlNyj6F8UY67byiPLQWnG84i+HO+ni9uhy5vgmIvzJ3Vv4EN/g3s+nas69yK9RylAkuFXDueeg5IkOaofjWv\n\
-        \          qifIIOoSr9wO95eurZOGaPvMGqHRYQHf/vpvZbKNcFJEqPPCf9XBamGr0RZ9gzfbU+C7rk/+LbD2OfRgM8W3xiU6bZdN/oYIEvNV\n\
-        \          oJnkMm4VrFa3wdY3wCI7pnIdz9U6mpKgqDVuMo0Hdwm5B4GSnSJWWaHh3nMd178N59nbjPe4RU4bFuUwgoEdfx9EdbZxNStahtY1\n\
-        \          L/Vm0lPs/DZwjJNf8+x7iNuSrORbdkOJlNbMDtqQlJxuhHWshR19inzdA4IhLtn/ymq+t+I2RREzeyW3IEVowo0MYSxlni66xhDH\n\
-        \          l/x+tXTttdvnn28YjV2deK5nX9dUJzrIIPtMEQxgc9T6x5hib9kAYGN03eCGIrMIpIQbJkGWcded22E0TQhvMlbegBU/7BMhOy33\n\
-        \          aVNze6tZTk/M3uXZbuV6VhTwkxm6prWPclzD4bY4OfZDQ/y7YpttfRv0yOyT7Mbd+xjXwnZsNHsU3PjghI/5SXdOCsOMIisLrnOY\n\
-        \          PWkNq70bjg8YaLGDFbcggWeb34hb3Iizr/0qazRByaSNiaWUxDfA+E0rmteuTvEhw7Lklsrtq7lzCyoBeVrvAVMCn4Ll4obBKPly\n\
-        \          4azsG/tnWi89zz5fPgutkH3Qim3WsSa+hUkcXrjK6SKOwk/vHz8pyaNlY4N0QRnUnSkBb+p+KUeVMTxoNatdn0/28mEuv71tskKF\n\
-        \          jB1Llmo3gLuIIsIH4S0ZRdiNipbCgnVzW7cCI3fCiG/3/2bnkjY0TknzfzPjBiq5v4EnlHMdgGEq/s08t8hC1xx1lNn6GCC3zVcE\n\
-        \          cqUBvB5/y6xD3OiWQA+8mNnfUFmcOWo5XZ+nQttLflNVen3MbZVBn1Ki6H+rOhgDMy9Qb6pZK0mtJ+CVpYhrcf/pp6+vjw/PH+fH\n\
-        \          Pxqh4ftJXeW89pe6x2wjTSLfhzZ1wj7UriQZFesc7gFtyL/cUJRe96fJIOl1/i28WqnUXYwx+WFUm0rilTs/Ge7TWuk+ggmgbW4L\n\
-        \          DDPiavzUd7YB/smBQ7HW3YW2qG1Yl4bgap2tRhas525THivdreMFh08cDiysNH76Wpzw1y7CHDbyE9eOXDN8ZYVT3nTzmJFgbuyB\n\
-        \          TekRIxkfyIC8qrOMuaJiiuHKK+O4MRE5qqae2diClyTvkCbgqf51bepp7LyMGMu4p2QcE22EiDLXMX0FvXylOJLdcGgHdN+bBCk6\n\
-        \          z9SKKAkWGt+VHeKY2YcIQWLO2YaxKmqC2vPcOprxKfWN65RlHKq/N3Yu0apgOgMnEeALF2hDqoqYVlZcHbylc7phWQjkcnEzcmVE\n\
-        \          4s4n7uVJZYuIgBDYvRJn3rjeXaJ6DSggqYBEXhP5LVB6UHBBAKHxGh/jr2sCgiPWe/lyO74P8RFxX3d9AbzvVFso27SJe96yYvkw\n\
-        \          Mm+4a2i9cv3pEhjg0Rm9u5BlM2FqtX14+yKi8bFfilnvv/xS60o2GBIJ+KfW/VKLwIiEO53DZ4EoI1ZyT6kxQHLKQiBPP12Ro+mz\n\
-        \          rRezUcHjL3Mv0zk/7YqpIksZpAzNgNagiuuCqWjVEBuSUWXQjuiPh7eHx4/z2yBkT89Cye9iDspgKDk7rYOmrOVXvK0za5GsbQzB\n\
-        \          28m8DfOo8bqYF58LnceJZsPVNjwiOF/D1ZEz0xjjK2D0QgzjKIddPIziWbU++M9vTw/PUx+BXQtEGLORj6GOFHiL6arIX1/+IQjv\n\
-        \          bbnCX6HCP2ZXBs73pkwd1zF14wXlmlB9VUVoT3z0hpbspgwZOfnat+1DyMkEwajV4xh1MkKWpgaJTedlUtG5v2oGv68Xz/Tfw5DU\n\
-        \          Gzp0BDIiwOmRJo0ICTuSzcfANoqd3hnmGK9vEEK2xsXCoyjXvAW8INwl46uTcTy6vezXmmy0AcVlqA3GktPytDTOk+6lYcmthZEq\n\
-        \          MpGr0jORE542aWn7RoQuFQicXTHbsAh2gsqERivnUG0ZU9834hCUrPe2h6iJI4032BL1XLDjpeoIvUc4iPJYfhlzSRSxomCDV4fd\n\
-        \          u8JwKrUb8HWGX6lT54Fo0MhUwSs75+aPiiNiEB7maIpVW0fwX5lpwtQetMc9TJj0ftTrnTPXh98H4ez6ohhBZ31k8CZRJImwepLV\n\
-        \          JSYnx7gJKxZvcIeJh94NOMbJ4nV0KGM5lcS8rMqRl1aRpFVdYbYqDjefvg16K1zcEogLYXjS8+5Zn8qBTTclqj2vRfiTS4Tj1tDd\n\
-        \          ixRvHIZBdeFHI4xhWZ4UcjJek5B6lAadKylQMTETDwBbTwU/nj+evj+f/4Rpgh+P/nj6rjrYMBupwpaRgUKhD3KNz6DuCwaB6wLI\n\
-        \          9icjIq2jua+57+oxZUTWi7l7A+ZPM4blUV2lRozObQXSY3prKVl6ispUZZmPiC42NfI68qiRdFOE1wjgOFoXZh3DcI0CepXRjGeY\n\
-        \          /geG4boGwFW95mmLZ+7CX2hrLuhL30w/GehZrLPL6cjo/ldLZ7pbZkHkOv0UEEvGTnMtNRfXOp6WzhlfLNYLE33pOybyeqmf5AdN\n\
-        \          EIqONjIBuW4Rf71/nL/NfsPIzO1ozn7+BsP8/Nfs/O2385cv5y+zXzrUP4B1fYRV/bfxgHc+bLXfj9Bhi3ERx5SzTS4iuqviv2ix\n\
-        \          mletCKMZPegHw1ibvMhIzHZaeqF/ZCGmSURMUWwQIjyTdSyolPduX2rLrXb+yTA9slrjrR3JnYsaff6WQZuGdPwTjv0XkFMA80u7\n\
-        \          Czx8efj+oV/9MSvwgebe01emC5MMsrjOrkA0twiLOtl//twUnCX6lhE8JQ/6+VKz/H4cS09Uuvj4oz2ruoYNFsG4UXiUG2YTrzW3\n\
-        \          BoKYkgM1zGaMcaIPT3uB4KZtgejCoDNfaUFRyhGOSqblZJCWAVskR4gQqSqJuWSz7OEd50h0PSziac+K8HVCxFCz30g+tVHuWreH\n\
-        \          WpjJsRTSTTtU2/B+T9FCtDsGElHs0AbdBHrRTkMtHWR3z9NTT8TTyXRA7l3MaAGjTWVIUe1DSABJMoDzyNFXyrijIOCE7hr11Ml+\n\
-        \          I5E/3+d3Wdls7ka9eplg5dvrx+vj63M304aKmVJMmdHTUkzFiOIY93wS2FduWEqX3snR0ifr+UIb+mbFX2LbgL8FwytXZkQ0+G/Y\n\
-        \          cqb0uCOp2+DntIiWeSv57PH5qY00O+XGMWOUMnSovRPSpdp5wRUl9Gc20HitXGry+/nl/Pbw8fo2ZTLrEur5+vhfU6kFSI27CAIo\n\
-        \          vRDv5Iavz1sPazN8EZ3T+lhUwlWTkJR5TbISL8oHz9Afvnx5wsfpcKKJr73/c/CdluMeOAhieTb0cIIA+Nc1AUMWVOhx/0IYyLa4\n\
-        \          I5uY+I6G/KqRnkWl53PNa4MexKGdGieGF8jJXTiqR9+XD3E5FHZfv/IucJZzcxsQE5gxrLybO+7ahrF+S2BWZgw0JVhqNFJDzNqG\n\
-        \          Qc9C7sJazumG+qw1r5slzPqGcvzVDd+6AbO+pT6BYcKI00PsZbiPqeZOi+BhizBPzzgL5uae3hXKaBo9OWVDQfeSSjaFrJ7vKSEw\n\
-        \          FcS8Nndb8qtlVUX7kNgaNpqK/e4Bu6TkHbJLEBoofLYGLcpATF+4Xo8okv6p/SgLq+7GHsnbHWi8FQ/yXWzVWv3N+dvr21+zbw/f\n\
-        \          v4PMJ7IpmGGRbzU/tc431TdN5eXCTE+Pj6QM9eSkxr90tx4Cctl7TfJii6y0vJugb9NjrKdmYbDkGuvPFgCHkkZqay/rUkdj7d8P\n\
-        \          QqQxZhH0EzbUQFbLbSjbi1af//wOZ6NqFE2OKjpAbmiWcH3gOBaAZ+g4oUvzjQC0pDAA6pJFXuBOb9myJJ42v1NmMVvHhHVwMtaK\n\
-        \          NSJWjWY/70G0RXlzPaqKI99zT0oG11JJWIPucm7sfYw2e7INoGFmZpHvB4FhhEvGC01k5HZuVsSdO/7Uhw0I4/rmHdVVai2ryEF1\n\
-        \          D9PSxItbaaO/Jgv3YrwODUW3OO1WMQbhP2vdPdMQnGluKocYcU6Wmm1gCEzryFsvPHMfTOIjD2mKaitQYtcZHKYDUrth6YpvqW1S\n\
-        \          kSS6QFuIqaiI2p4VysfMbaF8X5bp/fRjbbpBbCrRazBCteEQ8fAgcdSEpIazSmNSjUba+mLwTgQ9N+NWqtvku+KbmHsrzWKSIDeU\n\
-        \          4hkhKd0UDT34RhAPubFFOnofhldH78sP7zxtYPgeg0++Vs7cuQXkGWvLeIkgIwYKCtaOb8SkZbDSPKXrIdr94fod0UPm79SRv1y4\n\
-        \          Rkzrh0D4BDy586XmwqNHt4x2FoZGFIzK3F2c7Bid57kBxlusrJiV5hZogFkElm9Bo/z5yjhHNmS/oe3WODcvn6peOL55DlT1er5Y\n\
-        \          KN3Q0qsDT4GW4sle5mJcl2vP8+QQdTJtpEsWp9/dj4fnx9dv32b1+fGPl9fn19+fzu9/n7GXx38KG63fz29Cy5H8OD/PNg8/fj+r\n\
-        \          9DnCCBm6THVC9LSF5CyxS0x1j+IE4JA1Ycb1dOBBKRpTtu3U+LkOXT84qTBDxNrpEE25z8qm5LJrZoQs3PYtn+1jS+fS8clGD1ss\n\
-        \          WpWesUDRyru8OBQLPT0RB4tvA8x1Y3MnmRpt06XruvqOCvoKy05ESgxjnVOMJ8DvJ6QoiidpolnwJx/7cxjSdNcfHS6sYDEo1cwd\n\
-        \          gER1pigfky1F0xMwNJsR6GLVko3C+2FCf6ky0om39ncPHyDUqkTb3pKWxCtf83B4AJnfAgkskAz9I9yAWdyAWd6AWdsxvrU+a2/u\n\
-        \          WDA19KAdM78J49oxS8+OWd3wrZWln3m0WtrGi5dU4+rwAqlPpbmQmC89x4JwbTVhix3ahRoxycoNnEVixQSebgO9gBb+asGNmE26\n\
-        \          cAOt1eYF4zk2zGrpEBvCPCNaHZPGH0IP2rLt0vXN48BQfXTUBSu/oOpgZQT8Gs3NFQYRpHI9y6QQh7Au6mOPEUzSwo5ZOzYMcJKu\n\
-        \          FeO5CzvG8+yY+Q3lLJ0bMOY6CzcUrh2zdJYLO8hd2zHLwIpZr2wQ311ZOhFAS9uWITD+2o6Z3/CthWPH3NQwy0zMotK3naJ1pHvo\n\
-        \          f93/I63VdDd7Mo3J2hVgOWMAYC1hYQOsbIDAAghslQxslQxslQxslbRtLsBj2AC2Sq4Xnj+3Y+buDRhze8soWPmWrQcxc8/cLXmN\n\
-        \          Zlq0yhivtQbpHTSqYd/wrZiVZT4BZhU4nhWzdsxdmZciDpilC5JgsdbodjOd6dIl9zGzHth8W1tOG0BYdgpA+H/aEJGlDIOh54WB\n\
-        \          y6i78s0TgmbRWH2uwniuHbM8eo6l0hmP5qvsNpBlebaw0Lds77yu+Wph+2K2XNrEn8j1gjiwSlvcdVxbUXwVeIEds7JIAdDjgY0/\n\
-        \          z4nnrK0Qy6oCiO9ZT7+VefnW2yyyHNd1VrqWjUJAfDsksEHmlqmKEEuTD4wsg6VZSjjUrmfh9A41xiEyQo6Bv1r5GysmcGMrZn0L\n\
-        \          xrsB49shCxskXQWLmt+AWubW1i+91Ta5AURlVH8Jg4ciGdhldQmwgZCajZ2IdDSa0WpDc3yD2l1FNTFFd7MZ/+SMwb0aaZRcJNO0\n\
-        \          Y8WEP2SM2lkqvhvThOzTutkUB4zeVzZHxmW/LgpgQlgFB4vO/FSVBZ/6tm68b87S3aBilBqi4zD6fPpaKYDGdiIAbXObsYGuAndt\n\
-        \          1LRjkZ4Wx9Ymhuu+ZGhjr4sv94MZdVXRo21hT1Bki+khqeidKut1yplC8twVFbtTfUDoIElUshnLa3/unNBQ8e2b6s3x1eCqplkJ\n\
-        \          zSSVpFQdXmsqvjSpsdA6C3BmGJkaF2lvJnS5pphWUo67LnKpNN016z55HWNMwzhLe1zUYkeQaSIokSI9jFJhWLaYJqMbivZZ4rSo\n\
-        \          qCjwXe8ktjHS+0a306yJowOXAaQo8fXWtJBBSNDewYiMUV+o8qxtBgxcCd/G16l1quk3nLsMw67X1NiINNsK7CGOzbi2kQz7FkqM\n\
-        \          eTm9SzAMS3RqWEnJztAXwy69S8qqUOv2jqSOtnGhfHuAvukLzlk4ejYtv+i4BhwmSjgSpmZC+Gbx64+XRzQJnsZY7ocoiScO7DGN\n\
-        \          RHWwni/UXIYAcH+l4TB6skZr09qFo4GWRucn8pPaC1aO/vGIAAnXS0lKT5Gm76+obRppvDojRgQ3cTT8qADE68XKzY4H/WdOpeec\n\
-        \          tN4jRUdX+JxHT8/wkSvRd1pM1o6vryOSF572rcYAYqqkgCyMZI0G+kL2TWSdDyxBTnN90SAx+uisytS+HmNq4JYtgcXWG+2CDNyU\n\
-        \          hLPI15Kh+NHT1OvFXglkndszoOneYGLNfiX55ybKilgXIB4wOzgcNZ9GchCUWeA4FvrCTF86J8McPbnzhUZV1wFWq6VhabeAYGkB\n\
-        \          rH0zIJgbAcHaWZnp3sJMX1vyrwM9vV76puw0Tzw3zNTzj34WT7FL/TZipB7g2KrE23ctpKL1Xksso2QBS1jllhXJ4o3jyCIe0wVf\n\
-        \          VJWZJpvSkl7UZWomKtP1Vi2CHC3qRWCg7wJHP05Vvqh1YRxErWlkPoE4m6+WJwsmWzj6g5Lv7gNYUJ4hu+ZNEglPC8dyQvI6K6lu\n\
-        \          SCa2jpialv7asLLQiizQd5jgzwxzi6SZJtoreiJ2HY39VuumWBdqwOTDWFRKAAwbTgtYO2aA566M7YaeMRzOHWKxXNi+EpgBwdLS\n\
-        \          0rXr2ABmDuACMp20AIJzRqNAqo/p3PENcxMAS2dumbzH1PVWvhmTZv7CsD3Ukb8I1voOO5wCA69DKva5yImxs3qMqa+OWTA3nMlA\n\
-        \          9l0zz9JBLB/xF46tFN0jLLEbCqfc8codPREYMmjHAI5u6SUOP+AON3JLOZYW1SKk7kn2FZGwE4VRKtKabDRyaC/Eofepve6R5xWO\n\
-        \          ahihhVFmmMDRK/X9BaquAfBMG92qvKJQogo0q3+Aihe+hrEYgHL4q7SAgNX2NDvBCORaQAnJF/5iYau61nr4CmE8XfvOwo5aeiuX\n\
-        \          WGB4Uq3cW0CeFRSsvNMNIGsfpO2GcwNquVpaUMhpL4IbUMFyvr4FtXRuQK0X3i0ozW3/AAUssHVmlcn+M9V54RvADkHgLG9CBTeh\n\
-        \          1lbUMTNuCz23O3A6PiLKL+YHRKGWzIqUxurdpLU5JiELQ3MVBC6KQ0Mx+JXQ0lQO/KeztC02OO4X7tL37LCl51uHqmW4PP8m2Op0\n\
-        \          C8y9qW4Lb24r7aB91D6Y3BSteyMLKiorO8K3Q+YY74c3aVzYsdtmF3JunDgVTTY0V88a4csxOY2/NS2jnfqq6VSaVw66k1GtC6G2\n\
-        \          kDiLKtL59c1ozIh4JlVUteSj7dv5y9PD7PH17Tx1tdDmikiGbh+vma8skKC3UYmb+tBDtN9H/4o1XiEc9KVVBJ9JKkoa4Xhc3YCK\n\
-        \          QBy11erqfG9amyutiQ+q3UUEt5BDibRJh3nqoSt9dBdJSqYij9NIfGgZvDGh5ekyluM8IvmGDi4hxHdgdXm4wqR6QIUnimpMyzKi\n\
-        \          ssxHUj4MSiuw5ATVImUNLOAndykXhMHkUMkqKqaWUQVMOLDjNMLLsCYtcGFqolgjvI26qnJekompOlXIi5HCNyCj+X08//b48G3q\n\
-        \          yBihbcdGKeGDvhwR+iADB6lbRbhdXkZk6MgRE7OFzkGOqFt9cJYadbkoMg00h8Dlg+ii4M4CEb5MbZiSEdeCieuI67RIVxStC807\n\
-        \          oCsmYTktma1Ov1J8uf6rDZViIKwwii24HXxTEw18ACpyFhELKCOVrYFZtcYHDraS8mPg2HqhOCw0RsISRmPKOMI0tpJApvM0Kl8J\n\
-        \          tPIN83qAcm2TilOdMc8Ak6+hVhqrqzHM1p8chvgU3gKyzTz8Y+E4N6Hcm1CLm1DLm1DBLajlLfVyF/auv1vbK4+YyA7y7UNY7xx3\n\
-        \          bge5rm+tFG7BgXUM93mZ7m2Lvl66ts2xLnSRVoeYPcZ0t6EOwcK3LcFD5Oj8awxAsONlFsyJVRhTpYmYbQf9HPmGE608qidAd8LC\n\
-        \          IaRv0ufKX84NZcOAH2loagv3PI3uof0+YOrD1PDm5eH59fdfvjz9/vTx8DwDBHqnUPi57ji2vaMzEO1aefJ893RSuK22fUCwQsiP\n\
-        \          eFpOqa4REO7jDa0toFhzh84zLr4SVwdtCaEXeZ3JQDn2nCkBCR8ZhQ64sL9jU39+kLr3b+bOBZ5W53mlZfnQ9YqeuQfG+OINqLP9\n\
-        \          kezEugEiCW2iiBmnqsFdZIvQ+ZtuqUK7AXOVa+wni6iTsQxlGB0kAq9TEVMZwmEpi6PGPwmBQQsylxHavhEdykn5AzKw05KIhaJz\n\
-        \          WoRoT3SfnzQySVbeAadtfRQfn7/9+LM32nl8ffn69PvAH3xbTiuKQGmj5HwPMyQ7dQZL/NN8DOBHycKPlxrvmjEV8ZfUpoYDuVD8\n\
-        \          M9wn3kRAw1l7kebaSaueFYAT7khMIKz+eAn8W54G1J36/ydb56r//GWWZdEvHO02Og/C8utr2JeQqN2YWjUBq5jGccl9WaFjhoRV\n\
-        \          2VFtsjoZg0m6QkYX6TA2xdDYd5AjE7amVydqKLA+vDw+PT8/vP119an98eMF/v47VOfl/RX/8eQ9wq/vT3+ffX17ffk4v3x5/9tY\n\
-        \          wkVlQnUQDtw5TWHND0IStIqYuiYivmR7lP348vQKg/D4+kV86/vbK2yz+DnhOOLb058DP1hVzC/QPu3w9OX8qknFEh6kD8j084uc\n\
-        \          Gj18O789dO0dbPmCmDw/vP8xTmzLefoG1f7X+dv55WOGzsYvZNG6X1oQTMPvb9A0tNqTQDyuZqKr5eTs6f3xDCPycn5FN/bn5+9j\n\
-        \          BG/HZfbjHSYqlPr++tg8tk1ox/BSlBhhvGQkilkcnWIvCJzWp7A8kaWBq/f50DB1kIiOvMuUqml1TAJv7RiIq5OW6ALV1VLXQbBS\n\
-        \          E7MaxC5NsSchueloGKddR5traVk0n/PA8SWl5fsHTMCHty+zn98fPmAonz7Of7uunMvgyNBH4SH2/8xglGC2fGC8JUUm2DP/wc3l\n\
-        \          IqSGRWwtJ+o+qiATjAf/cw5b4R8zAhPr6fHh5Zfd69v54QV21EvBv0Si0nF9UJTBeHxDRQRKbtH/vjFrz6UOULAanv9qF9X7L2Wa\n\
-        \          XlYMMJhdLIh+Jc++wlIX3XnZBeC8gNXE4CtvXx/gbPiZ5gvH89y/qeNIiEz16+vzOzrthWLPz6/fZy/n/5lWdfP28P2Pp8f3qRL7\n\
-        \          sCGdw2U5Qeg2N+Ve6DX7A7MamKHDjyZjuHS55BAb0+MS9uFTHwVFffgiTHge0fi9vgJgO0/GTqgHoB0chm30jnE1EqFeNr80QBwG\n\
-        \          g2lgUcXKA3HcskgWFi4eJLtNfQbDOto0pRLa8DArR6O76CGcpTqXhT0kP5ViM1oHp9twGkNZxG3jVKM2FONMUhhnxoFbuteCMNau\n\
-        \          oZNJFsN0Ur3lmP3cHsbRa9kfwn9DZ/jAF/14e0Br88u2kMWz9Om3N+QW3l5/fDy9nCf9mxf7AyV7bT0OG6qfcIedRmGLxH2c6lun\n\
-        \          8ZEuem9DNp6j7/uIVdWeN3c009e6ikjVxEcYJ02EvwsoPcT6Jtyd9E0Ii2irz6mOEYeUkuQ07c+f+On9+/PDX7MS2IfnydgIqIio\n\
-        \          h7w2LMpUv9JarLE1LaTlASwghi67dvDX2te8IlBgGZzzbmRD53mRYggiZ7X+rFGYX9G/xqxJa2flZNRZOIZJ0bUNxOJ9joEY1zrf\n\
-        \          f4O+wnco84XGkuKKK0AsQH9526ao8ZJ0bas0/ElQDRw1h8PJdRLHn+fWqleElyGtqnuMEnANL27NdR8zkDerbBl4N3cPX1J/S7zb\n\
-        \          0Uv/V+fk+LdnCAixVoayXdHM/eMhcTc2LJyMZZPeuY5bufyk0YlP8NyZ+7WbUjue1RXq7Rter1bB+qBZum1YN/lMbwu4UKRVfWVN\n\
-        \          wrenL79PN9/2shu+S/LTSqeeEntenKNjJv1eFu+zUPAiMdGvQNwdjLGcxc6Fwf22rMQ39HF5wtccG9qEwcI5+E1y1ObDY7Osc3++\n\
-        \          NI08nnpNyYOlYVuBsxz+Y4HuEUOLYWvHOxnpOicdSK+3LKfwZ7T0oVdcxzNAC75lIWltWVfLlR4IKzcpdZ7HWs4pr3G5pvV66br7\n\
-        \          U2RkREh8WC1c/dwlVVRu9GfglnEGf+ieOVwgO1ax3NCo/D6u9CxAmbqGKraRIk0nIW6vNK8Fx9nc7Vm14/I7wY6PwriB7UPqVsp/\n\
-        \          AwF69tuPr18x/M/4Tj4JmyiL0WfVkMdNQq2qMQ5Vzv8xnouII4V2XgN7gL52kNhe7XdvEwdX+EhL54kDE8urNTunwGTcC/xNorkD\n\
-        \          E5D64C+cu4MWgCevp1kLPd3XrCWk13HhzTMt+bDZeHPfI3MtwugmX3QdHiGZvgaG8xrJcK74y3Wy0cgAXT8uHHeXGLp6ewp8jV9Z\n\
-        \          JMPhDrzOwjwPpOH+a0rvHklLj0MvxJFRowqRBeu52xxTGhurcX2rfRzZMV4xJC4DnRHICLWyodLMX/oam4QRam0DlcFicbKAtKbM\n\
-        \          g3IOC89ZpaUFFsZL11nZOqGKTlGeq3yAxlLcpWKfD1yc8tGPNoSunFRG2SShoWk8TWQ0Wi8COX17jGkpJ1XkmLGYyYkYU1VoqIsk\n\
-        \          6UKPD6i/EhHZaJTS2SONQ1kBteAclQCq99JdXfuGStm21STI04Aqm3fJ1UHdCchiMf/ke8P0bsdtijSWrd5EPaoiapJRSQd8esep\n\
-        \          ICZ8XMMrFcMqqy9dsKq6SHVYhCJUHdaU3u3xVk/b+umNoUjeZ9m9th4EY4ppqVldkoOW2sdHd5cLnfcdLKPcj2xopIFm4/qS2A00\n\
-        \          1vWCXDN2Ki1k4ZM/04P2QeA6RrJnJvsG8tHT0sI60Fg6ixVGHFdz/AhyxnTxQsWKOt1vNLKcyM3nnsY3f0fW2foJcn1K9J+OSZUS\n\
-        \          Q49thK8oLRk4L2P2tvi5ufi5pXg9PRtFZZKJTE8Dcb3QeU4CMstjpgl5eSUzGyD+1VrCyVqEHkFz7vorx0LXz5sk00UjFtt1zEsj\n\
-        \          Ub9GgflxV4ZRg92VpsHJsQL0n9gV1cb1XP1yTYtUP/rpaTlfzjVhdNupc9KFV0FynnkL/WIvo9O20lIrVtYspnp6Rn3PRF0vzdSF\n\
-        \          Z9j1l/rpdGAk8E5WumV/Fs/9Cq5fGoeT1ucuUO+zZLRRCnFuG/9DKLWlW3sxD0k7WTRnFNKB8xH35CDzf6aflnOJgxhzDXseThLg\n\
-        \          1IiHcc/65D1xHXeaHBFG7jTJLVM1JS4TNrQK6JO3LJH8UYlzKIo96f6yB6M4u5wml0WsTNwqkusip7IM21MOBPiFk6Zr0LGRTOLC\n\
-        \          LEFOuHChE+aoEIHTG7y70PMG6CQGkAau7BKam3lTwxP+GnVGCnhRmLydz++PD8/nWVTu30c3hlfo63e8LnlXZPnP8UzkgttMG8Ir\n\
-        \          fR17ECfMjuE3YMpYE516iKK2z7HshAOpsysTO7KHTsmXnuuMe1dR2sZIvxs5A2qHp86eHt9ez8/nx4+31xe8W+UocM9wyFvbD0XE\n\
-        \          kb7IU52UG6Kt2edTU8eZZosQVUZt2mU76L6AVoyqUA39jI3Wq6ZFmVpLYrJ3V4Zz9gpautrX4ROgNuDzALhyHM8M2s1dZ26DzBeB\n\
-        \          DbJYWEvRWTAPIXNbdRd+sLRBFrbqptFi6ZkrE8ZeYMXUDY8KIyTi/iL1vRsw/g2Y+Q2YhQUz99K5Z8cs7DOxxd1S1tKOWflWzNLe\n\
-        \          NAMrfIHc1rCVfYEh7HQKbinOd31rzfz52gJZ+KnvGPYwVEW1+5HqfKV85VpmEEC0LskvkMB3l1aIZ++WDmbr5U2dLS17J14YN9XO\n\
-        \          d3xzxTJyWgcLy3YnQJorHAmz9m4A+ZZ53X7NPDe66M3NEfXc4jrwZnj3ANaIL6PMXQauFbMK1tYxFbj16WacbfARFyxvKw9xN5QH\n\
-        \          szcgtxTYAm8oceF6f95SoMDZyqvqxdKyvhDim8eLb+pUawxxAQkzD+C7y5QljFYWcJV0rL6d47EzpZxnns7NyBCzdDxrl/U42xAA\n\
-        \          br6wrGxeE92jpiFkYenZmgGDb+aRa8K9heX0BIzWK9YQs3JPdozn2DDAfZn3xjomq7lrPqbqhKyDlQWTHnzPISzyfOuoDbG2mXDB\n\
-        \          jt9AGZDeaX57HQT69lpY6sB94nkragG1bIYdZGHAj1mwcB0rxMLyCoj9Q4H1QzrPtEOIF1ghvr0Uf2WFzO2lLOwtWli7brWyl7Ja\n\
-        \          WiGBZ4MEjn1SdzDbbEaPZI61ZeulY4dYq71eze0Q66RYB+Zz5bNQdayXpedZebPVwryToQ+lhXn25GQfLOaOFRO4N2BsG3RJMGgc\n\
-        \          MTSsPfQjnfPRAYZHezOuZQc2FSm3twNVpbYKXhZPjekhUYqvyeL/r7Qva24cR9b9K4p6monontZu6d6oB5CEJLa4mSAluV4Ybltd\n\
-        \          5Whvx5bPdM2vv5kAKRFLkj73xCwuIT9iTQAJIJdLDOki58m62Lje5MMgZ/uWCw2VTSuTixaGunt6Pd6hsQHWwfL3gXg2RfVOsyrM\n\
-        \          90upiemuA9Dz8qAXLJOq1cpIzTLdX/g5MXSLZZIuCKtxSSzxzpuol8ejbZhYHcuLNKtWK+Ijf4O6p3q9/U0Iv27MnPw0F6yj5n5a\n\
-        \          rllOlJPlaRBu+Y2wcpVmOnSm2Xg0GlOVv2nunVuJwCTrNMlV5Iiz1lmTZg0Sj4VK04rlEUuIQtFoLo2NTKLUSPgGbTWZM/bC3GL8\n\
-        \          9SqPiZI2aVTwrfaBTDFGU88uTdcwyzcsplwySlQxX0yooYKaS/bXq7+94XpC6aMKq68n7lkE7GY0/CaXWn56aoj20GZnUPGikfY7\n\
-        \          83JGVLnYh8mGGSVseSJCWEvMkiNfBvQwy46IEKuKhiGLicKxG+p1xJFaBb8TBPiRtWMjNOltDsXEvIy9iGcsGFuk9XI6tBL3G84j\n\
-        \          YTF6zGC04rQUVq/H7GYVMbEhm59zNYGIDohDdLCfrgqjwDSBJd2cBnEZFaGDvxJ87kuC1KxcUoREsUmRh2s9kzRXE6a98LAEY0VE\n\
-        \          ad7aLFqJjsmf8QT6KSmopYwXLLpJjC0ggzUz8q3pXSdflM7ITm6QwIeCKhlWJamw7lvLKKrKisKy39JW4DCWL33G0EKGASe+yVPf\n\
-        \          Z8awwh5gdXJtAWAkGnsI/qY3IhnjGD2GmDUUBWfUCgk0YHXY87mxCdTuV6zWxhQzrdHogomQXfI5J1lTScQsL35Pb+oiztbml1Tr\n\
-        \          kyLcGVsErJOCc4thUEF9TbW32OSlKM6qaOeYOpdUBzuXKDZVmZgQme6ZtZ/twzBOC2PBP4QwLfSkbzxPzX5u0uih/nYTgMCUWqKK\n\
-        \          CgdTbUqPFoCijJaOrne5JX+ibxCnDKqe4R3z1aWBW4OVzuTZklHP95wNPjpuyGzSjY8xcooCdmlY78L2rqV7n2slnnXgW2ksxz2E\n\
-        \          iWrjBxpFhyltvvZ3SQKLm8+rhO/Pvip+umzase/ql3K935oAYBnPRSg094uS3O/RT/ZEse6iVfsNLDRRKIpOlBfJlVUUJN9IHQpY\n\
-        \          VDG62nrN0RW1Rzp8lC74CPNMpO3lcHhs5ea0l/cTmmQ2RsiB/cwsv59fHYZDHDiCSQ7IJBt9NzmnB97ad/pePCOsMVeptba+TuJE\n\
-        \          UTI9T1PZr1VREOVJWFEgMwk4SwSOzK3aNEW2a6SP66Ecj4abzOwhDRSKbDSaHzoxK+AQVG3owmBAaIxLQ49GeukiR6rdvrSvfWUN\n\
-        \          oN1ORYvRqBORL9h8PltedYJkRxsWqRoAKyn9v8SGDHDmaGViM/Afb9/f7UO0XE98q31Sz9qpEy2nUGB9UMS2rXgCG9D/GSg3XWmO\n\
-        \          Mejvj69orI+uNIQvwsEfH6eBF21xEatEMHi6/dko/Nw+vr8M/jgOno/H++P9/4VMj1pOm+Pjq1T+eUKPtQ/Pf77obapxZjXrZFJR\n\
-        \          vI3Bg7omJ9UJ0vNKZkzCc8asYCvmuYkrkEe0nbpNDAVqj7lp8G9WuEkiCPLhkqbNZm7a72WciU1K5MoiVgbMTUsTbkj/beqW5THx\n\
-        \          YeOMB7rI96iR4Qk015uPZ7R/vpIJJ6eHT7ffH56/uzyJyWUi8BcdnhvlGajDB1+Y0fE05PdyOga6jll7T937E2ufhbRqk3ZskBKx\n\
-        \          ZqZrNxMRYByHPI3OhqzZ4+0JpsfTYP34cax3scbpkiEKyDqwzPB/K5PTleV45ky7tjhZJsNi5Wgl7eEPDVbDgDOidbhHXM2NaVEn\n\
-        \          2iv6mQBd2nSHteUgQPWohHRuT4g9962T6bBD3cuqMuSw+FyZd2BcDCNLG+SwSWtRO9wBtFAszH2MTNuLy7eT0WjeB1NXlH0ofzOZ\n\
-        \          jvpAUjrccFb0AVFbAu90ecQ7pb6m8AwEhkMvql6M4kUfkscZX3cP1KoIQhiPlBipXSiIwLotUJix615Mby4c+PozndTgqiLsg64W\n\
-        \          o3GH19ELajbp7fU17A797BNm+15IWfZB8K46Y0mVBeyT0F5YJHp7a5t6aATv945A7BdV+YmOjfF+pxeUiitKk8CALab9sEP5GR5K\n\
-        \          2C52XrK3MFk0ngwnxLxIi3C+mPVOwGuflb2cdQ2rNB6y+3Ai87PFYdYLY6veJVOEPM/ZPsxhYRKiF30Te2nUh+qfjv6Nx3M0A+0D\n\
-        \          HmDlT3v7I81Ij1FtVJyECS8+k5nfn9sB74mquDe7fSg2HoibvV0rytGwl6uvi965VmbB1WI1vJr0ZuaOTIACgX4Dc+++P+BxOKdr\n\
-        \          A9QxvROzoCw658NO8HXHPco6LfD1hEZ0nEebXdO/ufLnkw6YjO5Mi1aBfMagT/24n5oveHon4CNsl6MuaRrjlaLihwKSUJZKO/aB\n\
-        \          UMCf3ZpGRHSnFDlLfL4Lvdz0+Ko3Ot2zPA87EITvN3URIEBelSf9VXgoytwh2uLjxIreOW/gI5pt+DfZ8QeaK/EWCf6OZ6MOV/ob\n\
-        \          Efr4j8lsOOkFTee60m+7u9HzOIwtuqHk9gWlv2GpgF2bvl3hynC7SryrXXa9HE5pbsRo5FtRewKiUei5IQjZ2gE8T/7sx8/3h7vb\n\
-        \          x0F0+1NzYdi+W9m0HtQS5Uu7Ovg83JmtRGcKkok7zyiTjkAD6CHFuKU1qEJAfarruPWOicnXVk0xdSOs5HPX8LisKfphPcpcLzbn\n\
-        \          Q5VqRlKsjMgq8oBmdYg6tlmLLwmCyRJxQTS/BspVQiqmLIdDB725mUDv0F65WqE3gHGryI4j3YUvjm8Prz+Ob8AZl8tlc1No7jrL\n\
-        \          oCNiQt5Jbi4VaWf8Bza+oleBeNeZPZInHZeeSYafy1tTOg+sIL3KePB9VxVYHMxmk3kXBASV8fhq3E3viv+QbunDBV+Ph0Uf73V4\n\
-        \          aZerV6hirXdd7EoHEx1X2lHoodVmKsLCuJ1Z1Re67Ul4uYzQUjlu02aiYVOrskzMLPMEdl8TFaOPncvVq0ZbWeiS+WMrB81DikrT\n\
-        \          tMRUEq7DZppvhWdaoUd/61ul9SZy3+42K+k6EFa118KqYVxkZlJmJql/mr3QpFYl3/HE3ucasho/ghfOKMdN/pmWevzQ933S8T33\n\
-        \          aWZtg9A/ueg4Kpyx177koX7gZ2ExTOzKY5+pJo/7usJgZXc+qyqCVU/05WUzf4tkcV2b1mJVqgYwi0b9LVY42qubDR6TtbLnaIto\n\
-        \          vMib+e78z9S1+/mpBbTXgRbRXhDaRGtlaBHtad8iWvO/3TXUrDdXhOIm080BZUJV+ITzDkUufeICqv5ahh9fHJwiSPHz9firr5yh\n\
-        \          vz4e/z6+/RYcW78G4t8Pp7sfLn0IlTtG78vCCQr3QyMMkVkIezwd355vT8dB/HJ/dB2CVZboPjsqzKdLXaJBGVHsw0LX5r1IVi//\n\
-        \          ln4EH7GIn4akbYxwFlRZGoV+S3yVwV4VzSG8whFT6hzQT1Eg3VaGgN7ygKhJss50pU1XswkJwhfHvEz66NXu257E+EGeooNr3+EO\n\
-        \          sUbCcsZWdvKZh53UFfOh8BubIAXwdVu+aCg89ngQ8LPOuONbPGdFadv7mUWqRKapgDoB5EuvjS7yVVdpzr4VXlkzp02L01DgQR2q\n\
-        \          UKiglzYmWsdBvSh/JgM4LlblwdVoB9bfdLXb8YEcmuSTudNnsAvboAUjXo1QFxvnTobzV5hDxpXYtVflmu7o9tq9nNIacnyiI0Au\n\
-        \          2Kf5tgdlOIBxYgw/gk6MDAPTl48pI7tRhtB+5hqYNiF0q4jEaLTRhYO9KzptHLdkjGyfC34Nk9CRaIUZif3K0+fhOalxCHjx/Hch\n\
-        \          BRyOyTlH7VRRxpoAJcP5lMwdiBcyMK97MC3MfFSMXoeJm+UQ4+c3WZHawWJleCEVYegTyl2YE83aSGV5DH9CovYi2LSVic5JFTQa\n\
-        \          nzCFSHVnghdE1p0pnKqLVez+NAVRMWeCuC/VccVy1I8K9n4sNn4PsCsg2gW1wr9OBwkXjKE1IPkgXMWoFERmThjISV7wrgirLaTu\n\
-        \          ZNjoOKabF+zpj0sQf+i8y65eK6Gx4RwkGqoz/OuN7rpRdkTtxZpyU4iYmHCKeenhA0+ciuXnYusJpPNum4L3pHpk7FjAMrR1ZIqK\n\
-        \          qaiw2Vq6UH2zCbN82SrOqRVtvyBBXo632wm+PWz2eP2brLltq4YWIA5hU+bA9uMhod+gSvDj+YQwbb0AZh0APx8OR9MREaVUQqJ4\n\
-        \          MiMelxo65WvnTF9SDqMRkPlsScUIlQDSQa/KP5ssp9Nu+qyrftlsNh710Cfd9Hln/gsqrm5Dp9x2XLpn1tN/80kHIIBj9HgqhoQx\n\
-        \          q8qEcBctiTlfY5ge4hlIcVowXgy7eqGYzJYdvVj4bD4jfCcrQOTPlpQt/plRZ3/T9FBMRqtoMloeejFjR9zTy0SVSpx/PD48//WP\n\
-        \          kQoEmq+9QW3K9fGMcYYcVqCDf1wsLf5pTXUPX486hkDcCOqVWtLj6JATT6iSXgrn3YSk4WMSHBmrqK1JrSh41JTLXLUbW6sg2y/m\n\
-        \          4ykq4sGaKsjcMY/mpbGKdGMrG+Hs9+Lt4ft37VWqrVtvrtmNyr3lOFqjprAyb9Kig+Nq4IaD5OdRSl8atNvgSoP6WdkPgnNquAuL\n\
-        \          m35k9xrZoBobCp2TZDc/vJ4wXtv74KT6+sLLyfH05wPejtTxMAf/wCE53b59P55sRj53fs4SgcEWPtEVdGRWDZexhAh2q8Hg6EQF\n\
-        \          NlPibOhhFCF3p4bw/wmILonrEYMHrqsITNV/1cdjnLS6X3BJpGV1SS42cF7j+YEqf5vfpCjRz6dWzhcSXhpFdBltIHZqhWdv3l/i\n\
-        \          BV1yq/QD6n7SZfpoJ3lQ+dAo059jo8de+Ph81FJsh4RGNmslbXwQPW/ciU0khS9vp7vhlzYAiEW68fWv6kTjq0sU18InL2qQluxA\n\
-        \          2GxUmyFh8NDE52mtYgjEh+Qzp5jp6FrekWz40W+nV2XIK9Ojvl7rfGfdbpzNy7CmDnG0+Y553uwbF5POzJl3WBDarA0kEKMJsdu3\n\
-        \          IYQTjxZkTjyaNpDNTbyYzbvrG7PDfEkckBpMLmb+pKesUESj8XDxCcz4MxkR+lQN6ACQWSci81ekFx4NM5x/AjT5DOgzmEXPaExH\n\
-        \          xaJ7MLzryXjbiRBwZlkSMUQazComfSmeRx0YedQLmREu79q5jLuHiseT4bh7PuS7xUJXUFL+RrKwb9Jijy77O3057Z+y437IrBcy\n\
-        \          nfRD+teG5bB/Uo+6p1C+pHzpXoZu2j+689HoE4vHdPGJRWjcN33Go54JHfvZ1XJGbEoO18TIPxgS+xOLfyAmlPK3XsM+RgY+Wvr2\n\
-        \          a9zZAKi3HqPxYt7HIFQwszZk1suJ88WsWrE4jG76kFfTvskxng67p5gotqOrgvUwynRR9LQeIZNZL4RwSHWGiBiOd+OelXi66GHa\n\
-        \          PJv5PbMMGaJ7Bn27Sa7jzOKYl+df8RzVwy9ZNOxZ5xHRXcVVAf8y9gIzk3hxOBxMuUyOa7IT3X10ZWhEnt1YqXDufS1sOTLAQ69L\n\
-        \          eTFmF7P7S9S8cyqhHQ4AO+AdJFY8WauAd600Ga1BmlKxJOGR0Kmp5iMCzVJzBjy2xiKcZ7UYL5CjIRVAeV+xQ4g5u4+E0lc9lbeM\n\
-        \          8oAq3Yw4i8QgX0Fn7tysnUWTybCiMq/jpQkSoFTt+siK5btL8VjcDdhgG6t4TRguXDAOlpHEdSb7uD107fSOwywMEDk4Na1yRefA\n\
-        \          yviPD8fnk8bqTNwkcDimuw3SnacaSPfKle1TQuaHurYaW5YHh4Z+81BpWMuhA1vCOS3SMpyZcCYO82sSE8AhsQ/DCBe5SBM891Pi\n\
-        \          OCbr4IeNSSaJSXhxoDPIS8pOCKjxaj6euntKaWpvWM4DdRA+f7hbEVdVuH40wcscmSIZ8+VJqWWnkqmnpuarOHQ8tGKUiPeXP0+D\n\
-        \          zc/X49uvu8H3j+P7yaVPtIOeVgtlff/jcp5eMHzubVcuy0MRj/EF3Fk5mEk8CImtIVqMluOSIkahR353NZ54xIazuBpReS5GiwWn\n\
-        \          yhMz42SrbgygU99PtQn7eXtS4eDv7o6Px7eXp+PJ2LQYzLDRfEwYW9RU3eJP5fh8+/jyfXB6Gdw/fH843T7ifSQUaed/NSeipwHp\n\
-        \          ijhbAmkxIr8aEerfQDLUsttVber5x8Ov9w9vxztcgchKF1eGN3xFvn29vYNMnu+On2r5aEY2bzQj23A1tUsOZI3hjypR/Hw+/Ti+\n\
-        \          PxgFLhcTKlcgTW0HG8fTv1/e/pI99PM/x7dfBuHT6/Fets8nGjVbTuxzL4Pe/O/j4Ph8fPv+cyC5DLkw9PVv+dViZtciP76/POJL\n\
-        \          zie6dCyWVJeO4SAyskdfvB5v//p4xRyhmOPg/fV4vPuhhX1RK0VluaGsuef+7eXh/rJVMbEx1lA4xOUpCH07I4hRI9/ofq5Q+Qmv\n\
-        \          M2Gv2XDmjosk1a9YvuNpWfSgNmWy7YGAZNAJWKW5z6UAgdswCZM6OdIHCaqRSV8/ILU5fRAgPEvTSCoWVjmHnb2lhnSmYjKctfPt\n\
-        \          19FwaA+Il1LOZ0FerUBWvRpPCXl0TbRjLSqMJ+SlxFtTmYQwNiJjObVFxNij0bY6RCAWwj/234g67sPIh2YNpcJSD4JSRaE8e2zF\n\
-        \          FXUVts75jaFQKvn4+uP28e7l6WnAYOWAjXbgR8FgjyaSTy/3H4/HC4Nf+wwaFlRIbCm6tlLxJlwKa1/uj3/efjyeWlfxWTh1LBDr\n\
-        \          2/e/jieXZ5VmsNdMbHkB7MVijsp2lDSOBw0YxHCV/v808dJNaRSsQkJjxN/kIAucnTd1dOYJ1pLnF9heHo7vg4fnu38N0CbnHR+c\n\
-        \          /3y4q9trm/GhOMYPRRPh3FAnzrmmxSgyPa5adhZ78MjhPi60QUmQIbDl1rCtgA4/UKUglK4DUdjD2dnS3Q8zppnfw2/3CpEx8gkG\n\
-        \          afsgxNm1CrkR0VeZXZjFoCGIUVSDR2sOpBm1mlTxJkTOPNxQFWwgcCqHZSdha9JEQOsvdcaCc0Gle06VOULfBWXscsYGiwM+AUVp\n\
-        \          ui3bDnHZjssVJMs5rDOtY/tldTmHKlNh6/zHl7u/VOB73K/bfNxakXDwWBESrloQsRHBtm9dQ+/oU0I5pQUT4YxykK6jCG0mHTT9\n\
-        \          DIhwst8C+YHPrwhp04Atx71N9AVGY6yI0IWIuE7z8No18q1tAg98baZp0Sg1n/aY+u5qxoEQsD5F5E1BIHwXYzVel/T7AzabdOSF\n\
-        \          n+VZrHlJZ9l1tfb9ajFcuIcOAXHchQjrLKZDIvJIeC6DCG2KgKgPoHIg3i5xHZaAOaH0dQZQrxcXQEcOUScgUDks56MZCYg6AVCE\n\
-        \          6utlbzM6OqLOoq+rlstewLyvjGVfZy6JaBB1Xy2mM5Iu1ed7MLjv2pDz3hnDJoHuS3EFD3e6CTvOBpZmtcW7VfUtFbYaAU3VOkF1\n\
-        \          3ToxPov7IOus7C0Jt+s+UOLM5+zwWDY6Ctt6v62GWgRVcSu5brOVrhphJSfu5KY9NeEy4qqWHk/WVMy0pqhuTF3NHlBdCxvVYsC6\n\
-        \          H9g6bVv1SNZsGuGi1d3kIFGf1D3ooCQk5Tx6De2yW6iChF96xD33uZKdGFWrTkiUoVa3NGDthDaNp1bwSyd0IeS6RAF8aZLiZ2WV\n\
-        \          wvh2FoT72Xi578lGBDHJhjjZNux33s2nnZBmBenENHPfBDVS6h4OpYluuXNJa8QIJYlK6VS8fLy5jjpS71O9N2kpIKh7LdmX5bHy\n\
-        \          Z93oiTrTK74rMD5MWzo3EHivgOdHluumVvIJKs9ZUQJ8OFzMFrO2J3MRRuh56gwZzUdD+R+toPn0DIAMluORJhPpFdn5Ra3i6BaQ\n\
-        \          AK2AIls43djELIy89GAWEW9K4h1MnVY7AJPxsIohS3eF6kdAil5Xx9JWM0TJzMfDmeseTLqFafuJCUEsLfXDoEq6aHWqywO8V4TT\n\
-        \          tCQOstvvR6kda7sjVV/j+8O6QJ+VZr4XCi4v+lnOBYDzXrQi22t9AqOzuxLO6zADuWK6jZoT8D8sXX4CswpOl0XkdXxz9t0OC2yx\n\
-        \          gWmy3nTUeddyxpuuVLLZr0HbYy8qsJvD2GJfob7XWBrTqt2EnCeS/onegHbLh0T6HfScG+Yk/fa4z+6SlyP27QbYPsuMdyRJVMxo\n\
-        \          32U/vZyOr28vd04NAY4xFVCN1P7w9en9u716wrlLtMy65U980s/NNHXqk16vElaEO425LUieOfV6TZhQF90kOdOtsRwA4jntAhRx\n\
-        \          0AFR74WkbAogMwN15w8d/A/x8/10fBqkzwP/x8PrPy+XcoHxNvaE13d3sIH55rOZ9/Zye3/38mTQWvFMQMzL/RhYyX5bOWS/rd6O\n\
-        \          x/e7W1iqrl/ewmtXEQ//ig+u9PMNo07TzuXAgag/FnjGVRWIGEJxtkFAE//rkpccb10LYZ5frr2i2kCOEeHcT42s8EJqwsC67xtF\n\
-        \          RpHvW3MHTxOSQs48kOCbT/UZiRKpO1MQquA8150tHqMznq8wlMaTRoqDoopSFug2KvI6NvMEleE1nBQ3PMo0s5czRd5sOtKDlVZ7\n\
-        \          dQHqF1FXKTJgFQx5FLFMv4VUIxsX6HPG6ZZGAdQFjtZhxjNWMx/N1UHjEdFBi8YmuZ0zZ3l0U+XAX6l5twoVSfMbybGGadP5mApD\n\
-        \          n1elFD6pArA9krG51dBsnDlaSnjPktS9n6CbyiKPyOZmYQR/BTp7yeY7500CL8qsEiKvkrQIV1LeS8uiHTEIaOJGxNI1QwvyFa8e\n\
-        \          hxqq9NBsogN1NgexCjT7g/voi0H5otNvN2rFCvRYgfZfbqLMO7Q+lRXEZ80c9lbW3vfr3jLwqtnXMrZ9HFto2YyLB/MWEV/vzitY\n\
-        \          u2EBTO/d2EjkZWCyW5iE9eqoD3pwk5yJWICT186AmB0qjiHIuMCBsAThnL6+SXMM0Jesa38Y9CVOxIJQmur9z9A8z2jWXgk2nS6G\n\
-        \          ZiBZjftZ4W+CdG33JjS+QGeFUboG/jGI6iF5jx96YYGRHhRTWh0tIWEWQv+ZvuU1jToQ0ITPorAdWOxMuUgKG3PJgPOv03LpWnAu\n\
-        \          nUGE+bX9Dczlsggj93mt/anDg6e2RdZBzKy0KtsWrrWpEhHnWbN06V2FrqTo8iQ3wfpz2btaUng9HbPYKtMPk1265fq0kg7kzPO3\n\
-        \          nIyx2Vf47K9moLuvoHDYDHJO+ehtZqurB+FbKddh7shmepuCINdIWrV+L9h6t3BmCoMnNnHdka3m8VovTq5D9QJntB7kBThWox+a\n\
-        \          FoHBOT9an8NlwD8H3svt2/1AHB+VblHLPHbNtUFQv9W+ZmaJgo/PbqC4SO91i1pFQem8NbCBLK2MZx8HKvChAzPi6G+hhdcP3sO8\n\
-        \          jeJPgZo69oBhdGB5g/Xn88BP5sx8Hn0K48pPH9csj9tsIZpzR3Z7uvvRVt1GvJK3z8skQZGLnL2bIww3QzX5zRkhq4OOgrg0hS4z\n\
-        \          osqtHLAEDAjsb023W9IIE3f16gYEOdjvxsM2+VoEkdsvmDyiZejdtkwKM1e8bIb9vQC5kPvpznLllSZQvTBhGBZ6Wxrfona78DFE\n\
-        \          o9lqsYcDcAQ9GEWh36EjKrNRKhjwN46V0hEKF+eWaPk2WI8llZ9Dn+Lo8KinhDhGWUvotZeJaSqsMs4EGE6oTsHzuCtfieReaOcO\n\
-        \          HX+dSr139PfEE9NDGGKCfHc5B8nRwmNGumpLjmdGvl5lOfD97vbxw+RiRZKa/PmK+aYALneo3NyGrjec1wKAXIczDJ9k+DlTnx9g\n\
-        \          4+Vsq+8EtVMZMzBii1R8MzcIpaJPOL/HLzd7jOXhUg65XDXhycAVj1oStFs9eYYglWIkFbad9if1sYOKE6WobkdV7i2oaxkiR1a7\n\
-        \          4Chsq4DDw+PD89/UrUhtMrHzXduT3Pd2q5xfN6xV/xysXyCj55f2NUdNqtbprglenyYBx1uPljlLC+TcqzUA8rdgO4KMjjlExsiv\n\
-        \          mRDhzuRuL0S3ZXuNC+VFPY9h4lVaejs39fEeeC7WX9kskA9bEFc4lzVRC67KdJeHszCamN0emHdLVuksyHlSzyYKs85KaInVBUrO\n\
-        \          q8GrvZ1BPaqao1XtI/jr7c37Yg0BixzlLlzjHwyN7MeEGuyFLZUY7PK+IONANN3H/z7dvTw3wREdjuDqsBEs8Kvf3QfJJrBEpluy\n\
-        \          1MkYlHIyc6sw1JDatgkE1zgUfhcyLxbLqwnrgoh4NiOMB2tEE1HALSXJKxzXMqe3Dn7WFw/uxRXNeGp3oSSg9i1C0kUT1bYL4cjk\n\
-        \          k6YSoy5TieGSoB6iyXRmnrktOnVj7sVsRNhKAGk8pkj+aDZUoc/cE4RRfuwDNiFMdkGgyANCyU7RljSNUFqWw56n6P9b1dbhaFof\n\
-        \          wKLGTVAd2K0jfRDBkqD4v29Hw5H7wSn2J+MJ5aCPXU1n9Cg2dNq1ILsiNc1itpgSRiFAW85mow4a0ZSDPx0SPgCANh8T64vw2WRI\n\
-        \          +OAQxXYxGY1Jmsdm/ytrofGctPsZL0c0aUGRple0+RFd1hVd1tVyQhotLa4o0nJMfrUknKD50jpghHuIe11O4JSTZo1XXcIj3CZc\n\
-        \          TAn7883hipjkcOYaHw5kyVHhj6dXI5pGebdDGhFdBDa8EeV2A2kjKkSXIi5IGuUrBTWd50T7Yz+bjAm3OUibEk5jElZeGTb4balm\n\
-        \          h+KAdWI5b+NAnVkXgAU1COpdJ+8ky2zDfsiOgohAijBxGnQ4HSxk1YeLkd9JJozTGvJUDAnXjwoxGo8miy76cCFGw3FnDgsxnHUi\n\
-        \          5iMxJ3z9SASUQGjhKvLVkrD5U+TFfEE2oYj86YwIe7pbzUdDczoSSys6EGn+Dcm3CqAtuO0vV28vz6cBf77XVmLcZHOOl+92QCL2\n\
-        \          9PoIR0lr7V5M5g6byR/HJxnRSjlP0D8pIiaqbFO7SyBkGD4nZBTfFwtq/WLX5CF6922xtD1Kbh7uG/8OaEirLC+arhIia4hngi6P\n\
-        \          iKxuxKa0dQH8l4/nds8H3aPTtrYcEj4RgDSZD0kSaVc7m45HJGk6p0mUXDubLcc5TZvQtCHZsvl4mpNCFO4hc9LOdTZfzMlPkbyc\n\
-        \          dwjhsytCIpKkBUmaj2gS2coOEWNC2mMvFsT5I8jSAp3LuoliOh0Tavvz8YToTdggZyNyQ54txuTeOb0izGuQthyTKzDUf7gYk85x\n\
-        \          FWI2u+paJI0+OJvG3388Pf2s76uaibh6O/7Xx/H57ufZovo/6Bw2CMRvWRQ1KKXgKrUQb08vb78FD++nt4c/PuortraVteHhTXlS\n\
-        \          +nH7fvw1gjyO94Po5eV18A/I/J+DP8+Fv7cK1zNcgeg2dFiDq/Xj+8+3l/e7l9cjkOzFVR5Ih+RKgFTK5VpDnXcddcnl55CL6Yw6\n\
-        \          ka5H1AEoKyfD2ZCcnfWxb32Tpx2nvrBYg+Bmd9nmePt4+tHahJrUt9MgV4Fmnh9OZheu+HRKTUVJm1KzYzLsEFeRaHvc2nw8Pdw/\n\
-        \          nH46BzMeTwi5I9gUxCa4QZmIEGI3hRgT83dTlARFhFfUcRJJY7vbQ5gzJ/S9/HS8ff94Oz4dQdb4gJ52sOp02MWMU/L6IwSOIrmm\n\
-        \          JlM7wjY+zKkT0A5Zct7Jki0MVULNtpGI54FwOLJ++P7j5J6+vweVoC5hWASLNuFSkWWBWFIxBiSRMhPzNqOrGU2ixLB4Mh4RfvmQ\n\
-        \          RuwuQJoQZ2IgzQk+Q9KcuApZZ2OWARey4dDtCEhJaOhYPBovh8SRUQcRDv0lcURscr8LBmcVwhFblg9JD/dFTjqn38GSMfUFtaLA\n\
-        \          UkQMeJoVwAvuXDOo53hIkkU4Gk0mJImyryu2k8mIujyqyl0oiH4rfDGZEvbCkka4fG1GrIBBoZyeStqCpl0ReQNtOptQAfJmo8XY\n\
-        \          rb+885OIHJMdj6P5kLBn3kVz6qr3GwzmeOxwThfffn8+ntSdtXMx2ZJ2nZJECL3b4XJJLED11XLM1knH2nvBkFeibD0Z0bFWJjPD\n\
-        \          +ZC5rsrMaXGgYY1N7M8W0wlZVRNnVFd18iXWnXVUNt6U673v7vHh2RoUTYJ7fTnBjvjgfG2YUTFoAzFaDMk7rdmUWIsV7YqUy6kF\n\
-        \          EWmjCS3rU9OjyCKnnGO2/f10q4sDUZwtR0OHEJe9Hd9RinCyuJcN58N4TXBiRj10bDKqK7NoNOq461dkkq+zCPiasteekfeOQJpc\n\
-        \          dTF8llMWZcWMklU32Xg4dzfjW8Zgg5675ZJndOLk6msxWepXyvXwvPz98IQSrLqCeleeshwZ+JvRcESLVbi5kjthGLAc9bE45RAy\n\
-        \          X6EPLeIiUOQrQmgXByhzSH60+F/6rRq5TiXF8ekVD5UUTwfiCqSFqgi2FUZajkNBXcHC5A5jBUr9tMwILyBxdFgO58Qeq4jULW2c\n\
-        \          DYlXP0m6IrbPG0EMpCQRu2dSuA3YdkqVyqVXso/bwehiO9wDJqIR6Kpw6/khXUbvWczc+Su11mxtZmpGSVCLf349uPvx8NpyX9hw\n\
-        \          d37tb8JMV5RYt7X/6gSpYJ7kX0dm+m4c2+DdxJUG52FBpaOXRieN+ZH5OrFJ93Uovlp1+ixB5kUo4zlmPPez0vguC2zd75iwIAkz\n\
-        \          VKhzjy4UjSYyaVLkaRTpNjqKpjRVUmJpVBilEk1F7lnF9r1RtrkZiI8/3qUp2WUIa6uESkV8bbpic2N7e/H82tqpFN4YIW7Wg0+z\n\
-        \          A6vGiySuNoJwD6qhMD8S5QMfZ6SfS0SgVeMGtSvjIJ7PiWUPgbUtw/ViOJ9WghWsGxlK5OETSMODtANgNtEElMb8RtUun9DviX37\n\
-        \          Vj47vqGDc7lHPanbH5ezUZwYPoZPjEvSpNT3XYpZSMlsa9dAlGRmykxt3GjLim5LNoclbcbNvJspwESju2S7NFQODFuLQe3R0Asx\n\
-        \          +g2aPVC0dqAU46vGxfWXPx4wdNEvP/5d/+O/n+/Vv77YPhQvJXYb/J59LvIkQPOYNN0KQl7wkh0q9xJqLq7QPk24mMt+tJOGAril\n\
-        \          kEZ6Uofy0hn1J/i4KgJ21gjf7Aent9s7KViZO4MotELhJ5rExTfEUTrGaLJocAMpIiU2/BasO3SW8sJduEzB0WOiw114hsNE66ri\n\
-        \          V1W8zs9wQQrLJtTfZd24WsXUyM9EAfdNh3V4BTsP1Os/pOPuStmGNzo9WEWEw3MizjrnbqXYNNPM0USYuhhTRGGsVMkvSJWkLIEM\n\
-        \          c0UHJFkHmrKh4bLUOhALQRqJbdfClBNqVdHGw8AaVfqTNP/65en96dfb+7fj88uvp/98sbIx3QogUwkM3VbnqMeNk+G8cAte36Bi\n\
-        \          ArBtYHsaL95f79/+255khUBX4M10LF4+7n7go8BxcP/vqwVshHVUQeu7XehVwR4h7m+Xo7H9bcvxtfx6ObKPw2Y2089kM+3JxtmS\n\
-        \          ywQe7/5X32fxYjQbeh3BBou8hKMKWq4Ax7dcv7STLR8cOpV24tDC4b94UJUhGUk8TuHIZHvwXD2gL2Ap17V1n5Wm9T7Ng9p3y6Xu\n\
-        \          O4ZHTzh2rgSKvaJtywJJwMEsM/R4xxWhxQq0SeXcS4AyrdqbqkwoBUfjSpmnQcLapCI86FJ7Q5KmvmFxY1RsCtNHmhGEhDAsMZTl\n\
-        \          wu9eoBlp428SjGbpnuxWXWgPBQoPVAf9TpMONGm9EmSXp34H0Ss66pKEkf1p07qx/K7FCZiAuuZ2Kvz3wIoit5MdA9iQXAMoadJK\n\
-        \          i6py83XPKCuYXKrD5Hdle9OZH6zX8v4pdBoiSFSYYuut6pbJioV5le8Fj4kdkxDGKAZHiysjoGOdVseQTzPniIWRNG/fakbFaFKC\n\
-        \          6m03BF3rSyIZpJe1oGhhAhILV7Y7Wp2V/VO9qWWrrbsHlJWc1qtNYtfMqxFeGUZFmIBUsU5YUeZcq6Y0528dZAMzIVQJ0jpGqwJT\n\
-        \          BJeAUKZF2ycQ/sTYFtIK2mEmluWQWMP2LE9MjzuSQDVUUYuc69bTq7iodiMXXlLGRvX8ItKDjxTpSkypGabIxKIgl2uNNX3KErqO\n\
-        \          iEHNY8zJy1aOQlC0QltEvZxLKiyxQZjDnK7gT+f3FySL9uwGGpVGUbonssXzmVuloAU6AMvILuoDxhw6Ps2chiMweXjMk4JFqpF1\n\
-        \          CIbaeK01EeTuYivdBb/Cgey3YBfIzf6y17fumdPlfD6kOr8MVgZJPV+k4rcVK37jB/z/pDByP88NfQeIBXynpexMCP5uJGcfxNqM\n\
-        \          rfnX6eTKRQ9TdAIlePH1y8P7y2IxW/46+tKemRdoWawWxB6vakDcwFrcrS5N3o8f9y+DP11tRsdWBj/KpK15RmwT8UauiNorASRi\n\
-        \          09GaLFQ+SPTs/E0Y4anAfX2EiDJ0BQzewlmk3d9GmNcizqyfrp1HEZqd/PLGUq5hefOcC0LM41UAaz/XfNNIX4EbJqp1uGZJEapm\n\
-        \          tw9Byg5K56NQqEBJyrmDPvlzlqw5LciwoIO2olYzLvcsXSZtkqBlQjRxds4a4z4D8Vnngw1dMpCyqCTJXkeDPJrU8ZWfs5ggieuS\n\
-        \          iQ1B3HVInugU5kCKnnFH6zOadp0cpp3UOU3NHYU2U0T6BGjNOOUjANYLtBM/y3javFOQ6Ft6JrtnX4Obfha38T+FXEzHn8J9E0Xg\n\
-        \          BOqwVhu7O6FZRS2gBcBQGI+3p+MXCygv56wMdMd+dWLO9BvAG7Ejd6cO3s/TjtMML9A9ansNcd2AtgMGwo9LM1vbTYvc7FcV7Ffa\n\
-        \          xWmbdkW8bOsgQhlFAy0ILTUDNP4M6FPFfaLii/ln6kRoGxqgz1ScUHQyQNPPgD7TBYSpnAFa9oOWk0/ktPzMAC8nn+in5fQTdVpc\n\
-        \          0f0EUiIyfLXoz2Y0/ky1AUUzARN+GLon5LkmI3OGNYRxbyMmvYj+jpj1Iua9iKtexLIXMepvzKi/NSO6Ods0XFR5N7kkyRhSE3Zh\n\
-        \          lnQifA4nc78HAuflMk+7QXnKirCvsJs8RJc4naA1470QOGpvOxEhtIslQTcmKcOiv/v6GlWU+ZYK5IQY8vwTRC7POmUS4kzVYouq\n\
-        \          pCpB1yJR+I3JGx3X86QyFjvefbyhFpQV5XTLb1rbKv6ScoR+XYbORDEaU1IgIgfZmhB+6ywI02ApovOAhqCfm2BTpVCebBClQKnu\n\
-        \          HzE4qpCKFEUe+s6Am46byibNKYees65FEteHZ3HlsMrj7gpCN7oeLyMZdYRlKKLDCSjIv07GV/OFFo0JjtIBT/AdQYZwzW4qFlke\n\
-        \          MC1QBwkO4FGETre6MLgZiKwdY035KJEIfNdSnmV7yLLdX798sXoV+BNm2MHZqzVNOrvKGEid3V3bwINQEO4abSiXtumtypsItvNN\n\
-        \          J54WRl5y5/waXUPhA0zJvw5JsAiDguGjlNig+0nxdWlDYzUmjibGUvsIp1uZ9fSGhAJjgghdEG5IDDDLMp4E6v416ploRRqnN2k3\n\
-        \          BvJjwAM9ZaNTtyxMukE3jAjhfGkCW6H6VBj0leZvg3Sf4IxzXucVfG2uD+fEy9V016cyHIjuOJ+oPN/FTk9J6kqsa47YmNhw30ND\n\
-        \          DdPDywr09QuaEN6//Pv5l5+3T7e/PL7c3r8+PP/yfvvnEZAP9788PJ+O33HX+OX9+Pjw/PH3L+9Pt3d//XJ6eXr5+fLL7evr7dvT\n\
-        \          y9svf7z++UVtM9vj2/PxcfDj9u3+KBV1L9uNUlc/Av7n4OH5AQ2wHv5zqzul9H159yQDdO5YLh274loCHN1akZyob3DArDw9dB2F\n\
-        \          00c7LJRbXdhKE8I7zwUDS2hTISdTaEBnWfJNBvjyPFLE81YDlrFN3djz3RH6XjtfRr/9fD29DO5e3o6Dl7fBj+Pjq7Qt1cD4LKTF\n\
-        \          uNCSx3Y6Z4Ez0YZ60dYPs017jzAp9ke4PjoTbWjevte7pDmB9k1JU3WyJoyq/TbLxq5EOwcUnxzVEZq+Up0abMgBrbgf2J1SewGk\n\
-        \          0seOMnBvpkupP2z2URmEQljZr1ej8SIuI4uQlJE70VWTTP6l64JSlYwFYOUo/wSOLGNFofOE6b8BydPxqSko61QRxq7yYFXd8fFs\n\
-        \          pscHVCqMH6cfaDxyd3s63g/48x3ORAzo/e+H048Be39/uXuQpOD2dKtZHtRZ+zFdnbUfu2qzYfDf8TBLo5vRhDJPbKbrOhQjwnbQ\n\
-        \          wES9oPFs3oUBOaAUc8JMqo0ZGTYwxiDw63asu/PE2DBYHs8KU560hX96uW+7AG16yHMNvb/y6EL9wp5evmNOcN9zZB3l+65GZ1Ah\n\
-        \          uuiDHgCjWWX4zT4nlIibMQngSFqUts7/5vb9B9U1IETYi64r8eDuxV3scGsQPHw/vp/swnJ/MvYd8xqSHVl7EdvysehqsoJ4XRDI\n\
-        \          vRgNg3DVMa/qrccap0/MqDiYdqyrwcy1XIXAuzzCv10553HQM1MRMR/2IHomKSAm467Zt2Eja8QgEbJ1Jc9GrpEEwqSrEiLuJBfr\n\
-        \          fLQcdyH22cyhweg/vP7QXIieFy/XDINUw6eshUhKLxQd20zuT518nO7pkN41l7KYR1HIujGimPUB5nT1AmezV9Z+bC09G/aNBZ3j\n\
-        \          B4dHNu7kxGaX6syG8+5ieJ4ZPlBtTpp2chJndP8U+xSHyWLrOv3iH60Jgf2KZp/64aXpaflaZ+UUfUsdI7CYdvJ29G3aQ9507Cb4\n\
-        \          8NhUOb99vn95GiQfT38c3xq/Ma76s0SElZ+5xOwg91BvICndlHrrsERcSWPdc0CCYOPt4GBAWOX+HuJRDAOeqLsvl+iLwfx6yz8D\n\
-        \          RS3/fwoMnfQpHJ6U6JbJy6EwWaX2Zrx39SffgajYKQ0gBI6PeXqo/CSZzQ6HPrTPdmEZV9/C3nyvfd61zNS+l2XoLt+eBQrQHFid\n\
-        \          uSu/y66iUaPOdjTuriS6IeweHdWPOed9IAzEifcpnyo0dHYPEzdxzPGWWl5xFzdZW+fmQsxKL6oxovR02GE2XFY+zzHOkY/6AKbC\n\
-        \          d7b1xVWt/dKiXi7xJR1PPVgA4UJjjdfBGVcqp6iqKQszdGvVIohedP6Up533wZ9op/bw/VmZDd/9ON799fD8/bK4SF+NHPPHsr9+\n\
-        \          uYOP33/DLwBW/XX8+a/X49OXlhYUBolpNOnrJwdNS8qgC7xtbusoIJ0fCjTcuXQZdVmYJgGGczDKc6NV1iB8+tsoFIULfH4MkUEi\n\
-        \          pBrp6hy04OGPt9u3n4O3l4/Tw3NbKvdgwnLoccHbF/Q7rnSyXFT1RsJa5+/GCFQUeeLjlT9GQCg1LmlDIp4QVIz+JuMO2aTMD8+G\n\
-        \          BW2tMVQL9ePs4G/W8t415yuHXpmMCBqXURFmUajzZ5jUKp+GP+/2tdYj2X3Nlhh6zeGhFajL2jgBpaSSzu0VUc7zvo1rzgtVLsJv\n\
-        \          /OvSmdlnDhWXqrmP9RcTQlThS/h1ex310Sq00O67/NFc7wC/ss9EGjksysp9MWKd1SDB+eaoA2BJ497NwvGpolAyjoSwfE/NXIXw\n\
-        \          Qkoq9OdkziThyt3X5+NrG+uK6nQ46HeZ8nXADhmnkuWsUK+tFMSiXrTpZNTC7gH4hmwCooUukcpUS05tK9LpqQF3pU+d6Zqym5Gs\n\
-        \          4S+2M9+Q4HwZOSu0rb+1nRO0CB4Qxk5K9K0dAFgjTO1FzfG2CpJBUIk0SjXHyO1UfNFeECQosEUqYCsSHIfblVZt21FRW+le7Exe\n\
-        \          ibavBSFSP5ThdYGfcqY9AUsTsHa8XJWEJimVtoJjuhYxOZGNWatQPTxZFxuDhgR8wjaCW8oKIg2ftauimk+9sDA2tKbTEeanGynA\n\
-        \          t4YKUuuNIM3aD7H7MC2iVlxZsY7UuLWWu6yscq1hwXV7e4xS7coOf3dNnyTSbaP86FtVMP3WL80D4i4HOsD9spNf407gsoqNsxDm\n\
-        \          ZmuWhd4qaPUNWpfneP1a5DdEp+4Ckdr8veaFjJ60CtoM0lDrRUb/VKD7gjRy7OEq3HPYVhKAQTZMDVEnI1nTGinnp8JGUpSpr28P\n\
-        \          z6e/lK+ep+P7d1tfRYpTWxkLqtVPHLsAn8y04Hy1nisGIYvw7f/8HnRFIq7LkBdfpxcteSVNWzlMW0ovGJ2rrlbAI+YWrYObhMVh\n\
-        \          VxxwFVO2qVGZ4EaCwngaWm4XjG9q6Rrf1uVB0uHs+en14fH46+nhqZbO32Uf36n0N7ubVcb1qdQoDlPRQKf0iTubFkyAmFf0gYI9\n\
-        \          y1fTPpRXuGWWdeBhzLUwK5ymAnUwLxDtlepGy7glZzGXpl1fx8PpQufdDFZWdK8QU95bWCAzZkTE3jIBgTjADLyUUK+QmpfpPiFu\n\
-        \          G1TTKR19jsHxapPLjs+FsqBEG40YA6hSRyANJPukSpPoxulBRAKSou6/hj/Nfq3TbfapI7JytkW9MlyznSEj0fEPnLbann1aiecn\n\
-        \          cTW+X4d/j1woONyE7QOSqgFa3fCoOZLVSgnB8Y+P79/VWqQPEey8PBGUHarKEoFyM+rE1MGQUyL0oywN+k2kCXX+vJQGLLjqgORp\n\
-        \          wNACkXJWolCphya2hPZPVHp2QNX2nlP3Jgb4UqHwjNwbShd/Sm2JEhfZDpRTc+a8H9WYMC9KFtm1qAld66eK9Y37R1enK2ZFqYfs\n\
-        \          ESXOMdHWoDMIMtATa1vl1ooqimqdAzTq5duLziQSXKZl6gPs34uCWqsuK64i0l0ykildHb31051VMSgFkqsiZzCrM+2Igviusd+g\n\
-        \          RzLrARHn4QBdk3+8ql1qc/v83QgBuCrwiqHMusPMKGK1KTFoJRNuPtxfn0NLu4xzLnO2LYxqybUW4EgnNtEqZ2chycft3IiwqxLN\n\
-        \          ffYSNl2SKYnhDANxvtjkaYG2zK5WyGwaxcZWSCXMXM1AVAXs20uwRVvOs561Cc5BcWYLfDiil0V28I/314dnfLh//2Xw9HE6/n2E\n\
-        \          fxxPd//617/+2QrkiUbzMt+1lCbtGKhZnu7OxvFujxuYBza+a7XESyk4YvEuMUtAyzGzrpWkN5P9XoFgeU33pn6wWSv0TNCVmWxa\n\
-        \          37YDx1oUPGU87568sI/lK0gttQu6Q2HOoWokvcFcGkofsCTvyZVDCziK0gcq0JUJPgsCj6q7jo7Kb9VG1r1Rwf92PPdSwU2BgKbg\n\
-        \          Ha+9pUAXIaGLV7qmiHRREHbL9D4I2HAuDg3dXPWY55ducQUIMt4oPSqIoIauBcF9DgYHxqBZxsajNv2yQCEIlj69ABxRsnh+LXpP\n\
-        \          QbAoKzExtwREA6n8aoCIhm8wxE0gNGaTFlmk5A1pSim9NrrtM+rBqXiep3mfE5JPOCqpIx0XqSvYdZJmqrtyQ2BYlYkSyrup65xl\n\
-        \          GzemOXGumgmmZaD261g69ZORrvPAgKAVvOQAREppXhgIv/5Q5dJ2qYR5+zgyresxGclahtlsWW1jYFOJ1x54cHxwSMU+xOOI2Tz0\n\
-        \          xAcnct3GW735FZ6dAisQGhTguGftmNdWsc19iFleDbSDia+stcsYNsIfgNwh8R5Itl9Q10RCRr3uzagLovb4DsBmjwGBOwA1p9Tc\n\
-        \          QLh5lp9XIgHRGGaa6zEMlnAYSdit5csi6lobu7hMZwlMP4aPcOoDYis9w4E9O4FKuOlonRdt5eOtDOHKnOJvCaV5vB6qy9h72cpK\n\
-        \          M5BWH2KwehBaydV5gy+KdRTYjp6Wk7HyYFXZxCx3yyOt6fY/QPbWsMW78q6LRqomc5CN5T0xjpfTKZuaWqrPrMDD8iYZdlvKzU4O\n\
-        \          6w5sULIWmE2tndLybYhxTrBXBUxcwv1hF9VrBBQpxnTsqx76+qHp8i4E+6IbpjwW03Qly6Hb2y5HpLJJG34ISsKhrWqzuqFVJluC\n\
-        \          xm0BWKQHGqBeuGm6uhzupMOGGwU0oizDDir67lmBNE0jcrxLLUw7MaO/KBUhSQ0DRhOjbdxRd9QCMv0JGR2QuXtvFSbofbZvqss8\n\
-        \          VmEeg+Dc0UDl1aajovTldc0v0tSPNN5UzBKnHSMV85i8ZGnKwFMIAYHPSZ6Xt1lJJS+9QCbJS9rF3Fl4/QzY96u9lATd+wvDWPE9\n\
-        \          10HrQHsywt9dtyylJy9uoJJF+E3ucZrhr+e+7mndhkkvv6GQB8M9Dwx/zLB4ZAWuDGpRJe6XsxBvJRpBLCSeslR26nSGdZVCGwgt\n\
-        \          gnedjfYH52uvPKtG4Tqp7y7teuccDaeIY4uCKFNgEArwetnjK/RgErMtd/hxdbl2RV9wAh05VwL/RUHOiKqIfeM5sIb5rHAfWy4Q\n\
-        \          lUEWfgrHC29HxKRpIZVXZV7EU1cfX4DN2SDnWRQaD9+t7IrYlQwCLpEMXIsHD2VK5MKkwtntRRYwIj12dy9SjDeAzgb7wtnCzV4K\n\
-        \          Hi6SdHPtIuQ8TgvZyd1U64nC0b516W6eZDLp9cdh31yH6bj7MXi9vfvr9vvxbF+ZPyXH0+D49+n4/K6/5+UxqnTh3cDXJz1NbAQk\n\
-        \          /T/pURuxjaYCAA==\nEOF_B64\n)\nprintf '%s' \"$BASE64\" | base64 -d | gzip -dc > \"$OUT_DIR/.config\"\ncp\
-        \ \"$OUT_DIR/.config\" \"$DIAG_DIR/working-baseline.config\"\n# EXACT agreed additions: performance + SukiSU builtin/manual\
-        \ hook + KPM + SUSFS.\nscripts/config --file \"$OUT_DIR/.config\" \\\n  --enable CONFIG_KSU \\\n  --enable CONFIG_KSU_MANUAL_HOOK\
-        \ \\\n  --enable CONFIG_KPM \\\n  --enable CONFIG_KSU_SUSFS \\\n  --enable CONFIG_KSU_SUSFS_SUS_KSTAT \\\n  --enable\
-        \ CONFIG_KSU_SUSFS_SPOOF_UNAME \\\n  --enable CONFIG_KSU_SUSFS_TRY_UMOUNT \\\n  --enable CONFIG_KSU_SUSFS_ENABLE_LOG\
-        \ \\\n  --disable CONFIG_KSU_SUSFS_SUS_PATH \\\n  --disable CONFIG_KSU_SUSFS_SUS_MOUNT \\\n  --disable CONFIG_KSU_SUSFS_SUS_SU\
-        \ \\\n  --enable CONFIG_SCHED_WALT \\\n  --enable CONFIG_SCHED_TUNE \\\n  --enable CONFIG_SCHED_CORE_CTL \\\n  --enable\
-        \ CONFIG_ZRAM \\\n  --enable CONFIG_ZSMALLOC \\\n  --enable CONFIG_ZRAM_DEDUP \\\n  --enable CONFIG_LTO_CLANG \\\n\
-        \  --enable CONFIG_LTO_CLANG_THIN \\\n  --enable CONFIG_KALLSYMS \\\n  --enable CONFIG_KALLSYMS_ALL \\\n  --disable\
-        \ CONFIG_KPROBES\n# Disable only the explicitly agreed non-global carrier defaults; source code is untouched.\nfor\
-        \ sym in CONFIG_LGE_USB_GADGET_AUTORUN_VZW CONFIG_LGE_USB_DIAG_LOCK_SPR CONFIG_LGE_USB_DIAG_LOCK_TRF CONFIG_LGE_USB_DIAG_LOCK_VZW\
-        \ CONFIG_MACH_LITO_CAYMANLM_DCM_JP CONFIG_MACH_LITO_CAYMANLM_SB_JP; do\n  scripts/config --file \"$OUT_DIR/.config\"\
-        \ --disable \"$sym\" || true\ndone\n# Never invent an EMW symbol: record the actual CaymanLM SKU choices for diagnosis.\n\
-        grep -E '^CONFIG_MACH_LITO_CAYMANLM|^# CONFIG_MACH_LITO_CAYMANLM' \"$OUT_DIR/.config\" | tee \"$DIAG_DIR/caymanlm-sku-config.txt\"\
-        \nexport PATH=\"$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH\"\
-        \nexport CC=\"$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang\"\nexport LD=\"$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/ld.lld\"\
-        \nexport LLVM=1 LLVM_IAS=1\nmake O=\"$OUT_DIR\" ARCH=arm64 CC=\"$CC\" LD=\"$LD\" LLVM=1 LLVM_IAS=1 olddefconfig 2>&1\
-        \ | tee \"$DIAG_DIR/olddefconfig.log\"\ntest -s \"$OUT_DIR/.config\"\ntest -s \"$OUT_DIR/include/config/auto.conf\"\
-        \ncp \"$OUT_DIR/.config\" \"$DIAG_DIR/final.config\"\n# Required final state.\nfor pat in  '^CONFIG_KSU=y$' '^CONFIG_KSU_MANUAL_HOOK=y$'\
-        \ '^CONFIG_KPM=y$'  '^CONFIG_KALLSYMS=y$' '^CONFIG_KALLSYMS_ALL=y$' '^CONFIG_LTO_CLANG=y$'  '^CONFIG_LTO_CLANG_THIN=y$'\
-        \ '^CONFIG_SCHED_WALT=y$' '^CONFIG_SCHED_TUNE=y$'  '^CONFIG_ZRAM=y$' '^CONFIG_ZSMALLOC=y$' '^CONFIG_ZRAM_DEDUP=y$'\
-        \ '^# CONFIG_KPROBES is not set$'; do\n  grep -q \"$pat\" \"$OUT_DIR/.config\"\ndone\n"
-    - name: 09 - Immutable feature/source audit
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/09-audit.log\") 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\
-        \nif git status --short -- arch/arm64/boot/dts arch/arm64/configs | grep -q .; then\n  echo '::error::DT/defconfig\
-        \ source changed.'\n  exit 1\nfi\ntest -d drivers/kernelsu\ntest -f fs/susfs.c\ntest -f include/linux/susfs.h\ngrep\
-        \ -E '^(CONFIG_(KSU|KPM|SUSFS|SCHED_WALT|SCHED_TUNE|SCHED_CORE_CTL|ZRAM|ZSMALLOC|LTO|KALLSYMS|KPROBES))' \"$OUT_DIR/.config\"\
-        \ | sort | tee \"$DIAG_DIR/final-feature-config.txt\"\n"
-    - name: 10 - Build RAW ARM64 kernel Image + modules
-      shell: bash
-      run: 'set -euo pipefail
+      - name: 07 • Integrate pinned SukiSU-Ultra 4.1.3 builtin
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -LSs --fail \
+            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_REF}/kernel/setup.sh" \
+            -o ci-diagnostics/sukisu-setup.sh
+          chmod +x ci-diagnostics/sukisu-setup.sh
+          printf '%s  %s\n' \
+            "$(sha256sum ci-diagnostics/sukisu-setup.sh | cut -d' ' -f1)" \
+            "sukisu-setup.sh" > ci-diagnostics/sukisu-setup.sha256
 
-        mkdir -p "$DIAG_DIR"
+          bash ci-diagnostics/sukisu-setup.sh builtin \
+            2>&1 | tee ci-diagnostics/07-sukisu.log
 
-        exec > >(tee "$DIAG_DIR/10-build.log") 2>&1
+          test -d KernelSU || test -d drivers/kernelsu || true
 
-        cd "$GITHUB_WORKSPACE/kernel"
+      - name: 08 • Integrate exact SUSFS 1.5.5 kernel-4.19 patch set
+        shell: bash
+        run: |
+          set -u
+          work="$RUNNER_TEMP/susfs"
+          rm -rf "$work"
+          git clone --depth=1 --branch kernel-4.19 \
+            https://gitlab.com/simonpunk/susfs4ksu.git "$work" \
+            2>&1 | tee ci-diagnostics/08-susfs-clone.log
 
-        export PATH="$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+          git -C "$work" fetch --depth=1 origin "$SUSFS_REF"
+          git -C "$work" checkout --detach "$SUSFS_REF"
+          git -C "$work" rev-parse HEAD | tee ci-diagnostics/susfs-resolved.txt
 
-        export CC="$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang"
+          cp "$work/kernel_patches/50_add_susfs_in_kernel-4.19.patch" \
+            ci-diagnostics/susfs-4.19.patch
 
-        export LD="$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/ld.lld"
+          # The SukiSU builtin tree already owns the KernelSU-side SUSFS
+          # integration. We therefore apply the 4.19 kernel patch set and
+          # the 1.5.5 kernel headers/fs payload, but do not blindly apply
+          # the legacy KernelSU-only 10_enable_susfs_for_ksu.patch.
+          rsync -a "$work/kernel_patches/fs/" fs/
+          rsync -a "$work/kernel_patches/include/linux/" include/linux/
 
-        export CROSS_COMPILE="$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-"
+          set +e
+          patch -p1 --forward --batch --fuzz=3 < \
+            ci-diagnostics/susfs-4.19.patch \
+            2>&1 | tee ci-diagnostics/08-susfs-patch.log
+          prc=${PIPESTATUS[0]}
+          set -e
 
-        export CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-"
+          while IFS= read -r rej; do
+            file="${rej%.rej}"
+            test -f "$file"
+            wiggle --replace --no-backup "$file" "$rej" \
+              2>&1 | tee -a ci-diagnostics/08-susfs-wiggle.log || true
+          done < <(find . -type f -name '*.rej' | sort)
 
-        export LLVM=1 LLVM_IAS=1 CLANG_TRIPLE=aarch64-linux-gnu-
+          find . -type f -name '*.orig' -delete
+          find . -type f -name '*.rej' -print > ci-diagnostics/susfs-remaining-rejects.txt
 
-        make -Oline O="$OUT_DIR" ARCH=arm64 CC="$CC" LD="$LD" LLVM=1 LLVM_IAS=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"
-        CLANG_TRIPLE=aarch64-linux-gnu- -j"$(nproc)" Image modules
+          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' \
+              --include='*.c' --include='*.h' --include='Kconfig' . \
+              > ci-diagnostics/susfs-conflicts.txt; then
+            echo "::error::SUSFS left unresolved conflict markers."
+            exit 1
+          fi
 
-        test -s "$OUT_DIR/arch/arm64/boot/Image"
+          if [ -s ci-diagnostics/susfs-remaining-rejects.txt ]; then
+            echo "::error::SUSFS 1.5.5 still has rejected hunks."
+            exit 1
+          fi
 
-        cp "$OUT_DIR/arch/arm64/boot/Image" "$GITHUB_WORKSPACE/LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-Image"
+          # A non-zero patch result is acceptable only if every reject was
+          # subsequently merged cleanly by wiggle.
+          echo "initial_patch_exit=$prc" > ci-diagnostics/susfs-apply-status.txt
 
-        file "$GITHUB_WORKSPACE/LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-Image" | tee "$DIAG_DIR/image-file.txt"
+      - name: 09 • Configure only the finalized feature set
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$PWD/kernel/out"
+          test -f "$OUT/.config"
 
-        sha256sum "$GITHUB_WORKSPACE/LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-Image" | tee "$DIAG_DIR/Image.sha256"
+          # Do not silently invent Kconfig symbols. Every item in the
+          # finalized feature list must exist in this exact kernel tree.
+          required_symbols=( \
+            CONFIG_KSU CONFIG_KPM CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL \
+            CONFIG_SCHED_WALT CONFIG_SCHED_TUNE CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
+            CONFIG_ZRAM CONFIG_ZSMALLOC CONFIG_LTO_CLANG CONFIG_LTO_CLANG_THIN \
+            CONFIG_RANDOMIZE_BASE CONFIG_STACKPROTECTOR_STRONG CONFIG_HARDENED_USERCOPY \
+            CONFIG_SLAB_FREELIST_RANDOM CONFIG_SLAB_FREELIST_HARDENED \
+            CONFIG_DM_VERITY CONFIG_DM_VERITY_FEC CONFIG_FS_VERITY \
+            CONFIG_BPF CONFIG_BPF_JIT CONFIG_OVERLAY_FS CONFIG_TMPFS_XATTR \
+            CONFIG_TMPFS_POSIX_ACL \
+          )
+          : > ci-diagnostics/missing-final-symbols.txt
+          for sym in "${required_symbols[@]}"; do
+            if ! grep -RqsE "^[[:space:]]*config[[:space:]]+${sym#CONFIG_}([[:space:]]|$)" \
+                --include='Kconfig' --include='Kconfig.*' .; then
+              echo "$sym" >> ci-diagnostics/missing-final-symbols.txt
+            fi
+          done
+          if [ -s ci-diagnostics/missing-final-symbols.txt ]; then
+            echo "::error::A finalized feature symbol is not present in this LG/CIP/SukiSU tree."
+            cat ci-diagnostics/missing-final-symbols.txt
+            exit 1
+          fi
 
-        '
-    - name: 11 - Build OrangeFox-flashable AnyKernel3 ZIP
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\" \"$GITHUB_WORKSPACE/flashable\"\nexec > >(tee \"$DIAG_DIR/11-anykernel3.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE\"\nrm -rf AnyKernel3\ngit clone --depth=1 https://github.com/osm0sis/AnyKernel3.git\
-        \ AnyKernel3\ncd AnyKernel3\nrm -f Image Image.gz zImage dtb.img\ncp \"$GITHUB_WORKSPACE/LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-Image\"\
-        \ Image\ncat > anykernel.sh <<'AK3'\n## LG Velvet G900EMW / SM7250\n## Kernel-only AnyKernel3 package: preserves the\
-        \ boot image's existing ramdisk/DTB.\nproperties() {\n  kernel.string=LG Velvet G900EMW | 4.19.325-cip135 | SukiSU-Ultra\
-        \ 4.1.3 builtin | SUSFS 1.5.5 | KPM | LTO\n}\nblock=auto\nis_slot_device=auto\ndo.devicecheck=0\ndo.modules=0\ndo.systemless=0\n\
-        do.cleanup=1\ndo.cleanuponabort=0\npatch_vbmeta_flag=auto\nAK3\nzip -r9 \"$GITHUB_WORKSPACE/flashable/LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-OrangeFox.zip\"\
-        \ . -x '.git/*' '.github/*' 'README.md' 'LICENSE' > \"$DIAG_DIR/zip.log\"\nunzip -t \"$GITHUB_WORKSPACE/flashable/LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-OrangeFox.zip\"\
-        \ | tail -n 2\nsha256sum \"$GITHUB_WORKSPACE/flashable/LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-OrangeFox.zip\" |\
-        \ tee \"$DIAG_DIR/OrangeFox-ZIP.sha256\"\n"
-    - name: 12 - Final report and diagnostics bundle (ALWAYS)
-      shell: bash
-      run: "set +e\nmkdir -p \"$DIAG_DIR\"\n{\n echo \"run_id=${{ github.run_id }}\"\n echo \"source_branch=$SOURCE_BRANCH\"\
-        \n echo \"source_commit=$(cd \"$GITHUB_WORKSPACE/kernel\" 2>/dev/null && git rev-parse HEAD || true)\"\n echo \"target=$KERNEL_VERSION_TARGET\"\
-        \n echo \"sukisu=$SUKISU_VERSION commit=$SUKISU_COMMIT\"\n echo \"susfs=$SUSFS_VERSION ref=$SUSFS_REF\"\n echo \"\
-        features=G900EMW+WALT+SchedTune+ZRAM+LTO+SukiSU-builtin+KPM+SUSFS\"\n} | tee \"$DIAG_DIR/final-report.txt\"\ntar -czf\
-        \ \"$GITHUB_WORKSPACE/LG-Velvet-G900EMW-CIP135-diagnostics-${{ github.run_id }}.tar.gz\" -C \"$GITHUB_WORKSPACE\"\
-        \ ci-diagnostics 2>/dev/null || true\n"
-      if: always()
-    - name: 13 - Upload COMPLETE diagnostics ALWAYS
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-diagnostics-${{ github.run_id }}
-        if-no-files-found: warn
-        retention-days: 30
-        path: "|\n  ${{ github.workspace }}/ci-diagnostics/**\n  ${{ github.workspace }}/LG-Velvet-G900EMW-CIP135-diagnostics-${{\
-          \ github.run_id }}.tar.gz"
-    - name: 14 - Upload kernel + OrangeFox ZIP only after success
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-KERNEL-${{ github.run_id }}
-        if-no-files-found: error
-        retention-days: 30
-        path: "|\n  ${{ github.workspace }}/LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-Image\n  ${{ github.workspace }}/flashable/LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-OrangeFox.zip\n\
-          \  ${{ github.workspace }}/out/.config"
+          scripts/config --file "$OUT/.config" \
+            -e CONFIG_KSU \
+            -e CONFIG_KPM \
+            -e CONFIG_KALLSYMS \
+            -e CONFIG_KALLSYMS_ALL \
+            -e CONFIG_SCHED_WALT \
+            -e CONFIG_SCHED_TUNE \
+            -e CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
+            -e CONFIG_ZRAM \
+            -e CONFIG_ZSMALLOC \
+            -e CONFIG_LTO_CLANG \
+            -e CONFIG_LTO_CLANG_THIN \
+            -e CONFIG_RANDOMIZE_BASE \
+            -e CONFIG_STACKPROTECTOR_STRONG \
+            -e CONFIG_HARDENED_USERCOPY \
+            -e CONFIG_SLAB_FREELIST_RANDOM \
+            -e CONFIG_SLAB_FREELIST_HARDENED \
+            -e CONFIG_DM_VERITY \
+            -e CONFIG_DM_VERITY_FEC \
+            -e CONFIG_FS_VERITY \
+            -e CONFIG_BPF \
+            -e CONFIG_BPF_JIT \
+            -e CONFIG_OVERLAY_FS \
+            -e CONFIG_TMPFS_XATTR \
+            -e CONFIG_TMPFS_POSIX_ACL
+
+          # Keep the existing LG hardware/vendor choices from the pristine
+          # defconfig. Do not substitute another device defconfig.
+          yes "" | make O="$OUT" ARCH=arm64 olddefconfig \
+            2>&1 | tee ci-diagnostics/09-olddefconfig.log
+
+          cp "$OUT/.config" ci-diagnostics/final.config
+          sha256sum "$OUT/.config" | tee ci-diagnostics/final-config.sha256
+
+          grep -E '^(CONFIG_(KSU|KPM|KALLSYMS|KALLSYMS_ALL|SCHED_WALT|SCHED_TUNE|CPU_FREQ_GOV_SCHEDUTIL|ZRAM|ZSMALLOC|LTO_CLANG|LTO_CLANG_THIN|RANDOMIZE_BASE|STACKPROTECTOR_STRONG|HARDENED_USERCOPY|SLAB_FREELIST_RANDOM|SLAB_FREELIST_HARDENED|DM_VERITY|DM_VERITY_FEC|FS_VERITY|BPF|BPF_JIT|OVERLAY_FS|TMPFS_XATTR|TMPFS_POSIX_ACL))=' \
+            "$OUT/.config" | tee ci-diagnostics/final-feature-check.txt
+
+          test "$(grep -c '^CONFIG_KPM=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_KALLSYMS=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_KALLSYMS_ALL=y$' "$OUT/.config")" -eq 1
+          test "$(grep -c '^CONFIG_KSU=y$' "$OUT/.config")" -eq 1
+
+      - name: 10 • Immutable source/config audit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git status --short > ci-diagnostics/git-status-after-integration.txt
+          git diff --check
+          grep -RInE 'G900N|VZW|SPRINT|DCM_JP|SB_JP' \
+            arch/arm64/configs drivers include \
+            > ci-diagnostics/regional-default-audit.txt || true
+
+          {
+            echo "=== source ==="
+            git rev-parse HEAD
+            echo "=== kernel release ==="
+            make -s O=kernel/out ARCH=arm64 kernelversion
+            echo "=== SukiSU ==="
+            grep -R "VERSION_TAG" drivers/kernelsu KernelSU 2>/dev/null | head -20 || true
+            echo "=== KPM/SUSFS symbols ==="
+            grep -R "CONFIG_KPM\|CONFIG_KSU_SUSFS" -n drivers/kernelsu KernelSU 2>/dev/null | head -100 || true
+          } | tee ci-diagnostics/10-source-audit.txt
+
+      - name: 11 • Build ARM64 kernel and modules
+        shell: bash
+        env:
+          PATH: ${{ runner.temp }}/clang/bin:${{ env.PATH }}
+        run: |
+          set -euxo pipefail
+          CLANG_DIR="$RUNNER_TEMP/clang"
+          rm -rf "$CLANG_DIR"
+          mkdir -p "$CLANG_DIR"
+
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            "$RUNNER_TEMP/clang-repo" \
+            2>&1 | tee ci-diagnostics/11-clang-clone.log
+          git -C "$RUNNER_TEMP/clang-repo" fetch --depth=1 origin "$CLANG_REPO_COMMIT"
+          git -C "$RUNNER_TEMP/clang-repo" checkout --detach "$CLANG_REPO_COMMIT"
+          cp -a "$RUNNER_TEMP/clang-repo/$CLANG_REV/." "$CLANG_DIR/"
+          "$CLANG_DIR/bin/clang" --version | tee ci-diagnostics/11-clang-version.txt
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export LLVM=1
+          export LLVM_IAS=1
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+
+          mkdir -p kernel/out
+          make -C . O=kernel/out ARCH=arm64 \
+            CC=clang LLVM=1 LLVM_IAS=1 \
+            -j"$(nproc --all)" \
+            Image.gz-dtb modules \
+            2>&1 | tee ci-diagnostics/11-build.log
+
+      - name: 12 • Verify kernel output
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$PWD/kernel/out"
+          find "$OUT/arch/arm64/boot" -maxdepth 1 -type f -printf '%f %s bytes\n' \
+            | tee ci-diagnostics/12-boot-output-list.txt
+
+          test -s "$OUT/arch/arm64/boot/Image.gz-dtb" || \
+            test -s "$OUT/arch/arm64/boot/Image"
+
+          file "$OUT/arch/arm64/boot/Image.gz-dtb" 2>/dev/null || true
+          find "$OUT" -type f -name '*.ko' -print0 | sort -z | xargs -0 -r sha256sum \
+            | tee ci-diagnostics/modules.sha256
+
+      - name: 13 • Package OrangeFox-flashable AnyKernel3 ZIP
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf "$RUNNER_TEMP/AnyKernel3"
+          git clone --depth=1 \
+            https://github.com/osm0sis/AnyKernel3.git \
+            "$RUNNER_TEMP/AnyKernel3" \
+            2>&1 | tee ci-diagnostics/13-anykernel3-clone.log
+
+          cd "$RUNNER_TEMP/AnyKernel3"
+          git fetch --depth=1 origin "$ANYKERNEL3_REF"
+          git checkout --detach "$ANYKERNEL3_REF"
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/ci-diagnostics/anykernel3-resolved.txt"
+
+          # Keep the package intentionally generic for the LG Velvet family:
+          # AnyKernel3 will locate the boot partition at flash time.
+          rm -rf .git
+          rm -rf tools/dtbTools 2>/dev/null || true
+
+          if [ -s "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz-dtb" .
+            KERNEL_IMAGE="Image.gz-dtb"
+          else
+            cp "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image" .
+            KERNEL_IMAGE="Image"
+          fi
+
+          cat > anykernel.sh <<'AK3'
+          # AnyKernel3 installer for LG Velvet G900EMW
+          properties() {
+            kernel.string=LG Velvet G900EMW • CIP135 • SukiSU-Ultra 4.1.3 • SUSFS 1.5.5 • KPM
+            do.devicecheck=0
+            do.modules=0
+            do.systemless=0
+            do.cleanup=1
+            do.cleanuponabort=0
+            device.name1=G900EMW
+            supported.versions=
+            supported.patchlevels=
+          }
+          block=auto;
+          is_slot_device=auto;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          AK3
+          printf 'kernel_image=%s\n' "$KERNEL_IMAGE" \
+            > "$GITHUB_WORKSPACE/ci-diagnostics/anykernel-package.txt"
+
+          # Keep only the kernel image plus the standard AnyKernel3 payload.
+          zip -r9 \
+            "$GITHUB_WORKSPACE/LG-Velvet-G900EMW-CIP135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip" \
+            . \
+            -x '.git/*' '*.md' 'README*' \
+            > "$GITHUB_WORKSPACE/ci-diagnostics/13-zip.log"
+
+          sha256sum \
+            "$GITHUB_WORKSPACE/LG-Velvet-G900EMW-CIP135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip" \
+            | tee ci-diagnostics/flashable.zip.sha256
+
+      - name: 14 • Package diagnostics ALWAYS
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "status=${{ job.status }}"
+            echo "source=$(git rev-parse HEAD 2>/dev/null || true)"
+            echo "cip=${CIP_VERSION}"
+            echo "sukisu=${SUKISU_VERSION}@${SUKISU_REF}"
+            echo "susfs=${SUSFS_VERSION}@${SUSFS_REF}"
+            echo "kernelversion=$(make -s O=kernel/out ARCH=arm64 kernelversion 2>/dev/null || true)"
+            echo "timestamp=$(date -u +%FT%TZ)"
+          } > ci-diagnostics/final-report.txt
+
+          git status --short > ci-diagnostics/git-status-final.txt 2>/dev/null || true
+          find ci-diagnostics -type f -maxdepth 1 -print | sort > ci-diagnostics/diagnostic-file-list.txt
+
+          tar -czf "LG-Velvet-G900EMW-diagnostics-${GITHUB_RUN_ID}.tar.gz" \
+            ci-diagnostics
+
+      - name: 15 • Upload diagnostics ALWAYS
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LG-Velvet-G900EMW-CIP135-SukiSU-KPM-SUSFS-diagnostics-${{ github.run_id }}
+          path: |
+            LG-Velvet-G900EMW-diagnostics-${{ github.run_id }}.tar.gz
+            ci-diagnostics/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 16 • Upload kernel + OrangeFox ZIP on success
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LG-Velvet-G900EMW-CIP135-SukiSU4.1.3-SUSFS1.5.5-KPM-${{ github.run_id }}
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/Image
+            LG-Velvet-G900EMW-CIP135-SukiSU4.1.3-SUSFS1.5.5-KPM-OrangeFox.zip
+            ci-diagnostics/final.config
+            ci-diagnostics/final-report.txt
+          if-no-files-found: error
+          retention-days: 30
