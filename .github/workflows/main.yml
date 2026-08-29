@@ -1368,7 +1368,7 @@ jobs:
         \ directory\n# created by the SUSFS-compatible setup script; do not mistake\
         \ it for\n# the legacy KernelSU/ directory. Only KernelSU-Next/SUSFS integration\n\
         # and the documented non-KPROBE hook sites may differ from the WORKING tree.\n\
-        allowed_files='^(KernelSU-Next/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$|drivers/input/input.c$|fs/Makefile$|fs/dcache.c$|fs/devpts/inode.c$|fs/exec.c$|fs/inode.c$|fs/notify/fdinfo.c$|fs/namei.c$|fs/open.c$|fs/overlayfs/inode.c$|fs/overlayfs/readdir.c$|fs/overlayfs/super.c$|fs/proc/cmdline.c$|fs/proc/fd.c$|fs/proc/task_mmu.c$|fs/proc_namespace.c$|fs/read_write.c$|fs/readdir.c$|fs/stat.c$|fs/statfs.c$|include/linux/mount.h$|include/linux/sched.h$|kernel/kallsyms.c$|kernel/sys.c$|fs/susfs.c$|include/linux/susfs.h$|fs/sus_su.c$|include/linux/sus_su.h$|include/linux/susfs_def.h$)$'\n\
+        allowed_files='^(KernelSU-Next/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$|drivers/input/input.c$|fs/Makefile$|fs/dcache.c$|fs/devpts/inode.c$|fs/exec.c$|fs/inode.c$|fs/notify/fdinfo.c$|fs/namei.c$|fs/open.c$|fs/overlayfs/inode.c$|fs/overlayfs/readdir.c$|fs/overlayfs/super.c$|fs/proc/cmdline.c$|fs/proc/fd.c$|fs/proc/task_mmu.c$|fs/proc_namespace.c$|fs/read_write.c$|fs/readdir.c$|fs/stat.c$|fs/statfs.c$|include/linux/mount.h$|include/linux/sched.h$|kernel/kallsyms.c$|kernel/sys.c$|fs/susfs.c$|include/linux/susfs.h$|fs/sus_su.c$|include/linux/sus_su.h$|include/linux/susfs_def.h$|include/linux/susfs_ksu_compat.h$)$'\n\
         unexpected=\"$(git status --short | sed -E 's/^.. //g' | grep -Ev \"$allowed_files\"\
         \ || true)\"\nif [ -n \"$unexpected\" ]; then\n  echo \"::error::Unexpected\
         \ source files changed (outside KSU/SUSFS integration scope):\"\n  printf\
@@ -1415,6 +1415,10 @@ jobs:
         { echo "LG 4.19 seccomp compatibility audit"; echo "KSU app profile: $KSU_APP"; echo "Vendor header: $SEC_HDR"; if grep -qE '\bfilter_count\b' "$SEC_HDR"; then echo "filter_count: PRESENT"; else echo "filter_count: ABSENT; KSU-local no-op applied"; fi; echo "Vendor seccomp ABI/header modification: NOT USED"; } > "$DIAG_DIR/10B-seccomp-filter-count-audit.txt"
         echo "PASS: 4.19 seccomp filter_count compatibility audit completed."
         echo "PASS: earlier SUSFS/KSU/VFS fixes were not modified by this step."
+
+test -f "$GITHUB_WORKSPACE/kernel/include/linux/susfs_ksu_compat.h"
+grep -q "linux/susfs_ksu_compat.h" "$GITHUB_WORKSPACE/kernel/KernelSU-Next/kernel/supercall/dispatch.c"
+echo "PASS: SUSFS v1.5.5/v2 API bridge remains present after all fixes."
     - name: 10C - Guard KernelSU SELinux rules for legacy 4.19
       shell: bash
       run: |
@@ -1603,6 +1607,115 @@ jobs:
 
         echo "PASS: automatic scanner armed; unknown errors will not be blindly patched."
 
+    - name: 10G - Bridge KernelSU-Next SUSFS v2 API to LG 4.19 SUSFS
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/kernel"
+        mkdir -p include/linux "$DIAG_DIR"
+
+        # KSU-Next v3.3.0 dispatch.c passes void __user ** to SUSFS v2 APIs.
+        # The selected kernel-4.19 SUSFS tree is the older typed-pointer API.
+        # Use the same narrow compatibility-bridge pattern proven on legacy
+        # 4.14/4.19 KSU+SUSFS integrations: typed wrappers for existing APIs,
+        # no-op stubs for APIs that do not exist in the legacy SUSFS branch.
+        cat > include/linux/susfs_ksu_compat.h <<'EOF'
+        #ifndef KSU_SUSFS_COMPAT_H
+        #define KSU_SUSFS_COMPAT_H
+
+        #include <linux/susfs.h>
+
+        static inline void ksu_susfs_add_sus_path(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+            susfs_add_sus_path((struct st_susfs_sus_path __user *)*p);
+        #endif
+        }
+        static inline void ksu_susfs_add_sus_kstat(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+            susfs_add_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
+        #endif
+        }
+        static inline void ksu_susfs_update_sus_kstat(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+            susfs_update_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
+        #endif
+        }
+        static inline void ksu_susfs_set_uname(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+            susfs_set_uname((struct st_susfs_uname __user *)*p);
+        #endif
+        }
+        static inline void ksu_susfs_set_cmdline(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+            susfs_set_cmdline_or_bootconfig((char __user *)*p);
+        #endif
+        }
+        static inline void ksu_susfs_add_open_redirect(void __user **p)
+        {
+        #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+            susfs_add_open_redirect((struct st_susfs_open_redirect __user *)*p);
+        #endif
+        }
+
+        /* Legacy 4.19 SUSFS lacks several newer v2 helpers. */
+        #ifndef susfs_start_sdcard_monitor_fn
+        #define susfs_start_sdcard_monitor_fn() do { } while (0)
+        #endif
+        #ifndef susfs_is_current_proc_umounted
+        #define susfs_is_current_proc_umounted() (false)
+        #endif
+
+        #define susfs_add_sus_path(p)                    ksu_susfs_add_sus_path(p)
+        #define susfs_add_sus_path_loop(p)               do { } while (0)
+        #define susfs_set_hide_sus_mnts_for_non_su_procs(p) do { } while (0)
+        #define susfs_add_sus_kstat(p)                   ksu_susfs_add_sus_kstat(p)
+        #define susfs_update_sus_kstat(p)                ksu_susfs_update_sus_kstat(p)
+        #define susfs_set_uname(p)                       ksu_susfs_set_uname(p)
+        #define susfs_enable_log(p)                      susfs_set_log(true)
+        #define susfs_set_cmdline_or_bootconfig(p)       ksu_susfs_set_cmdline(p)
+        #define susfs_add_open_redirect(p)               ksu_susfs_add_open_redirect(p)
+        #define susfs_add_sus_map(p)                     do { } while (0)
+        #define susfs_set_avc_log_spoofing(p)            do { } while (0)
+        #define susfs_get_enabled_features(p)            do { } while (0)
+        #define susfs_show_variant(p)                    do { } while (0)
+        #define susfs_show_version(p)                    do { } while (0)
+
+        #endif
+        EOF
+
+        DISPATCH="KernelSU-Next/kernel/supercall/dispatch.c"
+        test -f "$DISPATCH"
+
+        # The SUSFS patch can leave the include out when its context differs.
+        if ! grep -q 'linux/susfs_ksu_compat.h' "$DISPATCH"; then
+          sed -i '/#include <linux\/version.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_ksu_compat.h>\n#endif' "$DISPATCH"
+        fi
+
+        # Linux 4.19 exposes tasklist_lock/task_pgrp/task_session through the
+        # scheduler signal headers; make that dependency explicit for clang.
+        if ! grep -q 'linux/sched/signal.h' "$DISPATCH"; then
+          sed -i '/#include <linux\/thread_info.h>/a #include <linux/sched/signal.h>' "$DISPATCH"
+        fi
+
+        grep -q 'linux/susfs_ksu_compat.h' "$DISPATCH"
+        grep -q 'linux/sched/signal.h' "$DISPATCH"
+        test -s include/linux/susfs_ksu_compat.h
+
+        {
+          echo "SUSFS/KSU compatibility bridge: PRESENT"
+          echo "dispatch include: PRESENT"
+          echo "legacy scheduler include: PRESENT"
+          echo "vendor SELinux/security headers: UNTOUCHED"
+          echo "legacy unsupported SUSFS v2 helpers: guarded/no-op"
+          echo "typed v1.5.5 SUSFS APIs: bridged"
+        } | tee "$DIAG_DIR/10G-susfs-ksu-compat-audit.txt"
+
+        echo "PASS: KSU-Next v3.3.0 <-> SUSFS kernel-4.19 compatibility bridge installed."
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
@@ -1656,6 +1769,10 @@ jobs:
               echo "RESULT: KNOWN FAILURE — KernelSU SULog event.c requires unavailable linux/minmax.h on LG 4.19."
             elif grep -qE 'sulog/event\.c:.*(get_monotonic_boottime|ktime_get_boottime)' "$LOG"; then
               echo "RESULT: KNOWN FAILURE — KernelSU SULog legacy timekeeping API mismatch on LG 4.19."
+            elif grep -qE 'susfs_(start_sdcard_monitor_fn|is_current_proc_umounted)|SUSFS_MAGIC|CMD_SUSFS_' "$LOG"; then
+              echo "RESULT: KNOWN FAILURE — KSU-Next SUSFS v2 API is not directly compatible with the selected SUSFS kernel-4.19 typed API; use the 10G compatibility bridge."
+            elif grep -q "fatal error: 'linux/minmax.h' file not found" "$LOG"; then
+              echo "RESULT: KNOWN FAILURE — LG 4.19 lacks linux/minmax.h in KernelSU SULog event.c."
             elif grep -qE '(^|[^[:alpha:]])error:' "$LOG"; then
               echo "RESULT: DIFFERENT BUILD ERROR — not one of the audited seccomp/SELinux compatibility failures."
             else
