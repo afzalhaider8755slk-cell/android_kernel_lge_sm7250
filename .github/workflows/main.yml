@@ -1634,55 +1634,59 @@ jobs:
         cd "$GITHUB_WORKSPACE/kernel"
         mkdir -p include/linux "$DIAG_DIR"
 
-        # KSU-Next v3.3.0 dispatch.c passes void __user ** to SUSFS v2 APIs.
-        # The selected kernel-4.19 SUSFS tree is the older typed-pointer API.
-        # Use the same narrow compatibility-bridge pattern proven on legacy
-        # 4.14/4.19 KSU+SUSFS integrations: typed wrappers for existing APIs,
-        # no-op stubs for APIs that do not exist in the legacy SUSFS branch.
+        # Resolve the real checked-out KernelSU source. In this tree
+        # drivers/kernelsu is normally the symlink/integration point, while
+        # KernelSU-Next/kernel is the repository path. Do not assume one.
+        DISPATCH="$(find drivers/kernelsu KernelSU-Next/kernel -type f \
+          -path '*/supercall/dispatch.c' -print -quit 2>/dev/null || true)"
+        if [ -z "$DISPATCH" ]; then
+          echo "::error::KernelSU supercall/dispatch.c was not found."
+          exit 1
+        fi
+        echo "dispatch=$DISPATCH"
+
         cat > include/linux/susfs_ksu_compat.h <<'EOF'
         #ifndef KSU_SUSFS_COMPAT_H
         #define KSU_SUSFS_COMPAT_H
-
         #include <linux/susfs.h>
 
         static inline void ksu_susfs_add_sus_path(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-            susfs_add_sus_path((struct st_susfs_sus_path __user *)*p);
+          susfs_add_sus_path((struct st_susfs_sus_path __user *)*p);
         #endif
         }
         static inline void ksu_susfs_add_sus_kstat(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-            susfs_add_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
+          susfs_add_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
         #endif
         }
         static inline void ksu_susfs_update_sus_kstat(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-            susfs_update_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
+          susfs_update_sus_kstat((struct st_susfs_sus_kstat __user *)*p);
         #endif
         }
         static inline void ksu_susfs_set_uname(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-            susfs_set_uname((struct st_susfs_uname __user *)*p);
+          susfs_set_uname((struct st_susfs_uname __user *)*p);
         #endif
         }
         static inline void ksu_susfs_set_cmdline(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-            susfs_set_cmdline_or_bootconfig((char __user *)*p);
+          susfs_set_cmdline_or_bootconfig((char __user *)*p);
         #endif
         }
         static inline void ksu_susfs_add_open_redirect(void __user **p)
         {
         #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-            susfs_add_open_redirect((struct st_susfs_open_redirect __user *)*p);
+          susfs_add_open_redirect((struct st_susfs_open_redirect __user *)*p);
         #endif
         }
 
-        /* Legacy 4.19 SUSFS lacks several newer v2 helpers. */
         #ifndef susfs_start_sdcard_monitor_fn
         #define susfs_start_sdcard_monitor_fn() do { } while (0)
         #endif
@@ -1690,52 +1694,48 @@ jobs:
         #define susfs_is_current_proc_umounted() (false)
         #endif
 
-        #define susfs_add_sus_path(p)                    ksu_susfs_add_sus_path(p)
-        #define susfs_add_sus_path_loop(p)               do { } while (0)
+        #define susfs_add_sus_path(p) ksu_susfs_add_sus_path(p)
+        #define susfs_add_sus_path_loop(p) do { } while (0)
         #define susfs_set_hide_sus_mnts_for_non_su_procs(p) do { } while (0)
-        #define susfs_add_sus_kstat(p)                   ksu_susfs_add_sus_kstat(p)
-        #define susfs_update_sus_kstat(p)                ksu_susfs_update_sus_kstat(p)
-        #define susfs_set_uname(p)                       ksu_susfs_set_uname(p)
-        #define susfs_enable_log(p)                      susfs_set_log(true)
-        #define susfs_set_cmdline_or_bootconfig(p)       ksu_susfs_set_cmdline(p)
-        #define susfs_add_open_redirect(p)               ksu_susfs_add_open_redirect(p)
-        #define susfs_add_sus_map(p)                     do { } while (0)
-        #define susfs_set_avc_log_spoofing(p)            do { } while (0)
-        #define susfs_get_enabled_features(p)            do { } while (0)
-        #define susfs_show_variant(p)                    do { } while (0)
-        #define susfs_show_version(p)                    do { } while (0)
-
+        #define susfs_add_sus_kstat(p) ksu_susfs_add_sus_kstat(p)
+        #define susfs_update_sus_kstat(p) ksu_susfs_update_sus_kstat(p)
+        #define susfs_set_uname(p) ksu_susfs_set_uname(p)
+        #define susfs_enable_log(p) susfs_set_log(true)
+        #define susfs_set_cmdline_or_bootconfig(p) ksu_susfs_set_cmdline(p)
+        #define susfs_add_open_redirect(p) ksu_susfs_add_open_redirect(p)
+        #define susfs_add_sus_map(p) do { } while (0)
+        #define susfs_set_avc_log_spoofing(p) do { } while (0)
+        #define susfs_get_enabled_features(p) do { } while (0)
+        #define susfs_show_variant(p) do { } while (0)
+        #define susfs_show_version(p) do { } while (0)
         #endif
         EOF
 
-        DISPATCH="KernelSU-Next/kernel/supercall/dispatch.c"
-        test -f "$DISPATCH"
-
-        # The SUSFS patch can leave the include out when its context differs.
-        if ! grep -q 'linux/susfs_ksu_compat.h' "$DISPATCH"; then
-          sed -i '/#include <linux\/version.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_ksu_compat.h>\n#endif' "$DISPATCH"
+        # Include the bridge exactly once. Do not depend on a particular
+        # include name existing in the upstream file.
+        if ! grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"; then
+          sed -i '1a\
+        #ifdef CONFIG_KSU_SUSFS\
+        #include <linux/susfs_ksu_compat.h>\
+        #endif' "$DISPATCH"
         fi
 
-        # Linux 4.19 exposes tasklist_lock/task_pgrp/task_session through the
-        # scheduler signal headers; make that dependency explicit for clang.
-        if ! grep -q 'linux/sched/signal.h' "$DISPATCH"; then
-          sed -i '/#include <linux\/thread_info.h>/a #include <linux/sched/signal.h>' "$DISPATCH"
+        # Linux 4.19 tasklist/task_pgrp/task_session declarations.
+        if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
+          sed -i '1a#include <linux/sched/signal.h>' "$DISPATCH"
         fi
 
-        grep -q 'linux/susfs_ksu_compat.h' "$DISPATCH"
-        grep -q 'linux/sched/signal.h' "$DISPATCH"
+        grep -qF 'linux/susfs_ksu_compat.h' "$DISPATCH"
+        grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"
         test -s include/linux/susfs_ksu_compat.h
 
         {
           echo "SUSFS/KSU compatibility bridge: PRESENT"
-          echo "dispatch include: PRESENT"
-          echo "legacy scheduler include: PRESENT"
+          echo "dispatch=$DISPATCH"
+          echo "scheduler include: PRESENT"
           echo "vendor SELinux/security headers: UNTOUCHED"
-          echo "legacy unsupported SUSFS v2 helpers: guarded/no-op"
-          echo "typed v1.5.5 SUSFS APIs: bridged"
         } | tee "$DIAG_DIR/10G-susfs-ksu-compat-audit.txt"
-
-        echo "PASS: KSU-Next v3.3.0 <-> SUSFS kernel-4.19 compatibility bridge installed."
+        echo "PASS: SUSFS/KSU legacy bridge installed."
     - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
       shell: bash
       run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
