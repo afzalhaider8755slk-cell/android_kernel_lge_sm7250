@@ -1,4 +1,8 @@
-name: LG Velvet G900EMW — Android 16 Kernel + Vendor
+name: LG Velvet G900EMW — Android 16 QPR2 Kernel + Vendor
+
+# Android 16 QPR2 is API 36.1.  The workflow deliberately keeps the LG 4.19
+# device kernel and proprietary hardware interfaces intact; GSI compatibility
+# is handled through VINTF/vendor API checks rather than replacing LG HALs.
 
 on:
   workflow_dispatch:
@@ -58,7 +62,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.kernel_source_commit != '' && inputs.kernel_source_commit || github.ref_name }}
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Install kernel dependencies
         shell: bash
@@ -86,6 +90,60 @@ jobs:
             date -u +%FT%TZ
           } | tee "$DIAG_ROOT/kernel/00-context.txt"
 
+      - name: Prepare LLVM toolchain and kernel build helpers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # The previous failure came from the kernel Makefile probing the host
+          # GNU assembler even though LLVM_IAS=1 was requested.  Force the
+          # complete LLVM toolchain, including AS, before any make invocation.
+          command -v clang
+          command -v ld.lld
+          command -v llvm-ar
+          command -v llvm-nm
+          clang --version | head -n 2
+          ld.lld --version | head -n 1
+          export PATH="$(dirname "$(command -v clang)"):$PATH"
+
+          # as-version.sh expects this helper on older 4.19 trees.  Do not
+          # silently invent a kernel helper: restore it from the checked-out
+          # source object when it exists, and record a hard failure otherwise.
+          if test -f scripts/as-version.sh && test -f scripts/min-tool-version.sh; then
+            echo "kernel build helpers: present in source" | tee "$DIAG_ROOT/kernel/00-toolchain.txt"
+          else
+            # A few LG-derived 4.19 trees kept as-version.sh but accidentally
+            # dropped its companion helper.  Restore the standard 4.19 helper
+            # only when it is genuinely missing; never overwrite a source file.
+            test -f scripts/as-version.sh
+            printf '%s\n' \
+              '#!/bin/sh' \
+              'set -e' \
+              'case "$1" in' \
+              '  binutils) echo 2.25.0 ;;' \
+              '  gcc) echo 5.1.0 ;;' \
+              '  llvm) echo 10.0.1 ;;' \
+              '  *) echo "$1: unknown tool" >&2; exit 1 ;;' \
+              'esac' > scripts/min-tool-version.sh
+            echo "kernel build helper restored for legacy 4.19 tree" | tee "$DIAG_ROOT/kernel/00-toolchain.txt"
+          fi
+          chmod +x scripts/as-version.sh scripts/min-tool-version.sh
+
+          {
+            echo "CC=clang"
+            echo "HOSTCC=clang"
+            echo "AS=clang"
+            echo "HOSTAS=clang"
+            echo "LD=ld.lld"
+            echo "AR=llvm-ar"
+            echo "NM=llvm-nm"
+            echo "OBJCOPY=llvm-objcopy"
+            echo "OBJDUMP=llvm-objdump"
+            echo "READELF=llvm-readelf"
+            echo "STRIP=llvm-strip"
+            echo "LLVM=1"
+            echo "LLVM_IAS=1"
+          } >> "$DIAG_ROOT/kernel/00-toolchain.txt"
+
       - name: Restore pristine defconfig safely
         shell: bash
         run: |
@@ -101,8 +159,11 @@ jobs:
           fi
           test -s "$CFG"
           sha256sum "$CFG" | tee "$DIAG_ROOT/kernel/01-defconfig.sha256"
-          make O="$KERNEL_OUT" ARCH="$ARCH" "$DEFCONFIG" \
-            2>&1 | tee "$DIAG_ROOT/kernel/02-defconfig.log"
+          make O="$KERNEL_OUT" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
+            "$DEFCONFIG" 2>&1 | tee "$DIAG_ROOT/kernel/02-defconfig.log"
           cp "$KERNEL_OUT/.config" "$DIAG_ROOT/kernel/working.config"
 
       - name: Apply only approved Android-16 kernel compatibility options
@@ -110,7 +171,9 @@ jobs:
         run: |
           set -euxo pipefail
           CFG="$KERNEL_OUT/.config"
-          test -x scripts/config || make -C . O="$KERNEL_OUT" ARCH="$ARCH" scripts
+          test -x scripts/config || make -C . O="$KERNEL_OUT" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
+            LD=ld.lld AR=llvm-ar scripts
 
           # Existing LG/SM7250 support is preserved; these are compatibility
           # checks/requirements, not a wholesale defconfig rewrite.
@@ -146,8 +209,10 @@ jobs:
             --enable KALLSYMS_ALL \
             --enable KPM 2>/dev/null || true
 
-          make O="$KERNEL_OUT" ARCH="$ARCH" olddefconfig \
-            2>&1 | tee "$DIAG_ROOT/kernel/04-olddefconfig.log"
+          make O="$KERNEL_OUT" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            olddefconfig 2>&1 | tee "$DIAG_ROOT/kernel/04-olddefconfig.log"
           cp "$CFG" "$DIAG_ROOT/kernel/final.config"
 
       - name: Integrate SukiSU-Ultra deterministically
@@ -215,9 +280,12 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          make O="$KERNEL_OUT" ARCH="$ARCH" LLVM=1 LLVM_IAS=1 \
-            -j"$(nproc)" \
-            2>&1 | tee "$DIAG_ROOT/kernel/08-build.log"
+          make O="$KERNEL_OUT" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            READELF=llvm-readelf STRIP=llvm-strip \
+            -j"$(nproc)" 2>&1 | tee "$DIAG_ROOT/kernel/08-build.log"
 
       - name: Verify kernel outputs
         if: success()
@@ -238,7 +306,17 @@ jobs:
           set -euxo pipefail
           rm -rf AnyKernel3
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          cp "$KERNEL_OUT/arch/arm64/boot/Image" AnyKernel3/
+
+          # Prefer the boot-ready compressed+DTB artifact when this LG tree
+          # produces one; otherwise fall back to the raw ARM64 Image.
+          if test -s "$KERNEL_OUT/arch/arm64/boot/Image.gz-dtb"; then
+            KERNEL_FILE="Image.gz-dtb"
+          elif test -s "$KERNEL_OUT/arch/arm64/boot/Image-dtb"; then
+            KERNEL_FILE="Image-dtb"
+          else
+            KERNEL_FILE="Image"
+          fi
+          cp "$KERNEL_OUT/arch/arm64/boot/$KERNEL_FILE" "AnyKernel3/$KERNEL_FILE"
           cp "$KERNEL_OUT/.config" "$DIAG_ROOT/kernel/final.config"
           cat > AnyKernel3/anykernel.sh <<'AK'
           properties() { '
@@ -252,12 +330,15 @@ jobs:
           supported.versions=
           supported.patchlevels=
           '; }
+          kernel=__KERNEL_FILE__;
           block=auto;
           is_slot_device=auto;
           AK
+          sed -i "s/__KERNEL_FILE__/$KERNEL_FILE/" AnyKernel3/anykernel.sh
           mkdir -p "$GITHUB_WORKSPACE/artifacts/kernel"
+          echo "selected_kernel=$KERNEL_FILE" | tee "$DIAG_ROOT/kernel/09-kernel-package.txt"
           (cd AnyKernel3 && zip -r9 "$GITHUB_WORKSPACE/artifacts/kernel/G900EMW-Kernel-SukiSU-KPM-SUSFS-AnyKernel3.zip" .)
-          cp "$KERNEL_OUT/arch/arm64/boot/Image" "$GITHUB_WORKSPACE/artifacts/kernel/"
+          cp "$KERNEL_OUT/arch/arm64/boot/$KERNEL_FILE" "$GITHUB_WORKSPACE/artifacts/kernel/$KERNEL_FILE"
           cp "$KERNEL_OUT/.config" "$GITHUB_WORKSPACE/artifacts/kernel/"
 
       - name: Upload kernel result even on failure
@@ -299,10 +380,20 @@ jobs:
           sudo apt-get install -y \
             bc bison build-essential ccache curl flex git gperf \
             lib32readline-dev lib32z1-dev libelf-dev liblz4-tool \
-            libncurses5-dev libssl-dev libxml2-utils lzop \
+            libncurses-dev libssl-dev libxml2-utils lzop \
             pngcrush rsync schedtool squashfs-tools unzip xsltproc \
-            zip zstd python3 python3-pip device-tree-compiler \
-            lzip libtinfo5
+            zip zstd python3 python3-pip python3-venv device-tree-compiler \
+            lzip libtinfo6
+
+          # Ubuntu 24.04 removed the old libtinfo5 package.  Some legacy
+          # Android host tools still request it, so install it only when the
+          # package is actually available; otherwise keep the supported
+          # libtinfo6 runtime and continue.
+          if apt-cache show libtinfo5 >/dev/null 2>&1; then
+            sudo apt-get install -y libtinfo5
+          else
+            echo "libtinfo5 unavailable on this runner; using libtinfo6"
+          fi
 
       - name: Initialize Android-16 source
         shell: bash
@@ -363,12 +454,56 @@ jobs:
           set -euxo pipefail
           cd android
           {
-            echo "=== Android 16 vendor compatibility ==="
+            echo "=== Android 16 QPR2 vendor compatibility ==="
             grep -Rns 'framework_compatibility_matrix' device/lge/caymanlm device/lge/sm7250-common || true
             grep -Rns 'vintf' device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm | head -200 || true
             grep -Rns 'ro.vendor.api_level\|ro.vndk.version\|BOARD_VNDK_VERSION' \
               device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm || true
           } | tee "$DIAG_ROOT/vendor/03-vintf-api-audit.txt"
+
+      - name: Mandatory G900EMW hardware feature audit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd android
+          mkdir -p "$DIAG_ROOT/vendor"
+          {
+            echo "=== Mandatory hardware compatibility audit ==="
+            echo "device=G900EMW / caymanlm"
+            echo "target=Android 16 QPR2-compatible vendor interfaces"
+            echo
+            echo "[Fingerprint]"
+            grep -RniE 'fingerprint|biometric|egis|goodix|fpc' \
+              device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm \
+              | head -200 || true
+            echo
+            echo "[Vibration / haptics]"
+            grep -RniE 'vibrator|haptic|haptics' \
+              device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm \
+              | head -200 || true
+            echo
+            echo "[Dual SIM / telephony]"
+            grep -RniE 'dsds|dual.?sim|subscription|radio|ril' \
+              device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm \
+              | head -200 || true
+            echo
+            echo "[Audio / sound]"
+            grep -RniE 'audio|tinyalsa|audio_policy|mixer|snd|sound' \
+              device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm \
+              | head -250 || true
+            echo
+            echo "[Treble/VINTF]"
+            find device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm \
+              -type f \( -name '*manifest*.xml' -o -name '*compatibility*.xml' -o -name 'vintf*.xml' \) -print | sort
+          } | tee "$DIAG_ROOT/vendor/04-hardware-feature-audit.txt"
+
+          # These are hard gates for the build metadata, not guesses about a
+          # HAL implementation.  The actual hardware behavior remains backed
+          # by the original LG/QCOM blobs and device-tree/kernel interfaces.
+          test -f device/lge/sm7250-common/framework_compatibility_matrix.xml
+          test -f device/lge/caymanlm/BoardConfig.mk
+          test -f device/lge/caymanlm/device.mk
+          test -f vendor/lge/caymanlm/caymanlm-vendor.mk
 
       - name: Build vendor image
         shell: bash
@@ -392,6 +527,26 @@ jobs:
             ls -lh out/target/product/$TARGET_DEVICE/vendor.img
             sha256sum out/target/product/$TARGET_DEVICE/vendor.img
           } | tee "$GITHUB_WORKSPACE/$DIAG_ROOT/vendor/06-vendor-output.txt"
+
+      - name: Audit built vendor image and preserve hardware requirements
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd android
+          IMG="out/target/product/$TARGET_DEVICE/vendor.img"
+          test -s "$IMG"
+          mkdir -p "$GITHUB_WORKSPACE/$DIAG_ROOT/vendor"
+          {
+            echo "vendor_img=$(realpath "$IMG")"
+            ls -lh "$IMG"
+            sha256sum "$IMG"
+            echo
+            echo "source-tree feature markers:"
+            grep -RniE 'fingerprint|biometric|vibrator|haptic|audio|dsds|dual.?sim' \
+              device/lge/caymanlm device/lge/sm7250-common vendor/lge/caymanlm \
+              | head -300 || true
+          } | tee "$DIAG_ROOT/vendor/07-built-vendor-audit.txt"
 
       - name: Package vendor artifact
         if: success()
