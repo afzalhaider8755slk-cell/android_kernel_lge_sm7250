@@ -1,4 +1,4 @@
-name: "LG Velvet LM-G900 • Android 16 QPR2 • Hardened Kernel + Vendor • CIP135 FIX v11"
+name: "LG Velvet LM-G900 • Android 16 QPR2 • Hardened Kernel + Vendor + DTBO • CIP135 FIX v12"
 
 on:
   workflow_dispatch:
@@ -10,6 +10,11 @@ on:
         type: boolean
       build_vendor:
         description: "Build vendor.img"
+        required: true
+        default: true
+        type: boolean
+      build_dtbo:
+        description: "Build DTBO.img"
         required: true
         default: true
         type: boolean
@@ -26,6 +31,7 @@ on:
       - "techpack/**"
       - "Makefile"
       - "localversion-*"
+      - "arch/arm64/boot/dts/**"
 
 permissions:
   contents: read
@@ -597,9 +603,165 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  dtbo:
+    if: ${{ github.event_name == 'push' || inputs.build_dtbo }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: "D01 • Checkout exact kernel source"
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.KERNEL_BRANCH }}
+          fetch-depth: 0
+
+      - name: "D02 • Install DTBO build dependencies"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex build-essential ccache clang-18 lld-18 llvm-18 \
+            libssl-dev libelf-dev libdw-dev dwarves \
+            python3 python3-pip rsync patch git curl wget unzip zip xz-utils \
+            device-tree-compiler file gawk
+
+      - name: "D03 • Create numbered DTBO diagnostics workspace"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p ci-diagnostics/dtbo dtbo/out
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "device=${DEVICE}"
+            echo "codename=${CODENAME}"
+            echo "branch=${KERNEL_BRANCH}"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "target=Android 16 QPR2 GSI / LM-G900"
+            echo "dtbo_partition_size=25165824"
+            echo "source_dts_root=arch/arm64/boot/dts/vendor/lge/lito-caymanlm"
+          } | tee ci-diagnostics/dtbo/00-context.txt
+          git status --short | tee ci-diagnostics/dtbo/00-git-status-before.txt
+
+      - name: "D04 • Verify caymanlm DT overlay source and selected region"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s "arch/arm64/configs/${DEFCONFIG}"
+          test -d arch/arm64/boot/dts/vendor/lge/lito-caymanlm
+          find arch/arm64/boot/dts/vendor/lge/lito-caymanlm -type f -name '*.dts' -print | sort | tee ci-diagnostics/dtbo/01-dts-inventory.txt
+          grep -RInE '^CONFIG_(MACH_LITO_CAYMANLM|MACH_LITO_CAYMANLM_LAO_COM|MACH_LITO_CAYMANLM_DCM_JP|MACH_LITO_CAYMANLM_SB_JP)=' \
+            "arch/arm64/configs/${DEFCONFIG}" | tee ci-diagnostics/dtbo/02-device-config.txt
+          test "$(grep -Ec '^CONFIG_MACH_LITO_CAYMANLM=y$' "arch/arm64/configs/${DEFCONFIG}")" -eq 1
+          regions=$(grep -Ec '^CONFIG_MACH_LITO_CAYMANLM_(LAO_COM|DCM_JP|SB_JP)=y$' "arch/arm64/configs/${DEFCONFIG}" || true)
+          test "$regions" -eq 1 || { echo "::error::Expected exactly one caymanlm regional DT overlay target in defconfig; refusing to guess."; exit 1; }
+
+      - name: "D05 • Baseline defconfig and enable only the DT overlay build gate"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          make O=dtbo/out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} NM=llvm-nm-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- \
+            "${DEFCONFIG}" 2>&1 | tee ci-diagnostics/dtbo/03-defconfig.log
+          scripts/config --file dtbo/out/.config --enable CONFIG_BUILD_ARM64_DT_OVERLAY
+          make O=dtbo/out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} NM=llvm-nm-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- olddefconfig \
+            2>&1 | tee ci-diagnostics/dtbo/04-olddefconfig.log
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y$' dtbo/out/.config
+          grep -E '^CONFIG_(MACH_LITO_CAYMANLM|MACH_LITO_CAYMANLM_LAO_COM|MACH_LITO_CAYMANLM_DCM_JP|MACH_LITO_CAYMANLM_SB_JP|BUILD_ARM64_DT_OVERLAY)=' dtbo/out/.config | tee ci-diagnostics/dtbo/05-final-config.txt
+
+      - name: "D06 • Harden the known DTBO Kbuild discovery typo in CI only"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          f=arch/arm64/boot/dts/vendor/lge/Makefile
+          test -s "$f"
+          sha256sum "$f" | tee ci-diagnostics/dtbo/06-makefile-before.sha256
+          grep -qF 'wildcard echo $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts' "$f"
+          cp "$f" ci-diagnostics/dtbo/06-lge-makefile-before
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('arch/arm64/boot/dts/vendor/lge/Makefile')
+          s=p.read_text()
+          old='$(wildcard echo $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts)'
+          new='$(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts)'
+          if s.count(old) != 1:
+              raise SystemExit('Expected exactly one known DTBO wildcard typo')
+          p.write_text(s.replace(old,new,1))
+          PY
+          diff -u ci-diagnostics/dtbo/06-lge-makefile-before "$f" | tee ci-diagnostics/dtbo/06-lge-makefile-ci-fix.diff
+          sha256sum "$f" | tee ci-diagnostics/dtbo/06-makefile-after.sha256
+
+      - name: "D07 • Build ARM64 DT overlays with the same caymanlm defconfig"
+        shell: bash
+        run: |
+          set -o pipefail
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          make O=dtbo/out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} NM=llvm-nm-${LLVM_VERSION} \
+            OBJCOPY=llvm-objcopy-${LLVM_VERSION} OBJDUMP=llvm-objdump-${LLVM_VERSION} \
+            READELF=llvm-readelf-${LLVM_VERSION} STRIP=llvm-strip-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- \
+            -j"$(nproc --all)" dtbs 2>&1 | tee ci-diagnostics/dtbo/07-dtbo-build.log
+          find dtbo/out/arch/arm64/boot/dts -type f -name '*.dtbo' -print | sort | tee ci-diagnostics/dtbo/08-built-dtbo-list.txt
+          test -s ci-diagnostics/dtbo/08-built-dtbo-list.txt
+
+      - name: "D08 • Package DTBO.img with AOSP mkdtboimg.py — no guessed entries"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/mkdtbo"
+          curl -fsSL --retry 5 --retry-all-errors \
+            https://android.googlesource.com/platform/system/libufdt/+/refs/heads/android16-qpr2-release/utils/src/mkdtboimg.py?format=TEXT \
+            -o "$RUNNER_TEMP/mkdtbo/mkdtboimg.b64"
+          base64 -d "$RUNNER_TEMP/mkdtbo/mkdtboimg.b64" > "$RUNNER_TEMP/mkdtbo/mkdtboimg.py"
+          chmod +x "$RUNNER_TEMP/mkdtbo/mkdtboimg.py"
+          python3 "$RUNNER_TEMP/mkdtbo/mkdtboimg.py" --help | tee ci-diagnostics/dtbo/09-mkdtboimg-help.txt
+          mapfile -t overlays < ci-diagnostics/dtbo/08-built-dtbo-list.txt
+          test "${#overlays[@]}" -gt 0
+          : > ci-diagnostics/dtbo/10-mkdtbo-command.txt
+          printf '%q ' python3 "$RUNNER_TEMP/mkdtbo/mkdtboimg.py" create LG-Velvet-LM-G900-Android16QPR2-dtbo.img --page_size=4096 >> ci-diagnostics/dtbo/10-mkdtbo-command.txt
+          for f in "${overlays[@]}"; do printf '%q ' "$f" >> ci-diagnostics/dtbo/10-mkdtbo-command.txt; done
+          echo >> ci-diagnostics/dtbo/10-mkdtbo-command.txt
+          python3 "$RUNNER_TEMP/mkdtbo/mkdtboimg.py" create \
+            LG-Velvet-LM-G900-Android16QPR2-dtbo.img --page_size=4096 \
+            "${overlays[@]}" 2>&1 | tee ci-diagnostics/dtbo/10-mkdtboimg.log
+          test -s LG-Velvet-LM-G900-Android16QPR2-dtbo.img
+
+      - name: "D09 • Verify DTBO image header, entries, size and SHA256"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(stat -c '%s' LG-Velvet-LM-G900-Android16QPR2-dtbo.img)" -le 25165824
+          python3 "$RUNNER_TEMP/mkdtbo/mkdtboimg.py" dump LG-Velvet-LM-G900-Android16QPR2-dtbo.img \
+            2>&1 | tee ci-diagnostics/dtbo/11-dtbo-dump.txt
+          grep -q 'dt_entry_count' ci-diagnostics/dtbo/11-dtbo-dump.txt
+          grep -q 'page_size = 4096' ci-diagnostics/dtbo/11-dtbo-dump.txt
+          sha256sum LG-Velvet-LM-G900-Android16QPR2-dtbo.img | tee ci-diagnostics/dtbo/12-dtbo.sha256
+          file LG-Velvet-LM-G900-Android16QPR2-dtbo.img | tee ci-diagnostics/dtbo/12-dtbo-file.txt
+          printf 'device=LM-G900\ncodename=caymanlm\ntarget=Android 16 QPR2 / API 36\npartition=dtbo\n' > DTBO-BUILD-METADATA.txt
+          zip -9 LM-G900-Android16QPR2-dtbo.zip LG-Velvet-LM-G900-Android16QPR2-dtbo.img DTBO-BUILD-METADATA.txt
+          sha256sum LM-G900-Android16QPR2-dtbo.zip | tee ci-diagnostics/dtbo/13-dtbo-zip.sha256
+
+      - name: "D10 • Upload DTBO result + diagnostics ALWAYS"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "LM-G900-DTBO-${{ github.run_id }}"
+          path: |
+            LG-Velvet-LM-G900-Android16QPR2-dtbo.img
+            LM-G900-Android16QPR2-dtbo.zip
+            DTBO-BUILD-METADATA.txt
+            dtbo/out/arch/arm64/boot/dts/**/*.dtbo
+            ci-diagnostics/dtbo/**
+          if-no-files-found: warn
+          retention-days: 30
+
   bundle:
-    if: always() && (needs.kernel.result != 'skipped' || needs.vendor.result != 'skipped')
-    needs: [kernel, vendor]
+    if: always() && (needs.kernel.result != 'skipped' || needs.vendor.result != 'skipped' || needs.dtbo.result != 'skipped')
+    needs: [kernel, vendor, dtbo]
     runs-on: ubuntu-24.04
     steps:
       - name: "B01 • Download independent kernel/vendor artifacts"
@@ -619,7 +781,8 @@ jobs:
             echo "LG Velvet LM-G900 — Android 16 QPR2"
             echo "kernel_job=${{ needs.kernel.result }}"
             echo "vendor_job=${{ needs.vendor.result }}"
-            echo "Kernel and vendor are independent; a successful artifact is preserved even when the other job fails."
+            echo "dtbo_job=${{ needs.dtbo.result }}"
+            echo "Kernel, vendor and DTBO are independent; a successful artifact is preserved even when another job fails."
             echo "If a failure occurs, the exact numbered setup is visible in that job's log and diagnostic artifact."
           } | tee final/BUILD-STATUS.txt
           find collected -type f -print | sort > final/ARTIFACT-LIST.txt
