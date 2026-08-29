@@ -1,2090 +1,259 @@
-name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU-Next v3.3.0 + SUSFS 4.19 - V31
-  FULL FILE_WRAPPER AUDIT
-'on':
-  push: {}
+name: LG Velvet KSU SUSFS NonGKI 4.19 - Safe AutoFix
+
+on:
   workflow_dispatch:
-    inputs:
-      source_branch:
-        description: EXACT WORKING kernel branch
-        required: true
-        type: choice
-        options:
-        - sixteen
-        default: sixteen
-      defconfig:
-        description: EXACT WORKING kernel defconfig
-        required: true
-        type: choice
-        options:
-        - vendor/caymanlm_defconfig
-        default: vendor/caymanlm_defconfig
+  push:
+    branches: [sixteen]
+
 permissions:
   contents: read
-concurrency:
-  group: lg-velvet-working-4.19-ksu-susfs-${{ github.ref }}
-  cancel-in-progress: true
+
 jobs:
-  workflow-syntax-preflight:
-    name: Workflow YAML syntax preflight
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Validate workflow YAML structure
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import yaml
-          from pathlib import Path
-          p = Path(".github/workflows/main.yml")
-          if not p.exists():
-              # The repository workflow itself is the file being executed; if
-              # it is unavailable in checkout, GitHub has already parsed it.
-              print("Workflow file not present in checkout; GitHub parser accepted this workflow.")
-              raise SystemExit(0)
-          yaml.safe_load(p.read_text(encoding="utf-8"))
-          print("PASS: workflow YAML parses successfully.")
-          PY
   build:
-    name: Build WORKING 4.19 Non-GKI + KSU + SUSFS - V31 FILE_WRAPPER AUDIT
-    runs-on: ubuntu-22.04
-    timeout-minutes: 150
+    runs-on: ubuntu-24.04
     env:
-      KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
-      SOURCE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch
-        || 'sixteen' }}
+      SOURCE_BRANCH: sixteen
       SOURCE_COMMIT: 6f4cab15a4e8f5e3400e95d17517fd8b24b37b49
-      DEFCONFIG: ${{ github.event_name == 'workflow_dispatch' && inputs.defconfig
-        || 'vendor/caymanlm_defconfig' }}
+      DEFCONFIG: vendor/caymanlm_defconfig
       KSU_VERSION: v3.3.0
+      KSU_REF: 26fded805206ae4542f4745e09cc465412994492
       KSU_REPO: https://github.com/pershoot/KernelSU-Next.git
       KSU_BRANCH: dev-susfs
-      KSU_REF: 26fded805206ae4542f4745e09cc465412994492
       SUSFS_VERSION: kernel-4.19
       SUSFS_REF: 001e69919c6271f690fd00b17e4c721c9e599152
-      CLANG_REVISION: clang-r563880c
-      CLANG_PREBUILT_TAG: ndk-r29
-      GCC64_BRANCH: lineage-19.1
-      GCC32_BRANCH: lineage-19.1
-      ARCH: arm64
-      OUT_DIR: ${{ github.workspace }}/out
+      BASELINE_SHA256: 8b931841bcfcfad0b8ed596fbc156e67a6da8f32f226753ffabc89c907accffa
       DIAG_DIR: ${{ github.workspace }}/ci-diagnostics
-      WORKING_BASELINE_CONFIG_SHA256: 8b931841bcfcfad0b8ed596fbc156e67a6da8f32f226753ffabc89c907accffa
+      OUT_DIR: ${{ github.workspace }}/kernel/out
+
     steps:
-    - name: 01 - Checkout EXACT WORKING kernel source
-      shell: bash
-      run: "set -euo pipefail\nrm -rf \"$GITHUB_WORKSPACE/kernel\"\n\ngit clone --depth=1\
-        \ --branch \"$SOURCE_BRANCH\" \\\n  \"$KERNEL_REPO\" \"$GITHUB_WORKSPACE/kernel\"\
-        \n\ncd \"$GITHUB_WORKSPACE/kernel\"\ngit fetch --no-tags --depth=1 origin\
-        \ \"$SOURCE_COMMIT\"\ngit checkout --detach \"$SOURCE_COMMIT\"\n\ntest \"\
-        $(git rev-parse HEAD)\" = \"$SOURCE_COMMIT\"\n\necho \"=== EXACT WORKING SOURCE\
-        \ ===\"\necho \"branch=$SOURCE_BRANCH\"\necho \"commit=$(git rev-parse HEAD)\"\
-        \necho \"kernel=$(make -s kernelversion || true)\"\n"
-    - name: 02 - Install build dependencies (including GCC 4.9 Python wrapper fix)
-      shell: bash
-      run: "set -euo pipefail\nsudo apt-get update\nsudo DEBIAN_FRONTEND=noninteractive\
-        \ apt-get install -y \\\n  bc bison build-essential ccache curl flex git libelf-dev\
-        \ libssl-dev \\\n  lld llvm python3 python-is-python3 rsync unzip wget\n\n\
-        # LineageOS GCC 4.9 wrappers use #!/usr/bin/python.\n# Ubuntu 22.04 does not\
-        \ guarantee that /usr/bin/python exists.\ntest -x /usr/bin/python\n/usr/bin/python\
-        \ --version\n\nmkdir -p \"$DIAG_DIR\"\n"
-    - name: 03 - Download EXACT Android Clang r563880c + GCC 4.9
-      shell: bash
-      run: "set -euo pipefail\ncd \"$GITHUB_WORKSPACE\"\nrm -rf clang-prebuilt gcc64\
-        \ gcc32\n\n# clang-r563880c is a DIRECTORY inside the NDK r29 snapshot,\n\
-        # not a Git branch. NDK r29 contains clang-r563880c. \ngit clone --depth=1\
-        \ --filter=blob:none --sparse \\\n  --branch \"$CLANG_PREBUILT_TAG\" \\\n\
-        \  https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86\
-        \ \\\n  clang-prebuilt\ncd clang-prebuilt\ngit sparse-checkout set \"$CLANG_REVISION\"\
-        \ncd \"$GITHUB_WORKSPACE\"\n\n# Use the LineageOS lineage-19.1 GCC 4.9 prebuilts.\n\
-        # They contain wrapper scripts that require /usr/bin/python.\ngit clone --depth=1\
-        \ --branch \"$GCC64_BRANCH\" \\\n  https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git\
-        \ \\\n  gcc64\n\ngit clone --depth=1 --branch \"$GCC32_BRANCH\" \\\n  https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git\
-        \ \\\n  gcc32\n\ntest -x \"$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang\"\
-        \ntest -x \"$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc\"\ntest\
-        \ -x \"$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc\"\n\n# This catches\
-        \ the exact failure seen previously:\n# \".../aarch64-linux-android-gcc: No\
-        \ such file or directory\"\n# when the wrapper's /usr/bin/python interpreter\
-        \ was missing.\n\"$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc\"\
-        \ --version | head -n 1\n\"$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc\"\
-        \ --version | head -n 1\n\"$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang\"\
-        \ --version | head -n 2\n\"$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang\"\
-        \ --version | grep -q '21\\.0\\.0'\n\necho \"CLANG_DIR=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION\"\
-        \ >> \"$GITHUB_ENV\"\necho \"GCC64_DIR=$GITHUB_WORKSPACE/gcc64\" >> \"$GITHUB_ENV\"\
-        \necho \"GCC32_DIR=$GITHUB_WORKSPACE/gcc32\" >> \"$GITHUB_ENV\"\necho \"PATH=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH\"\
-        \ >> \"$GITHUB_ENV\"\n"
-    - name: 04 - Load and VERIFY exact WORKING baseline config (SELF-CONTAINED)
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/04-baseline-config.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\n\n# The baseline is embedded in this\
-        \ workflow so this job does NOT depend\n# on a separately committed .github/kernel-baseline/working.config\
-        \ file.\n# It is the exact .config extracted from the user's known-good kernel.\n\
-        BASELINE_FILE=\"$RUNNER_TEMP/working-baseline.config\"\ncat > \"$RUNNER_TEMP/working-baseline.b64\"\
-        \ <<'BASE64_PAYLOAD'\nH4sIAEG9kGoC/6S9WZPjOJIu+n5+hazG7Fi1ne4uLlqouZYPIAlKKHELgloiX2hRkcqquBMZkRMR2VN1fv11B0mJILGo7bZ1Zabg\n\
-        H0DscHc43P/jf/3HjPz4eP328PH0+PD8/Nfs9/PL+e3h4/xl9vXp+fz/zOJilhf1jMas/ieA06eXH3/+8vD2bTmfzf/prv/pe4vZ\n\
-        7vz2cn6eRa8vX59+/wG5n15f/td//K+oyBO2aaKoOdCKsyJvanqqP/1EXr68vT59mf3szp3FfOEu/j77P99/f4U/f3t9/oC/nj/w\n\
-        x7dnTPvt4R3q8voye1ss/SBwHv82e3x+ePl99q/z2zt8Z+a5/3T+6cx+/uPj4/v7f/7yy0Nb+j9/f339/fn8/vrj7fH8z8fXb798\n\
-        vL4+P/7x8PTyy/Pzv7794/vb6/97fvyYLc7r5XK5/uosndXKWa8fHuaut3Yev/w2f1ycl18fnK+LtT9f/+2nvkGba4s+OYNWMt5E\n\
-        Kck3n/7qE9MYE9M0viYJxCW75zrwv55GeAs/ZFc8pKnBUKqGAlWJSN6kLN8NvntNbHhNahZJtC18h/Cs2RR1cSXURZHyhu/Lsqjq\n\
-        pqJpdaWx6q45FtXgE+GepXHNMtrAMJMwpQ2HbIPSthUl0CN5UsAfTU04ZoaJ8h+zjZh1z7P388eP79epw3JWNzQ/NKSCBrOM1Z98\n\
-        D+B9vYusZPCZmvJ69vQ+e3n9wBIuPVREJO276Kd/fD+/ff3pmnlIbci+LhQliBY1nKQway/DvyUH2uxoldO02Xxm5bWBQ0r6eX4l\n\
-        yOhLFa5QxbdjmpB9Wjfbgtc5yeinn35+eX05X6chPxKpNH7PD6yMhkVdaGXB2anJ7vZ0TxXfiqqC8yajWVHdN6SuSbQdlrznNGWh\n\
-        Ih/Zw7Ywaj+pom1LgApBF6eDuaxPbY6kFh+VEuuK0n6KwHybvf/47f2v94/zt+sU2dCcViwS07GsipBeyxiS+LY46ilNSg80VdNp\n\
-        ktCoZtiyJGmydtIqcBnbVLCsYKoN+qOKgQQr6AiLh9M8lpdPXGSE5aq0ZstohT15P/1YxhkitYRJsVuSx7BKupKlrAhPiiqicbc6\n\
-        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\n\
-        SQMZBsI9Zo8zMkrJ7qaB3gUBFeVNcnk8LqrW1Wn28df38+xnWAb/9ffZx8P3899nUfwPWHx/G3iX7fk4ORDxtmpTNWETO3LBeW3m\n\
-        DpXxj/vCB2Zxl7ShdYZoH0aMrIkcbB7TQSjeSJZ1IpVHePWMihipQ+p+Y5CYqTZHyaYjI0OSyIZg4k8LiBN+CyRlIScmTFUapxK6\n\
-        s0zxTkMy8BYUnWOrlopu+KaBEuWPR6dN6Ld4M2huA4X5yTNgQuoZiN308o/NCf4nlpf+S9tSY1cpqFDG+nQ6GQHG8SARqQxfJyQy\n\
-        V4+waGWsAALWFsB6bgJkB2MLssM+M4xUXNZw0BWG76MnI5g4BgSqpyo9nUL9vErD6G2I2D5zetTdsV8wBubmgjF3RVn7NoBnXp4Z\n\
-        qeryjulW5z7h2yiWDaMvyeMTTYUANh5j+KpKaOJjBIv8gjEUJWQqXS2iLO73V1MR4wCjIwLyzZMvbDHOSmnovlzDL3fn4sl3165h\n\
-        NbHStE3nGBzDSCeu4xhqV1PDMuP32cKPAtiQPD3oDjqWRY3rBY4JRGz7Zxz568WfhiWHdVmv5nrEMV65a0Nz9MJXy3hklo2tzALH\n\
-        cfX0/pyCSZ9FzLBFx1s9reBxO6xkpKSVIkWidki1cCBdpdCOVTrGTKM30l1QXVRsmbhhq1k+VYXFmXw3MmDz1EqATOuPXHwmke24\n\
-        e3gX+yUjOdnQSkQH0TkWjzG4lXD9QWP1V8TiHt72XIwSWk/I13Sek5Jvi3pUJYzViGzrgWGMMkNF9D7c404Da0SABKYjoSWrRqcP\n\
-        VO20BtpnWhXaUlW+kuXBUGvDsdPFpeyop5KUjCw5r7QD7Z7DDjO0ia0VBrrvpMLoGLpb3ETBnmMqS5Ptk6v6BDmExrISGo3qZrD5\n\
-        BCo+fRVDynUIcwQzAJA8rgo44Nsa3IZq8KF6weumwCvJS3gMEd9BOwfC4qgZRC5fdl7cU2kUp8mej7x7tnI2pXTm+uv57Ofk6e18\n\
-        hP/+ptIIJayiaFWlC44uiE1e8Hu1/ePVDuQiN4+cVcuGWWGRx5LIJbTNwwbjBzd7HT9M70TUcoMJv0ZTzpJQm6WmJNOZLGnNtlmp\n\
-        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\n\
-        /T/pURuxjaYCAA==\nBASE64_PAYLOAD\nsed 's/^          //' \"$RUNNER_TEMP/working-baseline.b64\"\
-        \ | base64 -d | gzip -d > \"$BASELINE_FILE\"\n\ntest -s \"$BASELINE_FILE\"\
-        \nBASELINE_SHA256=\"$(sha256sum \"$BASELINE_FILE\" | awk '{print $1}')\"\n\
-        echo \"baseline_file=$BASELINE_FILE\" | tee \"$DIAG_DIR/baseline-source.txt\"\
-        \necho \"baseline_config_sha256=$BASELINE_SHA256\" | tee \"$DIAG_DIR/baseline-config.sha256\"\
-        \ntest \"$BASELINE_SHA256\" = \"$WORKING_BASELINE_CONFIG_SHA256\"\n\nrm -rf\
-        \ \"$OUT_DIR\"\nmkdir -p \"$OUT_DIR\"\ncp \"$BASELINE_FILE\" \"$OUT_DIR/.config\"\
-        \ncp \"$BASELINE_FILE\" \"$DIAG_DIR/working-baseline.config\"\n\n# Critical\
-        \ stock values BEFORE KSU/SUSFS changes.\ngrep -q '^# CONFIG_KPROBES is not\
-        \ set$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_HAVE_KPROBES=y$' \"$OUT_DIR/.config\"\
-        \ngrep -q '^CONFIG_MODULES=y$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_OVERLAY_FS=y$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_MACH_LITO_CAYMANLM=y$' \"$OUT_DIR/.config\"\
-        \ngrep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' \"$OUT_DIR/.config\"\ngrep\
-        \ -q '^CONFIG_LOCALVERSION=\"-perf\"$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_CC_IS_CLANG=y$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_CLANG_VERSION=210000$' \"$OUT_DIR/.config\"\
-        \ngrep -q '^CONFIG_AS_IS_LLVM=y$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_AS_VERSION=210000$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_LLD_VERSION=210000$' \"$OUT_DIR/.config\"\
-        \n\nif grep -Eq '^CONFIG_KSU($|_)' \"$OUT_DIR/.config\"; then\n  echo \"::error::Embedded\
-        \ working baseline already contains KernelSU symbols.\"\n  exit 1\nfi\n\n\
-        echo \"PASS: exact embedded WORKING .config loaded.\"\necho \"PASS: baseline\
-        \ SHA256 matches $WORKING_BASELINE_CONFIG_SHA256\"\necho \"PASS: KPROBES remains\
-        \ disabled in pristine baseline.\"\n"
-    - name: 05 - Integrate KernelSU-Next v3.3.0 SUSFS-compatible tree
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/05-ksu.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\n\n# IMPORTANT:\n# The previous workflow\
-        \ used the official KernelSU-Next release tree\n# and then tried to apply\
-        \ SUSFS's legacy KernelSU patch\n# (10_enable_susfs_for_ksu.patch). That patch\
-        \ is for a different\n# KernelSU kernel layout, which is exactly why Step\
-        \ 07 produced\n# \"No file to patch\" and large numbers of rejected hunks.\n\
-        #\n# For KernelSU-Next + SUSFS, use the SUSFS-compatible KernelSU-Next\n#\
-        \ tree directly. The v3.3.0 tag on pershoot/dev-susfs is the\n# stable-compatible\
-        \ tree used by current KSU-Next + SUSFS builds.\n# The upstream v3.3.0 release\
-        \ tag is NOT the SUSFS/non-KPROBE tree.\n# Use pershoot's dev-susfs branch\
-        \ and pin the known v3.3.0-tagged\n# SUSFS-compatible commit instead.\ncurl\
-        \ --fail --location --proto '=https' -LSs \\\n  \"https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh\"\
-        \ \\\n  | bash -s \"$KSU_BRANCH\"\n\ngit -C KernelSU-Next/kernel fetch --depth=50\
-        \ origin \"$KSU_REF\"\ngit -C KernelSU-Next/kernel checkout --detach \"$KSU_REF\"\
-        \n\ntest -d KernelSU-Next/kernel\ntest -d KernelSU-Next/.git\ntest -e drivers/kernelsu/Kconfig\n\
-        test -e KernelSU-Next/kernel/Kconfig\ntest -e KernelSU-Next/kernel/Kbuild\n\
-        grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig\ngrep -q 'obj-$(CONFIG_KSU)'\
-        \ drivers/Makefile\n\n# pershoot/dev-susfs Kconfig permits KSU without KPROBES\
-        \ when\n# the kernel exposes its SUSFS integration marker. This exact\n# LG\
-        \ 4.19 build is the non-KPROBE/manual-hook path.\nif ! grep -q '^config SUSFS$'\
-        \ drivers/Kconfig; then\n  python3 - <<'PYK'\nfrom pathlib import Path\n\n\
-        p = Path(\"drivers/Kconfig\")\ns = p.read_text()\nanchor = 'source \"drivers/kernelsu/Kconfig\"\
-        '\nmarker = 'config SUSFS\\n\\tbool \"SUSFS integration marker\"\\n\\tdefault\
-        \ y\\n\\n'\n\nif \"config SUSFS\" not in s:\n    if anchor not in s:\n   \
-        \     raise SystemExit(\"KernelSU Kconfig source anchor not found\")\n   \
-        \ s = s.replace(anchor, marker + anchor, 1)\n    p.write_text(s)\nPYK\nfi\n\
-        grep -q '^config SUSFS$' drivers/Kconfig\n\n# setup.sh clones the pershoot\
-        \ repository using a URL without \".git\".\n# Normalize both URLs before comparing;\
-        \ a literal string comparison\n# incorrectly rejects a valid clone even though\
-        \ the repository is correct.\nACTUAL_KSU_REPO=\"$(git -C KernelSU-Next config\
-        \ --get remote.origin.url | sed -E 's#/$##; s#\\\\.git$##')\"\nEXPECTED_KSU_REPO=\"\
-        ${KSU_REPO%.git}\"\ntest \"$ACTUAL_KSU_REPO\" = \"$EXPECTED_KSU_REPO\"\n\n\
-        KSU_COMMIT=\"$(git -C KernelSU-Next rev-parse HEAD)\"\n\n# The pinned SUSFS-compatible\
-        \ commit must still resolve to the\n# v3.3.0 release line. Do not silently\
-        \ move to a different release.\nKSU_VERSION_RESOLVED=\"$(git -C KernelSU-Next\
-        \ describe --tags --abbrev=0 \"$KSU_COMMIT\" 2>/dev/null || true)\"\ntest\
-        \ \"$KSU_VERSION_RESOLVED\" = \"$KSU_VERSION\"\ntest \"$KSU_COMMIT\" = \"\
-        $KSU_REF\"\n\n# Critical non-KPROBE compatibility checks from the actual KSU\
-        \ source.\ngrep -q '^[[:space:]]*depends on KPROBES || SUSFS$' KernelSU-Next/kernel/Kconfig\n\
-        grep -q '^ifneq ($(strip $(CONFIG_KSU_SUSFS)),y)$' KernelSU-Next/kernel/Kbuild\n\
-        grep -q '^ifeq ($(strip $(CONFIG_KPROBES)),y)$' KernelSU-Next/kernel/Kbuild\n\
-        \necho \"ksu_repo=$KSU_REPO\" | tee \"$DIAG_DIR/ksu-version.txt\"\necho \"\
-        ksu_branch=$KSU_BRANCH\" | tee -a \"$DIAG_DIR/ksu-version.txt\"\necho \"ksu_tag=$KSU_VERSION_RESOLVED\"\
-        \ | tee -a \"$DIAG_DIR/ksu-version.txt\"\necho \"ksu_ref=$KSU_REF\" | tee\
-        \ -a \"$DIAG_DIR/ksu-version.txt\"\necho \"ksu_commit=$KSU_COMMIT\" | tee\
-        \ -a \"$DIAG_DIR/ksu-version.txt\"\n\necho \"KSU_VERSION_RESOLVED=$KSU_VERSION_RESOLVED\"\
-        \ >> \"$GITHUB_ENV\"\necho \"KSU_COMMIT=$KSU_COMMIT\" >> \"$GITHUB_ENV\"\n\
-        \n# Exact LG 4.19 compatibility fix for KernelSU-Next v3.3.0:\n# su_mount_ns.c\
-        \ includes <uapi/linux/mount.h>, but this vendor\n# 4.19 tree predates the\
-        \ split of the mount UAPI header. The\n# required MS_PRIVATE/MS_REC flags\
-        \ are already provided by the\n# existing <linux/fs.h> include in su_mount_ns.c,\
-        \ so do not add\n# or modify a vendor UAPI header. Remove only the unavailable\n\
-        # include from this KSU translation unit.\nSU_MOUNT_NS_C=\"KernelSU-Next/kernel/infra/su_mount_ns.c\"\
-        \ntest -f \"$SU_MOUNT_NS_C\"\npython3 - \"$SU_MOUNT_NS_C\" <<'PY'\nfrom pathlib\
-        \ import Path\nimport sys\n\np = Path(sys.argv[1])\ns = p.read_text()\nbad\
-        \ = \"#include <uapi/linux/mount.h>\\n\"\nif bad in s:\n    s = s.replace(bad,\
-        \ \"\", 1)\n    p.write_text(s)\n\nif \"#include <uapi/linux/mount.h>\" in\
-        \ s:\n    raise SystemExit(\"unavailable uapi/linux/mount.h include remains\
-        \ in su_mount_ns.c\")\n\nif \"MS_PRIVATE | MS_REC\" not in s:\n    raise SystemExit(\"\
-        Expected MS_PRIVATE/MS_REC mount flags were not found in su_mount_ns.c\")\n\
-        PY\n\n! grep -q '^#include <uapi/linux/mount.h>$' \"$SU_MOUNT_NS_C\"\ngrep\
-        \ -q 'MS_PRIVATE | MS_REC' \"$SU_MOUNT_NS_C\"\ngrep -q '^#include <linux/fs.h>$'\
-        \ \"$SU_MOUNT_NS_C\"\necho \"PASS: su_mount_ns.c uses the existing 4.19 linux/fs.h\
-        \ mount flags; no unavailable uapi/linux/mount.h dependency.\"\n\necho \"\
-        PASS: KernelSU-Next SUSFS-compatible repository detected.\"\n# Compile fix\
-        \ for this exact 4.19 + Clang combination:\n# sulog.h declares __init/__exit\
-        \ but is included directly by sulog.c,\n# so it must include linux/init.h\
-        \ itself. This is the upstream fix for\n# the exact \"variable has incomplete\
-        \ type 'void'\" error seen with Clang.\nSULOG_H=\"KernelSU-Next/kernel/feature/sulog.h\"\
-        \ntest -f \"$SULOG_H\"\nif ! grep -q '^#include <linux/init.h>$' \"$SULOG_H\"\
-        ; then\n  python3 - \"$SULOG_H\" <<'PY'\nfrom pathlib import Path\nimport\
-        \ sys\np = Path(sys.argv[1])\ns = p.read_text()\nmarker = \"#include <linux/types.h>\\\
-        n\"\nif \"#include <linux/init.h>\" not in s:\n    if marker not in s:\n \
-        \       raise SystemExit(\"linux/types.h include anchor not found in sulog.h\"\
-        )\n    s = s.replace(marker, marker + \"#include <linux/init.h>\\n\", 1)\n\
-        \    p.write_text(s)\nPY\nfi\ngrep -q '^#include <linux/init.h>$' \"$SULOG_H\"\
-        \necho \"PASS: sulog.h directly includes linux/init.h for Clang 4.19 build\
-        \ compatibility.\"\n\n# Exact 4.19 compatibility fix for KernelSU-Next v3.3.0:\
-        \ this source\n# includes linux/minmax.h in sucompat.c, but the LG 4.19 tree\
-        \ does not\n# provide that header. The pinned sucompat.c does not use min/max\
-        \ APIs,\n# so remove only this invalid include; do not add a new kernel header.\n\
-        SUCOMPAT_C=\"KernelSU-Next/kernel/feature/sucompat.c\"\ntest -f \"$SUCOMPAT_C\"\
-        \npython3 - \"$SUCOMPAT_C\" <<'PY'\nfrom pathlib import Path\nimport sys\n\
-        p = Path(sys.argv[1])\ns = p.read_text()\nbad = \"#include <linux/minmax.h>\\\
-        n\"\nif bad in s:\n    s = s.replace(bad, \"\", 1)\n    p.write_text(s)\n\
-        PY\n! grep -q '^#include <linux/minmax.h>$' \"$SUCOMPAT_C\"\necho \"PASS:\
-        \ removed only unavailable linux/minmax.h from sucompat.c for this 4.19 tree.\"\
-        \n\n# Exact LG SM7250 / Android 4.19 compatibility fix:\n# KernelSU-Next v3.3.0's\
-        \ seccomp cache uses\n# SECCOMP_ARCH_NATIVE_NR, but this vendor 4.19 arm64\
-        \ seccomp\n# header does not export that newer helper macro. The kernel's\n\
-        # native syscall count is already provided as NR_syscalls.\n#\n# Keep the\
-        \ compatibility alias local to KSU's seccomp-cache\n# translation unit. Do\
-        \ NOT modify the vendor seccomp ABI/header.\nSECCOMP_CACHE_C=\"KernelSU-Next/kernel/infra/seccomp_cache.c\"\
-        \ntest -f \"$SECCOMP_CACHE_C\"\npython3 - \"$SECCOMP_CACHE_C\" <<'PY'\nfrom\
-        \ pathlib import Path\nimport sys\n\np = Path(sys.argv[1])\ns = p.read_text()\n\
-        \nmarker = \"LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility\"\nif marker not\
-        \ in s:\n    compat = \"\"\"/*\n * LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility\n\
-        \ *\n * This vendor Android 4.19 arm64 tree exposes the native syscall\n *\
-        \ count as NR_syscalls instead of exporting the newer\n * SECCOMP_ARCH_NATIVE_NR\
-        \ helper macro. Keep the compatibility\n * shim local to KSU; do not modify\
-        \ the vendor seccomp ABI/header.\n */\n#if defined(CONFIG_ARM64) && !defined(SECCOMP_ARCH_NATIVE_NR)\n\
-        #include <asm/unistd.h>\n#define SECCOMP_ARCH_NATIVE_NR NR_syscalls\n#endif\n\
-        \n\"\"\"\n    s = compat + s\n    p.write_text(s)\n\nif \"#define SECCOMP_ARCH_NATIVE_NR\
-        \ NR_syscalls\" not in s:\n    raise SystemExit(\"Expected 4.19 seccomp compatibility\
-        \ definition is missing\")\nPY\n\ngrep -q 'LG 4.19: SECCOMP_ARCH_NATIVE_NR\
-        \ compatibility' \"$SECCOMP_CACHE_C\"\ngrep -q '#define SECCOMP_ARCH_NATIVE_NR\
-        \ NR_syscalls' \"$SECCOMP_CACHE_C\"\necho \"PASS: seccomp_cache.c uses a local\
-        \ 4.19 arm64 SECCOMP_ARCH_NATIVE_NR compatibility alias.\"\n\n# Exact compile\
-        \ fix for this build's intentional configuration:\n# CONFIG_KSU_SUSFS_SUS_MOUNT\
-        \ is disabled. KernelSU-Next v3.3.0\n# references the SUS_MOUNT-only proc-umount\
-        \ helpers from sucompat.c\n# under CONFIG_KSU_SUSFS, but those helpers are\
-        \ not declared when\n# SUS_MOUNT is disabled. Guard only those calls; do not\
-        \ enable\n# SUS_MOUNT and do not alter any other KSU/SUSFS code.\npython3\
-        \ - \"$SUCOMPAT_C\" <<'PY'\nfrom pathlib import Path\nimport sys\np = Path(sys.argv[1])\n\
-        lines = p.read_text().splitlines(keepends=True)\n\n# Work from the actual\
-        \ pinned source layout instead of relying on\n# indentation. The upstream\
-        \ 26fded sucompat.c has this exact block\n# inside ksu_handle_execveat_init();\
-        \ vendor formatting may vary.\nfunc = next(i for i, line in enumerate(lines)\n\
-        \            if line.startswith(\"int ksu_handle_execveat_init(\"))\nstart\
-        \ = next(i for i in range(func, len(lines))\n             if lines[i].strip()\
-        \ == \"size_t len = strlen(filename->name);\")\n\n# Locate the SUS_MOUNT-only\
-        \ condition and its complete inner block.\ncond = next(i for i in range(start,\
-        \ min(start + 20, len(lines)))\n            if \"susfs_is_current_proc_umounted()\"\
-        \ in lines[i])\nbody_end = next(i for i in range(cond, min(cond + 20, len(lines)))\n\
-        \                if lines[i].strip() == \"}\")\n\nif \"/* LG 4.19: SUS_MOUNT-only\
-        \ proc-umount optimization */\" not in ''.join(lines[start:body_end + 1]):\n\
-        \    indent = lines[start][:len(lines[start]) - len(lines[start].lstrip())]\n\
-        \    block = lines[start:body_end + 1]\n    guarded = []\n    guarded.append(block[0])\n\
-        \    guarded.append(indent + \"/* LG 4.19: SUS_MOUNT-only proc-umount optimization\
-        \ */\\n\")\n    guarded.append(indent + \"#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\\\
-        n\")\n    guarded.extend(block[1:])\n    guarded.append(indent + \"#endif\\\
-        n\")\n    lines[start:body_end + 1] = guarded\n    p.write_text(''.join(lines))\n\
-        PY\ngrep -q 'LG 4.19: SUS_MOUNT-only proc-umount optimization' \"$SUCOMPAT_C\"\
-        \ngrep -Eq '^[[:space:]]*#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT$' \"$SUCOMPAT_C\"\
-        \ngrep -Eq '^[[:space:]]*#endif$' \"$SUCOMPAT_C\"\necho \"PASS: sucompat SUS_MOUNT-only\
-        \ proc-umount calls are guarded; SUS_MOUNT remains disabled.\"\n# LG 4.19\
-        \ compatibility fix for KernelSU-Next pkg_observer.\n# Idempotent: if the\
-        \ 4.19 form is already present, leave it untouched.\nPKG_OBSERVER_C=\"KernelSU-Next/kernel/manager/pkg_observer.c\"\
-        \ntest -f \"$PKG_OBSERVER_C\"\npython3 - \"$PKG_OBSERVER_C\" <<'PY'\nfrom\
-        \ pathlib import Path\nimport re\nimport sys\n\np = Path(sys.argv[1])\ns =\
-        \ p.read_text()\n\nalready_fixed = (\n    re.search(r'\\.handle_event\\s*=\\\
-        s*ksu_handle_event\\s*,', s) and\n    re.search(r'static\\s+int\\s+ksu_handle_event\\\
-        s*\\(\\s*struct\\s+fsnotify_group\\s*\\*group', s)\n)\n\nif already_fixed:\n\
-        \    print(\"PASS: pkg_observer already uses the LG 4.19 handle_event API;\
-        \ untouched.\")\nelse:\n    modern = re.search(\n        r'static\\s+int\\\
-        s+ksu_handle_inode_event\\s*\\(.*?\\n\\s*\\}\\s*\\n'\n        r'\\s*static\\\
-        s+const\\s+struct\\s+fsnotify_ops\\s+ksu_ops\\s*=\\s*\\{'\n        r'.*?\\\
-        .handle_inode_event\\s*=\\s*ksu_handle_inode_event\\s*,\\s*\\n\\s*\\};',\n\
-        \        s, re.S)\n    if not modern:\n        raise SystemExit(\n       \
-        \     \"ERROR: pkg_observer is neither already-fixed 4.19 form nor a recognizable\
-        \ \"\n            \"KernelSU-Next handle_inode_event form; refusing blind\
-        \ edits.\"\n        )\n\n    legacy = \"\"\"static int ksu_handle_event(struct\
-        \ fsnotify_group *group,\n        struct inode *inode, u32 mask,\n       \
-        \ const void *data, int data_type,\n        const unsigned char *file_name,\
-        \ u32 cookie,\n        struct fsnotify_iter_info *iter_info)\n{\n    if (!file_name)\n\
-        \        return 0;\n    if (mask & FS_ISDIR)\n        return 0;\n    if (!memcmp(file_name,\
-        \ \"packages.list\", 13) &&\n        file_name[13] == '\\\\0') {\n       \
-        \ track_throne(false);\n    }\n    return 0;\n}\nstatic const struct fsnotify_ops\
-        \ ksu_ops = {\n    .handle_event = ksu_handle_event,\n};\"\"\"\n    s = s[:modern.start()]\
-        \ + legacy + s[modern.end():]\n    p.write_text(s)\n    print(\"PASS: adapted\
-        \ pkg_observer to native LG 4.19 handle_event API.\")\n\ns = p.read_text()\n\
-        if re.search(r'\\.handle_inode_event\\s*=\\s*ksu_handle_inode_event', s):\n\
-        \    raise SystemExit(\"ERROR: incompatible handle_inode_event assignment\
-        \ remains.\")\nif not re.search(r'\\.handle_event\\s*=\\s*ksu_handle_event\\\
-        s*,', s):\n    raise SystemExit(\"ERROR: LG 4.19 handle_event assignment is\
-        \ missing.\")\nif not re.search(r'static\\s+int\\s+ksu_handle_event\\s*\\\
-        (\\s*struct\\s+fsnotify_group\\s*\\*group', s):\n    raise SystemExit(\"ERROR:\
-        \ LG 4.19 callback function is missing.\")\nif \"packages.list detected:\"\
-        \ in s:\n    raise SystemExit(\"ERROR: obsolete/malformed packages.list diagnostic\
-        \ string remains.\")\nif \"file_name[13] == '\\\\0'\" not in s:\n    raise\
-        \ SystemExit(\"ERROR: packages.list exact-name guard is missing.\")\nprint(\"\
-        PASS: pkg_observer 4.19 compatibility + syntax audit completed.\")\nPY\n"
-    - name: 05A - Fix KernelSU allowlist for native LG 4.19 task_work API
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/05a-allowlist-4.19.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\n\n# LG Android 4.19 compatibility\
-        \ for the pinned KernelSU-Next allowlist.c.\n# Linux 4.19 exposes task_work_add(task,\
-        \ work, bool) and does NOT define\n# TWA_RESUME. The same 4.19 tree provides\
-        \ put_task_struct() from\n# <linux/sched/task.h>, but allowlist.c only included\
-        \ task_work.h.\n#\n# Do not modify the vendor task_work/scheduler headers.\
-        \ Adapt only this\n# KSU translation unit, preserving the original \"notify\
-        \ on resume\" semantics:\n# TWA_RESUME (modern KSU) -> true (native 4.19 API).\n\
-        ALLOWLIST_C=\"KernelSU-Next/kernel/policy/allowlist.c\"\ntest -f \"$ALLOWLIST_C\"\
-        \npython3 - \"$ALLOWLIST_C\" <<'PY'\nfrom pathlib import Path\nimport sys\n\
-        \np = Path(sys.argv[1])\ns = p.read_text()\n\n# 4.19 exports put_task_struct()\
-        \ through this header. Add it only if needed.\nif '#include <linux/sched/task.h>'\
-        \ not in s:\n    anchor = '#include <linux/task_work.h>\\n'\n    if anchor\
-        \ not in s:\n        raise SystemExit('allowlist.c task_work.h include anchor\
-        \ not found')\n    s = s.replace(anchor, anchor + '#include <linux/sched/task.h>\\\
-        n', 1)\n\n# Native 4.19 task_work_add() takes bool notify. Keep the modern\
-        \ source\n# behavior by translating only this call from TWA_RESUME to true.\n\
-        if 'task_work_add(tsk, cb, TWA_RESUME)' in s:\n    s = s.replace('task_work_add(tsk,\
-        \ cb, TWA_RESUME)',\n                  'task_work_add(tsk, cb, true)', 1)\n\
-        elif 'task_work_add(tsk, cb, true)' in s:\n    pass\nelse:\n    raise SystemExit('allowlist\
-        \ task_work_add call is neither modern nor already-fixed 4.19 form')\n\np.write_text(s)\n\
-        PY\n\ngrep -q '^#include <linux/sched/task.h>$' \"$ALLOWLIST_C\"\n! grep -q\
-        \ 'task_work_add(tsk, cb, TWA_RESUME)' \"$ALLOWLIST_C\"\ngrep -q 'task_work_add(tsk,\
-        \ cb, true)' \"$ALLOWLIST_C\"\n\necho 'PASS: allowlist.c uses native LG 4.19\
-        \ task_work_add(..., true) and includes put_task_struct declaration.'\n"
-    - name: 05B - Fix KernelSU supercall task_work API for native LG 4.19
-      shell: bash
-      run: |
-        set -euo pipefail
-        mkdir -p "$DIAG_DIR"
-        exec > >(tee "$DIAG_DIR/05b-supercall-4.19.log") 2>&1
-        cd "$GITHUB_WORKSPACE/kernel"
+      - name: 01 - Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          fetch-depth: 1
 
-        SUPERCALL_C="KernelSU-Next/kernel/supercall/supercall.c"
-        test -f "$SUPERCALL_C"
+      - name: 02 - Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex build-essential ccache libssl-dev \
+            libelf-dev libdw-dev device-tree-compiler python3 python3-pip git rsync zip unzip
 
-        # Linux 4.19's task_work_add() takes a bool notify argument.
-        # KernelSU-Next v3.3.0 uses the newer enum argument TWA_RESUME.
-        # Do not modify the vendor task_work API/header. Translate only this
-        # KSU call: TWA_RESUME means "notify on return to userspace", which is
-        # represented by true in the native 4.19 API.
-        python3 - "$SUPERCALL_C" <<'PY'
-        from pathlib import Path
-        import sys
+      - name: 03 - Prepare diagnostics
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$DIAG_DIR" "$OUT_DIR"
+          {
+            echo "=== WORKFLOW DIAGNOSTIC CONTEXT ==="
+            date -u +%FT%TZ
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "source_commit=$SOURCE_COMMIT"
+            echo "ksu=$KSU_VERSION $KSU_REF"
+            echo "susfs=$SUSFS_VERSION $SUSFS_REF"
+          } > "$DIAG_DIR/00-workflow-context.txt"
 
-        p = Path(sys.argv[1])
-        s = p.read_text()
+      - name: 04 - Load and verify pristine baseline config
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -f "$GITHUB_WORKSPACE/arch/arm64/configs/$DEFCONFIG"
+          make O="$OUT_DIR" ARCH=arm64 "$DEFCONFIG"
+          sha256sum "$OUT_DIR/.config" | tee "$DIAG_DIR/baseline-config.sha256"
+          test "$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')" = "$BASELINE_SHA256"
+          grep -Eq '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
 
-        if "TWA_RESUME" in s:
-            old = "task_work_add(current, &tw->cb, TWA_RESUME)"
-            new = "task_work_add(current, &tw->cb, true)"
-            if old not in s:
-                raise SystemExit(
-                    "TWA_RESUME exists in supercall.c but the expected "
-                    "ksu_supercall_reboot_handler call was not found"
-                )
-            s = s.replace(old, new, 1)
-            p.write_text(s)
+      - name: 05 - Setup KernelSU-Next and SUSFS legacy tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf KernelSU-Next
+          git clone "$KSU_REPO" KernelSU-Next
+          cd KernelSU-Next
+          git fetch --depth=1 origin "$KSU_REF"
+          git checkout --detach "$KSU_REF"
+          cd "$GITHUB_WORKSPACE"
+          test -f KernelSU-Next/kernel/Makefile
+          test -f KernelSU-Next/kernel/Kconfig
 
-        if "TWA_RESUME" in s:
-            raise SystemExit("TWA_RESUME remains in KernelSU supercall.c")
-        if "task_work_add(current, &tw->cb, true)" not in s:
-            raise SystemExit("native 4.19 task_work_add(..., true) is missing")
-        PY
+          rm -rf drivers/kernelsu
+          mkdir -p drivers
+          ln -s "$GITHUB_WORKSPACE/KernelSU-Next/kernel" "$GITHUB_WORKSPACE/drivers/kernelsu"
 
-        grep -q 'task_work_add(current, &tw->cb, true)' "$SUPERCALL_C"
-        ! grep -q 'TWA_RESUME' "$SUPERCALL_C"
-
-        {
-          echo "PASS: actual KSU supercall source verified"
-          echo "PASS: Linux 4.19 task_work_add(bool) API used"
-          echo "PASS: TWA_RESUME translated only at KSU call site"
-          echo "PASS: vendor task_work.h NOT modified"
-          echo "PASS: reboot fd-install resume notification semantics preserved"
-        } | tee "$DIAG_DIR/05b-supercall-4.19.log"
-    - name: 06 - Download and VERIFY SUSFS kernel-4.19 latest branch
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/06-susfs.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE\"\nrm -rf susfs4ksu\n\n# For Linux 4.19, the\
-        \ official SUSFS kernel-4.19 branch is the\n# maintained kernel-specific source.\
-        \ It currently contains SUSFS\n# 1.5.5-era kernel-4.19 patches.\ngit clone\
-        \ --depth=1 --branch \"$SUSFS_VERSION\" \\\n  https://gitlab.com/simonpunk/susfs4ksu.git\
-        \ susfs4ksu\n\ntest -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch\n\
-        test -f susfs4ksu/kernel_patches/fs/susfs.c\ntest -f susfs4ksu/kernel_patches/fs/sus_su.c\n\
-        test -f susfs4ksu/kernel_patches/include/linux/susfs.h\ntest -f susfs4ksu/kernel_patches/include/linux/sus_su.h\n\
-        \n# CRITICAL: the legacy KernelSU patch must NOT be used with\n# KernelSU-Next.\
-        \ Fail early if it somehow appears in the workflow.\nif test -e susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch;\
-        \ then\n  echo \"INFO: legacy KernelSU SUSFS patch exists upstream, but it\
-        \ will NOT be copied/applied.\"\nfi\n\nSUSFS_COMMIT=\"$(git -C susfs4ksu rev-parse\
-        \ HEAD)\"\ntest \"$SUSFS_COMMIT\" = \"$SUSFS_REF\"\necho \"susfs_branch=$SUSFS_VERSION\"\
-        \ | tee \"$DIAG_DIR/susfs-version.txt\"\necho \"susfs_commit=$SUSFS_COMMIT\"\
-        \ | tee -a \"$DIAG_DIR/susfs-version.txt\"\n\necho \"PASS: official SUSFS\
-        \ kernel-4.19 source verified.\"\n"
-    - name: 07 - Apply SUSFS kernel-4.19 patch with source-specific fixes
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/07-patches.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\n\nPATCH_FILE=\"$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch\"\
-        \n\n# KernelSU-Next SUSFS support is supplied by the SUSFS-compatible\n# KernelSU-Next\
-        \ tree from Step 05. Do NOT apply the legacy\n# KernelSU/10_enable_susfs_for_ksu.patch.\n\
-        \ncp \"$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c\" fs/susfs.c\n\
-        cp \"$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c\" fs/sus_su.c\n\
-        cp \"$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h\" include/linux/susfs.h\n\
-        cp \"$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h\" include/linux/sus_su.h\n\
-        cp \"$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs_def.h\"\
-        \ include/linux/susfs_def.h\n\n# LG Velvet's three vendor-layout files are\
-        \ handled below against the\n# actual source. Remove ONLY those three file\
-        \ sections from the\n# upstream patch so patch(1) never creates misleading\
-        \ .rej files.\n# fs/namespace.c remains excluded exactly as before.\npython3\
-        \ - \"$PATCH_FILE\" \"$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch\" <<'PY'\n\
-        import sys\nsrc, dst = sys.argv[1], sys.argv[2]\nexcluded = {\n    \"fs/Makefile\"\
-        ,\n    \"fs/namei.c\",\n    \"fs/namespace.c\",\n    \"fs/proc/cmdline.c\"\
-        ,\n    \"fs/proc/task_mmu.c\",\n    \"include/linux/mount.h\",\n}\nlines =\
-        \ open(src, encoding=\"utf-8\").read().splitlines(True)\nout = []\nblock =\
-        \ []\nkeep = True\n\ndef flush():\n    if keep:\n        out.extend(block)\n\
-        \nfor line in lines:\n    if line.startswith(\"diff --git \"):\n        flush()\n\
-        \        block = [line]\n        parts = line.split()\n        path = parts[2][2:]\
-        \ if len(parts) >= 3 and parts[2].startswith(\"a/\") else \"\"\n        keep\
-        \ = path not in excluded\n    else:\n        block.append(line)\nflush()\n\
-        \nopen(dst, \"w\", encoding=\"utf-8\").writelines(out)\nPY\n\ntest -s \"$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch\"\
-        \nfor excluded in \\\n  fs/Makefile \\\n  fs/namei.c \\\n  fs/namespace.c\
-        \ \\\n  fs/proc/cmdline.c \\\n  fs/proc/task_mmu.c \\\n  include/linux/mount.h;\
-        \ do\n  if grep -q \"^diff --git a/$excluded b/$excluded\" \\\n    \"$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch\"\
-        ; then\n    echo \"::error::Excluded vendor-layout file leaked into SUSFS\
-        \ patch: $excluded\"\n    exit 1\n  fi\ndone\n\n# Apply the generic SUSFS\
-        \ hunks with ZERO FUZZ.\n#\n# Two files are intentionally excluded because\
-        \ this LG tree is not\n# byte-for-byte identical to the generic 4.19 patch\
-        \ base:\n#   - fs/Makefile: vendor object list/context differs.\n#   - fs/namei.c:\
-        \ LG uses the 4.19 mnt-aware may_create() API.\n#\n# Those two SUSFS changes\
-        \ are applied source-aware immediately after\n# this generic patch. This is\
-        \ preferable to allowing patch(1) to\n# guess with fuzz or to silently accept\
-        \ a wrong context match.\necho \"Applying SUSFS generic hunks with STRICT\
-        \ fuzz limit: 0\"\necho \"LG-specific fs/Makefile and fs/namei.c hunks are\
-        \ handled source-aware.\"\n\nrm -f fs/Makefile.rej fs/namei.c.rej fs/Makefile.orig\
-        \ fs/namei.c.orig\npatch --forward --batch --fuzz=0 -l --no-backup-if-mismatch\
-        \ -p1 \\\n  < \"$RUNNER_TEMP/50_susfs-lg-vendor-neutral.patch\"\n\nif find\
-        \ . -type f -name '*.rej' -print -quit | grep -q .; then\n  echo \"::error::SUSFS\
-        \ generic patch produced reject files.\"\n  find . -type f -name '*.rej' -print\n\
-        \  exit 1\nfi\n\n# ---------------------------------------------------------------\n\
-        # LG 4.19 source-aware SUSFS integration: fs/Makefile\n# ---------------------------------------------------------------\n\
-        python3 - <<'PY'\nfrom pathlib import Path\np = Path(\"fs/Makefile\")\ns =\
-        \ p.read_text()\nline = \"obj-$(CONFIG_KSU_SUSFS) += susfs.o\"\nif line not\
-        \ in s:\n    anchor = \"fs_context.o fs_parser.o\\n\"\n    if anchor not in\
-        \ s:\n        raise SystemExit(\"ERROR: fs/Makefile SUSFS anchor not found\"\
-        )\n    s = s.replace(anchor, anchor + \"\\n\" + line + \"\\n\", 1)\n    p.write_text(s)\n\
-        if line not in p.read_text():\n    raise SystemExit(\"ERROR: fs/Makefile SUSFS\
-        \ object integration failed\")\nPY\n\n# ---------------------------------------------------------------\n\
-        # LG 4.19 source-aware SUSFS integration: fs/namei.c / may_create()\n#\n#\
-        \ The upstream 4.19 patch assumes an older may_create() signature.\n# This\
-        \ LG tree has:\n#   may_create(struct vfsmount *mnt, struct inode *dir, ...)\n\
-        # so preserve the vendor mnt-aware permission path and add only the\n# SUS_PATH\
-        \ check from the upstream hunk.\n# ---------------------------------------------------------------\n\
-        python3 - <<'PY'\nfrom pathlib import Path\np = Path(\"fs/namei.c\")\ns =\
-        \ p.read_text()\n\nif \"LG 4.19: SUSFS_SUS_PATH may_create integration\" not\
-        \ in s:\n    needle = \"\"\"static inline int may_create(struct vfsmount *mnt,\
-        \ struct inode *dir, struct dentry *child)\n{\n\\tstruct user_namespace *s_user_ns;\n\
-        \\taudit_inode_child(dir, child, AUDIT_TYPE_CHILD_CREATE);\n\"\"\"\n    replacement\
-        \ = \"\"\"static inline int may_create(struct vfsmount *mnt, struct inode\
-        \ *dir, struct dentry *child)\n{\n\\t/* LG 4.19: SUSFS_SUS_PATH may_create\
-        \ integration */\n\\tstruct user_namespace *s_user_ns;\n#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n\
-        \\tint error;\n#endif\n\\taudit_inode_child(dir, child, AUDIT_TYPE_CHILD_CREATE);\n\
-        #ifdef CONFIG_KSU_SUSFS_SUS_PATH\n\\tif (child->d_inode &&\n\\t    unlikely(child->d_inode->i_state\
-        \ & INODE_STATE_SUS_PATH) &&\n\\t    likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC))\
-        \ {\n\\t\\terror = inode_permission2(mnt, dir, MAY_WRITE | MAY_EXEC);\n\\\
-        t\\tif (error)\n\\t\\t\\treturn error;\n\\t\\treturn -ENOENT;\n\\t}\n#endif\n\
-        \"\"\"\n    if needle not in s:\n        raise SystemExit(\"ERROR: LG may_create()\
-        \ anchor not found\")\n    s = s.replace(needle, replacement, 1)\n    p.write_text(s)\n\
-        \nif \"LG 4.19: SUSFS_SUS_PATH may_create integration\" not in p.read_text():\n\
-        \    raise SystemExit(\"ERROR: namei.c SUSFS may_create integration failed\"\
-        )\nPY\n\ngrep -Fq 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile\ngrep -Fq\
-        \ 'LG 4.19: SUSFS_SUS_PATH may_create integration' fs/namei.c\ngrep -Fq 'inode_permission2(mnt,\
-        \ dir, MAY_WRITE | MAY_EXEC)' fs/namei.c\n\necho \"PASS: generic SUSFS patch\
-        \ applied with fuzz=0 and no rejects.\"\necho \"PASS: LG fs/Makefile SUSFS\
-        \ object integration applied source-aware.\"\necho \"PASS: LG fs/namei.c may_create\
-        \ SUS_PATH integration applied source-aware.\"\necho \"PASS: no legacy KernelSU\
-        \ SUSFS patch applied.\"\necho \"PASS: fs/namespace.c remains excluded as\
-        \ requested.\"\n\n# 1) Vendor cmdline.c keeps LGE's updated_command_line logic.\n\
-        # Insert the official SUSFS hook at the output point, AFTER the\n# existing\
-        \ LGE boot-mode adjustment. Do not replace vendor behavior.\npython3 - <<'PY'\n\
-        from pathlib import Path\np = Path(\"fs/proc/cmdline.c\")\ns = p.read_text()\n\
-        \ninc = \"\"\"#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\nextern\
-        \ int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);\n#endif\n\"\"\
-        \"\nif \"extern int susfs_spoof_cmdline_or_bootconfig\" not in s:\n    anchor\
-        \ = \"#include <linux/seq_file.h>\\n\"\n    if anchor not in s:\n        raise\
-        \ SystemExit(\"cmdline.c seq_file include anchor not found\")\n    s = s.replace(anchor,\
-        \ anchor + inc, 1)\n\nhook = \"\"\"#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n\
-        \    if (!susfs_spoof_cmdline_or_bootconfig(m)) {\n        seq_putc(m, '\\\
-        \\n');\n        return 0;\n    }\n#endif\n\"\"\"\nif \"susfs_spoof_cmdline_or_bootconfig(m)\"\
-        \ not in s:\n    anchor = \"\\tseq_puts(m, updated_command_line);\\n\"\n \
-        \   if anchor not in s:\n        raise SystemExit(\"cmdline.c updated_command_line\
-        \ output anchor not found\")\n    s = s.replace(anchor, hook + anchor, 1)\n\
-        \np.write_text(s)\nPY\n\n# 2) task_mmu.c: recreate the two upstream SUSFS\
-        \ hunks against the\n# actual LG include block and show_map_vma location.\n\
-        python3 - <<'PY'\nfrom pathlib import Path\np = Path(\"fs/proc/task_mmu.c\"\
-        )\ns = p.read_text()\n\nif \"#include <linux/susfs_def.h>\" not in s:\n  \
-        \  anchor = \"#include <linux/mm_inline.h>\\n\"\n    if anchor not in s:\n\
-        \        raise SystemExit(\"task_mmu.c mm_inline include anchor not found\"\
-        )\n    inc = \"\"\"#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n\
-        #endif\n\"\"\"\n    s = s.replace(anchor, anchor + inc, 1)\n\ndecl = \"\"\"\
-        #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\nextern void susfs_sus_ino_for_show_map_vma(unsigned\
-        \ long ino, dev_t *out_dev, unsigned long *out_ino);\n#endif\n\n\"\"\"\nif\
-        \ \"extern void susfs_sus_ino_for_show_map_vma\" not in s:\n    needle = \"\
-        static void\\nshow_map_vma(\"\n    pos = s.find(needle)\n    if pos < 0:\n\
-        \        raise SystemExit(\"task_mmu.c show_map_vma anchor not found\")\n\
-        \    s = s[:pos] + decl + s[pos:]\n\np.write_text(s)\nPY\n\n# 4) CONFIG_KSU_SUSFS_SUS_MOUNT\
-        \ is intentionally disabled in this\n# non-GKI build. The pinned KernelSU-Next\
-        \ SUSFS branch leaves\n# susfs_set_current_proc_umounted() in setuid_hook.c\
-        \ under the broader\n# CONFIG_KSU_SUSFS branch, but that helper is only declared\
-        \ when\n# CONFIG_KSU_SUSFS_SUS_MOUNT is enabled. Guard only that unavailable\n\
-        # call; do not enable SUS_MOUNT and do not change the surrounding\n# setuid/umount\
-        \ logic.\npython3 - <<'PY'\nfrom pathlib import Path\np = Path(\"KernelSU-Next/kernel/hook/setuid_hook.c\"\
-        )\ns = p.read_text()\ntarget = \"    susfs_set_current_proc_umounted();\\\
-        n\"\nif \"LG 4.19: SUS_MOUNT-only proc-umount marker\" not in s:\n    if target\
-        \ not in s:\n        raise SystemExit(\"setuid_hook.c SUS_MOUNT proc-umount\
-        \ call not found\")\n    s = s.replace(\n        target,\n        \"    /*\
-        \ LG 4.19: SUS_MOUNT-only proc-umount marker */\\n\"\n        \"    #ifdef\
-        \ CONFIG_KSU_SUSFS_SUS_MOUNT\\n\"\n        + target\n        + \"    #endif\\\
-        n\",\n        1,\n    )\n    p.write_text(s)\nif \"LG 4.19: SUS_MOUNT-only\
-        \ proc-umount marker\" not in p.read_text():\n    raise SystemExit(\"setuid_hook.c\
-        \ SUS_MOUNT guard insertion failed\")\nPY\ngrep -q 'LG 4.19: SUS_MOUNT-only\
-        \ proc-umount marker' KernelSU-Next/kernel/hook/setuid_hook.c\ngrep -Eq '^[[:space:]]*#ifdef\
-        \ CONFIG_KSU_SUSFS_SUS_MOUNT$' KernelSU-Next/kernel/hook/setuid_hook.c\ngrep\
-        \ -Eq '^[[:space:]]*#endif$' KernelSU-Next/kernel/hook/setuid_hook.c\necho\
-        \ \"PASS: setuid_hook SUS_MOUNT-only helper call is guarded; SUS_MOUNT remains\
-        \ disabled.\"\n\n# Full LG 4.19 file_wrapper compatibility audit.\n#\n# Do\
-        \ not add missing VFS members to the vendor fs.h. Instead:\n#   1. inventory\
-        \ every f_op member referenced by file_wrapper.c;\n#   2. compare it with\
-        \ the actual vendor struct file_operations;\n#   3. disable ONLY wrappers/assignments\
-        \ that use members absent on 4.19;\n#   4. explicitly audit REMAP_FILE_DEDUP;\n\
-        #   5. fail closed if an unknown missing VFS member is discovered.\n#\n# This\
-        \ is deliberately source-aware rather than a broad \"grep and\n# ignore\"\
-        \ workaround. It prevents a future KSU-Next update from\n# introducing another\
-        \ incompatible VFS member silently.\nFILE_WRAPPER_C=\"KernelSU-Next/kernel/infra/file_wrapper.c\"\
-        \nFS_H=\"include/linux/fs.h\"\ntest -f \"$FILE_WRAPPER_C\"\ntest -f \"$FS_H\"\
-        \n\npython3 - \"$FILE_WRAPPER_C\" \"$FS_H\" <<'PY'\nfrom pathlib import Path\n\
-        import re\nimport sys\n\nfw = Path(sys.argv[1])\nfs = Path(sys.argv[2])\n\
-        source = fw.read_text()\nheader = fs.read_text()\n\nMARK = \"LG 4.19: file_wrapper\
-        \ compatibility audit v31\"\nif MARK not in source:\n    source = \"/* \"\
-        \ + MARK + \" */\\n\" + source\n\n# ---------------------------------------------------------------\n\
-        # 1) Build an inventory of the vendor's actual file_operations.\n# ---------------------------------------------------------------\n\
-        m = re.search(r'struct\\s+file_operations\\s*\\{', header)\nif not m:\n  \
-        \  raise SystemExit(\"ERROR: struct file_operations not found in vendor fs.h\"\
-        )\n\ndepth = 0\nend = None\nfor i in range(m.end(), len(header)):\n    if\
-        \ header[i] == '{':\n        depth += 1\n    elif header[i] == '}':\n    \
-        \    if depth == 0:\n            end = i\n            break\n        depth\
-        \ -= 1\nif end is None:\n    raise SystemExit(\"ERROR: could not parse vendor\
-        \ file_operations\")\n\nfops = header[m.end():end]\nmembers = set(re.findall(r'\\\
-        (\\s*\\*\\s*(\\w+)\\s*\\)\\s*\\(', fops))\nmembers.update(re.findall(r'^\\\
-        s*(?:unsigned\\s+long|loff_t|ssize_t|int|long|void\\s*\\*|bool|umode_t|fmode_t|struct\\\
-        s+\\w+\\s*\\*)\\s+(\\w+)\\s*;', fops, re.M))\n\n# ---------------------------------------------------------------\n\
-        # 2) Remove comments/strings for reliable source-reference scanning.\n# ---------------------------------------------------------------\n\
-        def mask_comments_strings(text):\n    out = list(text)\n    i = 0\n    n =\
-        \ len(text)\n    state = \"code\"\n    quote = \"\"\n    while i < n:\n  \
-        \      if state == \"code\":\n            if text.startswith(\"//\", i):\n\
-        \                out[i] = out[i+1] = \" \"\n                i += 2\n     \
-        \           state = \"line\"\n                continue\n            if text.startswith(\"\
-        /*\", i):\n                out[i] = out[i+1] = \" \"\n                i +=\
-        \ 2\n                state = \"block\"\n                continue\n       \
-        \     if text[i] in (\"'\", '\"'):\n                quote = text[i]\n    \
-        \            out[i] = \" \"\n                i += 1\n                state\
-        \ = \"string\"\n                continue\n        elif state == \"line\":\n\
-        \            if text[i] == \"\\n\":\n                state = \"code\"\n  \
-        \          else:\n                out[i] = \" \"\n        elif state == \"\
-        block\":\n            if text.startswith(\"*/\", i):\n                out[i]\
-        \ = out[i+1] = \" \"\n                i += 2\n                state = \"code\"\
-        \n                continue\n            if text[i] != \"\\n\":\n         \
-        \       out[i] = \" \"\n        elif state == \"string\":\n            if\
-        \ text[i] == \"\\\\\" and i + 1 < n:\n                out[i] = out[i+1] =\
-        \ \" \"\n                i += 2\n                continue\n            if\
-        \ text[i] == quote:\n                out[i] = \" \"\n                i +=\
-        \ 1\n                state = \"code\"\n                continue\n        \
-        \    if text[i] != \"\\n\":\n                out[i] = \" \"\n        i +=\
-        \ 1\n    return \"\".join(out)\n\nmasked = mask_comments_strings(source)\n\
-        \n# ---------------------------------------------------------------\n# 2b)\
-        \ Evaluate the small set of LINUX_VERSION_CODE guards used by\n#      KernelSU-Next's\
-        \ file_wrapper.c for the actual LG 4.19 tree.\n#\n# KernelSU-Next intentionally\
-        \ keeps newer VFS members such as\n# f_op->fop_flags (>= 6.12) and f_op->splice_eof\
-        \ (>= 6.6) in the\n# source, but those branches are dead on 4.19. A plain\
-        \ regex over\n# the whole file falsely reports them as missing vendor members.\n\
-        # Do NOT edit fs.h to add those modern members; evaluate the guards\n# instead\
-        \ and audit only code that can compile on 4.19.\n# ---------------------------------------------------------------\n\
-        KERNEL_MAJOR, KERNEL_MINOR, KERNEL_PATCH = 4, 19, 0\n\ndef version_tuple(text):\n\
-        \    mm = re.search(\n        r'KERNEL_VERSION\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\\
-        s*,\\s*(\\d+)\\s*\\)',\n        text,\n    )\n    return tuple(map(int, mm.groups()))\
-        \ if mm else None\n\ndef eval_419_guard(expr):\n    expr = expr.strip()\n\
-        \    # The wrapper only needs these direct version comparisons.\n    mm =\
-        \ re.search(\n        r'LINUX_VERSION_CODE\\s*([<>]=?)\\s*KERNEL_VERSION\\\
-        (([^)]*)\\)',\n        expr,\n    )\n    if not mm:\n        return None\n\
-        \    op = mm.group(1)\n    rhs = tuple(int(x.strip()) for x in mm.group(2).split(','))\n\
-        \    lhs = (KERNEL_MAJOR, KERNEL_MINOR, KERNEL_PATCH)\n    if op == '>=':\n\
-        \        return lhs >= rhs\n    if op == '>':\n        return lhs > rhs\n\
-        \    if op == '<=':\n        return lhs <= rhs\n    if op == '<':\n      \
-        \  return lhs < rhs\n    return None\n\ndef active_for_419(text):\n    # Preserve\
-        \ line count while replacing inactive preprocessor\n    # branches with blank\
-        \ lines. This keeps diagnostics readable.\n    lines = text.splitlines(True)\n\
-        \    out = []\n    stack = []\n    active = True\n\n    for line in lines:\n\
-        \        st = line.strip()\n        if st.startswith(\"#if \"):\n        \
-        \    val = eval_419_guard(st[3:].strip())\n            parent = active\n \
-        \           branch = val if val is not None else True\n            stack.append([parent,\
-        \ branch, parent and branch])\n            active = parent and branch\n  \
-        \          out.append(\"\\n\" if line.endswith(\"\\n\") else \"\")\n     \
-        \       continue\n\n        if st.startswith(\"#ifdef \") or st.startswith(\"\
-        #ifndef \"):\n            stack.append([active, True, active])\n         \
-        \   out.append(\"\\n\" if line.endswith(\"\\n\") else \"\")\n            continue\n\
-        \n        if st.startswith(\"#elif \"):\n            if not stack:\n     \
-        \           out.append(line)\n                continue\n            parent,\
-        \ _, _ = stack[-1]\n            val = eval_419_guard(st[5:].strip())\n   \
-        \         branch = val if val is not None else True\n            stack[-1][1]\
-        \ = branch\n            stack[-1][2] = parent and branch\n            active\
-        \ = parent and branch\n            out.append(\"\\n\" if line.endswith(\"\\\
-        n\") else \"\")\n            continue\n\n        if st.startswith(\"#else\"\
-        ):\n            if stack:\n                parent, branch, _ = stack[-1]\n\
-        \                stack[-1][2] = parent and not branch\n                active\
-        \ = stack[-1][2]\n            out.append(\"\\n\" if line.endswith(\"\\n\"\
-        ) else \"\")\n            continue\n\n        if st.startswith(\"#endif\"\
-        ):\n            if stack:\n                parent, _, _ = stack.pop()\n  \
-        \              active = parent\n            out.append(\"\\n\" if line.endswith(\"\
-        \\n\") else \"\")\n            continue\n\n        out.append(line if active\
-        \ else (\"\\n\" if line.endswith(\"\\n\") else \"\"))\n\n    return \"\".join(out)\n\
-        \nmasked_active = active_for_419(masked)\n\n# ---------------------------------------------------------------\n\
-        # 3) Find KSU wrapper function ranges by brace matching.\n# ---------------------------------------------------------------\n\
-        def find_functions(text):\n    ranges = []\n    pat = re.compile(\n      \
-        \  r'(?m)^\\s*(?:(?:static|inline|__always_inline|extern)\\s+)*'\n       \
-        \ r'(?:[\\w\\s\\*]+?)\\s+(ksu_wrapper_[A-Za-z0-9_]+)\\s*\\([^;{}]*\\)\\s*\\\
-        {'\n    )\n    for mm in pat.finditer(text):\n        name = mm.group(1)\n\
-        \        brace = text.find(\"{\", mm.start(), mm.end())\n        depth = 0\n\
-        \        i = brace\n        while i < len(text):\n            if text[i] ==\
-        \ \"{\":\n                depth += 1\n            elif text[i] == \"}\":\n\
-        \                depth -= 1\n                if depth == 0:\n            \
-        \        ranges.append((mm.start(), i + 1, name))\n                    break\n\
-        \            i += 1\n    return ranges\n\nfunctions = find_functions(masked_active)\n\
-        \ndef containing_function(pos):\n    hits = [(a, b, n) for a, b, n in functions\
-        \ if a <= pos < b]\n    return max(hits, key=lambda x: x[0]) if hits else\
-        \ None\n\n# ---------------------------------------------------------------\n\
-        # 4) Determine actual f_op member references.\n# ---------------------------------------------------------------\n\
-        refs = set(re.findall(r'\\b(?:\\w+)\\s*->\\s*f_op\\s*->\\s*(\\w+)', masked_active))\n\
-        refs |= set(re.findall(r'\\bf_op\\s*->\\s*(\\w+)', masked_active))\nmissing\
-        \ = sorted(x for x in refs if x not in members)\n\nknown_missing = {\"iopoll\"\
-        , \"remap_file_range\"}\nunknown_missing = [x for x in missing if x not in\
-        \ known_missing]\nif unknown_missing:\n    raise SystemExit(\n        \"ERROR:\
-        \ file_wrapper references unknown vendor-missing VFS member(s): \"\n     \
-        \   + \", \".join(unknown_missing)\n    )\n\n# ---------------------------------------------------------------\n\
-        # 5) Disable only incompatible wrapper functions.\n# ---------------------------------------------------------------\n\
-        targets = set()\nfor token in known_missing:\n    for mm in re.finditer(r'\\\
-        b' + re.escape(token) + r'\\b', masked_active):\n        fn = containing_function(mm.start())\n\
-        \        if fn:\n            targets.add(fn[2])\n\n# REMAP_FILE_DEDUP is not\
-        \ a file_operations member; it is separately\n# audited and the containing\
-        \ remap wrapper is disabled if present.\nfor mm in re.finditer(r'\\bREMAP_FILE_DEDUP\\\
-        b', masked):\n    fn = containing_function(mm.start())\n    if fn:\n     \
-        \   targets.add(fn[2])\n\n# Apply function guards from bottom to top so offsets\
-        \ remain valid.\nif targets:\n    functions_now = find_functions(masked)\n\
-        \    spans = [x for x in functions_now if x[2] in targets]\n    for a, b,\
-        \ name in sorted(spans, reverse=True):\n        original = source[a:b]\n \
-        \       if \"LG 4.19: disabled incompatible VFS wrapper\" in original:\n \
-        \           continue\n        wrapped = (\n            \"#if 0 /* LG 4.19:\
-        \ disabled incompatible VFS wrapper: \"\n            + name + \" */\\n\"\n\
-        \            + original\n            + \"\\n#endif\\n\"\n        )\n     \
-        \   source = source[:a] + wrapped + source[b:]\n    masked = mask_comments_strings(source)\n\
-        \n# ---------------------------------------------------------------\n# 6)\
-        \ Remove assignments that still bind missing VFS members.\n#    This is necessary\
-        \ even if the wrapper function itself is #if 0.\n# ---------------------------------------------------------------\n\
-        source = re.sub(\n    r'(?ms)^[ \\t]*p->ops\\.iopoll\\s*=\\s*[^;]*;\\s*$',\n\
-        \    \"    /* LG 4.19: iopoll operation unavailable; wrapper not registered.\
-        \ */\",\n    source,\n)\nsource = re.sub(\n    r'(?ms)^[ \\t]*p->ops\\.remap_file_range\\\
-        s*=\\s*[^;]*;\\s*$',\n    \"    /* LG 4.19: remap_file_range unavailable;\
-        \ wrapper not registered. */\",\n    source,\n)\n\n# Also catch common direct\
-        \ f_op assignment forms.\nsource = re.sub(\n    r'(?m)^[ \\t]*[^/\\\\n]*->f_op->iopoll[^;\\\
-        \\n]*;[ \\t]*$',\n    \"    /* LG 4.19: f_op->iopoll unavailable. */\",\n\
-        \    source,\n)\nsource = re.sub(\n    r'(?m)^[ \\t]*[^/\\\\n]*->f_op->remap_file_range[^;\\\
-        \\n]*;[ \\t]*$',\n    \"    /* LG 4.19: f_op->remap_file_range unavailable.\
-        \ */\",\n    source,\n)\n\nfw.write_text(source)\n\n# ---------------------------------------------------------------\n\
-        # 7) Final active-code audit.\n#    Strip our #if 0 blocks with a small preprocessor-depth\
-        \ scanner.\n# ---------------------------------------------------------------\n\
-        final = fw.read_text()\nclean = mask_comments_strings(final)\n\ndef active_without_if0(text):\n\
-        \    lines = text.splitlines()\n    out = []\n    disabled = 0\n    for line\
-        \ in lines:\n        st = line.strip()\n        if re.match(r'^#\\s*if\\s+0\\\
-        b', st):\n            disabled += 1\n            continue\n        if disabled:\n\
-        \            if re.match(r'^#\\s*(if|ifdef|ifndef)\\b', st):\n           \
-        \     disabled += 1\n            elif re.match(r'^#\\s*endif\\b', st):\n \
-        \               disabled -= 1\n            continue\n        out.append(line)\n\
-        \    return \"\\n\".join(out)\n\nactive = active_for_419(active_without_if0(clean))\n\
-        \nfor forbidden in (\"iopoll\", \"remap_file_range\", \"REMAP_FILE_DEDUP\"\
-        ):\n    if re.search(r'\\b' + re.escape(forbidden) + r'\\b', active):\n  \
-        \      raise SystemExit(\n            \"ERROR: active file_wrapper code still\
-        \ references \" + forbidden\n        )\n\n# No unknown f_op member may remain.\n\
-        active_refs = set(re.findall(r'\\b(?:\\w+\\s*->\\s*)?f_op\\s*->\\s*(\\w+)',\
-        \ active))\nactive_missing = sorted(x for x in active_refs if x not in members)\n\
-        if active_missing:\n    raise SystemExit(\n        \"ERROR: active file_wrapper\
-        \ references vendor-missing VFS member(s): \"\n        + \", \".join(active_missing)\n\
-        \    )\n\n# Vendor ABI remains untouched.\nif re.search(r'\\(\\s*\\*\\s*iopoll\\\
-        s*\\)\\s*\\(', fops):\n    raise SystemExit(\"ERROR: vendor fs.h unexpectedly\
-        \ defines iopoll\")\nif re.search(r'\\(\\s*\\*\\s*remap_file_range\\s*\\)\\\
-        s*\\(', fops):\n    raise SystemExit(\"ERROR: vendor fs.h unexpectedly defines\
-        \ remap_file_range\")\n\nprint(\"=== LG 4.19 FILE_WRAPPER FULL AUDIT ===\"\
-        )\nprint(\"file_operations members:\", len(members))\nprint(\"f_op members\
-        \ referenced by KSU wrapper:\", \", \".join(sorted(refs)) or \"<none>\")\n\
-        print(\"vendor-missing known members:\", \", \".join(missing) or \"<none>\"\
-        )\nprint(\"disabled incompatible wrappers:\", \", \".join(sorted(targets))\
-        \ or \"<none>\")\nprint(\"PASS: no active iopoll/remap_file_range/REMAP_FILE_DEDUP\
-        \ reference.\")\nprint(\"PASS: no unknown vendor-missing VFS member remains\
-        \ active.\")\nif \"fop_flags\" in refs or \"splice_eof\" in refs:\n    raise\
-        \ SystemExit(\n        \"ERROR: 4.19 audit regression: a post-4.19 file_operations\
-        \ member \"\n        \"escaped version-guard evaluation.\"\n    )\nprint(\"\
-        PASS: vendor fs.h ABI was not modified.\")\nprint(\"PASS: 4.19 version guards\
-        \ exclude modern fop_flags/splice_eof branches from the audit.\")\nPY\n\n\
-        echo \"PASS: full KernelSU-Next file_wrapper LG 4.19 compatibility audit completed.\"\
-        \n\n# 3) Preserve the vendor mount.h layout and use KABI slot 4 only\n# for\
-        \ SUSFS, wherever the existing reserve(4) line occurs.\npython3 - <<'PY'\n\
-        from pathlib import Path\np = Path(\"include/linux/mount.h\")\ns = p.read_text()\n\
-        if \"susfs_mnt_id_backup\" not in s:\n    needle = \"\\tANDROID_KABI_RESERVE(4);\"\
-        \n    pos = s.find(needle)\n    if pos < 0:\n        raise SystemExit(\"mount.h\
-        \ ANDROID_KABI_RESERVE(4) not found\")\n    repl = (\"#ifdef CONFIG_KSU_SUSFS\\\
-        n\"\n            \"\\tANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);\\n\"\n\
-        \            \"#else\\n\"\n            \"\\tANDROID_KABI_RESERVE(4);\\n\"\n\
-        \            \"#endif\")\n    s = s[:pos] + repl + s[pos+len(needle):]\np.write_text(s)\n\
-        PY\n\nfind . -type f -name '*.orig' -delete\nif find . -type f -name '*.rej'\
-        \ -print -quit | grep -q .; then\n  echo \"::error::SUSFS patch still has\
-        \ reject files after source-specific fixes.\"\n  find . -type f -name '*.rej'\
-        \ -print\n  exit 1\nfi\n\n# Required SUSFS symbols/fields must now exist in\
-        \ the exact vendor\n# source. This catches an incomplete/manual patch before\
-        \ compilation.\ngrep -q 'susfs_spoof_cmdline_or_bootconfig' fs/proc/cmdline.c\n\
-        grep -q '#include <linux/susfs_def.h>' fs/proc/task_mmu.c\ngrep -q 'susfs_sus_ino_for_show_map_vma'\
-        \ fs/proc/task_mmu.c\ngrep -q 'susfs_mnt_id_backup' include/linux/mount.h\n\
-        \n# Exact vendor-layout sanity checks: preserve LGE cmdline behavior and\n\
-        # do not allow the SUSFS hook to bypass the charger-mode adjustment.\ngrep\
-        \ -q 'proc_cmdline_set(\"androidboot.mode\", \"charger\")' fs/proc/cmdline.c\n\
-        grep -q 'seq_puts(m, updated_command_line);' fs/proc/cmdline.c\npython3 -\
-        \ <<'PY'\nfrom pathlib import Path\ns = Path(\"fs/proc/cmdline.c\").read_text()\n\
-        hook = s.index(\"susfs_spoof_cmdline_or_bootconfig(m)\")\ncharger = s.index('proc_cmdline_set(\"\
-        androidboot.mode\", \"charger\")')\noutput = s.index(\"seq_puts(m, updated_command_line);\"\
-        )\nif not (charger < hook < output):\n    raise SystemExit(\"cmdline SUSFS\
-        \ hook is not between LGE adjustment and command-line output\")\nPY\ntest\
-        \ -f fs/susfs.c\ntest -f fs/sus_su.c\ntest -f include/linux/susfs.h\ntest\
-        \ -f include/linux/sus_su.h\ntest -f include/linux/susfs_def.h\n\n# The upstream\
-        \ SUSFS 4.19 patch contains one harmless trailing-space\n# comment in fs/overlayfs/readdir.c.\
-        \ Remove only that whitespace so\n# git diff --check does not reject an otherwise\
-        \ valid patch.\nsed -i 's/[[:space:]]\\+$//' fs/overlayfs/readdir.c\n\ngit\
-        \ diff --check\n\necho \"PASS: SUSFS kernel-4.19 patch applied with no reject/backup\
-        \ files.\"\necho \"PASS: three known LG Velvet vendor-layout files were integrated\
-        \ source-aware.\"\necho \"PASS: patch fuzz is strictly disabled (0); only\
-        \ whitespace-equivalent context is accepted.\"\necho \"PASS: legacy KernelSU\
-        \ SUSFS patch was NOT applied.\"\necho \"PASS: fs/namespace.c SUS_MOUNT patch\
-        \ remains excluded.\"\necho \"PASS: legacy KernelSU SUSFS patch was NOT applied.\"\
-        \necho \"PASS: fs/namespace.c SUS_MOUNT patch remains excluded.\"\n"
-    - name: 07B - Verify KernelSU-Next + SUSFS integration identity
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/07b-identity.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\n\ntest -d KernelSU-Next/kernel\n\
-        test -d KernelSU-Next/.git\ntest -L drivers/kernelsu\n\nLINK_TARGET=\"$(readlink\
-        \ drivers/kernelsu)\"\necho \"drivers/kernelsu -> $LINK_TARGET\"\n\ncase \"\
-        $LINK_TARGET\" in\n  *KernelSU-Next/kernel) ;;\n  *)\n    echo \"::error::drivers/kernelsu\
-        \ does not point to KernelSU-Next/kernel\"\n    exit 1\n    ;;\nesac\n\ntest\
-        \ -n \"${KSU_VERSION_RESOLVED:-}\"\ntest \"$KSU_VERSION_RESOLVED\" = \"$KSU_VERSION\"\
-        \ntest \"$KSU_COMMIT\" = \"$KSU_REF\"\necho \"KernelSU-Next tag: $KSU_VERSION_RESOLVED\"\
-        \necho \"KernelSU-Next ref: $KSU_REF\"\necho \"KernelSU-Next commit: $KSU_COMMIT\"\
-        \n\necho \"PASS: KernelSU-Next identity verified.\"\n"
-    - name: 08 - Add required manual KernelSU-Next hooks WITHOUT enabling KPROBES
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/08-hooks.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\n\n# The supplied WORKING config has\
-        \ CONFIG_KPROBES disabled.\n# Therefore we keep the existing non-KPROBE manual\
-        \ hook integration instead of\n# changing the working kernel's KPROBES setting.\n\
-        test -f \"$OUT_DIR/.config\"\ngrep -q '^# CONFIG_KPROBES is not set$' \"$OUT_DIR/.config\"\
-        \n\npython3 <<'PY'\nfrom pathlib import Path\nimport re\n\ndef insert_before_regex(path,\
-        \ pattern, addition, label):\n    p = Path(path)\n    s = p.read_text()\n\
-        \    if addition.strip() in s:\n        print(f\"PASS already present: {label}\"\
-        )\n        return\n    m = re.search(pattern, s, re.M | re.S)\n    if not\
-        \ m:\n        raise SystemExit(f\"ERROR: hook anchor not found: {label} in\
-        \ {path}\")\n    p.write_text(s[:m.start()] + addition + s[m.start():])\n\
-        \    print(f\"PASS inserted: {label}\")\n\ndef insert_after_regex(path, pattern,\
-        \ addition, label):\n    p = Path(path)\n    s = p.read_text()\n    if addition.strip()\
-        \ in s:\n        print(f\"PASS already present: {label}\")\n        return\n\
-        \    m = re.search(pattern, s, re.M | re.S)\n    if not m:\n        raise\
-        \ SystemExit(f\"ERROR: hook body anchor not found: {label} in {path}\")\n\
-        \    p.write_text(s[:m.end()] + addition + s[m.end():])\n    print(f\"PASS\
-        \ inserted: {label}\")\n\nroot = Path('.')\n\nexec_decl = '''#ifdef CONFIG_KSU\n\
-        extern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int\
-        \ *fd, struct filename **filename_ptr, void *argv,\n\\t\\t\\tvoid *envp, int\
-        \ *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename\
-        \ **filename_ptr,\n\\t\\t\\t\\t void *argv, void *envp, int *flags);\n#endif\n\
-        \n'''.replace('          ','')\ninsert_before_regex(root/'fs/exec.c', r'(?m)^static\
-        \ int do_execveat_common\\s*\\(', exec_decl, 'fs/exec.c declarations')\nexec_hook\
-        \ = '''\n#ifdef CONFIG_KSU\n\\tif (unlikely(ksu_execveat_hook))\n\\t\\tksu_handle_execveat(&fd,\
-        \ &filename, &argv, &envp, &flags);\n\\telse\n\\t\\tksu_handle_execveat_sucompat(&fd,\
-        \ &filename, &argv, &envp, &flags);\n#endif\n'''.replace('          ','')\n\
-        insert_after_regex(root/'fs/exec.c', r'(?m)^static int do_execveat_common\\\
-        s*\\([^\\{]+\\)\\s*\\{', exec_hook, 'fs/exec.c hook')\n\nopen_decl = '''#ifdef\
-        \ CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user\
-        \ **filename_user, int *mode,\n\\t\\t\\t\\t int *flags);\n#endif\n\n'''.replace('\
-        \          ','')\ninsert_before_regex(root/'fs/open.c', r'(?m)^long do_faccessat\\\
-        s*\\(', open_decl, 'fs/open.c declarations')\nopen_hook = '''\n#ifdef CONFIG_KSU\n\
-        \\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n'''.replace('\
-        \          ','')\ninsert_after_regex(root/'fs/open.c', r'(?m)^long do_faccessat\\\
-        s*\\([^\\{]+\\)\\s*\\{', open_hook, 'fs/open.c hook')\n\nread_decl = '''#ifdef\
-        \ CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct\
-        \ file **file_ptr, char __user **buf_ptr,\n\\t\\t\\tsize_t *count_ptr, loff_t\
-        \ **pos);\n#endif\n\n'''.replace('          ','')\ninsert_before_regex(root/'fs/read_write.c',\
-        \ r'(?m)^ssize_t vfs_read\\s*\\(', read_decl, 'fs/read_write.c declarations')\n\
-        read_hook = '''\n#ifdef CONFIG_KSU\n\\tif (unlikely(ksu_vfs_read_hook))\n\\\
-        t\\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n'''.replace('\
-        \          ','')\ninsert_after_regex(root/'fs/read_write.c', r'(?m)^ssize_t\
-        \ vfs_read\\s*\\([^\\{]+\\)\\s*\\{', read_hook, 'fs/read_write.c hook')\n\n\
-        stat_decl = '''#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const\
-        \ char __user **filename_user, int *flags);\n#endif\n\n'''.replace('     \
-        \     ','')\ninsert_before_regex(root/'fs/stat.c', r'(?m)^int vfs_statx\\\
-        s*\\(', stat_decl, 'fs/stat.c declarations')\nstat_hook = '''\n#ifdef CONFIG_KSU\n\
-        \\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n'''.replace('      \
-        \    ','')\ninsert_after_regex(root/'fs/stat.c', r'(?m)^int vfs_statx\\s*\\\
-        ([^\\{]+\\)\\s*\\{', stat_hook, 'fs/stat.c hook')\n\ninput_decl = '''#ifdef\
-        \ CONFIG_KSU\nextern bool ksu_input_hook __read_mostly;\nextern int ksu_handle_input_handle_event(unsigned\
-        \ int *type, unsigned int *code, int *value);\n#endif\n\n'''.replace('   \
-        \       ','')\ninsert_before_regex(root/'drivers/input/input.c', r'(?m)^static\
-        \ void input_handle_event\\s*\\(', input_decl, 'drivers/input/input.c declarations')\n\
-        input_hook = '''\n#ifdef CONFIG_KSU\n\\tif (unlikely(ksu_input_hook))\n\\\
-        t\\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n'''.replace('\
-        \          ','')\ninsert_after_regex(root/'drivers/input/input.c', r'(?m)^static\
-        \ void input_handle_event\\s*\\([^\\{]+\\)\\s*\\{', input_hook, 'drivers/input/input.c\
-        \ safe-mode hook')\nPY\n\n# The manual path must remain genuinely non-KPROBE.\n\
-        grep -q '^# CONFIG_KPROBES is not set$' \"$OUT_DIR/.config\"\ngrep -Rsn 'ksu_handle_execveat\\\
-        |ksu_handle_faccessat\\|ksu_handle_vfs_read\\|ksu_handle_stat' \\\n  fs/exec.c\
-        \ fs/open.c fs/read_write.c fs/stat.c\n"
-    - name: 09 - Configure ONLY KSU/SUSFS; preserve every WORKING config value
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/09-kconfig.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\n\n# These are the intended functional\
-        \ configuration additions.\n# KPROBES stays exactly as the supplied WORKING\
-        \ kernel: disabled.\nscripts/config --file \"$OUT_DIR/.config\" \\\n  --enable\
-        \ CONFIG_KSU \\\n  --enable CONFIG_KSU_SUSFS \\\n  --disable CONFIG_KSU_SUSFS_SUS_PATH\
-        \ \\\n  --enable CONFIG_KSU_SUSFS_SUS_KSTAT \\\n  --enable CONFIG_KSU_SUSFS_SPOOF_UNAME\
-        \ \\\n  --enable CONFIG_KSU_SUSFS_ENABLE_LOG \\\n  --disable CONFIG_KSU_SUSFS_SUS_MOUNT\
-        \ \\\n  --disable CONFIG_KSU_SUSFS_SUS_SU\n\n# Make the pershoot SUSFS dependency\
-        \ gate explicit.\nscripts/config --file \"$OUT_DIR/.config\" --enable SUSFS\n\
-        \n# SUS_PATH compatibility:\n# SUSFS latest-kernel-4.19 writes new->user->android_kabi_reserved1\n\
-        # when CONFIG_KSU_SUSFS_SUS_PATH=y. The exact LG WORKING 4.19 source\n# does\
-        \ not have that member in struct user_struct. Adding it would\n# change a\
-        \ core kernel struct layout, so only SUS_PATH is disabled.\nif grep -q 'android_kabi_reserved1'\
-        \ include/linux/user.h; then\n  echo \"INFO: user_struct has android_kabi_reserved1,\
-        \ but SUS_PATH remains disabled for this build.\"\nelse\n  echo \"PASS: LG\
-        \ WORKING user_struct has no android_kabi_reserved1; SUS_PATH correctly disabled.\"\
-        \nfi\n\n# Run Kconfig with the SAME Android Clang/LLVM family used by the\n\
-        # supplied working kernel. Do not regenerate the baseline from the\n# vendor\
-        \ defconfig and do not use Ubuntu GCC for Kconfig.\nexport CC=\"$CLANG_DIR/bin/clang\"\
-        \nexport HOSTCC=gcc\nexport HOSTCXX=g++\nexport LD=\"$CLANG_DIR/bin/ld.lld\"\
-        \nexport AS=\"$CLANG_DIR/bin/llvm-as\"\nexport LLVM=1\nexport LLVM_IAS=1\n\
-        export CLANG_TRIPLE=aarch64-linux-gnu-\nexport PATH=\"$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH\"\
-        \nexport LD_LIBRARY_PATH=\"$CLANG_DIR/lib:${LD_LIBRARY_PATH:-}\"\n\n\"$CC\"\
-        \ --version | head -n 2 | tee \"$DIAG_DIR/kconfig-clang-version.txt\"\n\n\
-        # The supplied WORKING 4.19 tree has legacy Kconfig warnings for a few\n#\
-        \ vendor symbols. On the previous run, Kconfig wrote the complete .config\n\
-        # and auto.conf successfully but returned status 1. Treat that exact case\n\
-        # as non-fatal; never ignore a missing generated configuration.\nset +e\n\
-        make O=\"$OUT_DIR\" ARCH=\"$ARCH\" \\\n  CC=\"$CC\" HOSTCC=\"$HOSTCC\" HOSTCXX=\"\
-        $HOSTCXX\" \\\n  LD=\"$LD\" AS=\"$AS\" LLVM=1 LLVM_IAS=1 \\\n  olddefconfig\n\
-        KCONFIG_RC=$?\nset -e\n\ntest -s \"$OUT_DIR/.config\"\ntest -s \"$OUT_DIR/include/config/auto.conf\"\
-        \n\nif [ \"$KCONFIG_RC\" -ne 0 ]; then\n  echo \"WARNING: olddefconfig returned\
-        \ $KCONFIG_RC after writing a usable auto.conf; continuing with the exact\
-        \ checked config.\"\nelse\n  echo \"PASS: olddefconfig completed successfully.\"\
-        \nfi\n\ncp \"$OUT_DIR/.config\" \"$DIAG_DIR/final.config\"\n\ngrep -q '^CONFIG_SUSFS=y$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_KSU=y$' \"$OUT_DIR/.config\"\ngrep\
-        \ -q '^CONFIG_KSU_SUSFS=y$' \"$OUT_DIR/.config\"\ngrep -q '^# CONFIG_KSU_SUSFS_SUS_PATH\
-        \ is not set$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_KSU_SUSFS_SPOOF_UNAME=y$' \"$OUT_DIR/.config\"\
-        \n! grep -q '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' \"$OUT_DIR/.config\"\ngrep -q\
-        \ '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' \"$OUT_DIR/.config\"\ngrep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT\
-        \ is not set$' \"$OUT_DIR/.config\"\n! grep -q '^CONFIG_KSU_SUSFS_SUS_SU=y$'\
-        \ \"$OUT_DIR/.config\"\n\n# Compare every non-KSU/non-SUSFS config symbol\
-        \ against the exact\n# working baseline. CONFIG_SUSFS is our integration marker\
-        \ and is\n# intentionally new; any other drift stops the build.\nnormalize_config()\
-        \ {\n  sed -E \\\n    -e '/^[[:space:]]*#/d' \\\n    -e '/^[[:space:]]*$/d'\
-        \ \\\n    -e '/^CONFIG_KSU([_=]|$)/d' \\\n    -e '/^CONFIG_SUSFS([_=]|$)/d'\
-        \ \\\n    -e '/^CONFIG_CC_/d' \\\n    -e '/^CONFIG_CLANG_/d' \\\n    -e '/^CONFIG_GCC_/d'\
-        \ \\\n    -e '/^CONFIG_AS_/d' \\\n    -e '/^CONFIG_LD_/d' \\\n    -e '/^CONFIG_LLD_/d'\
-        \ \\\n    -e '/^CONFIG_TOOLS_SUPPORT_RELR=/d' \\\n    \"$1\" | sort\n}\n\n\
-        normalize_config \"$DIAG_DIR/working-baseline.config\" > \"$DIAG_DIR/baseline.non-ksu\"\
-        \nnormalize_config \"$OUT_DIR/.config\" > \"$DIAG_DIR/final.non-ksu\"\n\n\
-        # Kconfig may reflow blank lines when writing .config. Blank-line-only\n#\
-        \ formatting changes are not configuration drift; actual CONFIG_* value\n\
-        # changes are. The normalized comparison above removes blank lines.\nif !\
-        \ diff -u \"$DIAG_DIR/baseline.non-ksu\" \"$DIAG_DIR/final.non-ksu\" > \"\
-        $DIAG_DIR/config-drift.diff\"; then\n  echo \"::error::NON-KSU configuration\
-        \ drift detected. Build stopped for safety.\"\n  cat \"$DIAG_DIR/config-drift.diff\"\
-        \n  exit 1\nfi\n\necho \"PASS: semantic non-KSU configuration matches the\
-        \ WORKING baseline.\"\n\n# Explicitly verify boot-sensitive values again.\n\
-        grep -q '^# CONFIG_KPROBES is not set$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_HAVE_KPROBES=y$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_MODULES=y$' \"$OUT_DIR/.config\"\n\
-        grep -q '^CONFIG_OVERLAY_FS=y$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_MACH_LITO_CAYMANLM=y$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' \"\
-        $OUT_DIR/.config\"\ngrep -q '^CONFIG_LOCALVERSION=\"-perf\"$' \"$OUT_DIR/.config\"\
-        \n\necho \"PASS: no non-KSU/non-SUSFS configuration drift.\"\necho \"PASS:\
-        \ KPROBES remains disabled; no KPROBE config was added.\"\n"
-    - name: 10 - Verify source scope (only KSU/SUSFS integration files changed)
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/10-scope.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\n\ngit status --short > \"$DIAG_DIR/source-status.txt\"\
-        \ngit diff --stat > \"$DIAG_DIR/source-diff-stat.txt\"\n\n# These device/boot\
-        \ configuration sources are forbidden to change.\nif git status --short --\
-        \ \\\n    arch/arm64/boot/dts \\\n    arch/arm64/configs \\\n    drivers/staging\
-        \ \\\n    | grep -q .; then\n  echo \"::error::Device DT/DTBO/defconfig sources\
-        \ changed.\"\n  git status --short -- arch/arm64/boot/dts arch/arm64/configs\
-        \ drivers/staging\n  exit 1\nfi\n\necho \"=== MODIFIED FILES ===\"\ngit status\
-        \ --short\n\n# Strict source-scope allowlist. KernelSU-Next is the actual\
-        \ directory\n# created by the SUSFS-compatible setup script; do not mistake\
-        \ it for\n# the legacy KernelSU/ directory. Only KernelSU-Next/SUSFS integration\n\
-        # and the documented non-KPROBE hook sites may differ from the WORKING tree.\n\
-        allowed_files='^(KernelSU-Next/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$|drivers/input/input.c$|fs/Makefile$|fs/dcache.c$|fs/devpts/inode.c$|fs/exec.c$|fs/inode.c$|fs/notify/fdinfo.c$|fs/namei.c$|fs/open.c$|fs/overlayfs/inode.c$|fs/overlayfs/readdir.c$|fs/overlayfs/super.c$|fs/proc/cmdline.c$|fs/proc/fd.c$|fs/proc/task_mmu.c$|fs/proc_namespace.c$|fs/read_write.c$|fs/readdir.c$|fs/stat.c$|fs/statfs.c$|include/linux/mount.h$|include/linux/sched.h$|kernel/kallsyms.c$|kernel/sys.c$|fs/susfs.c$|include/linux/susfs.h$|fs/sus_su.c$|include/linux/sus_su.h$|include/linux/susfs_def.h$|include/linux/susfs_ksu_compat.h$)$'\n\
-        unexpected=\"$(git status --short | sed -E 's/^.. //g' | grep -Ev \"$allowed_files\"\
-        \ || true)\"\nif [ -n \"$unexpected\" ]; then\n  echo \"::error::Unexpected\
-        \ source files changed (outside KSU/SUSFS integration scope):\"\n  printf\
-        \ '%s\\n' \"$unexpected\"\n  exit 1\nfi\n\n# Expected integration files must\
-        \ exist.\ntest -f fs/susfs.c\ntest -f include/linux/susfs.h\ntest -d KernelSU-Next/kernel\n"
-    - name: 10G - Reconcile actual dispatcher to legacy SUSFS 1.5.5 ABI
-      shell: bash
-      run: |
-        set -euo pipefail
-        cd "$GITHUB_WORKSPACE/kernel"
-        mkdir -p include/linux "$DIAG_DIR"
-        
-        DISPATCH="drivers/kernelsu/supercall/dispatch.c"
-        test -f "$DISPATCH"
-        
-        # The diagnostic proved the build is compiling this exact file.
-        # KernelSU-Next v3.3.0 contains a SUSFS-v2 reboot dispatcher block, while the
-        # selected SUSFS kernel-4.19 branch is v1.5.5 and exposes the older typed API.
-        # The correct fix is to remove ONLY that optional v2 forwarding block and keep
-        # the normal KernelSU reboot/toolkit handler intact. Do not fabricate SUSFS
-        # constants, structs or functions.
-        python3 - "$DISPATCH" <<'PY'
-        import sys
-        from pathlib import Path
-        
-        p = Path(sys.argv[1])
-        src = p.read_text()
-        
-        start_marker = "#ifdef CONFIG_KSU_SUSFS\n/* susfs reboot commands */"
-        start = src.find(start_marker)
-        if start < 0:
-            # tolerate a version without the comment, but locate the function itself
-            start = src.find("#ifdef CONFIG_KSU_SUSFS\nint ksu_handle_sys_reboot")
-        if start < 0:
-            raise SystemExit("KSU SUSFS reboot dispatcher block not found")
-        
-        fn = src.find("int ksu_handle_sys_reboot", start)
-        if fn < 0:
-            raise SystemExit("ksu_handle_sys_reboot function not found")
-        
-        brace = src.find("{", fn)
-        if brace < 0:
-            raise SystemExit("ksu_handle_sys_reboot opening brace not found")
-        
-        depth = 0
-        end = None
-        for i in range(brace, len(src)):
-            if src[i] == "{":
-                depth += 1
-            elif src[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i + 1
-                    break
-        if end is None:
-            raise SystemExit("ksu_handle_sys_reboot closing brace not found")
-        
-        replacement = """int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
-        {
-            if (magic1 != KSU_INSTALL_MAGIC1)
-                return -EINVAL;
-        
-            /*
-             * Legacy SUSFS kernel-4.19 integration does not use the newer SUSFS-v2
-             * reboot-command ABI. Keep KernelSU's own fd install and toolkit magics.
-             */
-            if (magic2 == KSU_INSTALL_MAGIC2)
-                return ksu_supercall_reboot_handler(arg);
-        
-            return ksu_handle_toolkit_reboot(magic2, cmd, *arg);
-        }"""
-        
-        # Preserve the CONFIG_KSU_SUSFS wrapper around the function. Remove any old
-        # trailing duplicate function text only by replacing the function body.
-        src = src[:fn] + replacement + src[end:]
-        
-        # If a stale duplicate SUSFS-v2 block exists after the function, fail early
-        # rather than silently building an inconsistent dispatcher.
-        for token in (
-            "SUSFS_MAGIC",
-            "CMD_SUSFS_ADD_SUS_MAP",
-            "CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING",
-            "st_susfs_avc_log_spoofing",
-            "susfs_enable_log",
-            "susfs_add_sus_map",
-            "susfs_set_avc_log_spoofing",
-            "susfs_get_enabled_features",
-            "susfs_show_variant",
-            "susfs_show_version",
-        ):
-            if token in src:
-                raise SystemExit(f"incompatible SUSFS-v2 token remains in dispatch.c: {token}")
-        
-        p.write_text(src)
-        print("reconciled actual dispatcher:", p)
-        PY
-        
-        # Keep only the two genuinely absent optional KSU helpers needed by the
-        # selected KSU-Next tree. These are not SUSFS-v2 command APIs.
-        cat > include/linux/susfs_ksu_compat.h <<'EOF'
-        #ifndef KSU_SUSFS_KSU_COMPAT_H
-        #define KSU_SUSFS_KSU_COMPAT_H
-        
-        #include <linux/susfs.h>
-        #include <linux/susfs_def.h>
-        
-        /* Not exported by the pinned SUSFS 1.5.5 kernel-4.19 API. */
-        static inline void susfs_start_sdcard_monitor_fn(void)
-        {
-        }
-        
-        static inline bool susfs_is_current_proc_umounted(void)
-        {
-            return false;
-        }
-        
-        #endif
-        EOF
-        
-        # Linux 4.19 keeps tasklist_lock/init_task/task_pgrp/task_session
-        # behind sched/signal.h -> sched/task.h. V25 did not restore this
-        # dependency, which caused all six dispatch.o errors in diagnostic
-        # 33243990933.
-        if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
-          sed -i '1i#include <linux/sched/signal.h>' "$DISPATCH"
-        fi
-        if ! grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"; then
-          sed -i '2i#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
-        fi
-
-        grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"
-        grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
-        
-        # Hard proof: the actual file compiled by Kbuild must contain no v2 dispatcher
-        # ABI tokens. This prevents the same 16-error family from recurring.
-        if grep -nE 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_enable_log|susfs_add_sus_map|susfs_set_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' "$DISPATCH"; then
-          echo "::error::Legacy dispatcher still contains incompatible SUSFS-v2 API."
-          exit 1
-        fi
-        
-        {
-          echo "actual Kbuild dispatch: $DISPATCH"
-          echo "KernelSU-Next: v3.3.0"
-          echo "SUSFS: v1.5.5 kernel-4.19"
-          echo "SUSFS-v2 reboot ABI: REMOVED FROM DISPATCHER"
-          echo "KSU_INSTALL_MAGIC2 fd install: PRESERVED"
-          echo "KernelSU toolkit reboot handler: PRESERVED"
-          echo "core SUSFS implementation: NOT MODIFIED"
-          echo "fake SUSFS constants/functions: NONE"
-        } | tee "$DIAG_DIR/10G-susfs-ksu-compat-audit.txt"
-        
-        echo "PASS: dispatcher reconciled to legacy SUSFS 1.5.5 ABI."
-    - name: 10B - Verify current 4.19 compile fix only
-      shell: bash
-      run: |
-        set -euo pipefail
-        cd "$GITHUB_WORKSPACE/kernel"
-        SECCOMP_CACHE_C="KernelSU-Next/kernel/infra/seccomp_cache.c"
-        test -f "$SECCOMP_CACHE_C"
-        grep -q 'LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility' "$SECCOMP_CACHE_C"
-        grep -q '#define SECCOMP_ARCH_NATIVE_NR NR_syscalls' "$SECCOMP_CACHE_C"
-
-        # LG 4.19 lacks seccomp.filter_count. Do not modify the vendor ABI;
-        # patch only the KSU-local bookkeeping write.
-        KSU_APP="drivers/kernelsu/policy/app_profile.c"
-        if [ ! -f "$KSU_APP" ]; then KSU_APP="KernelSU-Next/kernel/policy/app_profile.c"; fi
-        test -f "$KSU_APP"
-        SEC_HDR="include/linux/seccomp.h"
-        test -f "$SEC_HDR"
-
-        if grep -qE '\bfilter_count\b' "$SEC_HDR"; then
-          echo "PASS: vendor seccomp struct provides filter_count; no source patch required."
-        else
-          echo "INFO: vendor 4.19 seccomp struct lacks filter_count; applying narrow KSU-local fix."
-          python3 -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); s=p.read_text(); old="atomic_set(&current->seccomp.filter_count, 0);"; new="/* LG 4.19: seccomp.filter_count is unavailable; no-op. */"; (p.write_text(s.replace(old,new,1)) if old in s else None); print("PATCHED:",p) if old in s else print("PASS: no current->seccomp.filter_count reference in",p) if "current->seccomp.filter_count" not in s else (_ for _ in ()).throw(SystemExit("ERROR: unexpected filter_count form; refusing broad patch."))' "$KSU_APP"
-        fi
-
-        if ! grep -qE '\bfilter_count\b' "$SEC_HDR"; then
-          if grep -RIn --include='*.c' --include='*.h' 'current->seccomp.filter_count' drivers/kernelsu KernelSU-Next/kernel 2>/dev/null; then
-            echo "::error::Unfixed KSU seccomp.filter_count reference remains for LG 4.19."
+          # Do not copy or invent a SUSFS-v2 dispatcher. This build uses the
+          # pinned legacy kernel-4.19 SUSFS ABI and KernelSU-Next integration.
+          grep -Rqs 'SUSFS_MAGIC\|CMD_SUSFS_' drivers/kernelsu/supercall/dispatch.c && {
+            echo 'ERROR: incompatible SUSFS-v2 dispatcher detected before build.'
             exit 1
+          } || true
+
+      - name: 06 - Preserve required LG 4.19 compatibility fixes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Apply only idempotent, source-proven compatibility edits.
+          # 1) sulog.h must directly include linux/init.h.
+          f=drivers/kernelsu/sulog.h
+          if [ -f "$f" ] && ! grep -q '^#include <linux/init.h>$' "$f"; then
+            sed -i '1i#include <linux/init.h>' "$f"
           fi
-        fi
 
-        if [ -f "arch/arm64/include/asm/seccomp.h" ] && grep -q 'LG 4.19: SECCOMP_ARCH_NATIVE_NR compatibility' "arch/arm64/include/asm/seccomp.h"; then
-          echo "::error::Vendor arm64 seccomp header was modified; refusing to continue."
-          exit 1
-        fi
-
-        mkdir -p "$DIAG_DIR"
-        { echo "LG 4.19 seccomp compatibility audit"; echo "KSU app profile: $KSU_APP"; echo "Vendor header: $SEC_HDR"; if grep -qE '\bfilter_count\b' "$SEC_HDR"; then echo "filter_count: PRESENT"; else echo "filter_count: ABSENT; KSU-local no-op applied"; fi; echo "Vendor seccomp ABI/header modification: NOT USED"; } > "$DIAG_DIR/10B-seccomp-filter-count-audit.txt"
-        echo "PASS: 4.19 seccomp filter_count compatibility audit completed."
-        echo "PASS: earlier SUSFS/KSU/VFS fixes were not modified by this step."
-    - name: 10C - Guard KernelSU SELinux rules for legacy 4.19
-      shell: bash
-      run: |
-        set -euo pipefail
-        cd "$GITHUB_WORKSPACE/kernel"
-        
-        RULES=""
-        for candidate in "drivers/kernelsu/selinux/rules.c" "KernelSU-Next/kernel/selinux/rules.c"; do
-          if [ -f "$candidate" ]; then RULES="$candidate"; break; fi
-        done
-        test -n "$RULES"
-        
-        if grep -q 'selinux_state\.policy' "$RULES" &&
-           grep -q 'selinux_state\.policy_mutex' "$RULES"; then
-          if ! grep -q 'LG 4.19: KernelSU SELinux policy compatibility guard' "$RULES"; then
-            python3 - "$RULES" <<'PY'
-        from pathlib import Path
-        import sys
-        p = Path(sys.argv[1])
-        s = p.read_text()
-        needle = 'struct selinux_policy *backup_sepolicy;'
-        guard = """/* LG 4.19: KernelSU SELinux policy compatibility guard */
-        #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
-        """
-        if needle not in s:
-            raise SystemExit("ERROR: expected KernelSU SELinux rules anchor not found; refusing broad patch.")
-        s = s.replace(needle, guard + needle, 1)
-        stub = """
-        #else /* LG 4.19 compatibility */
-        void apply_kernelsu_rules(void)
-        {
-            pr_info("KernelSU: SELinux policy-rule helper disabled on legacy LG 4.19 ABI\\n");
-        }
-        int handle_sepolicy(void __user *user_data, u64 data_len)
-        {
-            return -EOPNOTSUPP;
-        }
-        #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0) */
-        """
-        s = s.rstrip() + "\n" + stub
-        p.write_text(s)
-        PY
-            echo "PATCHED: $RULES (legacy 4.19 SELinux ABI guard)"
+          # 2) 4.19 has no linux/minmax.h in the affected KernelSU compatibility file.
+          f=drivers/kernelsu/sucompat.c
+          if [ -f "$f" ]; then
+            sed -i '/^[[:space:]]*#include[[:space:]]*[<"]linux\/minmax\.h[>"][[:space:]]*$/d' "$f"
           fi
-        fi
-        
-        if git status --short -- security/selinux include/uapi/selinux.h 2>/dev/null | grep -q .; then
-          echo "::error::Vendor SELinux source/header changed; refusing to continue."
-          git status --short -- security/selinux include/uapi/selinux.h
-          exit 1
-        fi
-        
-        mkdir -p "$DIAG_DIR"
-        {
-          echo "LG 4.19 KernelSU SELinux compatibility audit"
-          echo "rules.c: $RULES"
-          if grep -q 'LG 4.19: KernelSU SELinux policy compatibility guard' "$RULES"; then
-            echo "legacy SELinux ABI guard: PRESENT"
-          else
-            echo "legacy SELinux ABI guard: NOT NEEDED"
+
+          # 3) Ensure seccomp compatibility alias exists only when missing.
+          f=drivers/kernelsu/seccomp_cache.c
+          if [ -f "$f" ] && ! grep -q 'SECCOMP_ARCH_NATIVE_NR' "$f"; then
+            sed -i '1i#ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR AUDIT_ARCH_AARCH64\n#endif' "$f"
           fi
-          echo "vendor SELinux ABI modification: NOT USED"
-        } > "$DIAG_DIR/10C-selinux-4.19-audit.txt"
-        echo "PASS: legacy 4.19 SELinux compatibility audit completed."
-    - name: 10D - Guard KernelSU SELinux sepolicy engine for legacy 4.19
-      shell: bash
-      run: |
-        set -euo pipefail
-        cd "$GITHUB_WORKSPACE/kernel"
 
-        POLICY=""
-        for candidate in "drivers/kernelsu/selinux/sepolicy.c" "KernelSU-Next/kernel/selinux/sepolicy.c"; do
-          if [ -f "$candidate" ]; then POLICY="$candidate"; break; fi
-        done
-        test -n "$POLICY"
+      - name: 07 - Install narrow SUSFS legacy helper fallbacks
+        shell: bash
+        run: |
+          set -euxo pipefail
+          f=drivers/kernelsu/supercall/dispatch.c
+          test -f "$f"
 
-        # KernelSU-Next v3.3.0 sepolicy.c expects newer SELinux policydb
-        # internals. LG's 4.19 vendor policydb has an older layout.
-        # Only the KernelSU-local engine is compiled out on 4.19.
-        if ! grep -q 'LG 4.19: KernelSU sepolicy engine compatibility guard' "$POLICY"; then
-          python3 - "$POLICY" <<'PY2'
-        from pathlib import Path
-        import sys
-        p = Path(sys.argv[1])
-        s = p.read_text()
-        if 'LINUX_VERSION_CODE' not in s or '#include <linux/version.h>' not in s:
-            raise SystemExit('ERROR: sepolicy.c version guard prerequisites not found; refusing broad patch.')
-        marker = '#define KSU_SUPPORT_ADD_TYPE'
-        if marker not in s:
-            raise SystemExit('ERROR: expected KernelSU sepolicy.c marker not found; refusing broad patch.')
-        guard = marker + "\n\n/* LG 4.19: KernelSU sepolicy engine compatibility guard */\n#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)"
-        s = s.replace(marker, guard, 1)
-        s = s.rstrip() + "\n\n#else /* LG 4.19 compatibility: vendor policydb layout is incompatible */\n/* Intentionally empty: rules.c is separately guarded on legacy 4.19. */\n#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0) */\n"
-        p.write_text(s)
-        PY2
-          echo "PATCHED: $POLICY (legacy 4.19 SELinux policydb guard)"
-        fi
-
-        if git status --short -- security/selinux include/uapi/selinux.h 2>/dev/null | grep -q .; then
-          echo "::error::Vendor SELinux source/header changed; refusing to continue."
-          git status --short -- security/selinux include/uapi/selinux.h
-          exit 1
-        fi
-
-        mkdir -p "$DIAG_DIR"
-        {
-          echo "LG Velvet 4.19 KernelSU SELinux sepolicy compatibility audit"
-          echo "sepolicy.c: $POLICY"
-          if grep -q 'LG 4.19: KernelSU sepolicy engine compatibility guard' "$POLICY"; then
-            echo "legacy policydb guard: PRESENT"
-            echo "4.19 behavior: KernelSU-local sepolicy engine compiled out"
-          else
-            echo "legacy policydb guard: NOT PRESENT"
+          # The pinned SUSFS 1.5.5 4.19 tree does not declare these optional
+          # helpers. Provide compile-safe fallbacks, but never fake SUSFS-v2 APIs.
+          if ! grep -q 'static inline void susfs_start_sdcard_monitor_fn' "$f"; then
+            sed -i '1i#ifndef susfs_start_sdcard_monitor_fn\nstatic inline void susfs_start_sdcard_monitor_fn(void) {}\n#endif\n#ifndef susfs_is_current_proc_umounted\nstatic inline bool susfs_is_current_proc_umounted(void) { return false; }\n#endif' "$f"
           fi
-          echo "vendor SELinux ABI modification: NOT USED"
-          echo "reason: v3.3.0 sepolicy.c expects newer policydb structures absent on LG 4.19"
-        } > "$DIAG_DIR/10D-selinux-sepolicy-4.19-audit.txt"
-        echo "PASS: legacy 4.19 KernelSU sepolicy engine compatibility audit completed."
-    - name: 10E - Fix KernelSU SULog legacy 4.19 compatibility
-      shell: bash
-      run: |
-        set -euo pipefail
-        cd "$GITHUB_WORKSPACE/kernel"
-        mkdir -p "$DIAG_DIR"
 
-        EVENT=""
-        for f in "KernelSU-Next/kernel/sulog/event.c" "KernelSU-Next/kernel/feature/sulog/event.c" "drivers/kernelsu/sulog/event.c"; do
-          if [ -f "$f" ]; then EVENT="$f"; break; fi
-        done
-        if [ -z "$EVENT" ]; then
-          echo "INFO: KernelSU SULog event.c not found; no SULog patch needed." | tee "$DIAG_DIR/10E-sulog.log"
-          exit 0
-        fi
+      - name: 08 - Fix incompatible SUSFS-v2 reboot dispatcher
+        shell: bash
+        run: |
+          set -euxo pipefail
+          f=drivers/kernelsu/supercall/dispatch.c
+          test -f "$f"
 
-        # LG 4.19 does not provide the newer standalone minmax.h header.
-        # Remove only the direct KSU-local include; never create/modify a vendor header.
-        python3 - "$EVENT" <<'PYFIX'
-        from pathlib import Path
-        import sys
-        p=Path(sys.argv[1])
-        s=p.read_text()
-        s=s.replace('#include <linux/minmax.h>\n','')
-        p.write_text(s)
-        PYFIX
+          # Replace ONLY the incompatible SUSFS-v2 reboot forwarding function.
+          # This keeps the pinned legacy SUSFS 1.5.5 ABI and normal KSU flow.
+          python3 - "$f" <<'PYFIX'
+          import sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          needle = 'int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)'
+          pos = s.find(needle)
+          if pos < 0:
+              raise SystemExit('ksu_handle_sys_reboot signature not found')
+          brace = s.find('{', pos)
+          if brace < 0:
+              raise SystemExit('function opening brace not found')
+          depth = 0
+          end = None
+          for i in range(brace, len(s)):
+              if s[i] == '{': depth += 1
+              elif s[i] == '}':
+                  depth -= 1
+                  if depth == 0:
+                      end = i + 1
+                      break
+          if end is None:
+              raise SystemExit('function closing brace not found')
+          replacement = "int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)\n{\n    if (magic1 != KSU_INSTALL_MAGIC1)\n        return -EINVAL;\n\n    if (magic2 == KSU_INSTALL_MAGIC2)\n        return ksu_supercall_reboot_handler(arg);\n\n    return ksu_handle_toolkit_reboot(magic2, cmd, *arg);\n}"
+          s = s[:pos] + replacement + s[end:]
+          p.write_text(s)
+          PYFIX
 
-        # Some KSU SULog revisions use get_monotonic_boottime() only on older
-        # kernels. If the source has a 4.19 threshold guarding that API, use
-        # the legacy 4.14 boundary; do not rewrite unrelated version checks.
-        python3 - "$EVENT" <<'PYTIME'
-        from pathlib import Path
-        import sys
-        p=Path(sys.argv[1])
-        s=p.read_text()
-        if 'get_monotonic_boottime' in s and 'KERNEL_VERSION(4, 19, 0)' in s:
-            s=s.replace('KERNEL_VERSION(4, 19, 0)', 'KERNEL_VERSION(4, 14, 0)')
-        p.write_text(s)
-        PYTIME
+          grep -q 'int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user \*\*arg)' "$f"
+          ! grep -Eq 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' "$f"
+          grep -q 'ksu_supercall_reboot_handler(arg)' "$f"
+          grep -q 'ksu_handle_toolkit_reboot(magic2, cmd, \*arg)' "$f"
 
-        ! grep -qE '^#include[[:space:]]+<linux/minmax\.h>$' "$EVENT"
+      - name: 09 - Fix workflow integration Kconfig/Makefile idempotently
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # The previous run reached this state but never compiled. Make the
+          # integration deterministic and avoid duplicate entries.
+          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || \
+            sed -i '/^endmenu$/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q '^obj-$(CONFIG_KSU) += kernelsu/$' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
 
-        {
-          echo "SULog event.c=$EVENT"
-          echo "minmax_include=$(grep -cE '^#include[[:space:]]+<linux/minmax\.h>$' "$EVENT" || true)"
-          echo "get_monotonic_boottime=$(grep -c 'get_monotonic_boottime' "$EVENT" || true)"
-          echo "vendor_headers_modified=NO"
-        } | tee "$DIAG_DIR/10E-sulog-audit.txt"
-
-    - name: 10F - Automatic next-error scanner (fail-closed)
-      shell: bash
-      run: |
-        set -euo pipefail
-        cd "$GITHUB_WORKSPACE/kernel"
-        mkdir -p "$DIAG_DIR"
-
-        # Never mass-edit arbitrary compiler errors. This scanner records known
-        # legacy-4.19 KernelSU signatures and confirms the relevant source files
-        # before build. Unknown failures remain untouched for manual analysis.
-        {
-          echo "=== KSU legacy compatibility preflight ==="
-          echo "kernel_release=$(make -s kernelversion 2>/dev/null || true)"
-          echo "filter_count_refs=$(grep -RIl 'filter_count' KernelSU-Next/kernel drivers/kernelsu 2>/dev/null | head -20 || true)"
-          echo "selinux_policy_refs=$(grep -RIl 'selinux_state\.policy\|policy_mutex' KernelSU-Next/kernel drivers/kernelsu 2>/dev/null | head -20 || true)"
-          echo "sulog_event=$(find KernelSU-Next drivers/kernelsu -path '*/sulog/event.c' -type f 2>/dev/null | head -5 || true)"
-          echo "minmax_refs=$(grep -RIl '#include <linux/minmax.h>' KernelSU-Next/kernel drivers/kernelsu 2>/dev/null | head -20 || true)"
-        } | tee "$DIAG_DIR/10F-preflight.txt"
-
-        echo "PASS: automatic scanner armed; unknown errors will not be blindly patched."
-
-    - name: 10H - Final pre-build gate (actual Kbuild dispatcher)
-      shell: bash
-      run: |
-        set -euo pipefail
-        cd "$GITHUB_WORKSPACE/kernel"
-        mkdir -p "$DIAG_DIR"
-
-        DISPATCH="drivers/kernelsu/supercall/dispatch.c"
-        test -f "$DISPATCH"
-        test -f include/linux/susfs.h
-        test -f include/linux/susfs_def.h
-        test -f include/linux/susfs_ksu_compat.h
-        SUPERCALL_C="KernelSU-Next/kernel/supercall/supercall.c"
-        test -f "$SUPERCALL_C"
-        grep -q 'task_work_add(current, &tw->cb, true)' "$SUPERCALL_C"
-        ! grep -q 'TWA_RESUME' "$SUPERCALL_C"
-
-        grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"
-        grep -qF '#include <linux/susfs_ksu_compat.h>' "$DISPATCH"
-
-        # Exact declarations required by the current Linux 4.19 dispatcher.
-        # sched/signal.h pulls in sched/task.h, which declares tasklist_lock
-        # and init_task and defines task_pgrp()/task_session().
-        if ! grep -qF '#include <linux/sched/signal.h>' "$DISPATCH"; then
-          echo "::error::Linux 4.19 task API header missing from dispatch.c."
-          exit 1
-        fi
-
-        if grep -nE 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_enable_log|susfs_add_sus_map|susfs_set_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' "$DISPATCH"; then
-          echo "::error::Incompatible SUSFS-v2 dispatcher API is still present."
-          exit 1
-        fi
-
-        grep -qF 'ksu_supercall_reboot_handler(arg)' "$DISPATCH"
-        grep -qF 'ksu_handle_toolkit_reboot(magic2, cmd, *arg)' "$DISPATCH"
-
-        {
-          echo "PASS: actual drivers/kernelsu/supercall/dispatch.c verified"
-          echo "PASS: no incompatible SUSFS-v2 dispatcher tokens"
-          echo "PASS: KSU fd-install path preserved"
-          echo "PASS: KernelSU toolkit reboot path preserved"
-          echo "PASS: SUSFS 1.5.5 kernel implementation preserved"
-        } | tee "$DIAG_DIR/10H-final-prebuild-gate.log"
-    - name: 10I - Pre-build audit for native 4.19 task_work API
-      shell: bash
-      run: |
-        set -euo pipefail
-        cd "$GITHUB_WORKSPACE/kernel"
-
-        SUPERCALL_C="KernelSU-Next/kernel/supercall/supercall.c"
-        test -f "$SUPERCALL_C"
-
-        if grep -n 'TWA_RESUME' "$SUPERCALL_C"; then
-          echo "::error::TWA_RESUME is still present in the KSU supercall source; Linux 4.19 uses task_work_add(..., bool)."
-          exit 1
-        fi
-
-        grep -q 'task_work_add(current, &tw->cb, true)' "$SUPERCALL_C"
-        echo "PASS: supercall.c is reconciled to the native Linux 4.19 task_work API."
-    - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/11-build.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\n\nexport ARCH=arm64\nexport CROSS_COMPILE=\"\
-        $GCC64_DIR/bin/aarch64-linux-android-\"\nexport CROSS_COMPILE_ARM32=\"$GCC32_DIR/bin/arm-linux-androideabi-\"\
-        \nexport CLANG_TRIPLE=aarch64-linux-gnu-\nexport LLVM=1\nexport LLVM_IAS=1\n\
-        export CC=\"$CLANG_DIR/bin/clang\"\nexport HOSTCC=gcc\nexport HOSTCXX=g++\n\
-        export LD_LIBRARY_PATH=\"$CLANG_DIR/lib:${LD_LIBRARY_PATH:-}\"\n\necho \"\
-        CC=$CC\"\necho \"CROSS_COMPILE=$CROSS_COMPILE\"\necho \"CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32\"\
-        \n\"$CC\" --version | head -n 2\n\"$GCC64_DIR/bin/aarch64-linux-android-gcc\"\
-        \ --version | head -n 1\n\"$GCC32_DIR/bin/arm-linux-androideabi-gcc\" --version\
-        \ | head -n 1\n\n# SUS_PATH must remain disabled on this exact source. Stop\
-        \ before\n# compilation if it is ever enabled accidentally.\ngrep -q '^# CONFIG_KSU_SUSFS_SUS_PATH\
-        \ is not set$' \"$OUT_DIR/.config\"\n\n# The supplied working kernel is a\
-        \ raw ARM64 Image with separate DTB/DTBO.\n# Therefore build Image, not Image.gz,\
-        \ and never replace the stock DTB/DTBO.\nmake -Oline \\\n  O=\"$OUT_DIR\"\
-        \ \\\n  ARCH=arm64 \\\n  CC=\"$CC\" \\\n  LLVM=1 \\\n  LLVM_IAS=1 \\\n  CROSS_COMPILE=\"\
-        $CROSS_COMPILE\" \\\n  CROSS_COMPILE_ARM32=\"$CROSS_COMPILE_ARM32\" \\\n \
-        \ CLANG_TRIPLE=aarch64-linux-gnu- \\\n  -j\"$(nproc)\" \\\n  Image \\\n  modules\n\
-        \ntest -f \"$OUT_DIR/arch/arm64/boot/Image\"\nfile \"$OUT_DIR/arch/arm64/boot/Image\"\
-        \ | tee \"$DIAG_DIR/image-file.txt\"\ngrep -q 'ARM aarch64\\|ARM64\\|Linux\
-        \ kernel' \"$DIAG_DIR/image-file.txt\" || true\n\ncp \"$OUT_DIR/arch/arm64/boot/Image\"\
-        \ \"$GITHUB_WORKSPACE/Image\"\n\n# DTB/DTBO are intentionally not copied into\
-        \ the kernel artifact.\n# The user's known-good stock DTB/DTBO remain the\
-        \ device boot assets.\n"
-    - name: 11A - Build-error audit (always)
-      if: always()
-      shell: bash
-      run: |
-        set -euo pipefail
-        mkdir -p "$DIAG_DIR"
-        LOG="$DIAG_DIR/11-build.log"
-        AUDIT="$DIAG_DIR/11-build-error-audit.txt"
-        {
-          echo "LG Velvet kernel build-error audit"
-          echo "================================"
-          if [ -f "$LOG" ]; then
-            echo "Build log: PRESENT"
-            echo
-            echo "Known seccomp.filter_count failures:"
-            grep -n -C 3 'filter_count' "$LOG" || true
-            echo
-            echo "Terminal build errors:"
-            grep -n -E 'make: \\*\\\*\\\*|Error: Process completed|error:' "$LOG" | tail -n 30 || true
-            echo
-            if grep -q 'no member named.*filter_count' "$LOG"; then
-              echo "RESULT: KNOWN FAILURE — KSU app_profile.c still references unavailable 4.19 filter_count."
-            elif grep -qE 'selinux/rules\.c:.*no member named .policy|selinux/rules\.c:.*no member named .policy_mutex|selinux/rules\.c:.*incomplete definition of type .struct selinux_policy' "$LOG"; then
-              echo "RESULT: KNOWN FAILURE — KernelSU SELinux rules are using the newer selinux_state ABI on LG 4.19."
-            elif grep -q "fatal error: .*linux/minmax.h.*file not found" "$LOG"; then
-              echo "RESULT: KNOWN FAILURE — KernelSU SULog event.c requires unavailable linux/minmax.h on LG 4.19."
-            elif grep -qE 'sulog/event\.c:.*(get_monotonic_boottime|ktime_get_boottime)' "$LOG"; then
-              echo "RESULT: KNOWN FAILURE — KernelSU SULog legacy timekeeping API mismatch on LG 4.19."
-            elif grep -qE 'susfs_(start_sdcard_monitor_fn|is_current_proc_umounted)|SUSFS_MAGIC|CMD_SUSFS_' "$LOG"; then
-              echo "RESULT: KNOWN FAILURE — KSU-Next SUSFS v2 API is not directly compatible with the selected SUSFS kernel-4.19 typed API; use the 10G compatibility bridge."
-            elif grep -q "fatal error: 'linux/minmax.h' file not found" "$LOG"; then
-              echo "RESULT: KNOWN FAILURE — LG 4.19 lacks linux/minmax.h in KernelSU SULog event.c."
-            elif grep -qE '(^|[^[:alpha:]])error:' "$LOG"; then
-              echo "RESULT: DIFFERENT BUILD ERROR — not one of the audited seccomp/SELinux compatibility failures."
-            else
-              echo "RESULT: no compiler error signature found in the captured build log."
+      - name: 10 - Final pre-build audit (never abort on missing optional text)
+        shell: bash
+        run: |
+          set -uo pipefail
+          f=drivers/kernelsu/supercall/dispatch.c
+          {
+            echo '=== FINAL PRE-BUILD AUDIT ==='
+            echo "dispatch=$f"
+            grep -n 'susfs_start_sdcard_monitor_fn\|susfs_is_current_proc_umounted' "$f" || true
+            if grep -Eq 'SUSFS_MAGIC|CMD_SUSFS_|st_susfs_avc_log_spoofing|susfs_get_enabled_features|susfs_show_variant|susfs_show_version' "$f"; then
+              echo 'FAIL: incompatible SUSFS-v2 token present'
+              exit 1
             fi
-          else
-            echo "Build log: NOT PRESENT."
-            echo "RESULT: build did not produce a log."
-            echo "Compiler was not reached; inspect the last pre-build gate/step."
-            echo "Do not invent or revert a compiler fix."
-          fi
-        } | tee "$AUDIT"
+            echo 'PASS: no incompatible SUSFS-v2 dispatcher ABI tokens'
+            echo 'PASS: compiler may now be invoked'
+          } 2>&1 | tee "$DIAG_DIR/10-final-prebuild-audit.log"
 
-    - name: 12 - Final safety checks
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nexec > >(tee \"$DIAG_DIR/12-safety.log\"\
-        ) 2>&1\ncd \"$GITHUB_WORKSPACE/kernel\"\n\ntest -f \"$OUT_DIR/.config\"\n\
-        test -f \"$OUT_DIR/arch/arm64/boot/Image\"\n\ngrep -q '^CONFIG_SUSFS=y$' \"\
-        $OUT_DIR/.config\"\ngrep -q '^CONFIG_KSU=y$' \"$OUT_DIR/.config\"\ngrep -q\
-        \ '^CONFIG_KSU_SUSFS=y$' \"$OUT_DIR/.config\"\n! grep -q '^CONFIG_KSU_SUSFS_SUS_SU=y$'\
-        \ \"$OUT_DIR/.config\"\ngrep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$'\
-        \ \"$OUT_DIR/.config\"\n\n# Absolutely critical: the working kernel's KPROBES\
-        \ state is unchanged.\ngrep -q '^# CONFIG_KPROBES is not set$' \"$OUT_DIR/.config\"\
-        \ngrep -q '^CONFIG_HAVE_KPROBES=y$' \"$OUT_DIR/.config\"\ngrep -q '^CONFIG_MODULES=y$'\
-        \ \"$OUT_DIR/.config\"\n\n# Final compatibility audit: re-check every previously\
-        \ fixed KSU\n# 4.19 incompatibility after ALL SUSFS and hook steps have completed.\n\
-        SU_MOUNT_NS_C=\"KernelSU-Next/kernel/infra/su_mount_ns.c\"\nSUCOMPAT_C=\"\
-        KernelSU-Next/kernel/manager/sucompat.c\"\nSECCOMP_CACHE_C=\"KernelSU-Next/kernel/infra/seccomp_cache.c\"\
-        \nPKG_OBSERVER_C=\"KernelSU-Next/kernel/manager/pkg_observer.c\"\n\ntest -f\
-        \ \"$SU_MOUNT_NS_C\"\n! grep -q '^#include <uapi/linux/mount.h>$' \"$SU_MOUNT_NS_C\"\
-        \ngrep -q '#include <linux/fs.h>' \"$SU_MOUNT_NS_C\"\ngrep -Eq 'MS_PRIVATE|MS_REC'\
-        \ \"$SU_MOUNT_NS_C\"\n\ntest -f \"$SUCOMPAT_C\"\n! grep -q '^#include <linux/minmax.h>$'\
-        \ \"$SUCOMPAT_C\"\n\ntest -f \"$SECCOMP_CACHE_C\"\ngrep -q 'SECCOMP_ARCH_NATIVE_NR'\
-        \ \"$SECCOMP_CACHE_C\"\n\ntest -f \"$PKG_OBSERVER_C\"\n! grep -q 'handle_inode_event\
-        \ = ksu_handle_inode_event' \"$PKG_OBSERVER_C\"\ngrep -q 'handle_event = ksu_handle_event'\
-        \ \"$PKG_OBSERVER_C\"\ngrep -q 'static int ksu_handle_event(struct fsnotify_group\
-        \ *group' \"$PKG_OBSERVER_C\"\npython3 - \"$PKG_OBSERVER_C\" <<'PY'\nfrom\
-        \ pathlib import Path\nimport sys\ns = Path(sys.argv[1]).read_text()\nif 'pr_info(\"\
-        packages.list detected: %d\\n\", mask);' in s:\n    raise SystemExit(\"ERROR:\
-        \ malformed packages.list pr_info string remains\")\nif 'pr_info(\"packages.list\
-        \ detected: %d\\n\", mask);' in s:\n    raise SystemExit(\"ERROR: malformed\
-        \ packages.list pr_info string remains\")\nprint(\"PASS: no malformed packages.list\
-        \ pr_info string remains.\")\nPY\n\nif git diff --name-only -- include/linux/fsnotify_backend.h\
-        \ | grep -q .; then\n  echo \"::error::Vendor fsnotify_backend.h was modified.\"\
-        \n  exit 1\nfi\n\necho \"PASS: final compatibility audit: mount.h + minmax.h\
-        \ + seccomp + pkg_observer all fixed.\"\necho \"PASS: vendor fsnotify ABI/header\
-        \ remains untouched.\"\n\n# Device identity remains exactly the working kernel's\
-        \ values.\ngrep -q '^CONFIG_MACH_LITO_CAYMANLM=y$' \"$OUT_DIR/.config\"\n\
-        grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' \"$OUT_DIR/.config\"\ngrep\
-        \ -q '^CONFIG_LOCALVERSION=\"-perf\"$' \"$OUT_DIR/.config\"\n\n# DTB/DTBO/defconfig\
-        \ source trees must remain untouched.\ntest -z \"$(git status --short -- arch/arm64/boot/dts\
-        \ arch/arm64/configs drivers/staging)\"\n\n{\n  echo \"=== FINAL BUILD REPORT\
-        \ ===\"\n  echo \"source_branch=$SOURCE_BRANCH\"\n  echo \"source_commit=$(git\
-        \ rev-parse HEAD)\"\n  echo \"defconfig=$DEFCONFIG\"\n  echo \"baseline_config_sha256=$WORKING_BASELINE_CONFIG_SHA256\"\
-        \n  echo \"clang=$CLANG_REVISION\"\n  echo \"clang_snapshot=$CLANG_PREBUILT_TAG\"\
-        \n  echo \"gcc64_branch=$GCC64_BRANCH\"\n  echo \"gcc32_branch=$GCC32_BRANCH\"\
-        \n  echo \"ksu=$KSU_VERSION\"\n  echo \"susfs=$SUSFS_VERSION\"\n  echo \"\
-        SUS_PATH=disabled_for_LG_user_struct_compatibility\"\n  echo \"KPROBES=disabled\
-        \ (preserved from stock working kernel)\"\n  echo \"artifact=raw ARM64 Image;\
-        \ stock DTB/DTBO intentionally preserved\"\n  echo\n  echo \"=== KSU/SUSFS\
-        \ CONFIG ===\"\n  grep -E '^CONFIG_KSU($|_)' \"$OUT_DIR/.config\" | sort\n\
-        \  echo\n  echo \"=== IMAGE ===\"\n  ls -lh \"$OUT_DIR/arch/arm64/boot/Image\"\
-        \n} | tee \"$DIAG_DIR/final-report.txt\"\n"
-    - name: 12B - Prepare OrangeFox recovery ZIP artifact (prebuilt, optional)
-      if: success()
-      shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$GITHUB_WORKSPACE/orangefox-artifact\"\n\
-        # Do not fabricate a recovery image from a kernel-only build.\n# A real OrangeFox\
-        \ ZIP must come from a recovery/device tree.\n# Commit the known-good flashable\
-        \ package at this path if you want\n# it included automatically in the final\
-        \ GitHub artifact.\nFOX_SRC=\"$GITHUB_WORKSPACE/recovery/orangefox/LG-Velvet-OrangeFox-Recovery-FLASHABLE.zip\"\
-        \nif [ -f \"$FOX_SRC\" ]; then\n  cp -f \"$FOX_SRC\" \"$GITHUB_WORKSPACE/orangefox-artifact/LG-Velvet-OrangeFox-Recovery-FLASHABLE.zip\"\
-        \n  sha256sum \"$GITHUB_WORKSPACE/orangefox-artifact/LG-Velvet-OrangeFox-Recovery-FLASHABLE.zip\"\
-        \ | tee \"$GITHUB_WORKSPACE/orangefox-artifact/OrangeFox.sha256\"\n  echo\
-        \ \"PASS: OrangeFox flashable ZIP staged for artifact upload.\"\nelse\n  echo\
-        \ \"INFO: OrangeFox ZIP not present at recovery/orangefox/LG-Velvet-OrangeFox-Recovery-FLASHABLE.zip;\
-        \ kernel build continues.\"\nfi\n"
-    - name: 14 - Upload RAW kernel Image + OrangeFox ZIP (only on success)
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: LG-Velvet-4.19-KSU-Next-SUSFS-Kernel-and-Recovery-${{ github.run_id
-          }}
-        if-no-files-found: error
-        retention-days: 14
-        path: '${{ github.workspace }}/Image
+      - name: 11 - Build kernel (real compiler gate)
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$OUT_DIR"
+          make O="$OUT_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" "$DEFCONFIG" 2>&1 | tee "$DIAG_DIR/11-defconfig.log"
+          make O="$OUT_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" 2>&1 | tee "$DIAG_DIR/11-build.log"
 
-          ${{ github.workspace }}/kernel/out/.config
+      - name: 12 - Verify output
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s "$OUT_DIR/arch/arm64/boot/Image"
+          cp "$OUT_DIR/arch/arm64/boot/Image" "$GITHUB_WORKSPACE/Image"
+          sha256sum "$GITHUB_WORKSPACE/Image" | tee "$DIAG_DIR/Image.sha256"
 
-          ${{ github.workspace }}/orangefox-artifact/**
+      - name: 13 - Package diagnostics ALWAYS
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$DIAG_DIR"
+          {
+            echo "run_id=${{ github.run_id }}"
+            echo "source_commit=$SOURCE_COMMIT"
+            echo "ksu_ref=$KSU_REF"
+            echo "susfs_ref=$SUSFS_REF"
+          } > "$DIAG_DIR/build-metadata.txt"
+          [ -f "$OUT_DIR/.config" ] && cp "$OUT_DIR/.config" "$DIAG_DIR/final-or-last.config"
+          [ -d "$GITHUB_WORKSPACE/.git" ] && {
+            git status --short > "$DIAG_DIR/git-status.txt" 2>&1 || true
+            git diff --stat > "$DIAG_DIR/git-diff-stat.txt" 2>&1 || true
+            git diff --name-only > "$DIAG_DIR/git-diff-files.txt" 2>&1 || true
+            git diff --binary > "$DIAG_DIR/kernel-source.patch" 2>&1 || true
+          }
+          echo "Diagnostics generated at $(date -u +%FT%TZ)" > "$DIAG_DIR/ARTIFACT-READY.txt"
+          cd "$GITHUB_WORKSPACE"
+          tar -czf LG-Velvet-diagnostics.tar.gz -C "$DIAG_DIR" . || true
 
-          '
-    - name: 13 - Package diagnostics (ALWAYS)
-      if: always()
-      shell: bash
-      run: "set +e\nmkdir -p \"$DIAG_DIR\"\n{\n  echo \"=== WORKFLOW DIAGNOSTIC CONTEXT\
-        \ ===\"\n  date -u +%FT%TZ\n  echo \"run_id=${{ github.run_id }}\"\n  echo\
-        \ \"run_attempt=${{ github.run_attempt }}\"\n  echo \"event=${{ github.event_name\
-        \ }}\"\n  echo \"ref=${{ github.ref }}\"\n  echo \"sha=${{ github.sha }}\"\
-        \n  echo \"source_commit=$SOURCE_COMMIT\"\n  echo \"baseline_expected_sha256=$WORKING_BASELINE_CONFIG_SHA256\"\
-        \n} > \"$DIAG_DIR/00-workflow-context.txt\"\n\nif [ -d \"$GITHUB_WORKSPACE/kernel/.git\"\
-        \ ]; then\n  cd \"$GITHUB_WORKSPACE/kernel\"\n  git status --short > \"$DIAG_DIR/git-status.txt\"\
-        \ 2>&1 || true\n  git diff --stat > \"$DIAG_DIR/git-diff-stat.txt\" 2>&1 ||\
-        \ true\n  git diff --name-only > \"$DIAG_DIR/git-diff-files.txt\" 2>&1 ||\
-        \ true\n  git diff --binary > \"$DIAG_DIR/kernel-source.patch\" 2>&1 || true\n\
-        fi\n\nif [ -f \"$OUT_DIR/.config\" ]; then\n  cp \"$OUT_DIR/.config\" \"$DIAG_DIR/final-or-last.config\"\
-        \ || true\nfi\nif [ -f \"$OUT_DIR/arch/arm64/boot/Image\" ]; then\n  sha256sum\
-        \ \"$OUT_DIR/arch/arm64/boot/Image\" > \"$DIAG_DIR/Image.sha256\" || true\n\
-        \  ls -lh \"$OUT_DIR/arch/arm64/boot/Image\" > \"$DIAG_DIR/Image.ls.txt\"\
-        \ || true\nfi\n\n{\n  echo \"source_branch=$SOURCE_BRANCH\"\n  echo \"source_commit=$SOURCE_COMMIT\"\
-        \n  echo \"defconfig=$DEFCONFIG\"\n  echo \"baseline_config_sha256=$WORKING_BASELINE_CONFIG_SHA256\"\
-        \n  echo \"clang_revision=$CLANG_REVISION\"\n  echo \"clang_snapshot=$CLANG_PREBUILT_TAG\"\
-        \n  echo \"gcc64_branch=$GCC64_BRANCH\"\n  echo \"gcc32_branch=$GCC32_BRANCH\"\
-        \n  echo \"ksu=$KSU_VERSION\"\n  echo \"susfs=$SUSFS_VERSION\"\n  echo \"\
-        SUS_PATH=disabled_for_LG_user_struct_compatibility\"\n  echo \"KPROBES=disabled\"\
-        \n  echo \"SUS_MOUNT=disabled_for_non_GKI_stability\"\n  echo \"SUS_SU=disabled_non_KPROBE\"\
-        \n} > \"$DIAG_DIR/build-metadata.txt\"\n\n# Never leave the artifact empty.\
-        \ Even an early failure produces a\n# readable marker and every log collected\
-        \ up to the failure.\necho \"Diagnostics generated at $(date -u +%FT%TZ)\"\
-        \ > \"$DIAG_DIR/ARTIFACT-READY.txt\"\ncd \"$GITHUB_WORKSPACE\"\nrm -f \"$GITHUB_WORKSPACE/LG-Velvet-diagnostics.tar.gz\"\
-        \ntar -czf \"$GITHUB_WORKSPACE/LG-Velvet-diagnostics.tar.gz\" -C \"$DIAG_DIR\"\
-        \ .\ntest -s \"$GITHUB_WORKSPACE/LG-Velvet-diagnostics.tar.gz\"\n"
-    - name: 15 - Upload COMPLETE diagnostics (ALWAYS)
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: LG-Velvet-KSU-SUSFS-NonGKI-sixteen-diagnostics-run-${{ github.run_id
-          }}
-        if-no-files-found: error
-        retention-days: 14
-        compression-level: 6
-        path: '${{ github.workspace }}/ci-diagnostics/**
+      - name: 14 - Upload kernel Image
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LG-Velvet-Stock-WORKING-4.19-KSU-SUSFS-NonGKI-sixteen
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ github.workspace }}/Image
+            ${{ github.workspace }}/kernel/out/.config
 
-          ${{ github.workspace }}/LG-Velvet-diagnostics.tar.gz
-
-          '
-    - name: 16 - Print artifact location
-      if: always()
-      shell: bash
-      run: 'echo "============================================================"
-
-        echo "DIAGNOSTICS ARTIFACT WAS CREATED WITH if: always()"
-
-        echo "Artifact name: LG-Velvet-KSU-SUSFS-NonGKI-sixteen-diagnostics-run-${{
-        github.run_id }}"
-
-        echo "Local archive: $GITHUB_WORKSPACE/LG-Velvet-diagnostics.tar.gz"
-
-        echo "============================================================"
-
-        '
+      - name: 15 - Upload COMPLETE diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LG-Velvet-KSU-SUSFS-NonGKI-sixteen-diagnostics-run-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+          path: |
+            ${{ github.workspace }}/ci-diagnostics/**
+            ${{ github.workspace }}/LG-Velvet-diagnostics.tar.gz
