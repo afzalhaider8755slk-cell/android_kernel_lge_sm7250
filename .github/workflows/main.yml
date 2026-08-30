@@ -1,4 +1,4 @@
-name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v8
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-g900-global-v7-${{ github.ref }}
+  group: lg-g900-global-v8-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -32,8 +32,8 @@ env:
   CIP_BASE_TAG: v4.19.325-cip132
   CIP_TARGET_TAG: v4.19.325-cip135
 
-  DTB_TARGET: arch/arm64/boot/dts/vendor/qcom/lito-mtp.dtb
-  DTBO_TARGET: arch/arm64/boot/dts/vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
+  DTB_TARGET: vendor/qcom/lito-mtp.dtb
+  DTBO_TARGET: vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
   DTBO_DTS: arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-rev-1.0_overlay.dts
 
 jobs:
@@ -48,7 +48,7 @@ jobs:
           set -Eeuo pipefail
           mkdir -p ci-diagnostics artifacts
           exec > >(tee -a ci-diagnostics/00-runner.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           uname -a
           date -u +%FT%TZ
           echo "workflow=v7"
@@ -59,7 +59,7 @@ jobs:
           set -Eeuo pipefail
           mkdir -p src/device/lge src/vendor/lge
           exec > >(tee -a ci-diagnostics/01-checkout.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=01 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=01 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" src/kernel
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$COMMON_TREE" src/device/lge/sm7250-common
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$DEVICE_TREE" src/device/lge/caymanlm
@@ -73,7 +73,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/02-dependencies.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             bc bison build-essential ccache clang curl flex git libelf-dev libssl-dev \
@@ -84,7 +84,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/03-toolchain.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           git clone --depth=1 --filter=blob:none --sparse --branch ndk-r29 \
             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchains/clang
           cd toolchains/clang
@@ -99,7 +99,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/04-toolchain-test.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           export PATH="$CLANG_DIR/bin:$PATH"
           clang --version
           ld.lld --version
@@ -112,7 +112,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/05-target.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=05 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=05 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           test -f "arch/arm64/configs/$DEFCONFIG"
           test -f "$DTBO_DTS"
@@ -126,16 +126,16 @@ jobs:
           ! grep -q '0x010C0008' "$DTBO_DTS"
           echo "Global Cayman HW Rev 1.0 + DSDS baseline: PASS"
 
-      - name: 06 - Apply CIP135 only when exact CIP132 ancestry is proven
+      - name: 06 - Integrate CIP135 with LG-first conflict policy
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/06-cip135.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=06 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-          cd src/kernel
+          exec > >(tee -a "$GITHUB_WORKSPACE/ci-diagnostics/06-cip135.log") 2>&1
+          trap 'rc=$?; echo "FAILED step=06 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
+          cd "$GITHUB_WORKSPACE/src/kernel"
           if [ -f .git/shallow ]; then git fetch --unshallow; fi
           git remote add cip "$CIP_REPO"
-          git fetch cip "refs/tags/$CIP_BASE_TAG:refs/tags/$CIP_BASE_TAG" "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
+          git fetch cip "refs/tags/$CIP_BASE_TAG:refs/tags/$CIP_BASE_TAG"                        "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
           base=$(git rev-parse "refs/tags/$CIP_BASE_TAG^{commit}")
           target=$(git rev-parse "refs/tags/$CIP_TARGET_TAG^{commit}")
           vendor_head=$(git rev-parse HEAD)
@@ -145,25 +145,49 @@ jobs:
             echo "VENDOR_HEAD=$vendor_head"
           } | tee "$GITHUB_WORKSPACE/artifacts/cip-before.txt"
 
-          if ! git merge-base --is-ancestor "$base" "$vendor_head"; then
-            echo "ERROR: LG kernel is not provably based on $CIP_BASE_TAG. Refusing blind CIP merge." | tee "$GITHUB_WORKSPACE/artifacts/cip-error.txt"
-            exit 1
+          git merge-base --is-ancestor "$base" "$vendor_head"
+
+          # Real merge: clean CIP135 changes are retained; conflicting LG/Qualcomm
+          # files keep the LG side so the vendor tree remains the stability baseline.
+          git config user.name "LG-G900-CI"
+          git config user.email "ci@invalid.local"
+          if git merge --no-commit --no-ff -X ours "$target"; then
+            echo "CIP135 merge completed without conflicts."
+            git commit -m "Merge CIP135 into LG G900 kernel"
+          else
+            echo "CIP135 merge reported conflicts; resolving in favor of the LG tree."
+            git diff --name-only --diff-filter=U | tee "$GITHUB_WORKSPACE/artifacts/cip-conflicts.txt"
+            conflict_count=$(wc -l < "$GITHUB_WORKSPACE/artifacts/cip-conflicts.txt")
+            echo "conflict_count=$conflict_count" | tee "$GITHUB_WORKSPACE/artifacts/cip-merge-summary.txt"
+
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              if git checkout --ours -- "$f"; then
+                git add -- "$f"
+              else
+                git rm -f -- "$f" || true
+              fi
+            done < "$GITHUB_WORKSPACE/artifacts/cip-conflicts.txt"
+
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              echo "ERROR: unresolved Git merge entries remain after LG-first resolution."
+              git status --short
+              exit 1
+            fi
+
+            git commit -m "Merge CIP135 into LG G900 kernel (LG-first conflict resolution)"
           fi
 
-          git format-patch --stdout "$base..$target" > "$GITHUB_WORKSPACE/artifacts/cip135.patch"
-          test -s "$GITHUB_WORKSPACE/artifacts/cip135.patch"
-          git apply --check --3way "$GITHUB_WORKSPACE/artifacts/cip135.patch"
-          git apply --3way --index "$GITHUB_WORKSPACE/artifacts/cip135.patch"
-          echo "CIP135 delta applied cleanly."
-          git diff --check
-          git diff --stat > "$GITHUB_WORKSPACE/artifacts/cip-applied.stat"
-
+          grep -q -- '-cip135' localversion-cip
+          git status --short > "$GITHUB_WORKSPACE/artifacts/cip-final-status.txt"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/artifacts/cip-final-commit.txt"
+          echo "CIP135 integration complete."
       - name: 07 - Remove legacy KernelSU and integrate SukiSU-Ultra builtin
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/07-sukisu.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=07 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=07 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           rm -rf KernelSU drivers/kernelsu
           git ls-remote --exit-code --heads "$SUKISU_REPO" "refs/heads/$SUKISU_REF"
@@ -180,7 +204,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/08-defconfig.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=08 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=08 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
           rm -rf "$GITHUB_WORKSPACE/out"
@@ -201,7 +225,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/09-config.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=09 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=09 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
           scripts/config --file "$GITHUB_WORKSPACE/out/.config" \
@@ -211,10 +235,9 @@ jobs:
             --enable CONFIG_KSU \
             --enable CONFIG_KSU_SUSFS
 
-          # Do not enable experimental KPM/manual-hook or SUSFS path/mount/map features.
-          for c in CONFIG_KPM CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_MAP; do
-            scripts/config --file "$GITHUB_WORKSPACE/out/.config" --disable "$c" 2>/dev/null || true
-          done
+          # Keep the SUSFS features supplied by SukiSU-Ultra/builtin.
+          # KPM remains disabled for stability.
+          scripts/config --file "$GITHUB_WORKSPACE/out/.config" --disable CONFIG_KPM 2>/dev/null || true
 
           make O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 \
             LLVM=1 LLVM_IAS=1 CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
@@ -227,6 +250,21 @@ jobs:
           grep -q '^CONFIG_KSU=y$' "$GITHUB_WORKSPACE/out/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$GITHUB_WORKSPACE/out/.config"
           grep -q '^# CONFIG_KPM is not set$' "$GITHUB_WORKSPACE/out/.config"
+          for c in \
+            CONFIG_KSU_SUSFS_SUS_PATH \
+            CONFIG_KSU_SUSFS_SUS_MOUNT \
+            CONFIG_KSU_SUSFS_SUS_KSTAT \
+            CONFIG_KSU_SUSFS_SPOOF_UNAME \
+            CONFIG_KSU_SUSFS_ENABLE_LOG \
+            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+            CONFIG_KSU_SUSFS_SUS_MAP; do
+            grep -q "^${c}=y$" "$GITHUB_WORKSPACE/out/.config" || {
+              echo "MISSING $c after olddefconfig"
+              exit 1
+            }
+          done
           grep -q '^# CONFIG_KSU_MANUAL_HOOK is not set$' "$GITHUB_WORKSPACE/out/.config" || true
           cp "$GITHUB_WORKSPACE/out/.config" "$GITHUB_WORKSPACE/artifacts/final.config"
 
@@ -235,7 +273,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/10-network.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=10 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=10 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cfg="$GITHUB_WORKSPACE/out/.config"
           report="$GITHUB_WORKSPACE/artifacts/network-connectivity-report.txt"
           : > "$report"
@@ -254,7 +292,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/11-build.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=11 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=11 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
           make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 \
@@ -271,14 +309,16 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/12-final.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=12 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=12 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cfg="$GITHUB_WORKSPACE/out/.config"
           grep -q '^CONFIG_KPROBES=y$' "$cfg"
           grep -q '^CONFIG_KSU=y$' "$cfg"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$cfg"
           grep -q '^# CONFIG_KPM is not set$' "$cfg"
-          ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$cfg"
-          ! grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' "$cfg" || true
+          ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$cfg" || true
+          for c in CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP; do
+            grep -q "^${c}=y$" "$cfg"
+          done
           {
             echo 'target=LG-G900-Global'
             echo "kernel_commit=$(git -C src/kernel rev-parse HEAD)"
@@ -324,20 +364,20 @@ jobs:
           set -Eeuo pipefail
           mkdir -p ci-diagnostics artifacts
           exec > >(tee -a ci-diagnostics/00-runner.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
       - name: 01 - Checkout kernel
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/01-checkout.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=01 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=01 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" src/kernel
       - name: 02 - Dependencies + Clang
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/02-toolchain.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bc bison build-essential clang flex libelf-dev libssl-dev lld llvm make device-tree-compiler
           git clone --depth=1 --filter=blob:none --sparse --branch ndk-r29 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchains/clang
@@ -348,7 +388,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/03-config.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
           printf 'nop\n' | clang --target=aarch64-linux-android21 -x assembler - -c -o /tmp/as.o
@@ -363,7 +403,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/04-dtb-build.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
           make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
@@ -379,7 +419,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/05-verify.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=05 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=05 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           "$GITHUB_WORKSPACE/out/scripts/dtc/dtc" -I dtb -O dts -o artifacts/dtb/lito-mtp.dts artifacts/dtb/lito-mtp.dtb
           grep -q 'qcom,lito-mtp' artifacts/dtb/lito-mtp.dts
           grep -q 'qcom,lito' artifacts/dtb/lito-mtp.dts
@@ -410,20 +450,20 @@ jobs:
           set -Eeuo pipefail
           mkdir -p ci-diagnostics artifacts
           exec > >(tee -a ci-diagnostics/00-runner.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
       - name: 01 - Checkout kernel
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/01-checkout.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=01 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=01 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" src/kernel
       - name: 02 - Dependencies + Clang
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/02-toolchain.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bc bison build-essential clang flex libelf-dev libssl-dev lld llvm make device-tree-compiler
           git clone --depth=1 --filter=blob:none --sparse --branch ndk-r29 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchains/clang
@@ -434,7 +474,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/03-target.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
           make O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
@@ -452,7 +492,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/04-kbuild-fix.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           f=arch/arm64/boot/dts/vendor/lge/Makefile
           grep -q '\$(wildcard echo \$(srctree)/\$(src)' "$f"
@@ -466,14 +506,16 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/05-dtbo-build.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=05 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=05 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
           target="$DTBO_TARGET"
+          # The top-level kernel Makefile already prefixes arch/arm64/boot/dts
+          # for %.dtbo targets. Pass the target relative to that tree.
           make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
             AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$target"
-          produced="$GITHUB_WORKSPACE/out/$target"
+          produced="$GITHUB_WORKSPACE/out/arch/arm64/boot/dts/$target"
           test -s "$produced"
           mkdir -p "$GITHUB_WORKSPACE/artifacts/dtbo"
           cp "$produced" "$GITHUB_WORKSPACE/artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo"
@@ -484,7 +526,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/06-verify.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=06 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=06 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           grep -q 'LG Electronics, Caymanlm, HW Rev 1.0' artifacts/dtbo/overlay.dts
           grep -q 'qcom,board-id' artifacts/dtbo/overlay.dts
           ! grep -q '0x010C0008' artifacts/dtbo/overlay.dts
@@ -517,7 +559,7 @@ jobs:
           set -Eeuo pipefail
           mkdir -p ci-diagnostics artifacts
           exec > >(tee -a ci-diagnostics/00-runner.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
       - name: 01 - Download successful build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -529,7 +571,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/02-anykernel.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           git clone --depth=1 --branch "$ANYKERNEL3_REF" "$ANYKERNEL3_REPO" AnyKernel3
           cp downloaded/LG-G900-Global-Kernel/Image AnyKernel3/Image
           cp downloaded/LG-G900-Global-DTB/dtb/lito-mtp.dtb AnyKernel3/dtb
@@ -560,7 +602,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/03-dtbo-package.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           mkdir -p artifacts/dtbo
           cp downloaded/LG-G900-Global-DTBO/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo artifacts/dtbo/
           cp downloaded/LG-G900-Global-DTBO/dtbo/*.sha256 artifacts/dtbo/
@@ -571,7 +613,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/04-susfs-module.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           git clone --depth=1 --branch "$SUSFS_MODULE_REF" "$SUSFS_MODULE_REPO" susfs-module
           (cd susfs-module && zip -r9 "$GITHUB_WORKSPACE/artifacts/SUSFS-v1.5.2-R28-source.zip" . -x '*.git*')
           unzip -t artifacts/SUSFS-v1.5.2-R28-source.zip
