@@ -1,4 +1,4 @@
-name: LG Velvet 5G - WORKING 4.19 Non-GKI + KernelSU v0.9.5 + SUSFS 1.4.2 (v8)
+name: LG Velvet 5G - WORKING 4.19 Non-GKI + SukiSU-Ultra + SUSFS 1.4.2 + CIP135 (Global LM-G900)
 
 on:
   # Automatic run: any commit/upload to this repository triggers the build.
@@ -26,12 +26,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-velvet-working-4.19-ksu-susfs-${{ github.ref }}
+  group: lg-velvet-working-4.19-sukisu-susfs-cip135-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build WORKING 4.19 Non-GKI + KSU + SUSFS
+    name: Build WORKING 4.19 Non-GKI + SukiSU-Ultra + SUSFS + CIP135
     runs-on: ubuntu-22.04
     timeout-minutes: 150
 
@@ -41,9 +41,15 @@ jobs:
       SOURCE_COMMIT: 6f4cab15a4e8f5e3400e95d17517fd8b24b37b49
       DEFCONFIG: ${{ github.event_name == 'workflow_dispatch' && inputs.defconfig || 'vendor/caymanlm_defconfig' }}
 
-      # ONLY these two functional additions are intended.
-      KSU_VERSION: v0.9.5
+      # ONLY the three requested changes are intended.
+      SUKISU_BRANCH: builtin
+      SUKISU_COMMIT: 5a2bb7e5813002ccaabe02fa864cfb2dde6b5109
+      SUKISU_VERSION: 4.1.x-builtin
       SUSFS_VERSION: 1.4.2-kernel-4.19
+      CIP_BASE_TAG: v4.19.325-cip132
+      CIP_TARGET_TAG: v4.19.325-cip135
+      TARGET_MODEL: LM-G900
+      TARGET_REGION: Global
 
       # Exact toolchain family used by the current WORKING build.
       CLANG_REVISION: clang-r563880c
@@ -709,50 +715,73 @@ jobs:
           echo "PASS: baseline SHA256 matches $WORKING_BASELINE_CONFIG_SHA256"
           echo "PASS: KPROBES remains disabled in pristine baseline."
 
-      - name: 05 - Integrate ONLY KernelSU v0.9.5 (manual Non-GKI path)
+      - name: 05 - Replace cip132 with latest CIP 4.19.325-cip135 (ONLY CIP delta)
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/05-ksu.log") 2>&1
+          exec > >(tee "$DIAG_DIR/05-cip.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # v0.9.5 is the last official KernelSU release supporting non-GKI.
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
-            | bash -s "$KSU_VERSION"
+          rm -rf "$GITHUB_WORKSPACE/cip-upstream"
+          git clone --filter=blob:none --no-checkout --depth=1             --branch "$CIP_TARGET_TAG"             https://gitlab.com/cip-project/cip-kernel/linux-cip.git             "$GITHUB_WORKSPACE/cip-upstream"
 
-          test -d KernelSU/kernel
-          test -e drivers/kernelsu/Kconfig
-          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
-          grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
+          cd "$GITHUB_WORKSPACE/cip-upstream"
+          git fetch --no-tags --depth=1 origin             "refs/tags/$CIP_BASE_TAG:refs/tags/$CIP_BASE_TAG"
+          git cat-file -e "$CIP_BASE_TAG^{commit}"
+          git cat-file -e "$CIP_TARGET_TAG^{commit}"
 
-          cd KernelSU
-          test "$(git describe --tags --exact-match 2>/dev/null || true)" = "$KSU_VERSION"
-          git describe --tags --always
+          CIP_BASE_SHA="$(git rev-parse "$CIP_BASE_TAG^{commit}")"
+          CIP_TARGET_SHA="$(git rev-parse "$CIP_TARGET_TAG^{commit}")"
+          echo "cip_base=$CIP_BASE_TAG ($CIP_BASE_SHA)"
+          echo "cip_target=$CIP_TARGET_TAG ($CIP_TARGET_SHA)"
 
-      - name: 06 - Download and VERIFY SUSFS 1.4.2 for kernel 4.19
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/06-susfs.log") 2>&1
-          cd "$GITHUB_WORKSPACE"
-          rm -rf susfs4ksu
+          cd "$GITHUB_WORKSPACE/kernel"
 
-          git clone --depth=1 --branch "$SUSFS_VERSION" \
-            https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          # Only the official CIP132->CIP135 delta is applied. We do not
+          # replace the vendor tree with a CIP tree and do not use ours/theirs.
+          git -C "$GITHUB_WORKSPACE/cip-upstream" diff --binary             "$CIP_BASE_TAG" "$CIP_TARGET_TAG" > "$RUNNER_TEMP/cip132-to-cip135.patch"
+          git -C "$GITHUB_WORKSPACE/cip-upstream" diff --name-only             "$CIP_BASE_TAG" "$CIP_TARGET_TAG" | sort -u > "$DIAG_DIR/cip135.files"
 
-          test -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
-          test -f susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
-          test -f susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h
-          test -f susfs4ksu/kernel_patches/fs/susfs.c
-          test -f susfs4ksu/kernel_patches/fs/sus_su.c
-          test -f susfs4ksu/kernel_patches/include/linux/susfs.h
-          test -f susfs4ksu/kernel_patches/include/linux/sus_su.h
+          test -s "$RUNNER_TEMP/cip132-to-cip135.patch"
+          test -s "$DIAG_DIR/cip135.files"
 
-          echo "susfs_tag=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
-          echo "susfs_commit=$(git -C susfs4ksu rev-parse HEAD)" | tee -a "$DIAG_DIR/susfs-version.txt"
+          git apply --3way "$RUNNER_TEMP/cip132-to-cip135.patch"
 
+          test "$(cat localversion-cip)" = "-cip135"
+          echo "PASS: official CIP132 -> CIP135 delta applied only."
+            - name: 06 - Replace KernelSU with SukiSU-Ultra (builtin Non-GKI path)
+              shell: bash
+              run: |
+                set -euo pipefail
+                mkdir -p "$DIAG_DIR"
+                exec > >(tee "$DIAG_DIR/06-sukisu.log") 2>&1
+                cd "$GITHUB_WORKSPACE/kernel"
+
+                rm -rf KernelSU drivers/kernelsu
+                git clone --depth=1 --branch "$SUKISU_BRANCH"             https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
+                cd KernelSU
+                git fetch --no-tags --depth=1 origin "$SUKISU_COMMIT"
+                git checkout --detach "$SUKISU_COMMIT"
+
+                test "$(git rev-parse HEAD)" = "$SUKISU_COMMIT"
+                test -f kernel/Kconfig
+                test -f kernel/Makefile
+
+                cd "$GITHUB_WORKSPACE/kernel"
+                ln -s "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu
+                printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+                printf 'source "drivers/kernelsu/Kconfig"\n' >> drivers/Kconfig
+
+                grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
+                grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+                test -L drivers/kernelsu
+                test "$(readlink drivers/kernelsu)" = "$(realpath --relative-to=drivers KernelSU/kernel)"
+
+                echo "sukisu_commit=$(git -C KernelSU rev-parse HEAD)"
+                echo "sukisu_branch=$SUKISU_BRANCH"
+                echo "target_model=$TARGET_MODEL"
+                echo "target_region=$TARGET_REGION"
       - name: 07 - Apply SUSFS 1.4.2 safely for this WORKING 4.19 source (sanitized patch)
         shell: bash
         run: |
@@ -972,6 +1001,7 @@ jobs:
           # KPROBES stays exactly as the supplied WORKING kernel: disabled.
           scripts/config --file "$OUT_DIR/.config" \
             --enable CONFIG_KSU \
+            --enable CONFIG_KSU_MANUAL_HOOK \
             --enable CONFIG_KSU_SUSFS \
             --disable CONFIG_KSU_SUSFS_SUS_PATH \
             --enable CONFIG_KSU_SUSFS_SUS_KSTAT \
@@ -979,7 +1009,8 @@ jobs:
             --enable CONFIG_KSU_SUSFS_TRY_UMOUNT \
             --enable CONFIG_KSU_SUSFS_ENABLE_LOG \
             --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
-            --disable CONFIG_KSU_SUSFS_SUS_SU
+            --disable CONFIG_KSU_SUSFS_SUS_SU \
+            --disable CONFIG_KPM
 
           # SUS_PATH compatibility:
           # SUSFS 1.4.2-kernel-4.19 writes new->user->android_kabi_reserved1
@@ -1016,6 +1047,8 @@ jobs:
           cp "$OUT_DIR/.config" "$DIAG_DIR/final.config"
 
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KPM is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y$' "$OUT_DIR/.config"
@@ -1068,7 +1101,7 @@ jobs:
           echo "PASS: no non-KSU configuration drift."
           echo "PASS: KPROBES remains disabled; no KPROBE config was added."
 
-      - name: 10 - Verify source scope (only KSU/SUSFS integration files changed)
+      - name: 10 - Verify source scope (ONLY SukiSU/SUSFS/hooks + CIP132->CIP135)
         shell: bash
         run: |
           set -euo pipefail
@@ -1079,35 +1112,46 @@ jobs:
           git status --short > "$DIAG_DIR/source-status.txt"
           git diff --stat > "$DIAG_DIR/source-diff-stat.txt"
 
-          # These device/boot configuration sources are forbidden to change.
-          if git status --short -- \
-              arch/arm64/boot/dts \
-              arch/arm64/configs \
-              drivers/staging \
-              | grep -q .; then
+          if git status --short -- arch/arm64/boot/dts arch/arm64/configs drivers/staging | grep -q .; then
             echo "::error::Device DT/DTBO/defconfig sources changed."
             git status --short -- arch/arm64/boot/dts arch/arm64/configs drivers/staging
             exit 1
           fi
 
-          echo "=== MODIFIED FILES ==="
-          git status --short
+          test -s "$DIAG_DIR/cip135.files"
 
-          # Strict source-scope allowlist. Only KernelSU/SUSFS integration and
-          # the documented non-KPROBE hook sites may differ from the WORKING tree.
-          allowed_files='^(KernelSU/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$|drivers/input/input.c$|fs/Makefile$|fs/dcache.c$|fs/devpts/inode.c$|fs/exec.c$|fs/inode.c$|fs/namei.c$|fs/open.c$|fs/overlayfs/inode.c$|fs/overlayfs/readdir.c$|fs/overlayfs/super.c$|fs/proc/task_mmu.c$|fs/proc_namespace.c$|fs/read_write.c$|fs/readdir.c$|fs/stat.c$|fs/statfs.c$|include/linux/sched.h$|kernel/sys.c$|fs/susfs.c$|include/linux/susfs.h$|fs/sus_su.c$|include/linux/sus_su.h$)$'
-          unexpected="$(git status --short | sed -E 's/^.. //g' | grep -Ev "$allowed_files" || true)"
-          if [ -n "$unexpected" ]; then
-            echo "::error::Unexpected source files changed (outside KSU/SUSFS integration scope):"
-            printf '%s\n' "$unexpected"
+          is_cip_file() { grep -Fxq "$1" "$DIAG_DIR/cip135.files"; }
+          is_fixed_integration_file() {
+            case "$1" in
+              drivers/Kconfig|drivers/Makefile|drivers/input/input.c|fs/Makefile|              fs/dcache.c|fs/devpts/inode.c|fs/exec.c|fs/inode.c|fs/namei.c|fs/open.c|              fs/overlayfs/inode.c|fs/overlayfs/readdir.c|fs/overlayfs/super.c|              fs/proc/task_mmu.c|fs/proc_namespace.c|fs/read_write.c|fs/readdir.c|              fs/stat.c|fs/statfs.c|include/linux/sched.h|kernel/sys.c|fs/susfs.c|              include/linux/susfs.h|fs/sus_su.c|include/linux/sus_su.h)
+                return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          unexpected=0
+          while IFS= read -r entry; do
+            path="${entry:3}"
+            [ -n "$path" ] || continue
+            case "$path" in KernelSU/*) continue ;; esac
+            if is_cip_file "$path" || is_fixed_integration_file "$path"; then
+              continue
+            fi
+            echo "::error::Unexpected source change: $path"
+            unexpected=1
+          done < <(git status --short)
+
+          if [ "$unexpected" -ne 0 ]; then
+            echo "::error::Source scope violation. Build stopped."
             exit 1
           fi
 
-          # Expected integration files must exist.
+          test -L drivers/kernelsu
           test -f fs/susfs.c
           test -f include/linux/susfs.h
           test -d KernelSU/kernel
 
+          echo "PASS: source scope is limited to SukiSU/SUSFS/manual hooks and official CIP132->CIP135 files."
       - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
         shell: bash
         run: |
@@ -1201,13 +1245,17 @@ jobs:
             echo "clang_snapshot=$CLANG_PREBUILT_TAG"
             echo "gcc64_branch=$GCC64_BRANCH"
             echo "gcc32_branch=$GCC32_BRANCH"
-            echo "ksu=$KSU_VERSION"
+            echo "sukisu_branch=$SUKISU_BRANCH"
+            echo "sukisu_commit=$SUKISU_COMMIT"
+            echo "cip=$CIP_TARGET_TAG"
+            echo "target_model=$TARGET_MODEL"
+            echo "target_region=$TARGET_REGION"
             echo "susfs=$SUSFS_VERSION"
             echo "SUS_PATH=disabled_for_LG_user_struct_compatibility"
             echo "KPROBES=disabled (preserved from stock working kernel)"
             echo "artifact=raw ARM64 Image; stock DTB/DTBO intentionally preserved"
             echo
-            echo "=== KSU/SUSFS CONFIG ==="
+            echo "=== SukiSU-Ultra/SUSFS CONFIG ==="
             grep -E '^CONFIG_KSU($|_)' "$OUT_DIR/.config" | sort
             echo
             echo "=== IMAGE ==="
@@ -1257,7 +1305,11 @@ jobs:
             echo "clang_snapshot=$CLANG_PREBUILT_TAG"
             echo "gcc64_branch=$GCC64_BRANCH"
             echo "gcc32_branch=$GCC32_BRANCH"
-            echo "ksu=$KSU_VERSION"
+            echo "sukisu_branch=$SUKISU_BRANCH"
+            echo "sukisu_commit=$SUKISU_COMMIT"
+            echo "cip=$CIP_TARGET_TAG"
+            echo "target_model=$TARGET_MODEL"
+            echo "target_region=$TARGET_REGION"
             echo "susfs=$SUSFS_VERSION"
             echo "SUS_PATH=disabled_for_LG_user_struct_compatibility"
             echo "KPROBES=disabled"
@@ -1277,7 +1329,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: LG-Velvet-Stock-WORKING-4.19-KSU-SUSFS-NonGKI-sixteen
+          name: LG-Velvet-Global-LM-G900-WORKING-4.19-SukiSU-SUSFS-CIP135-NonGKI-sixteen
           if-no-files-found: error
           retention-days: 14
           path: |
@@ -1288,7 +1340,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LG-Velvet-KSU-SUSFS-NonGKI-sixteen-diagnostics-run-${{ github.run_id }}
+          name: LG-Velvet-SukiSU-SUSFS-CIP135-LM-G900-diagnostics-run-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
@@ -1302,6 +1354,6 @@ jobs:
         run: |
           echo "============================================================"
           echo "DIAGNOSTICS ARTIFACT WAS CREATED WITH if: always()"
-          echo "Artifact name: LG-Velvet-KSU-SUSFS-NonGKI-sixteen-diagnostics-run-${{ github.run_id }}"
+          echo "Artifact name: LG-Velvet-SukiSU-SUSFS-CIP135-LM-G900-diagnostics-run-${{ github.run_id }}"
           echo "Local archive: $GITHUB_WORKSPACE/LG-Velvet-diagnostics.tar.gz"
           echo "============================================================"
