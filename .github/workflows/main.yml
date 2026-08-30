@@ -1,4 +1,4 @@
-name: LM-G900 Kernel + DTBO Fixed
+name: LM-G900 Android 16 QPR2 - Full Feature Build
 
 on:
   workflow_dispatch:
@@ -10,102 +10,151 @@ env:
   DEVICE: LM-G900
   CODENAME: caymanlm
   DEFCONFIG: vendor/caymanlm_defconfig
-  KERNEL_OUT: kernel/out
-  DTBO_OUT: dtbo/out
-  CLANG_VERSION: r510928
-  FEATURES: SukiSU-Ultra+KPM+SUSFS+WALT+SchedTune+ZRAM+LTO
-  HARDWARE: Fingerprint+Vibration+DualSIM+Audio+VoWiFi
+  ARCH: arm64
+  OUT: out
   ANDROID_TARGET: Android 16 QPR2 GSI / API 36
+  EXPECTED_KERNEL: 4.19.325-cip135
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout
+      - name: Checkout exact source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison build-essential flex git libssl-dev \
-            libelf-dev lz4 cpio rsync unzip zip python3
+            bc bison build-essential ccache flex \
+            libelf-dev libssl-dev lz4 cpio rsync \
+            python3 python3-pip unzip zip
 
-      - name: Setup clang
+      # DO NOT replace, regenerate, or reset the source tree here.
+      # The previously fixed source state is the baseline.
+      - name: Baseline safety guard
+        shell: bash
         run: |
-          set -e
-          mkdir -p "$HOME/clang"
-          curl -L --fail --retry 3 \
-            "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-Linux-X86_64.tar.xz" \
-            -o "$HOME/clang/llvm.tar.xz"
-          tar -xf "$HOME/clang/llvm.tar.xz" -C "$HOME/clang"
-          echo "CLANG_BIN=$HOME/clang/LLVM-20.1.8-Linux-X86_64/bin" >> "$GITHUB_ENV"
-          echo "$HOME/clang/LLVM-20.1.8-Linux-X86_64/bin" >> "$GITHUB_PATH"
+          set -euo pipefail
+          git status --short
+          test -d arch/arm64
+          test -f Makefile
+          test -f "arch/arm64/configs/$DEFCONFIG"
+          echo "Baseline source present: OK"
 
-      - name: Preserve DTBO fix only
+      - name: Preserve and verify DTBO Makefile fix
+        shell: bash
         run: |
-          set -e
-          FILE="arch/arm64/boot/dts/vendor/lge/Makefile"
-          test -f "$FILE"
-          python3 - "$FILE" <<'PY'
+          set -euo pipefail
+          F="arch/arm64/boot/dts/vendor/lge/Makefile"
+          test -f "$F"
+
+          python3 - "$F" <<'PY'
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
           s = p.read_text()
-          old = '$(notdir $(wildcard echo $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))'
-          new = '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))'
-          if old in s:
-              s = s.replace(old, new)
-          p.write_text(s)
+          bad = '$(notdir $(wildcard echo $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))'
+          good = '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))'
+          if bad in s:
+              s = s.replace(bad, good)
+              p.write_text(s)
           PY
 
-      - name: Setup 5 - normalize defconfig target
+          grep -Fq '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))' "$F"
+          ! grep -Fq 'wildcard echo' "$F"
+
+      - name: Setup 5 - permanent defconfig path fix
         shell: bash
         run: |
           set -euo pipefail
 
-          # IMPORTANT:
-          # make's defconfig target is relative to arch/arm64/configs.
-          # Never pass arch/arm64/configs/... as the target.
-          DEFCONFIG_TARGET="${DEFCONFIG#arch/arm64/configs/}"
-          DEFCONFIG_TARGET="${DEFCONFIG_TARGET#configs/}"
-          DEFCONFIG_TARGET="${DEFCONFIG_TARGET#/}"
+          # Kbuild resolves the argument relative to arch/arm64/configs.
+          # Therefore the target MUST be vendor/caymanlm_defconfig,
+          # never arch/arm64/configs/vendor/caymanlm_defconfig.
+          TARGET="${DEFCONFIG#arch/arm64/configs/}"
+          TARGET="${TARGET#configs/}"
+          TARGET="${TARGET#/}"
 
-          case "$DEFCONFIG_TARGET" in
-            arch/arm64/configs/*|/../*|../*)
-              echo "Invalid defconfig target: $DEFCONFIG_TARGET"
+          test "$TARGET" = "vendor/caymanlm_defconfig"
+          test -f "arch/arm64/configs/$TARGET"
+
+          echo "DEFCONFIG_TARGET=$TARGET" >> "$GITHUB_ENV"
+
+      - name: Clang toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/toolchains"
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "$HOME/toolchains/clang"
+          CLANG_BIN="$(find "$HOME/toolchains/clang" -type d -path '*/bin' | sort | tail -1)"
+          test -n "$CLANG_BIN"
+          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+          echo "$CLANG_BIN" >> "$GITHUB_PATH"
+
+      - name: Configure kernel - do not drop existing features
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+
+          make O="$OUT" ARCH="$ARCH" LLVM=1 LLVM_IAS=1 "$DEFCONFIG_TARGET"
+
+          test -f "$OUT/.config"
+
+      - name: Feature preservation audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          C="$OUT/.config"
+
+          require_on() {
+            local key="$1"
+            grep -Eq "^${key}=y$" "$C" || {
+              echo "REQUIRED FEATURE MISSING/disabled: ${key}"
               exit 1
-              ;;
-          esac
+            }
+          }
 
-          test -f "arch/arm64/configs/$DEFCONFIG_TARGET"
-          echo "DEFCONFIG_TARGET=$DEFCONFIG_TARGET" >> "$GITHUB_ENV"
-          echo "Using defconfig target: $DEFCONFIG_TARGET"
+          # Features confirmed in the fixed configuration.
+          require_on CONFIG_SCHED_WALT
+          require_on CONFIG_SCHED_TUNE
+          require_on CONFIG_ZRAM
+          require_on CONFIG_INPUT_FINGERPRINT
 
-      - name: Kernel defconfig
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$KERNEL_OUT"
+          # LTO: do not silently fall back to NONE.
+          if grep -Eq '^CONFIG_ARCH_SUPPORTS_LTO_CLANG=y$' "$C"; then
+            if grep -Eq '^CONFIG_LTO_NONE=y$' "$C"; then
+              echo "ERROR: LTO support exists but configuration selected LTO_NONE."
+              echo "Refusing to silently remove/replace the requested LTO feature."
+              exit 1
+            fi
+            grep -Eq '^CONFIG_LTO_CLANG=y$|^CONFIG_LTO_CLANG_THIN=y$' "$C" || {
+              echo "ERROR: supported LTO mode is not enabled."
+              exit 1
+            }
+          fi
 
-          make -C . O="$KERNEL_OUT" \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            "$DEFCONFIG_TARGET"
+          # Do not invent or rename custom SukiSU/KPM/SUSFS symbols.
+          # Their source patches are preserved by this workflow; if the
+          # repository exposes matching Kconfig symbols, require them enabled.
+          for key in CONFIG_KSU CONFIG_KSU_SUKISU CONFIG_KPM CONFIG_SUSFS; do
+            if grep -Eq "^${key}=y$" "$C"; then
+              echo "$key=y"
+            fi
+          done
 
-          test -f "$KERNEL_OUT/.config"
+          echo "Core feature audit passed."
 
       - name: Kernel build
         shell: bash
         run: |
           set -euo pipefail
-
-          make -C . O="$KERNEL_OUT" \
-            ARCH=arm64 \
+          make O="$OUT" \
+            ARCH="$ARCH" \
             LLVM=1 \
             LLVM_IAS=1 \
             -j"$(nproc)"
@@ -114,59 +163,48 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$DTBO_OUT"
 
-          make -C . O="$DTBO_OUT" \
-            ARCH=arm64 \
+          # Reuse the SAME finalized kernel .config; never create a second
+          # divergent configuration that could drop features.
+          cp "$OUT/.config" "$OUT/.config.dtbo"
+
+          make O="$OUT" \
+            ARCH="$ARCH" \
             LLVM=1 \
             LLVM_IAS=1 \
-            "$DEFCONFIG_TARGET"
+            dtbs dtbo.img -j"$(nproc)"
 
-          make -C . O="$DTBO_OUT" \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            dtbo.img -j"$(nproc)"
-
-      - name: Verify no duplicated defconfig path
+      - name: Final regression checks
+        shell: bash
         run: |
-          set -e
-          ! grep -R \
+          set -euo pipefail
+
+          ! grep -R -n \
             --exclude-dir=.git \
-            --exclude-dir=out \
-            -n \
+            --exclude-dir="$OUT" \
             'arch/arm64/configs/arch/arm64/configs' \
-            .github scripts Makefile arch 2>/dev/null
+            . 2>/dev/null
 
-      - name: Verify required target and DTBO fix
-        run: |
-          set -e
-          grep -Fq '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))' \
-            arch/arm64/boot/dts/vendor/lge/Makefile
-          test -f "arch/arm64/configs/$DEFCONFIG_TARGET"
+          F="arch/arm64/boot/dts/vendor/lge/Makefile"
+          grep -Fq '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))' "$F"
 
-      - name: Package diagnostics
-        run: |
-          set -e
-          mkdir -p ci-diagnostics/final
-          {
-            echo "device=$DEVICE"
-            echo "codename=$CODENAME"
-            echo "android_target=$ANDROID_TARGET"
-            echo "defconfig_target=$DEFCONFIG_TARGET"
-            echo "features=$FEATURES"
-            echo "hardware=$HARDWARE"
-            echo "dtbo_fix=preserved"
-            echo "defconfig_path_duplication_fix=enabled"
-          } > ci-diagnostics/final/build-summary.txt
+          grep -Eq '^CONFIG_SCHED_WALT=y$' "$OUT/.config"
+          grep -Eq '^CONFIG_SCHED_TUNE=y$' "$OUT/.config"
+          grep -Eq '^CONFIG_ZRAM=y$' "$OUT/.config"
+          grep -Eq '^CONFIG_INPUT_FINGERPRINT=y$' "$OUT/.config"
 
-      - name: Upload kernel and DTBO
+          echo "No duplicated defconfig path."
+          echo "DTBO fix preserved."
+          echo "Required fixed features preserved."
+
+      - name: Package artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-Kernel-DTBO-Fixed
-          path: |
-            arch/arm64/boot/Image*
-            arch/arm64/boot/dtbo.img
-            dtbo.img
-            ci-diagnostics/
+          name: LM-G900-Android16-QPR2-Full-Feature-Fixed
           if-no-files-found: warn
+          path: |
+            ${{ env.OUT }}/arch/arm64/boot/Image*
+            ${{ env.OUT }}/arch/arm64/boot/dts/**/*.dtb
+            ${{ env.OUT }}/arch/arm64/boot/dts/**/*.dtbo
+            ${{ env.OUT }}/arch/arm64/boot/dtbo.img
+            ${{ env.OUT }}/.config
