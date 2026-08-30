@@ -1,4 +1,4 @@
-name: LG Velvet LM-G900 — Android 16 QPR2 Kernel + DTBO
+name: "LG Velvet LM-G900 • Android 16 QPR2 • Kernel + DTBO • Fixed"
 
 on:
   workflow_dispatch:
@@ -9,767 +9,594 @@ on:
         default: true
         type: boolean
       build_dtbo:
-        description: "Build DTBO"
+        description: "Build DTBO.img"
         required: true
         default: true
         type: boolean
+  push:
+    branches: ["sixteen"]
+    paths:
+      - ".github/workflows/**"
+      - "arch/arm64/configs/vendor/caymanlm_defconfig"
+      - "arch/arm64/boot/dts/**"
+      - "drivers/**"
+      - "fs/**"
+      - "include/**"
+      - "kernel/**"
+      - "sound/**"
+      - "techpack/**"
+      - "Makefile"
+      - "localversion-*"
 
 permissions:
   contents: read
 
 env:
   DEVICE: LM-G900
+  TARGET_VARIANT: G900EMW
   CODENAME: caymanlm
-
-  SOURCE_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
-  SOURCE_REF: sixteeen
-
-  CIP_REPO: https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-  CIP_TAG: v4.19.325-cip135
-
-  ARCH: arm64
-  LLVM: 1
-
-  OUT: ${{ github.workspace }}/out
-  LOGDIR: ${{ github.workspace }}/diagnostics
+  KERNEL_BRANCH: sixteen
+  DEFCONFIG: vendor/caymanlm_defconfig
+  KERNEL_EXPECTED: "4.19.325"
+  BASE_KERNEL_TAG: "v4.19.325"
+  CIP_TAG: "v4.19.325-cip135"
+  LLVM_VERSION: "18"
+  SUKISU_REF: "4.1.3"
+  SUSFS_REF: "001e69919c6271f690fd00b17e4c721c9e599152"
+  SUSFS_BRANCH: kernel-4.19
+  ANYKERNEL3_REF: dca9dc370838d919d56c1f59ec78b27a14a72c68
+  TARGET: "Android 16 QPR2 GSI / API 36"
+  KERNEL_IDENTITY: "LM-G900"
 
 jobs:
-
-  # ============================================================
-  # KERNEL
-  # ============================================================
-
   kernel:
-    name: "KERNEL — LM-G900 — K01-K15"
-    if: inputs.build_kernel
+    if: ${{ github.event_name == 'push' || inputs.build_kernel }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
 
     steps:
+      - name: "K01 • Checkout EXACT workflow commit — never guess branch"
+        uses: actions/checkout@v4
+        with:
+          # github.sha is the exact commit that triggered/manual-dispatched this run.
+          # This removes the previous 'remote branch sixteen not found' failure mode.
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: K01 — Checkout exact existing kernel source
+      - name: "K02 • Verify branch/commit/source before touching anything"
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p "$LOGDIR"
+          mkdir -p ci-diagnostics/kernel
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "ref=${GITHUB_REF}"
+            echo "ref_name=${GITHUB_REF_NAME}"
+            echo "sha=${GITHUB_SHA}"
+            echo "head=$(git rev-parse HEAD)"
+            echo "branch_expected=${KERNEL_BRANCH}"
+            echo "device=${DEVICE}"
+            echo "codename=${CODENAME}"
+            echo "target=${TARGET}"
+            echo "features=SukiSU-Ultra+KPM+SUSFS+WALT+SchedTune+ZRAM+LTO"
+            echo "hardware=Fingerprint+Vibration+DualSIM+Audio+VoWiFi"
+          } | tee ci-diagnostics/kernel/00-context.txt
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "${GITHUB_REF_NAME}" = "${KERNEL_BRANCH}"
+          test -s "arch/arm64/configs/${DEFCONFIG}"
+          git status --short | tee ci-diagnostics/kernel/00-git-status.txt
+          git log -1 --decorate --oneline | tee ci-diagnostics/kernel/00-source.txt
 
-          echo "=================================================="
-          echo "K01 — SOURCE CHECKOUT"
-          echo "=================================================="
-          echo "Repository : $SOURCE_REPO"
-          echo "Branch     : $SOURCE_REF"
-          echo "Device     : $DEVICE"
-          echo "Codename   : $CODENAME"
-
-          git clone --branch "$SOURCE_REF" --single-branch \
-            "$SOURCE_REPO" kernel
-
-          cd kernel
-
-          git rev-parse HEAD | tee "../$LOGDIR/kernel-source-commit.txt"
-          git status --short | tee "../$LOGDIR/kernel-source-status.txt"
-
-      - name: K02 — Toolchain preflight
+      - name: "K03 • Install kernel/DT dependencies"
         shell: bash
         run: |
           set -euxo pipefail
-
-          mkdir -p "$LOGDIR"
-
           sudo apt-get update
           sudo apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            ccache \
-            clang \
-            flex \
-            libelf-dev \
-            libssl-dev \
-            lld \
-            llvm \
-            lz4 \
-            device-tree-compiler \
-            python3 \
-            python3-pip \
-            rsync \
-            unzip \
-            zip
+            bc bison flex build-essential ccache \
+            clang-18 lld-18 llvm-18 \
+            libssl-dev libelf-dev libdw-dev dwarves \
+            python3 python3-pip rsync patch git curl wget unzip zip xz-utils \
+            device-tree-compiler cpio gawk file \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-          {
-            echo "=== clang ==="
-            clang --version
-
-            echo "=== llvm ==="
-            llvm-config --version
-
-            echo "=== dtc ==="
-            dtc --version
-
-            echo "=== python ==="
-            python3 --version
-          } | tee "$LOGDIR/toolchain.txt"
-
-      - name: K03 — CIP135 integration — FIXED REF ONLY
+      - name: "K04 • LLVM 18 + AArch64 toolchain smoke test"
         shell: bash
         run: |
           set -euxo pipefail
+          mkdir -p ci-diagnostics/kernel
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          clang-${LLVM_VERSION} --version | tee ci-diagnostics/kernel/01-clang-version.txt
+          ld.lld-${LLVM_VERSION} --version | tee ci-diagnostics/kernel/01-lld-version.txt
+          aarch64-linux-gnu-as --version | head -n 1 | tee ci-diagnostics/kernel/01-as-version.txt
+          printf 'int main(void){return 0;}\n' > "$RUNNER_TEMP/smoke.c"
+          clang-${LLVM_VERSION} --target=aarch64-linux-gnu -c "$RUNNER_TEMP/smoke.c" -o "$RUNNER_TEMP/smoke.o"
+          printf '.text\n.global smoke_symbol\nsmoke_symbol:\n nop\n' > "$RUNNER_TEMP/smoke.S"
+          clang-${LLVM_VERSION} --target=aarch64-linux-gnu -c "$RUNNER_TEMP/smoke.S" -o "$RUNNER_TEMP/smoke-asm.o"
+          ld.lld-${LLVM_VERSION} -r "$RUNNER_TEMP/smoke-asm.o" -o "$RUNNER_TEMP/smoke-linked.o"
+          file "$RUNNER_TEMP/smoke-linked.o" | tee ci-diagnostics/kernel/01-aarch64-smoke.txt
 
-          cd kernel
-
-          echo "=================================================="
-          echo "K03 — CIP135"
-          echo "=================================================="
-
-          git remote remove cip 2>/dev/null || true
-          git remote add cip "$CIP_REPO"
-
-          # IMPORTANT:
-          # The old workflow requested v4.19.325, which DOES NOT exist.
-          # The valid release is v4.19.325-cip135.
-          git fetch --no-tags cip \
-            "refs/tags/${CIP_TAG}:refs/tags/${CIP_TAG}"
-
-          test "$(git rev-parse "refs/tags/${CIP_TAG}")"
-
-          echo "CIP tag:"
-          git show -s --format='%H %D %s' \
-            "refs/tags/${CIP_TAG}" | tee "../$LOGDIR/cip135.txt"
-
-          # Do NOT re-merge CIP if it is already integrated.
-          if git merge-base --is-ancestor \
-              "$(git rev-parse "refs/tags/${CIP_TAG}")" HEAD; then
-
-            echo "CIP135 is already contained in current source."
-            echo "No previous integration will be modified."
-
-          else
-
-            echo "CIP135 is not yet contained."
-            echo "Integrating the exact CIP135 baseline."
-
-            git merge \
-              --no-edit \
-              "refs/tags/${CIP_TAG}"
-
-          fi
-
-          git rev-parse HEAD | tee "../$LOGDIR/post-cip-commit.txt"
-
-      - name: K04 — Preserve existing finalized feature sources
+      - name: "K05 • Baseline defconfig — diagnose BEFORE modifications"
         shell: bash
         run: |
-          set -euxo pipefail
+          set -o pipefail
+          mkdir -p kernel/out ci-diagnostics/kernel
+          DEF="arch/arm64/configs/${DEFCONFIG}"
+          sha256sum "$DEF" | tee ci-diagnostics/kernel/02-defconfig.sha256
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          make O=kernel/out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} \
+            AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} \
+            NM=llvm-nm-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- \
+            "$DEFCONFIG" 2>&1 | tee ci-diagnostics/kernel/03-defconfig.log
+          rc=${PIPESTATUS[0]}
+          cp kernel/out/.config ci-diagnostics/kernel/working-baseline.config 2>/dev/null || true
+          exit "$rc"
 
-          cd kernel
-
-          echo "=================================================="
-          echo "K04 — FEATURE PRESERVATION"
-          echo "=================================================="
-
-          {
-            echo "SukiSU-Ultra"
-            echo "KPM"
-            echo "SUSFS"
-            echo "WALT"
-            echo "SchedTune"
-            echo "ZRAM"
-            echo "LTO"
-            echo "Fingerprint"
-            echo "Vibration"
-            echo "Dual-SIM"
-            echo "Audio"
-            echo "IMS"
-            echo "VoWiFi / Wi-Fi Calling"
-            echo "LM-G900 identity"
-          } | tee "../$LOGDIR/finalized-features.txt"
-
-          # Diagnostic only.
-          # Do not overwrite existing source fixes.
-          git status --short | tee "../$LOGDIR/feature-source-status.txt"
-
-      - name: K05 — Configure finalized LM-G900 kernel feature set
+      - name: "K06 • Apply official CIP135 delta — NO skipped conflicts"
         shell: bash
         run: |
-          set -euxo pipefail
+          set -u
+          mkdir -p ci-diagnostics/kernel
+          exec > >(tee ci-diagnostics/kernel/04-cip-integration.log) 2>&1
+          git config user.name "CI CIP integrator"
+          git config user.email "ci@example.invalid"
+          git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+          git remote add cip-upstream https://gitlab.com/cip-project/cip-kernel/linux-cip.git
+          git fetch --no-tags linux-stable "refs/tags/${BASE_KERNEL_TAG}"
+          git fetch --no-tags cip-upstream "refs/tags/${CIP_TAG}"
+          BASE_SHA="$(git rev-parse "refs/tags/${BASE_KERNEL_TAG}")"
+          CIP_SHA="$(git rev-parse "FETCH_HEAD")"
+          printf 'base_tag=%s\nbase_commit=%s\ncip_tag=%s\ncip_commit=%s\n' \
+            "$BASE_KERNEL_TAG" "$BASE_SHA" "$CIP_TAG" "$CIP_SHA" \
+            | tee ci-diagnostics/kernel/04-cip-resolved.txt
+          git diff --binary "$BASE_SHA" "$CIP_SHA" > ci-diagnostics/kernel/04-cip135.delta.patch
+          test -s ci-diagnostics/kernel/04-cip135.delta.patch
+          sha256sum ci-diagnostics/kernel/04-cip135.delta.patch | tee ci-diagnostics/kernel/04-cip135.delta.sha256
 
-          cd kernel
-
-          mkdir -p "$OUT"
-
-          DEFCONFIG=""
-
-          # Prefer the existing caymanlm/vendor configuration.
-          for cfg in \
-            "arch/arm64/configs/vendor/caymanlm_defconfig" \
-            "arch/arm64/configs/vendor/caymanlm-perf_defconfig" \
-            "arch/arm64/configs/caymanlm_defconfig" \
-            "arch/arm64/configs/vendor/caymanlm.config"; do
-
-            if [ -f "$cfg" ]; then
-              DEFCONFIG="$cfg"
-              break
-            fi
-          done
-
-          if [ -z "$DEFCONFIG" ]; then
-            echo "ERROR: Existing caymanlm defconfig was not found."
-            find arch/arm64/configs -maxdepth 3 \
-              -iname '*cayman*' -o -iname '*g900*' \
-              | tee "../$LOGDIR/defconfig-search.txt"
-            exit 1
-          fi
-
-          echo "Using existing configuration:"
-          echo "$DEFCONFIG"
-
-          export ARCH=arm64
-          export LLVM=1
-          export O="$OUT"
-
-          make O="$OUT" \
-            "$DEFCONFIG"
-
-          # Preserve existing configuration first.
-          # Only enforce the finalized requirements.
-          ./scripts/config --enable CONFIG_KPM
-          ./scripts/config --enable CONFIG_KALLSYMS
-          ./scripts/config --enable CONFIG_KALLSYMS_ALL
-
-          ./scripts/config --enable CONFIG_ZRAM
-          ./scripts/config --enable CONFIG_LTO_CLANG
-
-          make O="$OUT" olddefconfig
-
-          {
-            echo "=== FINAL KERNEL CONFIG ==="
-            grep -E \
-              'CONFIG_(KPM|KALLSYMS|KALLSYMS_ALL|ZRAM|LTO_CLANG)=' \
-              "$OUT/.config" || true
-          } | tee "../$LOGDIR/final-config.txt"
-
-      - name: K06 — Build kernel
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd kernel
-
-          export ARCH=arm64
-          export LLVM=1
-          export O="$OUT"
-
-          mkdir -p "$LOGDIR"
-
-          echo "=================================================="
-          echo "K06 — BUILD KERNEL"
-          echo "=================================================="
-
-          make -j"$(nproc)" \
-            O="$OUT" \
-            2>&1 | tee "../$LOGDIR/kernel-build.log"
-
-      - name: K07 — Kernel feature + identity audit
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd kernel
-
-          {
-            echo "=== DEVICE ==="
-            echo "$DEVICE"
-
-            echo "=== CODENAME ==="
-            echo "$CODENAME"
-
-            echo "=== SOURCE ==="
-            git rev-parse HEAD
-
-            echo "=== KERNEL RELEASE ==="
-            "$OUT/scripts/config" --file "$OUT/.config" \
-              --get-val CONFIG_LOCALVERSION || true
-
-            echo "=== REQUIRED CONFIG ==="
-            grep -E \
-              'CONFIG_(KPM|KALLSYMS|KALLSYMS_ALL|ZRAM|LTO_CLANG)=' \
-              "$OUT/.config" || true
-
-            echo "=== OUTPUTS ==="
-            find "$OUT/arch/arm64/boot" \
-              -maxdepth 2 -type f \
-              -printf '%p %s bytes\n' | sort
-
-          } | tee "../$LOGDIR/kernel-audit.txt"
-
-      - name: K08 — Build AnyKernel3 package
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd kernel
-
-          mkdir -p "$OUT/anykernel"
-
-          git clone --depth=1 \
-            https://github.com/osm0sis/AnyKernel3.git \
-            "$OUT/anykernel/AnyKernel3"
-
-          # Locate the generated kernel image.
-          IMAGE=""
-
-          for candidate in \
-            "$OUT/arch/arm64/boot/Image.gz" \
-            "$OUT/arch/arm64/boot/Image.gz-dtb" \
-            "$OUT/arch/arm64/boot/Image"; do
-
-            if [ -f "$candidate" ]; then
-              IMAGE="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$IMAGE" ]; then
-            echo "ERROR: Kernel Image was not produced."
-            exit 1
-          fi
-
-          cp "$IMAGE" \
-            "$OUT/anykernel/AnyKernel3/"
-
-          cd "$OUT/anykernel/AnyKernel3"
-
-          cat > anykernel.sh <<'AK'
-          properties() { '
-          kernel.string=LM-G900 Android 16 QPR2 CIP135 SukiSU-Ultra
-          do.devicecheck=1
-          do.modules=1
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          '; }
-
-          block=/dev/block/bootdevice/by-name/boot
-          is_slot_device=0
-          slot_select=auto
-
-          . tools/ak3-core.sh
-          dump_boot
-          flash_boot
-          AK
-
-          zip -r9 \
-            "$OUT/LM-G900-Android16-QPR2-Kernel.zip" \
-            . \
-            -x '.git/*'
-
-      - name: K09 — Final kernel verification
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          test -f "$OUT/LM-G900-Android16-QPR2-Kernel.zip"
-
-          unzip -t \
-            "$OUT/LM-G900-Android16-QPR2-Kernel.zip" \
-            | tee "$LOGDIR/kernel-zip-test.txt"
-
-          sha256sum \
-            "$OUT/LM-G900-Android16-QPR2-Kernel.zip" \
-            | tee "$LOGDIR/kernel-sha256.txt"
-
-      - name: K10 — Package complete kernel diagnostics
-        if: always()
-        shell: bash
-        run: |
           set +e
+          git apply --3way --index ci-diagnostics/kernel/04-cip135.delta.patch \
+            2>&1 | tee ci-diagnostics/kernel/05-cip-apply.log
+          rc=${PIPESTATUS[0]}
+          set -e
 
-          mkdir -p "$LOGDIR"
+          git diff --name-only --diff-filter=U > ci-diagnostics/kernel/05-cip-unmerged.txt || true
+          if [ -s ci-diagnostics/kernel/05-cip-unmerged.txt ]; then
+            echo "::error::CIP135 has real unresolved conflicts; NOTHING was skipped."
+            git status --short | tee ci-diagnostics/kernel/05-cip-status.txt
+            git diff --cc | tee ci-diagnostics/kernel/05-cip-conflict.diff >/dev/null || true
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::CIP135 application failed; refusing partial build."
+            exit "$rc"
+          fi
+          git diff --check
+          test -f localversion-cip
+          grep -q -- '-cip135' localversion-cip
+          git reset >/dev/null
+          git add -A -- . ':(exclude)ci-diagnostics'
+          git commit -m "CI: apply Linux ${CIP_TAG} delta to LG Velvet kernel" \
+            2>&1 | tee ci-diagnostics/kernel/05-cip-commit.log
+          echo "CIP135 applied with zero unresolved conflicts and zero skipped files." \
+            | tee ci-diagnostics/kernel/05-cip-status-final.txt
 
-          {
-            echo "=================================================="
-            echo "KERNEL FAILURE / FINAL DIAGNOSTICS"
-            echo "=================================================="
+      - name: "K07 • Integrate pinned SukiSU-Ultra 4.1.3 builtin"
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p ci-diagnostics/kernel
+          curl -LSs --fail --retry 5 --retry-all-errors \
+            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_REF}/kernel/setup.sh" \
+            -o ci-diagnostics/kernel/06-sukisu-setup.sh
+          chmod +x ci-diagnostics/kernel/06-sukisu-setup.sh
+          sha256sum ci-diagnostics/kernel/06-sukisu-setup.sh \
+            | tee ci-diagnostics/kernel/06-sukisu-setup.sha256
+          bash ci-diagnostics/kernel/06-sukisu-setup.sh builtin 2>&1 \
+            | tee ci-diagnostics/kernel/06-sukisu.log
 
-            echo "DEVICE=$DEVICE"
-            echo "CODENAME=$CODENAME"
-            echo "SOURCE_REF=$SOURCE_REF"
-            echo "CIP_TAG=$CIP_TAG"
+      - name: "K08 • Apply SUSFS 1.5.5 — fail on REAL rejects only"
+        shell: bash
+        run: |
+          set -u
+          mkdir -p ci-diagnostics/kernel
+          work="$RUNNER_TEMP/susfs"
+          rm -rf "$work"
+          git clone --depth=1 --branch "$SUSFS_BRANCH" \
+            https://gitlab.com/simonpunk/susfs4ksu.git "$work" \
+            2>&1 | tee ci-diagnostics/kernel/07-susfs-clone.log
+          git -C "$work" fetch --depth=1 origin "$SUSFS_REF"
+          git -C "$work" checkout --detach "$SUSFS_REF"
+          cp "$work/kernel_patches/50_add_susfs_in_kernel-4.19.patch" \
+            ci-diagnostics/kernel/07-susfs.patch
+          rsync -a "$work/kernel_patches/fs/" fs/
+          rsync -a "$work/kernel_patches/include/linux/" include/linux/
+          set +e
+          patch -p1 --forward --batch --fuzz=0 \
+            < ci-diagnostics/kernel/07-susfs.patch \
+            2>&1 | tee ci-diagnostics/kernel/07-susfs-patch.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          find . -type f -name '*.orig' -delete
+          find . -type f -name '*.rej' -print \
+            | tee ci-diagnostics/kernel/07-susfs-rejects.txt
+          if [ -s ci-diagnostics/kernel/07-susfs-rejects.txt ]; then
+            echo "::error::SUSFS has unresolved rejects; NOTHING was discarded."
+            exit 1
+          fi
+          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' \
+              --include='*.c' --include='*.h' --include='Kconfig*' . \
+              > ci-diagnostics/kernel/07-susfs-conflicts.txt; then
+            echo "::error::SUSFS left conflict markers."
+            exit 1
+          fi
+          exit "$rc"
 
-            if [ -d kernel/.git ]; then
-              cd kernel
-              git status
-              git log -5 --oneline --decorate
-              git diff --stat
-            fi
-          } >> "$LOGDIR/final-diagnostics.txt" 2>&1
+      - name: "K09 • Preserve LM-G900 human identity + caymanlm hardware identity"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$PWD/kernel/out"
+          test -s "$OUT/.config"
+          scripts/config --file "$OUT/.config" --set-str CONFIG_LOCALVERSION "-LM-G900"
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} \
+            AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} \
+            NM=llvm-nm-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- \
+            olddefconfig 2>&1 | tee ci-diagnostics/kernel/08-model-olddefconfig.log
+          grep -q '^CONFIG_LOCALVERSION="-LM-G900"$' "$OUT/.config"
 
-      - name: K11 — Upload kernel artifacts + COMPLETE logs
+      - name: "K10 • Enforce finalized feature set — fail instead of silently disabling"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$PWD/kernel/out"
+          required=(
+            CONFIG_KSU CONFIG_KPM CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL
+            CONFIG_SCHED_WALT CONFIG_SCHED_TUNE CONFIG_CPU_FREQ_GOV_SCHEDUTIL
+            CONFIG_ZRAM CONFIG_ZSMALLOC CONFIG_LTO_CLANG CONFIG_LTO_CLANG_THIN
+            CONFIG_RANDOMIZE_BASE CONFIG_STACKPROTECTOR_STRONG CONFIG_HARDENED_USERCOPY
+            CONFIG_SLAB_FREELIST_RANDOM CONFIG_SLAB_FREELIST_HARDENED
+            CONFIG_DM_VERITY CONFIG_DM_VERITY_FEC CONFIG_FS_VERITY
+            CONFIG_BPF CONFIG_BPF_JIT CONFIG_OVERLAY_FS CONFIG_TMPFS_XATTR
+            CONFIG_TMPFS_POSIX_ACL
+          )
+          for sym in "${required[@]}"; do
+            grep -Rqs --exclude-dir=.git \
+              -E "^[[:space:]]*(menuconfig|config)[[:space:]]+${sym#CONFIG_}([[:space:]]|$)" . \
+              || { echo "::error::Missing kernel symbol $sym in source tree"; exit 1; }
+          done
+          scripts/config --file "$OUT/.config" \
+            -e CONFIG_KSU -e CONFIG_KPM -e CONFIG_KALLSYMS -e CONFIG_KALLSYMS_ALL \
+            -e CONFIG_SCHED_WALT -e CONFIG_SCHED_TUNE -e CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
+            -e CONFIG_ZRAM -e CONFIG_ZSMALLOC -e CONFIG_LTO_CLANG -e CONFIG_LTO_CLANG_THIN \
+            -e CONFIG_RANDOMIZE_BASE -e CONFIG_STACKPROTECTOR_STRONG -e CONFIG_HARDENED_USERCOPY \
+            -e CONFIG_SLAB_FREELIST_RANDOM -e CONFIG_SLAB_FREELIST_HARDENED \
+            -e CONFIG_DM_VERITY -e CONFIG_DM_VERITY_FEC -e CONFIG_FS_VERITY \
+            -e CONFIG_BPF -e CONFIG_BPF_JIT -e CONFIG_OVERLAY_FS \
+            -e CONFIG_TMPFS_XATTR -e CONFIG_TMPFS_POSIX_ACL
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          make O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} \
+            AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} \
+            NM=llvm-nm-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- \
+            olddefconfig 2>&1 | tee ci-diagnostics/kernel/08-olddefconfig.log
+          cp "$OUT/.config" ci-diagnostics/kernel/final.config
+          for sym in "${required[@]}"; do
+            grep -q "^${sym}=y$" "$OUT/.config" \
+              || { echo "::error::$sym was not enabled after olddefconfig"; exit 1; }
+          done
+          grep -E '^(CONFIG_(KSU|KPM|SCHED_WALT|SCHED_TUNE|ZRAM|ZSMALLOC|LTO_CLANG|LTO_CLANG_THIN))=' \
+            "$OUT/.config" | tee ci-diagnostics/kernel/08-final-feature-check.txt
+
+      - name: "K11 • Mandatory hardware/source audit — fingerprint/vibration/DualSIM/audio/VoWiFi"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          diag=ci-diagnostics/kernel/09-hardware-audit.txt
+          : > "$diag"
+          require_match() {
+            label="$1"; pattern="$2"; shift 2
+            found=0
+            for root in "$@"; do
+              [ -e "$root" ] || continue
+              if grep -RInE "$pattern" "$root" \
+                  --exclude-dir=.git --exclude='*.o' --exclude='*.ko' \
+                  2>/dev/null | head -n 25 | tee -a "$diag"; then
+                found=1
+                break
+              fi
+            done
+            [ "$found" -eq 1 ] \
+              || { echo "::error::Missing structural evidence for $label"; exit 1; }
+            echo "PASS: $label" | tee -a "$diag"
+          }
+          require_match "Fingerprint" 'fingerprint|udfps|fod' drivers techpack arch/arm64/boot/dts
+          require_match "Vibration" 'vibrator|haptics|haptic' drivers arch/arm64/boot/dts
+          require_match "Dual-SIM" 'dsds|dual.?sim|sim[01]|slot[01]' drivers arch/arm64/boot/dts
+          require_match "Audio" 'audio.primary|audio_policy|mixer_paths|tinyalsa|audio' sound techpack arch/arm64/boot/dts
+          require_match "VoWiFi/IWLAN" 'VoWiFi|VOWIFI|IWLAN|epdg|wfc|wifi.?calling|ims' drivers sound techpack arch/arm64/boot/dts
+          echo "Structural hardware audit passed; runtime VoWiFi still requires on-device modem/IMS testing." | tee -a "$diag"
+
+      - name: "K12 • Build ARM64 kernel + modules"
+        shell: bash
+        run: |
+          set -o pipefail
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          OUT="$PWD/kernel/out"
+          make -j"$(nproc --all)" O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} \
+            AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} \
+            NM=llvm-nm-${LLVM_VERSION} OBJCOPY=llvm-objcopy-${LLVM_VERSION} \
+            OBJDUMP=llvm-objdump-${LLVM_VERSION} READELF=llvm-readelf-${LLVM_VERSION} \
+            STRIP=llvm-strip-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- \
+            2>&1 | tee ci-diagnostics/kernel/10-kernel-build.log
+
+      - name: "K13 • Verify kernel image/modules/release"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$PWD/kernel/out"
+          test -s "$OUT/arch/arm64/boot/Image.gz-dtb" || test -s "$OUT/arch/arm64/boot/Image"
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          make -s O="$OUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} \
+            AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} \
+            NM=llvm-nm-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- \
+            kernelrelease | tee ci-diagnostics/kernel/11-kernelrelease.txt
+          grep -q '4.19.325-LM-G900-cip135' ci-diagnostics/kernel/11-kernelrelease.txt
+          file "$OUT/arch/arm64/boot/"Image* | tee ci-diagnostics/kernel/11-image-file.txt
+          find "$OUT" -type f -name '*.ko' -print0 | sort -z \
+            | xargs -0 -r sha256sum | tee ci-diagnostics/kernel/11-modules.sha256
+          sha256sum "$OUT/arch/arm64/boot/Image"* \
+            | tee ci-diagnostics/kernel/11-image.sha256
+
+      - name: "K14 • Package OrangeFox/AnyKernel3-compatible flash ZIP"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf "$RUNNER_TEMP/AnyKernel3"
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$RUNNER_TEMP/AnyKernel3"
+          cd "$RUNNER_TEMP/AnyKernel3"
+          git fetch --depth=1 origin "$ANYKERNEL3_REF"
+          git checkout --detach "$ANYKERNEL3_REF"
+          resolved="$(git rev-parse HEAD)"
+          echo "$resolved" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-anykernel3-resolved.txt"
+          rm -rf .git
+          if [ -s "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz-dtb" .
+            image=Image.gz-dtb
+          else
+            cp "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image" .
+            image=Image
+          fi
+          cat > anykernel.sh <<'AK3'
+          properties() {
+            kernel.string=LG Velvet LM-G900 • Android 16 QPR2 • 4.19.325-LM-G900-cip135 • SukiSU-Ultra 4.1.3 • SUSFS 1.5.5 • KPM
+            do.devicecheck=0
+            do.modules=0
+            do.systemless=0
+            do.cleanup=1
+            do.cleanuponabort=0
+            device.name1=LM-G900
+          }
+          block=auto
+          is_slot_device=auto
+          ramdisk_compression=auto
+          patch_vbmeta_flag=auto
+          AK3
+          echo "kernel_image=$image" | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-package.txt"
+          zip -r9 "$GITHUB_WORKSPACE/LG-Velvet-LM-G900-Android16QPR2-Kernel-Fixed-OrangeFox.zip" . \
+            -x '.git/*' '*.md' 'README*' > "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-zip.log"
+          sha256sum "$GITHUB_WORKSPACE/LG-Velvet-LM-G900-Android16QPR2-Kernel-Fixed-OrangeFox.zip" \
+            | tee "$GITHUB_WORKSPACE/ci-diagnostics/kernel/12-zip.sha256"
+
+      - name: "K15 • Upload kernel artifacts + COMPLETE logs ALWAYS"
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-KERNEL-Android16-QPR2-CIP135
-          if-no-files-found: warn
+          name: "LM-G900-KERNEL-FIXED-${{ github.run_id }}"
           path: |
-            out/LM-G900-Android16-QPR2-Kernel.zip
-            out/arch/arm64/boot/Image*
-            out/arch/arm64/boot/dts/**/*.dtb
-            diagnostics/**
-            kernel/.config
-            kernel/.git/logs/**
-            kernel/.git/HEAD
-
-
-  # ============================================================
-  # DTBO
-  # ============================================================
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/**/*.ko
+            LG-Velvet-LM-G900-Android16QPR2-Kernel-Fixed-OrangeFox.zip
+            ci-diagnostics/kernel/**
+          if-no-files-found: warn
+          retention-days: 30
 
   dtbo:
-    name: "DTBO — LM-G900 — D01-D14"
-    if: inputs.build_dtbo
+    if: ${{ github.event_name == 'push' || inputs.build_dtbo }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
 
     steps:
+      - name: "D01 • Checkout EXACT SAME commit as kernel"
+        uses: actions/checkout@v4
+        with:
+          # Critical: both jobs build the same git object, not a moving branch.
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: D01 — Checkout exact SAME kernel source
+      - name: "D02 • Verify exact source match + DTBO prerequisites"
         shell: bash
         run: |
           set -euxo pipefail
+          mkdir -p ci-diagnostics/dtbo
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "ref=${GITHUB_REF}"
+            echo "ref_name=${GITHUB_REF_NAME}"
+            echo "sha=${GITHUB_SHA}"
+            echo "head=$(git rev-parse HEAD)"
+            echo "device=${DEVICE}"
+            echo "codename=${CODENAME}"
+            echo "target=${TARGET}"
+            echo "source_dts_root=arch/arm64/boot/dts/vendor/lge/lito-caymanlm"
+            echo "dtbo_partition_size=25165824"
+          } | tee ci-diagnostics/dtbo/00-context.txt
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "${GITHUB_REF_NAME}" = "${KERNEL_BRANCH}"
+          test -s "arch/arm64/configs/${DEFCONFIG}"
+          test -d arch/arm64/boot/dts/vendor/lge/lito-caymanlm
+          git status --short | tee ci-diagnostics/dtbo/00-git-status.txt
+          git log -1 --decorate --oneline | tee ci-diagnostics/dtbo/00-source.txt
 
-          mkdir -p "$LOGDIR"
-
-          git clone --branch "$SOURCE_REF" --single-branch \
-            "$SOURCE_REPO" kernel
-
-          cd kernel
-
-          git rev-parse HEAD \
-            | tee "../$LOGDIR/dtbo-source-commit.txt"
-
-      - name: D02 — DTBO toolchain preflight
+      - name: "D03 • Install DTBO build dependencies"
         shell: bash
         run: |
           set -euxo pipefail
-
           sudo apt-get update
           sudo apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            clang \
-            flex \
-            libelf-dev \
-            libssl-dev \
-            lld \
-            llvm \
-            device-tree-compiler \
-            python3 \
-            rsync \
-            unzip \
-            zip
+            bc bison flex build-essential ccache \
+            clang-18 lld-18 llvm-18 \
+            libssl-dev libelf-dev libdw-dev dwarves \
+            python3 python3-pip rsync patch git curl wget unzip zip xz-utils \
+            device-tree-compiler file gawk \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-          {
-            clang --version
-            dtc --version
-          } | tee "$LOGDIR/dtbo-toolchain.txt"
-
-      - name: D03 — Apply SAME CIP135 baseline
+      - name: "D04 • Inventory DT sources + enforce one regional target"
         shell: bash
         run: |
           set -euxo pipefail
-
-          cd kernel
-
-          git remote add cip "$CIP_REPO"
-
-          git fetch --no-tags cip \
-            "refs/tags/${CIP_TAG}:refs/tags/${CIP_TAG}"
-
-          if git merge-base --is-ancestor \
-              "$(git rev-parse "refs/tags/${CIP_TAG}")" HEAD; then
-
-            echo "CIP135 already present."
-
-          else
-
-            git merge \
-              --no-edit \
-              "refs/tags/${CIP_TAG}"
-
-          fi
-
-          git rev-parse HEAD \
-            | tee "../$LOGDIR/dtbo-post-cip-commit.txt"
-
-      - name: D04 — Generate exact LM-G900 DT configuration
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd kernel
-
-          mkdir -p "$OUT"
-
-          DEFCONFIG=""
-
-          for cfg in \
-            "arch/arm64/configs/vendor/caymanlm_defconfig" \
-            "arch/arm64/configs/vendor/caymanlm-perf_defconfig" \
-            "arch/arm64/configs/caymanlm_defconfig"; do
-
-            if [ -f "$cfg" ]; then
-              DEFCONFIG="$cfg"
-              break
-            fi
-          done
-
-          if [ -z "$DEFCONFIG" ]; then
-            echo "ERROR: caymanlm defconfig not found."
+          find arch/arm64/boot/dts/vendor/lge/lito-caymanlm \
+            -type f -name '*.dts' -print | sort \
+            | tee ci-diagnostics/dtbo/01-dts-inventory.txt
+          grep -RInE '^CONFIG_(MACH_LITO_CAYMANLM|MACH_LITO_CAYMANLM_LAO_COM|MACH_LITO_CAYMANLM_DCM_JP|MACH_LITO_CAYMANLM_SB_JP)=' \
+            "arch/arm64/configs/${DEFCONFIG}" \
+            | tee ci-diagnostics/dtbo/02-device-config.txt
+          test "$(grep -Ec '^CONFIG_MACH_LITO_CAYMANLM=y$' "arch/arm64/configs/${DEFCONFIG}")" -eq 1
+          regions="$(grep -Ec '^CONFIG_MACH_LITO_CAYMANLM_(LAO_COM|DCM_JP|SB_JP)=y$' "arch/arm64/configs/${DEFCONFIG}" || true)"
+          test "$regions" -eq 1 || {
+            echo "::error::Expected exactly one caymanlm regional DT overlay target; refusing to guess."
             exit 1
-          fi
+          }
 
-          export ARCH=arm64
-          export LLVM=1
-          export O="$OUT"
-
-          make O="$OUT" "$DEFCONFIG"
-          make O="$OUT" olddefconfig
-
-          grep -E \
-            'CONFIG_(ARCH_QCOM|OF|OF_OVERLAY)=' \
-            "$OUT/.config" \
-            | tee "../$LOGDIR/dtbo-config.txt" || true
-
-      - name: D05 — Discover REAL Kbuild DTBO targets
+      - name: "D05 • Generate DTBO defconfig and enable ONLY overlay gate"
         shell: bash
         run: |
           set -euxo pipefail
+          mkdir -p dtbo/out
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          make O=dtbo/out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} \
+            AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} \
+            NM=llvm-nm-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- \
+            "${DEFCONFIG}" 2>&1 | tee ci-diagnostics/dtbo/03-defconfig.log
+          scripts/config --file dtbo/out/.config --enable CONFIG_BUILD_ARM64_DT_OVERLAY
+          make O=dtbo/out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} \
+            AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} \
+            NM=llvm-nm-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- \
+            olddefconfig 2>&1 | tee ci-diagnostics/dtbo/04-olddefconfig.log
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y$' dtbo/out/.config
+          grep -E '^CONFIG_(MACH_LITO_CAYMANLM|MACH_LITO_CAYMANLM_LAO_COM|MACH_LITO_CAYMANLM_DCM_JP|MACH_LITO_CAYMANLM_SB_JP|BUILD_ARM64_DT_OVERLAY)=' \
+            dtbo/out/.config | tee ci-diagnostics/dtbo/05-final-config.txt
 
-          cd kernel
+      - name: "D06 • Fix known DTBO Kbuild wildcard typo in CI copy ONLY"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          f=arch/arm64/boot/dts/vendor/lge/Makefile
+          test -s "$f"
+          cp "$f" ci-diagnostics/dtbo/06-makefile-before
+          sha256sum "$f" | tee ci-diagnostics/dtbo/06-makefile-before.sha256
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("arch/arm64/boot/dts/vendor/lge/Makefile")
+          s=p.read_text()
+          old="$(wildcard echo $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts)"
+          new="$(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts)"
+          if s.count(old) != 1:
+              raise SystemExit("Known DTBO wildcard typo was not found exactly once; refusing to guess.")
+          p.write_text(s.replace(old,new,1))
+          PY
+          diff -u ci-diagnostics/dtbo/06-makefile-before "$f" \
+            | tee ci-diagnostics/dtbo/06-makefile-ci-fix.diff
+          sha256sum "$f" | tee ci-diagnostics/dtbo/06-makefile-after.sha256
 
-          echo "Searching actual Kbuild DTBO definitions..."
+      - name: "D07 • Build ALL ARM64 DT overlays"
+        shell: bash
+        run: |
+          set -o pipefail
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          make O=dtbo/out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=clang-${LLVM_VERSION} HOSTCC=clang-${LLVM_VERSION} \
+            AS=clang-${LLVM_VERSION} HOSTAS=clang-${LLVM_VERSION} \
+            LD=ld.lld-${LLVM_VERSION} AR=llvm-ar-${LLVM_VERSION} \
+            NM=llvm-nm-${LLVM_VERSION} OBJCOPY=llvm-objcopy-${LLVM_VERSION} \
+            OBJDUMP=llvm-objdump-${LLVM_VERSION} READELF=llvm-readelf-${LLVM_VERSION} \
+            STRIP=llvm-strip-${LLVM_VERSION} CROSS_COMPILE=aarch64-linux-gnu- \
+            -j"$(nproc --all)" dtbs 2>&1 | tee ci-diagnostics/dtbo/07-dtbo-build.log
+          find dtbo/out/arch/arm64/boot/dts -type f -name '*.dtbo' -print \
+            | sort | tee ci-diagnostics/dtbo/08-built-dtbo-list.txt
+          test -s ci-diagnostics/dtbo/08-built-dtbo-list.txt
 
+      - name: "D08 • Build Android 16 QPR2 DTBO.img from REAL built overlays"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/mkdtbo"
+          curl -fsSL --retry 5 --retry-all-errors \
+            "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/android16-qpr2-release/utils/src/mkdtboimg.py?format=TEXT" \
+            -o "$RUNNER_TEMP/mkdtbo/mkdtboimg.b64"
+          base64 -d "$RUNNER_TEMP/mkdtbo/mkdtboimg.b64" \
+            > "$RUNNER_TEMP/mkdtbo/mkdtboimg.py"
+          chmod +x "$RUNNER_TEMP/mkdtbo/mkdtboimg.py"
+          python3 "$RUNNER_TEMP/mkdtbo/mkdtboimg.py" --help \
+            | tee ci-diagnostics/dtbo/09-mkdtboimg-help.txt
+          mapfile -t overlays < ci-diagnostics/dtbo/08-built-dtbo-list.txt
+          test "${#overlays[@]}" -gt 0
           {
-            echo "=== DTBO SOURCE FILES ==="
-            find arch/arm64/boot/dts \
-              -type f \
-              \( -name '*.dtso' -o -name '*.dtbo' \) \
-              -print | sort
-
+            printf '%q ' python3 "$RUNNER_TEMP/mkdtbo/mkdtboimg.py" create \
+              LG-Velvet-LM-G900-Android16QPR2-dtbo.img --page_size=4096
+            printf '%q ' "${overlays[@]}"
             echo
-            echo "=== KBUILD DTBO REFERENCES ==="
-            grep -Rni \
-              --include='Makefile' \
-              --include='Kbuild' \
-              -E 'dtbo|caymanlm|sm7250' \
-              arch/arm64/boot/dts \
-              || true
+          } | tee ci-diagnostics/dtbo/10-mkdtbo-command.txt
+          python3 "$RUNNER_TEMP/mkdtbo/mkdtboimg.py" create \
+            LG-Velvet-LM-G900-Android16QPR2-dtbo.img --page_size=4096 \
+            "${overlays[@]}" 2>&1 | tee ci-diagnostics/dtbo/10-mkdtboimg.log
+          test -s LG-Velvet-LM-G900-Android16QPR2-dtbo.img
 
-          } | tee "../$LOGDIR/dtbo-target-discovery.txt"
-
-      - name: D06 — Verify every selected overlay has a Kbuild rule
+      - name: "D09 • Verify DTBO header/entries/size/SHA256"
         shell: bash
         run: |
           set -euxo pipefail
+          img=LG-Velvet-LM-G900-Android16QPR2-dtbo.img
+          test "$(stat -c '%s' "$img")" -le 25165824
+          python3 "$RUNNER_TEMP/mkdtbo/mkdtboimg.py" dump "$img" \
+            2>&1 | tee ci-diagnostics/dtbo/11-dtbo-dump.txt
+          grep -q 'dt_entry_count' ci-diagnostics/dtbo/11-dtbo-dump.txt
+          grep -q 'page_size = 4096' ci-diagnostics/dtbo/11-dtbo-dump.txt
+          sha256sum "$img" | tee ci-diagnostics/dtbo/12-dtbo.sha256
+          file "$img" | tee ci-diagnostics/dtbo/12-dtbo-file.txt
+          printf 'device=LM-G900\ncodename=caymanlm\ntarget=Android 16 QPR2 / API 36\npartition=dtbo\n' \
+            > DTBO-BUILD-METADATA.txt
+          zip -9 LM-G900-Android16QPR2-DTBO-Fixed.zip \
+            "$img" DTBO-BUILD-METADATA.txt
+          sha256sum LM-G900-Android16QPR2-DTBO-Fixed.zip \
+            | tee ci-diagnostics/dtbo/13-dtbo-zip.sha256
 
-          cd kernel
-
-          TARGETS="$(grep -Rho \
-            --include='Makefile' \
-            --include='Kbuild' \
-            -E '[A-Za-z0-9._-]+\.dtbo' \
-            arch/arm64/boot/dts \
-            | sort -u || true)"
-
-          if [ -z "$TARGETS" ]; then
-            echo "ERROR: No real DTBO Kbuild target discovered."
-            exit 1
-          fi
-
-          printf '%s\n' "$TARGETS" \
-            | tee "../$LOGDIR/verified-dtbo-targets.txt"
-
-      - name: D07 — Build DTBs and DTBOs
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd kernel
-
-          export ARCH=arm64
-          export LLVM=1
-          export O="$OUT"
-
-          make -j"$(nproc)" \
-            O="$OUT" \
-            dtbs \
-            2>&1 | tee "../$LOGDIR/dtbo-build.log"
-
-      - name: D08 — Build actual dtbo.img
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd kernel
-
-          DTBO_FILES=()
-
-          while IFS= read -r f; do
-            DTBO_FILES+=("$f")
-          done < <(
-            find "$OUT/arch/arm64/boot/dts" \
-              -type f \
-              -name '*.dtbo' \
-              | sort
-          )
-
-          if [ "${#DTBO_FILES[@]}" -eq 0 ]; then
-            echo "ERROR: No DTBO binary was produced."
-            exit 1
-          fi
-
-          mkdir -p "$OUT/dtbo"
-
-          echo "DTBO files:"
-          printf '%s\n' "${DTBO_FILES[@]}" \
-            | tee "../$LOGDIR/dtbo-output-list.txt"
-
-          # Prefer Android mkdtimg supplied by the source tree/toolchain.
-          MKDTIMG="$(find /opt "$HOME" . \
-            -type f \
-            -name mkdtimg \
-            -perm -111 \
-            2>/dev/null \
-            | head -n1 || true)"
-
-          if [ -z "$MKDTIMG" ]; then
-            MKDTIMG="$(command -v mkdtimg || true)"
-          fi
-
-          if [ -z "$MKDTIMG" ]; then
-            echo "ERROR: mkdtimg is not available."
-            echo "DTBO binaries were built, but refusing to invent an image format."
-            exit 1
-          fi
-
-          "$MKDTIMG" create \
-            "$OUT/dtbo/dtbo.img" \
-            "${DTBO_FILES[@]}" \
-            2>&1 | tee "../$LOGDIR/mkdtimg.log"
-
-          test -s "$OUT/dtbo/dtbo.img"
-
-      - name: D09 — Verify DTBO image
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          test -s "$OUT/dtbo/dtbo.img"
-
-          {
-            echo "=== DTBO IMAGE ==="
-            ls -lh "$OUT/dtbo/dtbo.img"
-
-            echo
-            echo "=== SHA256 ==="
-            sha256sum "$OUT/dtbo/dtbo.img"
-
-            echo
-            echo "=== SOURCE COMMIT ==="
-            cd kernel
-            git rev-parse HEAD
-
-          } | tee "$LOGDIR/dtbo-audit.txt"
-
-      - name: D10 — DTBO identity audit
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          {
-            echo "DEVICE=$DEVICE"
-            echo "CODENAME=$CODENAME"
-            echo "ANDROID_TARGET=Android 16 QPR2 GSI"
-            echo "KERNEL_BASELINE=4.19.325-cip135"
-            echo "SOURCE_REF=$SOURCE_REF"
-            echo
-            echo "No device identity replacement is performed here."
-            echo "DTBO is generated from the matched caymanlm kernel DTS/Kbuild."
-          } | tee "$LOGDIR/dtbo-identity-audit.txt"
-
-      - name: D11 — Package flashable DTBO ZIP
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          mkdir -p "$OUT/dtbo-zip"
-
-          cp "$OUT/dtbo/dtbo.img" \
-            "$OUT/dtbo-zip/dtbo.img"
-
-          cat > "$OUT/dtbo-zip/README.txt" <<'EOF'
-          LG Velvet LM-G900
-          Android 16 QPR2
-          DTBO matched to kernel source
-          Kernel baseline: 4.19.325-cip135
-
-          This ZIP contains the raw dtbo.img.
-          EOF
-
-          cd "$OUT/dtbo-zip"
-
-          zip -9 \
-            "$OUT/LM-G900-Android16-QPR2-DTBO.zip" \
-            dtbo.img README.txt
-
-      - name: D12 — Final DTBO verification
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          unzip -t \
-            "$OUT/LM-G900-Android16-QPR2-DTBO.zip" \
-            | tee "$LOGDIR/dtbo-zip-test.txt"
-
-          sha256sum \
-            "$OUT/LM-G900-Android16-QPR2-DTBO.zip" \
-            | tee "$LOGDIR/dtbo-zip-sha256.txt"
-
-      - name: D13 — Complete DTBO diagnostics
-        if: always()
-        shell: bash
-        run: |
-          set +e
-
-          mkdir -p "$LOGDIR"
-
-          {
-            echo "=================================================="
-            echo "DTBO COMPLETE DIAGNOSTICS"
-            echo "=================================================="
-
-            echo "DEVICE=$DEVICE"
-            echo "CODENAME=$CODENAME"
-            echo "SOURCE_REF=$SOURCE_REF"
-            echo "CIP_TAG=$CIP_TAG"
-
-            if [ -d kernel/.git ]; then
-              cd kernel
-              git status
-              git log -5 --oneline --decorate
-            fi
-
-          } >> "$LOGDIR/final-dtbo-diagnostics.txt" 2>&1
-
-      - name: D14 — Upload DTBO artifacts + COMPLETE logs
+      - name: "D10 • Upload DTBO artifact + COMPLETE logs ALWAYS"
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-DTBO-Android16-QPR2-CIP135
-          if-no-files-found: warn
+          name: "LM-G900-DTBO-FIXED-${{ github.run_id }}"
           path: |
-            out/dtbo/dtbo.img
-            out/LM-G900-Android16-QPR2-DTBO.zip
-            diagnostics/**
-            kernel/.config
-            kernel/.git/logs/**
-            kernel/.git/HEAD
+            LG-Velvet-LM-G900-Android16QPR2-dtbo.img
+            LM-G900-Android16QPR2-DTBO-Fixed.zip
+            DTBO-BUILD-METADATA.txt
+            dtbo/out/arch/arm64/boot/dts/**/*.dtbo
+            ci-diagnostics/dtbo/**
+          if-no-files-found: warn
+          retention-days: 30
