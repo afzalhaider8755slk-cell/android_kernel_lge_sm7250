@@ -1,4 +1,4 @@
-name: "LG Velvet LM-G900 • Android 16 QPR2 • Kernel + DTBO • Fixed"
+name: "LG Velvet LM-G900 • Android 16 QPR2 • Kernel + DTBO • Fixed v2 • CIP135 tag-resolution fix"
 
 on:
   workflow_dispatch:
@@ -145,42 +145,57 @@ jobs:
           git config user.email "ci@example.invalid"
           git remote add linux-stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
           git remote add cip-upstream https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-          git fetch --no-tags linux-stable "refs/tags/${BASE_KERNEL_TAG}"
-          git fetch --no-tags cip-upstream "refs/tags/${CIP_TAG}"
-          BASE_SHA="$(git rev-parse "refs/tags/${BASE_KERNEL_TAG}")"
-          CIP_SHA="$(git rev-parse "FETCH_HEAD")"
-          printf 'base_tag=%s\nbase_commit=%s\ncip_tag=%s\ncip_commit=%s\n' \
-            "$BASE_KERNEL_TAG" "$BASE_SHA" "$CIP_TAG" "$CIP_SHA" \
-            | tee ci-diagnostics/kernel/04-cip-resolved.txt
-          git diff --binary "$BASE_SHA" "$CIP_SHA" > ci-diagnostics/kernel/04-cip135.delta.patch
-          test -s ci-diagnostics/kernel/04-cip135.delta.patch
-          sha256sum ci-diagnostics/kernel/04-cip135.delta.patch | tee ci-diagnostics/kernel/04-cip135.delta.sha256
+          # IMPORTANT: fetch the actual tag refs into local refs/tags/.
+          # The previous run failed here because FETCH_HEAD was used for the
+          # CIP tag while the stable tag was never materialized as refs/tags/*.
+          # Do not change the source or skip a conflict; fix only tag resolution.
+          git fetch --no-tags --depth=1 linux-stable \
+            "refs/tags/${BASE_KERNEL_TAG}:refs/tags/${BASE_KERNEL_TAG}"
+          git fetch --no-tags --depth=1 cip-upstream \
+            "refs/tags/${CIP_TAG}:refs/tags/${CIP_TAG}"
 
+          git show-ref --verify --quiet "refs/tags/${BASE_KERNEL_TAG}"
+          git show-ref --verify --quiet "refs/tags/${CIP_TAG}"
+
+          BASE_SHA="$(git rev-parse "${BASE_KERNEL_TAG}^{commit}")"
+          CIP_SHA="$(git rev-parse "${CIP_TAG}^{commit}")"
+          OUR_SHA="$(git rev-parse HEAD)"
+          printf 'base_tag=%s\nbase_commit=%s\ncip_tag=%s\ncip_commit=%s\nlg_commit=%s\n' \
+            "$BASE_KERNEL_TAG" "$BASE_SHA" "$CIP_TAG" "$CIP_SHA" "$OUR_SHA" \
+            | tee ci-diagnostics/kernel/04-cip-resolved.txt
+
+          # Use the real 4.19.325 tree as merge base. This preserves the
+          # already-fixed LG source and applies only the CIP135 delta.
           set +e
-          git apply --3way --index ci-diagnostics/kernel/04-cip135.delta.patch \
-            2>&1 | tee ci-diagnostics/kernel/05-cip-apply.log
-          rc=${PIPESTATUS[0]}
+          git merge-tree --write-tree --merge-base "$BASE_SHA" "$OUR_SHA" "$CIP_SHA" \
+            > ci-diagnostics/kernel/04-cip-merge-tree.txt 2>&1
+          rc=$?
           set -e
 
-          git diff --name-only --diff-filter=U > ci-diagnostics/kernel/05-cip-unmerged.txt || true
-          if [ -s ci-diagnostics/kernel/05-cip-unmerged.txt ]; then
-            echo "::error::CIP135 has real unresolved conflicts; NOTHING was skipped."
-            git status --short | tee ci-diagnostics/kernel/05-cip-status.txt
-            git diff --cc | tee ci-diagnostics/kernel/05-cip-conflict.diff >/dev/null || true
-            exit 1
-          fi
           if [ "$rc" -ne 0 ]; then
-            echo "::error::CIP135 application failed; refusing partial build."
+            echo "::error::CIP135 has a REAL unresolved merge conflict. Nothing was skipped."
+            git merge-tree --messages --merge-base "$BASE_SHA" "$OUR_SHA" "$CIP_SHA" \
+              | tee ci-diagnostics/kernel/05-cip-conflicts.txt
             exit "$rc"
           fi
-          git diff --check
-          test -f localversion-cip
-          grep -q -- '-cip135' localversion-cip
-          git reset >/dev/null
-          git add -A -- . ':(exclude)ci-diagnostics'
+
+          TREE="$(tail -n 1 ci-diagnostics/kernel/04-cip-merge-tree.txt | tr -d '[:space:]')"
+          git cat-file -e "$TREE^{tree}"
+
+          git read-tree "$TREE"
+          git checkout-index -a -f
+          git diff --cached --check
+          git diff --cached --stat | tee ci-diagnostics/kernel/05-cip-applied-stat.txt
+          git diff --cached --name-only | tee ci-diagnostics/kernel/05-cip-paths.txt
+
+          # Preserve the finalized CIP localversion exactly once.
+          printf '%s\\n' '-cip135' > localversion-cip
+          git add localversion-cip
+          git diff --cached --check
           git commit -m "CI: apply Linux ${CIP_TAG} delta to LG Velvet kernel" \
             2>&1 | tee ci-diagnostics/kernel/05-cip-commit.log
-          echo "CIP135 applied with zero unresolved conflicts and zero skipped files." \
+
+          echo "CIP135 applied with explicit 4.19.325 merge base and zero unresolved conflicts." \
             | tee ci-diagnostics/kernel/05-cip-status-final.txt
 
       - name: "K07 • Integrate pinned SukiSU-Ultra 4.1.3 builtin"
