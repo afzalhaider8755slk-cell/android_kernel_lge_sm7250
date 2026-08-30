@@ -860,8 +860,12 @@ jobs:
           git clone --filter=blob:none --no-checkout \
             https://github.com/sidex15/android_kernel_lge_sm8150.git "$REF"
           cd "$REF"
-          git fetch --no-tags --depth=1 origin 70d3982
-          git checkout --detach 70d3982
+          # The previous failure was caused by fetching abbreviated SHA 70d3982
+          # as a remote ref. Fetch advertised branch history, then resolve locally.
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          SUSFS_REF_COMMIT="$(git rev-parse --verify 70d3982^{commit})"
+          git checkout --detach "$SUSFS_REF_COMMIT"
+          test "$(git rev-parse --short=7 HEAD)" = "70d3982"
 
           # Verify that the reference actually contains the requested version.
           grep -Rqs 'v2\.2\.0' fs/susfs.c include/linux/susfs.h
