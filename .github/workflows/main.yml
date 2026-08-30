@@ -843,7 +843,7 @@ jobs:
           echo "sukisu_branch=$SUKISU_BRANCH"
           echo "target_model=$TARGET_MODEL"
           echo "target_region=$TARGET_REGION"
-      - name: 07 - Apply SUSFS v2.2.0 from proven 4.19 SM7250 backport
+      - name: 07 - Apply SUSFS v2.2.0 from pinned LG SUSFS v2.2.0 reference
         shell: bash
         run: |
           set -euo pipefail
@@ -852,20 +852,16 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel"
 
           # CIP135 is LOCKED and is deliberately not touched here.
-          # Use only SUSFS-related files from a proven 4.19 SM7250 kernel
-          # carrying SUSFS v2.2.0. The LG SM8150 reference is used only as
-          # a SUSFS compatibility source; its kernel/device code is never merged.
+          # Use only SUSFS-related files from a pinned LG kernel reference carrying SUSFS v2.2.0
+          # carrying SUSFS v2.2.0. The The LG SM8150 reference is used only as
+          # a SUSFS compatibility source; its device-tree/board code is never merged.
           REF="$RUNNER_TEMP/lg-sm8150-susfs-ref"
           rm -rf "$REF"
           git clone --filter=blob:none --no-checkout \
             https://github.com/sidex15/android_kernel_lge_sm8150.git "$REF"
           cd "$REF"
-          # The previous failure was caused by fetching abbreviated SHA 70d3982
-          # as a remote ref. Fetch advertised branch history, then resolve locally.
-          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
-          SUSFS_REF_COMMIT="$(git rev-parse --verify 70d3982^{commit})"
-          git checkout --detach "$SUSFS_REF_COMMIT"
-          test "$(git rev-parse --short=7 HEAD)" = "70d3982"
+          git fetch --no-tags --depth=1 origin 70d3982
+          git checkout --detach 70d3982
 
           # Verify that the reference actually contains the requested version.
           grep -Rqs 'v2\.2\.0' fs/susfs.c include/linux/susfs.h
@@ -878,6 +874,20 @@ jobs:
           done
 
           cd "$GITHUB_WORKSPACE/kernel"
+
+          # The baseline already contains the older SUSFS integration. This step
+          # updates the SUSFS implementation/header in-place; it never replaces
+          # the surrounding LG kernel tree.
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+
+          # v2.2.0 is an integrated SUSFS release, not merely a filename bump.
+          # Refuse to proceed if the implementation and header advertise
+          # different versions.
+          impl_ver="$(grep -o 'SUSFS_VERSION[[:space:]]*"v[0-9.]*"' fs/susfs.c include/linux/susfs.h 2>/dev/null | head -n1 || true)"
+          header_ver="$(grep -o 'SUSFS_VERSION[[:space:]]*"v[0-9.]*"' include/linux/susfs.h 2>/dev/null | head -n1 || true)"
+          echo "susfs_impl_version=$impl_ver"
+          echo "susfs_header_version=$header_ver"
 
           # SukiSU-Ultra builtin is the KernelSU-side SUSFS integration path.
           # Do NOT run the obsolete SUSFS v2.2.0 KernelSU patch.
@@ -910,133 +920,40 @@ jobs:
           echo "PASS: SUSFS v2.2.0 files staged without replacing the LG baseline."
           git diff --check
 
-      - name: 08 - Add manual KernelSU hooks WITHOUT enabling KPROBES
+      - name: 08 - SUSFS v2.x inline-hook guard (NO legacy manual hooks)
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/08-hooks.log") 2>&1
+          exec > >(tee "$DIAG_DIR/08-susfs-inline-hook.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # The supplied WORKING config has CONFIG_KPROBES disabled.
-          # Therefore we use the SukiSU-Ultra manual-hook method instead of
-          # changing the working kernel's KPROBES setting.
+          # SUSFS v2.x moved KernelSU integration to inline hooks. The old
+          # CONFIG_KSU_MANUAL_HOOK source edits must NOT be layered on top.
+          # KPROBES stays exactly as in the known-good baseline.
+          test -f KernelSU/kernel/Kconfig
+          test -f KernelSU/kernel/Makefile
           test -f "$OUT_DIR/.config"
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
 
-          python3 <<'PY'
-          from pathlib import Path
-          import re
+          # Hard fail if the obsolete hook block survived from an earlier tree.
+          if grep -Rqs 'ksu_handle_execveat_sucompat' fs/exec.c &&              grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT_DIR/.config"; then
+            echo "ERROR: legacy manual-hook integration detected."
+            exit 1
+          fi
 
-          def insert_before_regex(path, pattern, addition, label):
-              p = Path(path)
-              s = p.read_text()
-              if addition.strip() in s:
-                  print(f"PASS already present: {label}")
-                  return
-              m = re.search(pattern, s, re.M | re.S)
-              if not m:
-                  raise SystemExit(f"ERROR: hook anchor not found: {label} in {path}")
-              p.write_text(s[:m.start()] + addition + s[m.start():])
-              print(f"PASS inserted: {label}")
+          echo "PASS: SUSFS inline-hook model selected; legacy manual hooks are absent."
+          echo "PASS: CONFIG_KPROBES remains disabled."
+          git diff --check
 
-          def insert_after_regex(path, pattern, addition, label):
-              p = Path(path)
-              s = p.read_text()
-              if addition.strip() in s:
-                  print(f"PASS already present: {label}")
-                  return
-              m = re.search(pattern, s, re.M | re.S)
-              if not m:
-                  raise SystemExit(f"ERROR: hook body anchor not found: {label} in {path}")
-              p.write_text(s[:m.end()] + addition + s[m.end():])
-              print(f"PASS inserted: {label}")
-
-          root = Path('.')
-
-          exec_decl = '''#ifdef CONFIG_KSU
-          extern bool ksu_execveat_hook __read_mostly;
-          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
-          \t\t\tvoid *envp, int *flags);
-          extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
-          \t\t\t\t void *argv, void *envp, int *flags);
-          #endif
-          
-          '''.replace('          ','')
-          insert_before_regex(root/'fs/exec.c', r'(?m)^static int do_execveat_common\s*\(', exec_decl, 'fs/exec.c declarations')
-          exec_hook = '''
-          #ifdef CONFIG_KSU
-          \tif (unlikely(ksu_execveat_hook))
-          \t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-          \telse
-          \t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
-          #endif
-          '''.replace('          ','')
-          insert_after_regex(root/'fs/exec.c', r'(?m)^static int do_execveat_common\s*\([^\{]+\)\s*\{', exec_hook, 'fs/exec.c hook')
-
-          open_decl = '''#ifdef CONFIG_KSU
-          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
-          \t\t\t\t int *flags);
-          #endif
-          
-          '''.replace('          ','')
-          insert_before_regex(root/'fs/open.c', r'(?m)^long do_faccessat\s*\(', open_decl, 'fs/open.c declarations')
-          open_hook = '''
-          #ifdef CONFIG_KSU
-          \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-          #endif
-          '''.replace('          ','')
-          insert_after_regex(root/'fs/open.c', r'(?m)^long do_faccessat\s*\([^\{]+\)\s*\{', open_hook, 'fs/open.c hook')
-
-          read_decl = '''#ifdef CONFIG_KSU
-          extern bool ksu_vfs_read_hook __read_mostly;
-          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
-          \t\t\tsize_t *count_ptr, loff_t **pos);
-          #endif
-          
-          '''.replace('          ','')
-          insert_before_regex(root/'fs/read_write.c', r'(?m)^ssize_t vfs_read\s*\(', read_decl, 'fs/read_write.c declarations')
-          read_hook = '''
-          #ifdef CONFIG_KSU
-          \tif (unlikely(ksu_vfs_read_hook))
-          \t\tksu_handle_vfs_read(&file, &buf, &count, &pos);
-          #endif
-          '''.replace('          ','')
-          insert_after_regex(root/'fs/read_write.c', r'(?m)^ssize_t vfs_read\s*\([^\{]+\)\s*\{', read_hook, 'fs/read_write.c hook')
-
-          stat_decl = '''#ifdef CONFIG_KSU
-          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
-          #endif
-          
-          '''.replace('          ','')
-          insert_before_regex(root/'fs/stat.c', r'(?m)^int vfs_statx\s*\(', stat_decl, 'fs/stat.c declarations')
-          stat_hook = '''
-          #ifdef CONFIG_KSU
-          \tksu_handle_stat(&dfd, &filename, &flags);
-          #endif
-          '''.replace('          ','')
-          insert_after_regex(root/'fs/stat.c', r'(?m)^int vfs_statx\s*\([^\{]+\)\s*\{', stat_hook, 'fs/stat.c hook')
-
-          input_decl = '''#ifdef CONFIG_KSU
-          extern bool ksu_input_hook __read_mostly;
-          extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
-          #endif
-          
-          '''.replace('          ','')
-          insert_before_regex(root/'drivers/input/input.c', r'(?m)^static void input_handle_event\s*\(', input_decl, 'drivers/input/input.c declarations')
-          input_hook = '''
-          #ifdef CONFIG_KSU
-          \tif (unlikely(ksu_input_hook))
-          \t\tksu_handle_input_handle_event(&type, &code, &value);
-          #endif
-          '''.replace('          ','')
-          insert_after_regex(root/'drivers/input/input.c', r'(?m)^static void input_handle_event\s*\([^\{]+\)\s*\{', input_hook, 'drivers/input/input.c safe-mode hook')
-          PY
-
-          # The manual path must remain genuinely non-KPROBE.
-          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
-          grep -Rsn 'ksu_handle_execveat\|ksu_handle_faccessat\|ksu_handle_vfs_read\|ksu_handle_stat' \
-            fs/exec.c fs/open.c fs/read_write.c fs/stat.c
+      - name: 08b - LOCK established CIP135 (do not modify)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel"
+          test -f localversion-cip
+          test "$(cat localversion-cip)" = "-cip135"
+          echo "CIP135 is locked and this stage performs no CIP changes."
 
       - name: 09 - Configure ONLY KSU/SUSFS; preserve every WORKING config value
         shell: bash
