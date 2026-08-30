@@ -48,7 +48,7 @@ env:
 
 jobs:
   kernel:
-    if: ${{ inputs.run_kernel != false }}
+    if: ${{ github.event_name == 'push' || inputs.run_kernel != false }}
     name: "KERNEL — SETUP K01-K15 — 4.19.325-cip135 + SukiSU/KPM/SUSFS"
     runs-on: ubuntu-24.04
     steps:
@@ -358,7 +358,7 @@ jobs:
           } | tee "$DIAG_ROOT/kernel/99-final-state.txt"
 
   dtbo:
-    if: ${{ inputs.run_dtbo != false }}
+    if: ${{ github.event_name == 'push' || inputs.run_dtbo != false }}
     name: "DTBO — SETUP D01-D13 — matched caymanlm Android 16 QPR2"
     runs-on: ubuntu-24.04
     steps:
