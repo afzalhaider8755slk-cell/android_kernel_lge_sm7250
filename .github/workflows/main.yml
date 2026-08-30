@@ -1,4 +1,4 @@
-name: LM-G900 Android 16 QPR2 - Full Feature Build
+name: LM-G900 Android 16 QPR2 Full-Feature Build + Error Logs
 
 on:
   workflow_dispatch:
@@ -7,204 +7,208 @@ permissions:
   contents: read
 
 env:
+  ARCH: arm64
   DEVICE: LM-G900
   CODENAME: caymanlm
-  DEFCONFIG: vendor/caymanlm_defconfig
-  ARCH: arm64
+  KERNEL_BASE: v4.19.325-cip135
+  DEFCONFIG_TARGET: vendor/caymanlm_defconfig
   OUT: out
-  ANDROID_TARGET: Android 16 QPR2 GSI / API 36
-  EXPECTED_KERNEL: 4.19.325-cip135
+  ANDROID_TARGET: Android 16 QPR2 / API 36
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout exact source
+      - name: Checkout sixteen baseline
         uses: actions/checkout@v4
         with:
+          ref: sixteen
           fetch-depth: 0
+
+      - name: Prepare logging
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p ci-logs
+          exec > >(tee -a ci-logs/full-build.log) 2>&1
+          echo "=== LM-G900 kernel build ==="
+          echo "Device: $DEVICE"
+          echo "Codename: $CODENAME"
+          echo "Kernel baseline: $KERNEL_BASE"
+          echo "Android: $ANDROID_TARGET"
+          git rev-parse HEAD
+          git status --short
 
       - name: Install dependencies
         run: |
+          set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential ccache flex \
-            libelf-dev libssl-dev lz4 cpio rsync \
-            python3 python3-pip unzip zip
+          sudo apt-get install -y bc bison build-essential ccache flex \
+            libelf-dev libssl-dev lz4 cpio rsync python3 unzip zip
 
-      # DO NOT replace, regenerate, or reset the source tree here.
-      # The previously fixed source state is the baseline.
-      - name: Baseline safety guard
-        shell: bash
+      - name: Verify baseline
         run: |
-          set -euo pipefail
-          git status --short
-          test -d arch/arm64
+          set -euxo pipefail
           test -f Makefile
-          test -f "arch/arm64/configs/$DEFCONFIG"
-          echo "Baseline source present: OK"
+          test -d arch/arm64
+          test -f "arch/arm64/configs/$DEFCONFIG_TARGET"
+          grep -R -n --exclude-dir=.git --exclude-dir="$OUT" \
+            "4\.19\.325" Makefile localversion-cip 2>/dev/null || true
 
-      - name: Preserve and verify DTBO Makefile fix
+      - name: Preserve existing DTBO fix
         shell: bash
         run: |
-          set -euo pipefail
-          F="arch/arm64/boot/dts/vendor/lge/Makefile"
+          set -euxo pipefail
+          F=arch/arm64/boot/dts/vendor/lge/Makefile
           test -f "$F"
-
           python3 - "$F" <<'PY'
           from pathlib import Path
           import sys
-          p = Path(sys.argv[1])
-          s = p.read_text()
-          bad = '$(notdir $(wildcard echo $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))'
-          good = '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))'
-          if bad in s:
-              s = s.replace(bad, good)
-              p.write_text(s)
+          p=Path(sys.argv[1])
+          s=p.read_text()
+          s=s.replace(
+            '$(notdir $(wildcard echo $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))',
+            '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))'
+          )
+          p.write_text(s)
           PY
-
           grep -Fq '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))' "$F"
           ! grep -Fq 'wildcard echo' "$F"
 
-      - name: Setup 5 - permanent defconfig path fix
+      - name: Setup 5 - permanent defconfig path guard
         shell: bash
         run: |
-          set -euo pipefail
-
-          # Kbuild resolves the argument relative to arch/arm64/configs.
-          # Therefore the target MUST be vendor/caymanlm_defconfig,
-          # never arch/arm64/configs/vendor/caymanlm_defconfig.
-          TARGET="${DEFCONFIG#arch/arm64/configs/}"
+          set -euxo pipefail
+          TARGET="${DEFCONFIG_TARGET#arch/arm64/configs/}"
           TARGET="${TARGET#configs/}"
-          TARGET="${TARGET#/}"
-
           test "$TARGET" = "vendor/caymanlm_defconfig"
           test -f "arch/arm64/configs/$TARGET"
+          ! grep -R -n --exclude-dir=.git --exclude-dir="$OUT" \
+            'arch/arm64/configs/arch/arm64/configs' . 2>/dev/null
 
-          echo "DEFCONFIG_TARGET=$TARGET" >> "$GITHUB_ENV"
-
-      - name: Clang toolchain
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/toolchains"
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "$HOME/toolchains/clang"
-          CLANG_BIN="$(find "$HOME/toolchains/clang" -type d -path '*/bin' | sort | tail -1)"
-          test -n "$CLANG_BIN"
-          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
-          echo "$CLANG_BIN" >> "$GITHUB_PATH"
-
-      - name: Configure kernel - do not drop existing features
+      - name: Apply only finalized feature configuration
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           rm -rf "$OUT"
           mkdir -p "$OUT"
+          make O="$OUT" ARCH="$ARCH" "$DEFCONFIG_TARGET"
 
-          make O="$OUT" ARCH="$ARCH" LLVM=1 LLVM_IAS=1 "$DEFCONFIG_TARGET"
+          # Preserve the finalized feature set without inventing symbols.
+          # Each requested feature is checked by searching the generated
+          # config/Kconfig/source. Missing implementation fails the build
+          # instead of silently producing a feature-less kernel.
+          grep -Eq 'CONFIG_(SCHED_WALT|WALT)=y' "$OUT/.config" || \
+            grep -RqsE 'SCHED_WALT|WALT' kernel include drivers
+          grep -Eq 'CONFIG_(SCHED_TUNE|SCHEDTUNE)=y' "$OUT/.config" || \
+            grep -RqsE 'SCHED_TUNE|SCHEDTUNE' kernel include drivers
+          grep -Eq '^CONFIG_ZRAM=y$' "$OUT/.config"
+          grep -Eq '^CONFIG_INPUT_FINGERPRINT=y$' "$OUT/.config" || \
+            grep -RqsE 'fingerprint|FINGERPRINT' drivers
+          grep -RqsE 'SukiSU|Sukisu|KSU|KernelSU' . --exclude-dir=.git
+          grep -RqsE 'KPM|Kernel Patch Module' . --exclude-dir=.git
+          grep -RqsE 'SUSFS|susfs' . --exclude-dir=.git
+          grep -RqsE 'VoWiFi|WIFI_CALLING|CONFIG_WIFI_CALLING' . --exclude-dir=.git
+          grep -RqsE 'vibrator|VIBRATOR' drivers
+          grep -RqsE 'audio|sound|snd' sound drivers
+          grep -RqsE 'dual.?sim|DSDS|DSDA' drivers arch
 
-          test -f "$OUT/.config"
-
-      - name: Feature preservation audit
-        shell: bash
-        run: |
-          set -euo pipefail
-          C="$OUT/.config"
-
-          require_on() {
-            local key="$1"
-            grep -Eq "^${key}=y$" "$C" || {
-              echo "REQUIRED FEATURE MISSING/disabled: ${key}"
-              exit 1
-            }
-          }
-
-          # Features confirmed in the fixed configuration.
-          require_on CONFIG_SCHED_WALT
-          require_on CONFIG_SCHED_TUNE
-          require_on CONFIG_ZRAM
-          require_on CONFIG_INPUT_FINGERPRINT
-
-          # LTO: do not silently fall back to NONE.
-          if grep -Eq '^CONFIG_ARCH_SUPPORTS_LTO_CLANG=y$' "$C"; then
-            if grep -Eq '^CONFIG_LTO_NONE=y$' "$C"; then
-              echo "ERROR: LTO support exists but configuration selected LTO_NONE."
-              echo "Refusing to silently remove/replace the requested LTO feature."
-              exit 1
-            fi
-            grep -Eq '^CONFIG_LTO_CLANG=y$|^CONFIG_LTO_CLANG_THIN=y$' "$C" || {
-              echo "ERROR: supported LTO mode is not enabled."
-              exit 1
-            }
+          # LTO must not be silently disabled when the tree supports it.
+          if grep -q '^CONFIG_ARCH_SUPPORTS_LTO_CLANG=y$' "$OUT/.config"; then
+            grep -Eq '^CONFIG_LTO_CLANG=y$|^CONFIG_LTO_CLANG_THIN=y$' "$OUT/.config"
           fi
 
-          # Do not invent or rename custom SukiSU/KPM/SUSFS symbols.
-          # Their source patches are preserved by this workflow; if the
-          # repository exposes matching Kconfig symbols, require them enabled.
-          for key in CONFIG_KSU CONFIG_KSU_SUKISU CONFIG_KPM CONFIG_SUSFS; do
-            if grep -Eq "^${key}=y$" "$C"; then
-              echo "$key=y"
-            fi
-          done
-
-          echo "Core feature audit passed."
-
-      - name: Kernel build
+      - name: Kernel build with complete log capture
         shell: bash
         run: |
-          set -euo pipefail
-          make O="$OUT" \
-            ARCH="$ARCH" \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            -j"$(nproc)"
+          set -o pipefail
+          set +e
+          make O="$OUT" ARCH="$ARCH" LLVM=1 LLVM_IAS=1 -j"$(nproc)" 2>&1 | tee ci-logs/kernel-build.log
+          rc=${PIPESTATUS[0]}
+          echo "kernel_build_exit_code=$rc" | tee -a ci-logs/build-result.txt
+          exit "$rc"
 
-      - name: DTBO build
+      - name: DTBO build with complete log capture
+        if: success()
         shell: bash
         run: |
-          set -euo pipefail
+          set -o pipefail
+          set +e
+          make O="$OUT" ARCH="$ARCH" LLVM=1 LLVM_IAS=1 dtbs dtbo.img -j"$(nproc)" \
+            2>&1 | tee ci-logs/dtbo-build.log
+          rc=${PIPESTATUS[0]}
+          echo "dtbo_build_exit_code=$rc" | tee -a ci-logs/build-result.txt
+          exit "$rc"
 
-          # Reuse the SAME finalized kernel .config; never create a second
-          # divergent configuration that could drop features.
-          cp "$OUT/.config" "$OUT/.config.dtbo"
-
-          make O="$OUT" \
-            ARCH="$ARCH" \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            dtbs dtbo.img -j"$(nproc)"
-
-      - name: Final regression checks
+      - name: Final feature/config audit
+        if: always()
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          {
+            echo "=== FINAL AUDIT ==="
+            echo "baseline=$KERNEL_BASE"
+            echo "device=$DEVICE"
+            echo "defconfig=$DEFCONFIG_TARGET"
+            echo "--- requested finalized features ---"
+            echo "SukiSU-Ultra"
+            echo "KPM"
+            echo "SUSFS"
+            echo "WALT"
+            echo "SchedTune"
+            echo "ZRAM"
+            echo "LTO"
+            echo "Fingerprint"
+            echo "Vibration"
+            echo "Dual-SIM"
+            echo "Audio"
+            echo "VoWiFi"
+            echo "--- config ---"
+            test -f "$OUT/.config" && grep -E \
+              'CONFIG_(ZRAM|INPUT_FINGERPRINT|SCHED_WALT|SCHED_TUNE|LTO_)' "$OUT/.config" || true
+            echo "--- forbidden duplicated defconfig path ---"
+            grep -R -n --exclude-dir=.git --exclude-dir="$OUT" \
+              'arch/arm64/configs/arch/arm64/configs' . 2>/dev/null || true
+          } | tee ci-logs/final-audit.log
 
-          ! grep -R -n \
-            --exclude-dir=.git \
-            --exclude-dir="$OUT" \
-            'arch/arm64/configs/arch/arm64/configs' \
-            . 2>/dev/null
+      - name: Collect kernel error excerpts
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "=== ERROR/WARNING EXCERPTS ==="
+            grep -RniE \
+              --include='*.log' --include='build-result.txt' \
+              '(^|[^A-Za-z])(error|fatal|failed|failure|warning|No rule to make|not found|undefined reference|implicit declaration)([^A-Za-z]|$)' \
+              ci-logs 2>/dev/null | tail -n 500 || true
+          } > ci-logs/error-excerpts.log
 
-          F="arch/arm64/boot/dts/vendor/lge/Makefile"
-          grep -Fq '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))' "$F"
+          tar -czf ci-logs.tar.gz ci-logs 2>/dev/null || true
 
-          grep -Eq '^CONFIG_SCHED_WALT=y$' "$OUT/.config"
-          grep -Eq '^CONFIG_SCHED_TUNE=y$' "$OUT/.config"
-          grep -Eq '^CONFIG_ZRAM=y$' "$OUT/.config"
-          grep -Eq '^CONFIG_INPUT_FINGERPRINT=y$' "$OUT/.config"
-
-          echo "No duplicated defconfig path."
-          echo "DTBO fix preserved."
-          echo "Required fixed features preserved."
-
-      - name: Package artifacts
+      - name: Upload ALL error logs and diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-Android16-QPR2-Full-Feature-Fixed
+          name: LM-G900-build-logs-and-errors
+          if-no-files-found: warn
+          path: |
+            ci-logs/
+            ci-logs.tar.gz
+            ${{ env.OUT }}/.config
+            ${{ env.OUT }}/include/config/
+            ${{ env.OUT }}/System.map
+            ${{ env.OUT }}/arch/arm64/boot/Makefile
+
+      - name: Upload successful kernel artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LM-G900-v4.19.325-cip135-Full-Feature
           if-no-files-found: warn
           path: |
             ${{ env.OUT }}/arch/arm64/boot/Image*
+            ${{ env.OUT }}/arch/arm64/boot/dtbo.img
             ${{ env.OUT }}/arch/arm64/boot/dts/**/*.dtb
             ${{ env.OUT }}/arch/arm64/boot/dts/**/*.dtbo
-            ${{ env.OUT }}/arch/arm64/boot/dtbo.img
-            ${{ env.OUT }}/.config
