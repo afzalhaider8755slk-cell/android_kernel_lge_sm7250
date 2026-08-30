@@ -33,7 +33,7 @@ env:
   CIP_TARGET_TAG: v4.19.325-cip135
 
   DTB_TARGET: vendor/qcom/lito-mtp.dtb
-  DTBO_TARGET: vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
+  DTBO_TARGET: arch/arm64/boot/dts/vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
   DTBO_DTS: arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-rev-1.0_overlay.dts
 
 jobs:
@@ -134,6 +134,11 @@ jobs:
           trap 'rc=$?; echo "FAILED step=06 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd "$GITHUB_WORKSPACE/src/kernel"
           if [ -f .git/shallow ]; then git fetch --unshallow; fi
+          # Preserve the LG/Qualcomm ARM64 errata implementation. The current
+          # CIP135 merge introduces arm64_repeat_tlbi_list references that do
+          # not exist in this vendor 4.19 tree. Keep this vendor file intact
+          # while retaining the other CIP135 changes.
+          cp arch/arm64/kernel/cpu_errata.c "$GITHUB_WORKSPACE/artifacts/cpu_errata.lg-base.c"
           git remote add cip "$CIP_REPO"
           git fetch cip "refs/tags/$CIP_BASE_TAG:refs/tags/$CIP_BASE_TAG"                        "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
           base=$(git rev-parse "refs/tags/$CIP_BASE_TAG^{commit}")
@@ -178,6 +183,14 @@ jobs:
             git commit -m "Merge CIP135 into LG G900 kernel (LG-first conflict resolution)"
           fi
 
+          # Restore the known-good LG ARM64 errata file after the CIP merge.
+          # This fixes the exact compiler failure seen in the previous run:
+          # undeclared identifier 'arm64_repeat_tlbi_list'.
+          cp "$GITHUB_WORKSPACE/artifacts/cpu_errata.lg-base.c" arch/arm64/kernel/cpu_errata.c
+          git add arch/arm64/kernel/cpu_errata.c
+          if ! git diff --cached --quiet; then
+            git commit --amend --no-edit
+          fi
           grep -q -- '-cip135' localversion-cip
           git status --short > "$GITHUB_WORKSPACE/artifacts/cip-final-status.txt"
           git rev-parse HEAD > "$GITHUB_WORKSPACE/artifacts/cip-final-commit.txt"
@@ -409,8 +422,12 @@ jobs:
           make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
             AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$DTB_TARGET"
-          produced="$GITHUB_WORKSPACE/out/$DTB_TARGET"
-          test -s "$produced"
+          produced="$GITHUB_WORKSPACE/out/arch/arm64/boot/dts/$DTB_TARGET"
+          test -s "$produced" || {
+            echo "ERROR: expected DTB output not found: $produced"
+            find "$GITHUB_WORKSPACE/out/arch/arm64/boot/dts" -name 'lito-mtp.dtb' -print || true
+            exit 1
+          }
           mkdir -p "$GITHUB_WORKSPACE/artifacts/dtb"
           cp "$produced" "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dtb"
           sha256sum "$produced" > "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dtb.sha256"
@@ -510,12 +527,12 @@ jobs:
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
           target="$DTBO_TARGET"
-          # The top-level kernel Makefile already prefixes arch/arm64/boot/dts
-          # for %.dtbo targets. Pass the target relative to that tree.
+          # Use the full top-level Kbuild path. The previous relative
+          # vendor/lge target was not registered by this tree.
           make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
             AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$target"
-          produced="$GITHUB_WORKSPACE/out/arch/arm64/boot/dts/$target"
+          produced="$GITHUB_WORKSPACE/out/$target"
           test -s "$produced"
           mkdir -p "$GITHUB_WORKSPACE/artifacts/dtbo"
           cp "$produced" "$GITHUB_WORKSPACE/artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo"
