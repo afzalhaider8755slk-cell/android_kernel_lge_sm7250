@@ -1,4 +1,4 @@
-name: LG G900 Global - Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-g900-global-v6-${{ github.ref }}
+  group: lg-g900-global-v7-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -19,368 +19,278 @@ env:
 
   ARCH: arm64
   SUBARCH: arm64
+  DEFCONFIG: vendor/lineageos_cayman_defconfig
 
-  # This is the exact baseline from the previously working LG 4.19 setup.
-  BASELINE_CONFIG: .github/kernel-baseline/working.config
-  BASELINE_SHA256: 8b931841bcfcfad0b8ed596fbc156e67a6da8f32f226753ffabc89c907accffa
-
-  # SukiSU-Ultra branch that actually contains built-in SUSFS.
-  # Do not use the old "susfs-main" alias: current upstream redirects it to
-  # the builtin branch, while the setup script can silently fall back when a
-  # requested ref is unavailable.
   SUKISU_REPO: https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
   SUKISU_REF: builtin
-
   SUSFS_MODULE_REPO: https://github.com/sidex15/susfs4ksu-module.git
   SUSFS_MODULE_REF: v1.5.2+
-
   ANYKERNEL3_REPO: https://github.com/osm0sis/AnyKernel3.git
   ANYKERNEL3_REF: master
 
-  # Exact safe DT targets for this source.
+  CIP_REPO: https://gitlab.com/cip-project/cip-kernel/linux-cip.git
+  CIP_BASE_TAG: v4.19.325-cip132
+  CIP_TARGET_TAG: v4.19.325-cip135
+
   DTB_TARGET: arch/arm64/boot/dts/vendor/qcom/lito-mtp.dtb
   DTBO_TARGET: arch/arm64/boot/dts/vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
+  DTBO_DTS: arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-rev-1.0_overlay.dts
 
 jobs:
   kernel:
     name: Kernel
     runs-on: ubuntu-22.04
     timeout-minutes: 240
-
     steps:
-      - name: 00 - Initialize diagnostics
+      - name: 00 - Diagnostics trap
         shell: bash
         run: |
           set -Eeuo pipefail
           mkdir -p ci-diagnostics artifacts
           exec > >(tee -a ci-diagnostics/00-runner.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=00 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           uname -a
           date -u +%FT%TZ
+          echo "workflow=v7"
 
-      - name: 01 - Checkout all project trees
+      - name: 01 - Checkout all LG trees
         shell: bash
         run: |
           set -Eeuo pipefail
-          mkdir -p ci-diagnostics src/device/lge src/vendor/lge
+          mkdir -p src/device/lge src/vendor/lge
           exec > >(tee -a ci-diagnostics/01-checkout.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=01 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
+          trap 'rc=$?; echo "FAILED step=01 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" src/kernel
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$COMMON_TREE" src/device/lge/sm7250-common
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$DEVICE_TREE" src/device/lge/caymanlm
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$VENDOR_TREE" src/vendor/lge/caymanlm
-
           cd src/kernel
           echo "kernel_commit=$(git rev-parse HEAD)"
           echo "kernel_version=$(make -s kernelversion)"
 
-      - name: 02 - CIP135 release audit (no unsafe vendor merge)
+      - name: 02 - Install dependencies
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/02-cip135.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=02 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-          cd src/kernel
-
-          mkdir -p "$GITHUB_WORKSPACE/artifacts/cip"
-          git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git 2>/dev/null || true
-          git fetch --depth=1 cip refs/tags/v4.19.325-cip135
-
-          {
-            echo "CIP_TAG=v4.19.325-cip135"
-            echo "CIP_COMMIT=$(git rev-parse FETCH_HEAD)"
-            echo "VENDOR_COMMIT=$(git rev-parse HEAD)"
-            echo "MODE=release-audit-only"
-            echo "REASON=full CIP merge is intentionally blocked because this LG tree is vendor-modified and a full merge can replace Qualcomm/LG/DT code"
-          } | tee artifacts/cip/cip135-info.txt
-
-          git diff --stat HEAD..FETCH_HEAD > artifacts/cip/cip135-vendor-delta.stat || true
-
-      - name: 03 - Install dependencies
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/03-dependencies.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=03 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
+          exec > >(tee -a ci-diagnostics/02-dependencies.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            bc bison build-essential ccache clang curl flex \
-            libelf-dev libssl-dev lld llvm make python3 rsync unzip \
-            wget xz-utils device-tree-compiler
+            bc bison build-essential ccache clang curl flex git libelf-dev libssl-dev \
+            lld llvm make python3 rsync unzip wget xz-utils device-tree-compiler
 
-      - name: 04 - Install exact Android Clang r563880c
+      - name: 03 - Install exact Android Clang r563880c
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/04-toolchain.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=04 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
+          exec > >(tee -a ci-diagnostics/03-toolchain.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           git clone --depth=1 --filter=blob:none --sparse --branch ndk-r29 \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-            toolchains/clang
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchains/clang
           cd toolchains/clang
           git sparse-checkout set clang-r563880c
-
           test -x clang-r563880c/bin/clang
           test -x clang-r563880c/bin/ld.lld
           echo "CLANG_DIR=$GITHUB_WORKSPACE/toolchains/clang/clang-r563880c" >> "$GITHUB_ENV"
           echo "PATH=$GITHUB_WORKSPACE/toolchains/clang/clang-r563880c/bin:$PATH" >> "$GITHUB_ENV"
 
-      - name: 05 - Verify LLVM before config
+      - name: 04 - Verify assembler before any Kconfig operation
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/05-toolchain-test.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=05 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
+          exec > >(tee -a ci-diagnostics/04-toolchain-test.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           export PATH="$CLANG_DIR/bin:$PATH"
-          "$CLANG_DIR/bin/clang" --version
-          "$CLANG_DIR/bin/ld.lld" --version
-          printf 'int main(void){return 0;}\n' | "$CLANG_DIR/bin/clang" --target=aarch64-linux-android21 -x c - -c -o /tmp/a.o
-          "$CLANG_DIR/bin/clang" --target=aarch64-linux-android21 -x assembler /dev/null -c -o /tmp/as.o
-          echo "integrated-assembler=PASS"
+          clang --version
+          ld.lld --version
+          printf 'int main(void){return 0;}\n' | clang --target=aarch64-linux-android21 -x c - -c -o /tmp/a.o
+          printf 'nop\n' | clang --target=aarch64-linux-android21 -x assembler - -c -o /tmp/as.o
+          echo "LLVM_IAS=PASS"
 
-      - name: 06 - Load exact known-good baseline (NO defconfig regeneration)
+      - name: 05 - Validate Global Cayman + DSDS source baseline
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/06-baseline.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=06 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          exec > >(tee -a ci-diagnostics/05-target.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=05 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          cd src/kernel
+          test -f "arch/arm64/configs/$DEFCONFIG"
+          test -f "$DTBO_DTS"
+          grep -q 'CONFIG_MACH_LITO_CAYMANLM' "arch/arm64/configs/$DEFCONFIG" || true
+          grep -q 'BOARD_KERNEL_SEPARATED_DTBO := true' ../device/lge/caymanlm/BoardConfig.mk 2>/dev/null || true
+          grep -q 'persist.vendor.radio.multisim.config=dsds' ../device/lge/sm7250-common/vendor.prop
+          grep -q 'ro.vendor.lge.sim_num=2' ../device/lge/sm7250-common/vendor.prop
+          grep -q 'ro.vendor.lge.dsds=2' ../device/lge/sm7250-common/vendor.prop
+          grep -q 'model = "LG Electronics, Caymanlm, HW Rev 1.0"' "$DTBO_DTS"
+          grep -q 'qcom,board-id = <0x000C0008 0>;' "$DTBO_DTS"
+          ! grep -q '0x010C0008' "$DTBO_DTS"
+          echo "Global Cayman HW Rev 1.0 + DSDS baseline: PASS"
 
-          test -f "$BASELINE_CONFIG"
-          sha256sum "$BASELINE_CONFIG"
-          test "$(sha256sum "$BASELINE_CONFIG" | awk '{print $1}')" = "$BASELINE_SHA256"
-
-          mkdir -p out
-          cp "$BASELINE_CONFIG" out/.config
-
-          grep -q '^CONFIG_ARCH_LITO=y$' out/.config
-          grep -q '^CONFIG_MACH_LITO_CAYMANLM=y$' out/.config
-          grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' out/.config
-          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y$' out/.config
-          grep -q '^CONFIG_EXT4_FS=y$' out/.config
-          grep -q '^CONFIG_THREAD_INFO_IN_TASK=y$' out/.config
-          grep -q '^# CONFIG_KPROBES is not set$' out/.config
-
-          echo "Exact working baseline loaded."
-
-      - name: 07 - Validate target and DSDS baseline
+      - name: 06 - Apply CIP135 only when exact CIP132 ancestry is proven
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/07-target.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=07 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          exec > >(tee -a ci-diagnostics/06-cip135.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=06 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          cd src/kernel
+          if [ -f .git/shallow ]; then git fetch --unshallow; fi
+          git remote add cip "$CIP_REPO"
+          git fetch cip "refs/tags/$CIP_BASE_TAG:refs/tags/$CIP_BASE_TAG" "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
+          base=$(git rev-parse "refs/tags/$CIP_BASE_TAG^{commit}")
+          target=$(git rev-parse "refs/tags/$CIP_TARGET_TAG^{commit}")
+          vendor_head=$(git rev-parse HEAD)
+          {
+            echo "CIP_BASE=$CIP_BASE_TAG $base"
+            echo "CIP_TARGET=$CIP_TARGET_TAG $target"
+            echo "VENDOR_HEAD=$vendor_head"
+          } | tee "$GITHUB_WORKSPACE/artifacts/cip-before.txt"
 
-          grep -q 'TARGET_KERNEL_CONFIG := vendor/lineageos_cayman_defconfig' \
-            src/device/lge/caymanlm/BoardConfig.mk
-          grep -q 'BOARD_BOOTIMG_HEADER_VERSION := 2' \
-            src/device/lge/caymanlm/BoardConfig.mk
-          grep -q 'BOARD_DTB_OFFSET' \
-            src/device/lge/caymanlm/BoardConfig.mk
-          grep -q 'BOARD_INCLUDE_DTB_IN_BOOTIMG := true' \
-            src/device/lge/caymanlm/BoardConfig.mk
+          if ! git merge-base --is-ancestor "$base" "$vendor_head"; then
+            echo "ERROR: LG kernel is not provably based on $CIP_BASE_TAG. Refusing blind CIP merge." | tee "$GITHUB_WORKSPACE/artifacts/cip-error.txt"
+            exit 1
+          fi
 
-          grep -q 'persist.vendor.radio.multisim.config=dsds' \
-            src/device/lge/sm7250-common/vendor.prop
-          grep -q 'ro.vendor.lge.sim_num=2' \
-            src/device/lge/sm7250-common/vendor.prop
-          grep -q 'ro.vendor.lge.dsds=2' \
-            src/device/lge/sm7250-common/vendor.prop
+          git format-patch --stdout "$base..$target" > "$GITHUB_WORKSPACE/artifacts/cip135.patch"
+          test -s "$GITHUB_WORKSPACE/artifacts/cip135.patch"
+          git apply --check --3way "$GITHUB_WORKSPACE/artifacts/cip135.patch"
+          git apply --3way --index "$GITHUB_WORKSPACE/artifacts/cip135.patch"
+          echo "CIP135 delta applied cleanly."
+          git diff --check
+          git diff --stat > "$GITHUB_WORKSPACE/artifacts/cip-applied.stat"
 
-          echo "LG G900 family / Caymanlm / DSDS baseline: PASS"
-
-      - name: 08 - Remove old KernelSU and install SukiSU-Ultra builtin+SUSFS
+      - name: 07 - Remove legacy KernelSU and integrate SukiSU-Ultra builtin
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/08-sukisu.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=08 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
+          exec > >(tee -a ci-diagnostics/07-sukisu.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=07 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           cd src/kernel
           rm -rf KernelSU drivers/kernelsu
-
           git ls-remote --exit-code --heads "$SUKISU_REPO" "refs/heads/$SUKISU_REF"
-
-          curl -LSs \
-            https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh \
-            | bash -s "$SUKISU_REF"
-
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$SUKISU_REF"
           test -d KernelSU/kernel
-          test -L drivers/kernelsu
           test -f KernelSU/kernel/Kconfig
           test -f KernelSU/kernel/Makefile
-          grep -q 'config KSU_SUSFS' KernelSU/kernel/Kconfig
-          grep -Rqs 'SUSFS' KernelSU/kernel
-
-          echo "SukiSU branch=$(git -C KernelSU rev-parse --abbrev-ref HEAD)"
+          test -L drivers/kernelsu
+          grep -Rqs 'config KSU_SUSFS' KernelSU/kernel
           echo "SukiSU commit=$(git -C KernelSU rev-parse HEAD)"
-          grep -Rns 'SUSFS_VERSION' KernelSU/kernel | head -20 || true
 
-      - name: 09 - Configure KPROBES + SukiSU + conservative SUSFS
+      - name: 08 - Generate config with the REAL device defconfig (toolchain already verified)
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/09-config.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=09 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
+          exec > >(tee -a ci-diagnostics/08-defconfig.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=08 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
-
-          scripts/config --file "$GITHUB_WORKSPACE/out/.config" \
-            --enable CONFIG_KPROBES \
-            --enable CONFIG_KALLSYMS \
-            --enable CONFIG_KALLSYMS_ALL \
-            --enable CONFIG_KSU \
-            --enable CONFIG_KSU_SUSFS \
-            --enable CONFIG_KSU_SUSFS_SUS_KSTAT \
-            --enable CONFIG_KSU_SUSFS_SPOOF_UNAME \
-            --enable CONFIG_KSU_SUSFS_ENABLE_LOG
-
-          # Conservative/non-GKI safety: do not force mount/path/map features.
-          for s in \
-            CONFIG_KSU_SUSFS_SUS_PATH \
-            CONFIG_KSU_SUSFS_SUS_MOUNT \
-            CONFIG_KSU_SUSFS_SUS_MAP \
-            CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-            CONFIG_KPM
-          do
-            scripts/config --file "$GITHUB_WORKSPACE/out/.config" --disable "$s" 2>/dev/null || true
-          done
-
-          make O="$GITHUB_WORKSPACE/out" \
-            ARCH=arm64 SUBARCH=arm64 \
-            LLVM=1 LLVM_IAS=1 \
-            CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
-            LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
-            AR="$CLANG_DIR/bin/llvm-ar" \
-            NM="$CLANG_DIR/bin/llvm-nm" \
-            OBJCOPY="$CLANG_DIR/bin/llvm-objcopy" \
-            OBJDUMP="$CLANG_DIR/bin/llvm-objdump" \
-            STRIP="$CLANG_DIR/bin/llvm-strip" \
-            olddefconfig
-
-          grep -q '^CONFIG_KPROBES=y$' "$GITHUB_WORKSPACE/out/.config"
-          grep -q '^CONFIG_KSU=y$' "$GITHUB_WORKSPACE/out/.config"
-          grep -q '^CONFIG_KSU_SUSFS=y$' "$GITHUB_WORKSPACE/out/.config"
-          grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y$' "$GITHUB_WORKSPACE/out/.config"
-          grep -q '^CONFIG_KSU_SUSFS_SPOOF_UNAME=y$' "$GITHUB_WORKSPACE/out/.config"
-          grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' "$GITHUB_WORKSPACE/out/.config"
-          grep -q '^# CONFIG_KPM is not set$' "$GITHUB_WORKSPACE/out/.config"
-
-          # This old LG 4.19 tree previously failed here with android_kabi_reserved1.
-          ! grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' "$GITHUB_WORKSPACE/out/.config"
-          ! grep -q '^CONFIG_KSU_SUSFS_SUS_MOUNT=y$' "$GITHUB_WORKSPACE/out/.config"
-
-      - name: 10 - Network / IMS / WLAN / traffic-accounting validation
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/10-network.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=10 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
-          cfg="$GITHUB_WORKSPACE/out/.config"
-          report="$GITHUB_WORKSPACE/artifacts/network-connectivity-report.txt"
-
-          required=(
-            CONFIG_NETFILTER
-            CONFIG_NETFILTER_XTABLES
-            CONFIG_NETFILTER_XT_MATCH_OWNER
-            CONFIG_NETFILTER_XT_MATCH_CONNMARK
-            CONFIG_CFG80211
-            CONFIG_UID_SYS_STATS
-            CONFIG_RMNET
-            CONFIG_IPA3
-            CONFIG_RMNET_IPA3
-            CONFIG_QCOM_QMI_HELPERS
-            CONFIG_QCOM_QMI_RMNET
-            CONFIG_BPF
-            CONFIG_BPF_SYSCALL
-            CONFIG_ANDROID_BINDER_IPC
-            CONFIG_ANDROID_BINDERFS
-            CONFIG_DM_VERITY
-            CONFIG_FS_ENCRYPTION
-            CONFIG_OVERLAY_FS
-          )
-
-          : > "$report"
-          for c in "${required[@]}"; do
-            if grep -q "^${c}=y$" "$cfg"; then
-              echo "$c=y" >> "$report"
-            else
-              echo "MISSING $c" >> "$report"
-              exit 1
-            fi
-          done
-
-          {
-            echo "DSDS baseline: vendor properties already contain dual-SIM settings."
-            echo "VoLTE/Wi-Fi Calling remain vendor/modem/IMS dependent; no carrier data is faked."
-            echo "Traffic monitoring baseline: UID stats + BPF + netfilter."
-            echo "Android 16 QPR2 target: compatibility checks only; no experimental QPR2 kernel backports."
-            echo "Network connectivity baseline: PASS"
-          } | tee -a "$report"
-
-      - name: 11 - Build kernel Image + modules
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/11-kernel-build.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=11 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
-          cd src/kernel
-          export PATH="$CLANG_DIR/bin:$PATH"
-
-          make -Oline \
-            O="$GITHUB_WORKSPACE/out" \
-            ARCH=arm64 SUBARCH=arm64 \
+          rm -rf "$GITHUB_WORKSPACE/out"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          make O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 \
             LLVM=1 LLVM_IAS=1 \
             CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
             LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
             AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" \
             OBJCOPY="$CLANG_DIR/bin/llvm-objcopy" OBJDUMP="$CLANG_DIR/bin/llvm-objdump" \
             STRIP="$CLANG_DIR/bin/llvm-strip" \
-            -j"$(nproc)" Image modules
+            "$DEFCONFIG"
+          test -s "$GITHUB_WORKSPACE/out/.config"
+          cp "$GITHUB_WORKSPACE/out/.config" "$GITHUB_WORKSPACE/artifacts/config-from-defconfig"
 
-          test -s "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image"
-          sha256sum "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" > "$GITHUB_WORKSPACE/artifacts/Image.sha256"
-
-      - name: 12 - Kernel final verification
+      - name: 09 - Enable requested features conservatively
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/12-final.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=12 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
+          exec > >(tee -a ci-diagnostics/09-config.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=09 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           cd src/kernel
+          export PATH="$CLANG_DIR/bin:$PATH"
+          scripts/config --file "$GITHUB_WORKSPACE/out/.config" \
+            --enable CONFIG_KPROBES \
+            --enable CONFIG_KALLSYMS \
+            --enable CONFIG_KALLSYMS_ALL \
+            --enable CONFIG_KSU \
+            --enable CONFIG_KSU_SUSFS
+
+          # Do not enable experimental KPM/manual-hook or SUSFS path/mount/map features.
+          for c in CONFIG_KPM CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_MAP; do
+            scripts/config --file "$GITHUB_WORKSPACE/out/.config" --disable "$c" 2>/dev/null || true
+          done
+
+          make O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 \
+            LLVM=1 LLVM_IAS=1 CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
+            LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
+            AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" \
+            OBJCOPY="$CLANG_DIR/bin/llvm-objcopy" OBJDUMP="$CLANG_DIR/bin/llvm-objdump" \
+            STRIP="$CLANG_DIR/bin/llvm-strip" olddefconfig
+
           grep -q '^CONFIG_KPROBES=y$' "$GITHUB_WORKSPACE/out/.config"
           grep -q '^CONFIG_KSU=y$' "$GITHUB_WORKSPACE/out/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$GITHUB_WORKSPACE/out/.config"
           grep -q '^# CONFIG_KPM is not set$' "$GITHUB_WORKSPACE/out/.config"
-          grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' "$GITHUB_WORKSPACE/out/.config"
-
-          grep -Rqs 'CONFIG_KSU_MANUAL_HOOK' "$GITHUB_WORKSPACE/out/.config" || true
-          ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$GITHUB_WORKSPACE/out/.config"
-
+          grep -q '^# CONFIG_KSU_MANUAL_HOOK is not set$' "$GITHUB_WORKSPACE/out/.config" || true
           cp "$GITHUB_WORKSPACE/out/.config" "$GITHUB_WORKSPACE/artifacts/final.config"
 
+      - name: 10 - Network / IMS / WLAN / traffic-monitor baseline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/10-network.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=10 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          cfg="$GITHUB_WORKSPACE/out/.config"
+          report="$GITHUB_WORKSPACE/artifacts/network-connectivity-report.txt"
+          : > "$report"
+          required=(CONFIG_NETFILTER CONFIG_NETFILTER_XTABLES CONFIG_CFG80211 CONFIG_UID_SYS_STATS CONFIG_RMNET CONFIG_IPA3 CONFIG_RMNET_IPA3 CONFIG_QCOM_QMI_HELPERS CONFIG_QCOM_QMI_RMNET CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_ANDROID_BINDER_IPC CONFIG_ANDROID_BINDERFS CONFIG_DM_VERITY CONFIG_FS_ENCRYPTION CONFIG_OVERLAY_FS)
+          for c in "${required[@]}"; do
+            grep -q "^${c}=y$" "$cfg" || { echo "MISSING $c" | tee -a "$report"; exit 1; }
+            echo "$c=y" >> "$report"
+          done
+          echo 'Dual-SIM: common vendor DSDS properties verified.' | tee -a "$report"
+          echo 'VoLTE/Wi-Fi Calling: kernel transport/IMS prerequisites preserved; carrier/modem/vendor IMS remains external.' | tee -a "$report"
+          echo 'Traffic monitor: UID stats + BPF + netfilter baseline verified.' | tee -a "$report"
+          echo 'Android 16 QPR2/GSI: kernel compatibility validation only; no experimental QPR2 backports.' | tee -a "$report"
+
+      - name: 11 - Build kernel Image + modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/11-build.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=11 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          cd src/kernel
+          export PATH="$CLANG_DIR/bin:$PATH"
+          make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 \
+            LLVM=1 LLVM_IAS=1 CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
+            LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
+            AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" \
+            OBJCOPY="$CLANG_DIR/bin/llvm-objcopy" OBJDUMP="$CLANG_DIR/bin/llvm-objdump" \
+            STRIP="$CLANG_DIR/bin/llvm-strip" -j"$(nproc)" Image modules
+          test -s "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image"
+          sha256sum "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" > "$GITHUB_WORKSPACE/artifacts/Image.sha256"
+
+      - name: 12 - Final kernel validation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/12-final.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=12 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          cfg="$GITHUB_WORKSPACE/out/.config"
+          grep -q '^CONFIG_KPROBES=y$' "$cfg"
+          grep -q '^CONFIG_KSU=y$' "$cfg"
+          grep -q '^CONFIG_KSU_SUSFS=y$' "$cfg"
+          grep -q '^# CONFIG_KPM is not set$' "$cfg"
+          ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$cfg"
+          ! grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' "$cfg" || true
           {
-            echo "target=LG-G900-Global"
-            echo "kernel_repo=$KERNEL_REPO"
-            echo "kernel_branch=$KERNEL_BRANCH"
-            echo "kernel_commit=$(git rev-parse HEAD)"
+            echo 'target=LG-G900-Global'
+            echo "kernel_commit=$(git -C src/kernel rev-parse HEAD)"
+            echo "defconfig=$DEFCONFIG"
             echo "sukisu_ref=$SUKISU_REF"
-            echo "sukisu_commit=$(git -C KernelSU rev-parse HEAD)"
-            echo "susfs_module_ref=$SUSFS_MODULE_REF"
-            echo "CIP=v4.19.325-cip135 audit-only (no unsafe vendor merge)"
-            echo "KPROBES=y"
-            echo "KPM=n"
-            echo "DTB_TARGET=$DTB_TARGET"
-            echo "DTBO_TARGET=$DTBO_TARGET"
+            echo "sukisu_commit=$(git -C src/kernel/KernelSU rev-parse HEAD)"
+            echo "cip=$CIP_TARGET_TAG applied-only-after-clean-ancestry"
+            echo "dtb=$DTB_TARGET"
+            echo "dtbo=$DTBO_TARGET"
           } > "$GITHUB_WORKSPACE/artifacts/build-info.txt"
 
-      - name: 13 - Upload kernel artifact
+      - name: 13 - Upload kernel artifacts
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
@@ -391,6 +301,7 @@ jobs:
             artifacts/build-info.txt
             artifacts/Image.sha256
             artifacts/network-connectivity-report.txt
+            artifacts/cip*
 
       - name: 14 - Upload kernel diagnostics ALWAYS
         if: ${{ always() }}
@@ -406,98 +317,79 @@ jobs:
     name: DTB
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-
     steps:
-      - name: 00 - Initialize DTB diagnostics
+      - name: 00 - Init diagnostics
         shell: bash
         run: |
           set -Eeuo pipefail
           mkdir -p ci-diagnostics artifacts
           exec > >(tee -a ci-diagnostics/00-runner.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=00 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-          uname -a
-          date -u +%FT%TZ
-
+          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
       - name: 01 - Checkout kernel
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/01-checkout.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=01 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-          mkdir -p src
+          trap 'rc=$?; echo "FAILED step=01 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" src/kernel
-
-      - name: 02 - Dependencies and Clang
+      - name: 02 - Dependencies + Clang
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/02-toolchain.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=02 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bc bison build-essential clang flex libelf-dev libssl-dev lld llvm make device-tree-compiler
-          git clone --depth=1 --filter=blob:none --sparse --branch ndk-r29 \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchains/clang
-          cd toolchains/clang
-          git sparse-checkout set clang-r563880c
+          git clone --depth=1 --filter=blob:none --sparse --branch ndk-r29 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchains/clang
+          cd toolchains/clang && git sparse-checkout set clang-r563880c
           echo "CLANG_DIR=$GITHUB_WORKSPACE/toolchains/clang/clang-r563880c" >> "$GITHUB_ENV"
-
-      - name: 03 - Load exact baseline (NO defconfig regeneration)
+      - name: 03 - Configure exact device defconfig
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/03-baseline.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=03 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-          test "$(sha256sum "$GITHUB_WORKSPACE/$BASELINE_CONFIG" | awk '{print $1}')" = "$BASELINE_SHA256"
-          mkdir -p out
-          cp "$GITHUB_WORKSPACE/$BASELINE_CONFIG" out/.config
-          grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' out/.config
-          grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' out/.config
-          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y$' out/.config
-
-      - name: 04 - Build ONLY exact base DTB lito-mtp.dtb
+          exec > >(tee -a ci-diagnostics/03-config.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          cd src/kernel
+          export PATH="$CLANG_DIR/bin:$PATH"
+          printf 'nop\n' | clang --target=aarch64-linux-android21 -x assembler - -c -o /tmp/as.o
+          make O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
+            AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$DEFCONFIG"
+          test -s "$GITHUB_WORKSPACE/out/.config"
+          grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' "$GITHUB_WORKSPACE/out/.config"
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y$' "$GITHUB_WORKSPACE/out/.config"
+      - name: 04 - Build ONLY lito-mtp.dtb
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/04-dtb-build.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=04 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
+          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
-
-          mkdir -p "$GITHUB_WORKSPACE/artifacts/dtb"
-
-          # IMPORTANT: the source uses CONFIG_MACH_LGE + CONFIG_ARCH_LITO to
-          # provide lito-mtp.dtb even when DT overlay mode is enabled.
-          make -Oline \
-            O="$GITHUB_WORKSPACE/out" \
-            ARCH=arm64 SUBARCH=arm64 \
-            LLVM=1 LLVM_IAS=1 \
-            CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
-            LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
-            "$DTB_TARGET"
-
+          make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
+            AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$DTB_TARGET"
           produced="$GITHUB_WORKSPACE/out/$DTB_TARGET"
           test -s "$produced"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts/dtb"
           cp "$produced" "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dtb"
-
-          "$GITHUB_WORKSPACE/out/scripts/dtc/dtc" \
-            -I dtb -O dts -o "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dts" \
-            "$produced"
-
-          grep -q 'qcom,lito-mtp' "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dts"
-          grep -q 'qcom,lito' "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dts"
-          grep -q 'qcom,board-id' "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dts"
-
           sha256sum "$produced" > "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dtb.sha256"
-
-      - name: 05 - Upload DTB
+      - name: 05 - Validate DTB structure
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/05-verify.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=05 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          "$GITHUB_WORKSPACE/out/scripts/dtc/dtc" -I dtb -O dts -o artifacts/dtb/lito-mtp.dts artifacts/dtb/lito-mtp.dtb
+          grep -q 'qcom,lito-mtp' artifacts/dtb/lito-mtp.dts
+          grep -q 'qcom,lito' artifacts/dtb/lito-mtp.dts
+      - name: 06 - Upload DTB
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
           name: LG-G900-Global-DTB
           path: artifacts/dtb/**
-
-      - name: 06 - Upload DTB diagnostics ALWAYS
+      - name: 07 - Upload DTB diagnostics ALWAYS
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -511,113 +403,98 @@ jobs:
     name: DTBO
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-
     steps:
-      - name: 00 - Initialize DTBO diagnostics
+      - name: 00 - Init diagnostics
         shell: bash
         run: |
           set -Eeuo pipefail
           mkdir -p ci-diagnostics artifacts
           exec > >(tee -a ci-diagnostics/00-runner.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=00 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-          uname -a
-          date -u +%FT%TZ
-
+          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
       - name: 01 - Checkout kernel
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/01-checkout.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=01 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-          mkdir -p src
+          trap 'rc=$?; echo "FAILED step=01 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           git clone --depth=1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" src/kernel
-
-      - name: 02 - Dependencies and Clang
+      - name: 02 - Dependencies + Clang
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/02-toolchain.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=02 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bc bison build-essential clang flex libelf-dev libssl-dev lld llvm make device-tree-compiler
-          git clone --depth=1 --filter=blob:none --sparse --branch ndk-r29 \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchains/clang
-          cd toolchains/clang
-          git sparse-checkout set clang-r563880c
+          git clone --depth=1 --filter=blob:none --sparse --branch ndk-r29 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchains/clang
+          cd toolchains/clang && git sparse-checkout set clang-r563880c
           echo "CLANG_DIR=$GITHUB_WORKSPACE/toolchains/clang/clang-r563880c" >> "$GITHUB_ENV"
-
-      - name: 03 - Load baseline and validate exact DTBO target
+      - name: 03 - Configure and validate exact Global overlay
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/03-target.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=03 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
-          test "$(sha256sum "$GITHUB_WORKSPACE/$BASELINE_CONFIG" | awk '{print $1}')" = "$BASELINE_SHA256"
-          mkdir -p out
-          cp "$GITHUB_WORKSPACE/$BASELINE_CONFIG" out/.config
-
+          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           cd src/kernel
-          selected="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-rev-1.0_overlay.dts"
-          test -f "$selected"
-
-          grep -q 'model = "LG Electronics, Caymanlm, HW Rev 1.0"' "$selected"
-          grep -q 'compatible = "qcom,lito-mtp", "qcom,lito", "qcom,mtp"' "$selected"
-          grep -q 'qcom,board-id = <0x000C0008 0>;' "$selected"
-
-          # Never select CN or VZW overlays for the Global target.
-          ! grep -q 'qcom,board-id = <0x010C0008 0>;' \
-            "$selected"
-
-          find arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com \
-            -maxdepth 1 -type f -name '*overlay.dts' -print | sort \
-            > "$GITHUB_WORKSPACE/ci-diagnostics/available-overlays.txt"
-
-          echo "selected=$selected"
-          echo "board-id=0x000C0008"
-
-      - name: 04 - Build ONLY selected Global Cayman DTBO
+          export PATH="$CLANG_DIR/bin:$PATH"
+          make O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
+            AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$DEFCONFIG"
+          grep -q '^CONFIG_MACH_LITO_CAYMANLM=y$' "$GITHUB_WORKSPACE/out/.config"
+          grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' "$GITHUB_WORKSPACE/out/.config"
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y$' "$GITHUB_WORKSPACE/out/.config"
+          test -f "$DTBO_DTS"
+          grep -q 'model = "LG Electronics, Caymanlm, HW Rev 1.0"' "$DTBO_DTS"
+          grep -q 'qcom,board-id = <0x000C0008 0>;' "$DTBO_DTS"
+          ! grep -q '0x010C0008' "$DTBO_DTS"
+      - name: 04 - Repair only the confirmed LGE Kbuild wildcard typo in a temporary CI copy
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/04-dtbo-build.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=04 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
+          exec > >(tee -a ci-diagnostics/04-kbuild-fix.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          cd src/kernel
+          f=arch/arm64/boot/dts/vendor/lge/Makefile
+          grep -q '\$(wildcard echo \$(srctree)/\$(src)' "$f"
+          cp "$f" "$GITHUB_WORKSPACE/artifacts/lge-Makefile.before"
+          sed -i 's/\$(wildcard echo \$(srctree)\/\$(src)/\$(wildcard \$(srctree)\/\$(src)/' "$f"
+          ! grep -q '\$(wildcard echo' "$f"
+          cp "$f" "$GITHUB_WORKSPACE/artifacts/lge-Makefile.after"
+          echo 'Applied one CI-local typo fix only: wildcard echo -> wildcard.'
+      - name: 05 - Build ONLY selected Global Cayman DTBO
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/05-dtbo-build.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=05 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
-          mkdir -p "$GITHUB_WORKSPACE/artifacts/dtbo"
-
-          # vendor/lge/Makefile registers the Cayman overlay by basename.
-          # The previous workflow incorrectly passed the nested source path as
-          # a target, causing "No rule to make target".
-          target="arch/arm64/boot/dts/vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo"
-
-          make -Oline \
-            O="$GITHUB_WORKSPACE/out" \
-            ARCH=arm64 SUBARCH=arm64 \
-            LLVM=1 LLVM_IAS=1 \
-            CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
-            LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
-            "$target"
-
+          target="$DTBO_TARGET"
+          make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
+            AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$target"
           produced="$GITHUB_WORKSPACE/out/$target"
           test -s "$produced"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts/dtbo"
           cp "$produced" "$GITHUB_WORKSPACE/artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo"
-
-          "$GITHUB_WORKSPACE/out/scripts/dtc/dtc" \
-            -I dtb -O dts -o "$GITHUB_WORKSPACE/artifacts/dtbo/overlay.dts" \
-            "$produced" || true
-
           sha256sum "$produced" > "$GITHUB_WORKSPACE/artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo.sha256"
-
-      - name: 05 - Upload DTBO
+          "$GITHUB_WORKSPACE/out/scripts/dtc/dtc" -I dtb -O dts -o "$GITHUB_WORKSPACE/artifacts/dtbo/overlay.dts" "$produced"
+      - name: 06 - Validate DTBO identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/06-verify.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=06 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          grep -q 'LG Electronics, Caymanlm, HW Rev 1.0' artifacts/dtbo/overlay.dts
+          grep -q 'qcom,board-id' artifacts/dtbo/overlay.dts
+          ! grep -q '0x010C0008' artifacts/dtbo/overlay.dts
+      - name: 07 - Upload DTBO
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
           name: LG-G900-Global-DTBO
           path: artifacts/dtbo/**
-
-      - name: 06 - Upload DTBO diagnostics ALWAYS
+      - name: 08 - Upload DTBO diagnostics ALWAYS
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -628,115 +505,83 @@ jobs:
           if-no-files-found: warn
 
   package:
-    name: AnyKernel3 + SUSFS module
+    name: AnyKernel3 + SUSFS package
     needs: [kernel, dtb, dtbo]
     if: ${{ always() && needs.kernel.result == 'success' && needs.dtb.result == 'success' && needs.dtbo.result == 'success' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 60
-
     steps:
-      - name: 00 - Initialize package diagnostics
+      - name: 00 - Init package diagnostics
         shell: bash
         run: |
           set -Eeuo pipefail
           mkdir -p ci-diagnostics artifacts
           exec > >(tee -a ci-diagnostics/00-runner.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=00 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
-      - name: 01a - Download kernel artifact
+          trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+      - name: 01 - Download successful build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: LG-G900-Global-Kernel
-          path: downloaded/kernel
-
-      - name: 01b - Download DTB artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: LG-G900-Global-DTB
-          path: downloaded/dtb
-
-      - name: 01c - Download DTBO artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: LG-G900-Global-DTBO
-          path: downloaded/dtbo
-
-      - name: 02 - Package AnyKernel3
+          pattern: LG-G900-Global-{Kernel,DTB,DTBO}
+          path: downloaded
+          merge-multiple: false
+      - name: 02 - Install AnyKernel3
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/02-anykernel3.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=02 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
+          exec > >(tee -a ci-diagnostics/02-anykernel.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=02 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
           git clone --depth=1 --branch "$ANYKERNEL3_REF" "$ANYKERNEL3_REPO" AnyKernel3
-
           cp downloaded/LG-G900-Global-Kernel/Image AnyKernel3/Image
           cp downloaded/LG-G900-Global-DTB/dtb/lito-mtp.dtb AnyKernel3/dtb
-
           cat > AnyKernel3/anykernel.sh <<'AK3'
           properties() { '
-          kernel.string=LG G900 Global - SukiSU-Ultra + SUSFS
+          kernel.string=LG G900 Global - SukiSU-Ultra + SUSFS + CIP135
           do.devicecheck=1
           do.modules=1
           do.systemless=1
           do.cleanup=1
           do.cleanuponabort=0
           device.name1=caymanlm
-          device.name2=
-          device.name3=
-          device.name4=
-          device.name5=
-          supported.versions=
-          supported.patchlevels=
-          supported.vendorpatchlevels=
           '; }
-
           BLOCK=boot;
           IS_SLOT_DEVICE=auto;
           RAMDISK_COMPRESSION=auto;
           PATCH_VBMETA_FLAG=auto;
-
           . tools/ak3-core.sh;
-
           split_boot;
           flash_boot;
           AK3
-
           rm -rf AnyKernel3/.git AnyKernel3/.github
-          mkdir -p artifacts/anykernel3
-          (
-            cd AnyKernel3
-            zip -r9 "$GITHUB_WORKSPACE/artifacts/anykernel3/LG-G900-Global-SukiSU-SUSFS-AnyKernel3.zip" . \
-              -x '*.git*' '*.github*'
-          )
-          unzip -t artifacts/anykernel3/LG-G900-Global-SukiSU-SUSFS-AnyKernel3.zip
-
-      - name: 03 - Package official SUSFS userspace module R28
+          mkdir -p artifacts
+          (cd AnyKernel3 && zip -r9 "$GITHUB_WORKSPACE/artifacts/LG-G900-Global-SukiSU-SUSFS-CIP135-AnyKernel3.zip" . -x '*.git*' '*.github*')
+          unzip -t artifacts/*.zip
+      - name: 03 - Package DTBO separately (no automatic force-flash)
         shell: bash
         run: |
           set -Eeuo pipefail
-          exec > >(tee -a ci-diagnostics/03-susfs-module.log) 2>&1
-          trap 'rc=$?; echo "FAILED step=03 rc=$rc command=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
-
-          git clone --depth=1 --branch "$SUSFS_MODULE_REF" \
-            "$SUSFS_MODULE_REPO" susfs-module
-
-          mkdir -p artifacts/susfs
-          (
-            cd susfs-module
-            zip -r9 "$GITHUB_WORKSPACE/artifacts/susfs/SUSFS-v1.5.2-R28-source.zip" . \
-              -x '*.git*'
-          )
-          unzip -t artifacts/susfs/SUSFS-v1.5.2-R28-source.zip
-
-      - name: 04 - Upload package artifacts
+          exec > >(tee -a ci-diagnostics/03-dtbo-package.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          mkdir -p artifacts/dtbo
+          cp downloaded/LG-G900-Global-DTBO/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo artifacts/dtbo/
+          cp downloaded/LG-G900-Global-DTBO/dtbo/*.sha256 artifacts/dtbo/
+          (cd artifacts/dtbo && zip -9 "$GITHUB_WORKSPACE/artifacts/LG-G900-Global-DTBO.zip" ./*)
+          unzip -t artifacts/LG-G900-Global-DTBO.zip
+      - name: 04 - Package SUSFS userspace module source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/04-susfs-module.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=04 rc=$rc cmd=${BASH_COMMAND}" >> ci-diagnostics/error.log' ERR
+          git clone --depth=1 --branch "$SUSFS_MODULE_REF" "$SUSFS_MODULE_REPO" susfs-module
+          (cd susfs-module && zip -r9 "$GITHUB_WORKSPACE/artifacts/SUSFS-v1.5.2-R28-source.zip" . -x '*.git*')
+          unzip -t artifacts/SUSFS-v1.5.2-R28-source.zip
+      - name: 05 - Upload packages
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
           name: LG-G900-Global-Flashable-Packages
           path: artifacts/**
-
-      - name: 05 - Upload package diagnostics ALWAYS
+      - name: 06 - Upload package diagnostics ALWAYS
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
