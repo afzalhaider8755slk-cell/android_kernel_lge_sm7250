@@ -1,4 +1,4 @@
-name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v8
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v11
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-g900-global-v8-${{ github.ref }}
+  group: lg-g900-global-v11-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -33,7 +33,7 @@ env:
   CIP_TARGET_TAG: v4.19.325-cip135
 
   DTB_TARGET: vendor/qcom/lito-mtp.dtb
-  DTBO_TARGET: vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
+  DTBO_TARGET: arch/arm64/boot/dts/vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
   DTBO_DTS: arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-rev-1.0_overlay.dts
 
 jobs:
@@ -205,44 +205,108 @@ jobs:
           trap 'rc=$?; echo "FAILED step=07 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           rm -rf KernelSU drivers/kernelsu
-          # The previous run used the plain builtin branch and proved that it does
-          # not contain the kernel-side SUSFS header for this build. Do not change
-          # any other SukiSU behavior: select, at runtime, the official SukiSU
-          # branch/tag that actually contains susfs.h + susfs.c, then perform the
-          # same integration performed by setup.sh.
-          rm -rf KernelSU
-          git clone --filter=blob:none --no-checkout "$SUKISU_REPO" KernelSU
-          cd KernelSU
-          git fetch --quiet --depth=1 origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
-          selected=''
-          for ref in susfs-main susfs-test susfs-1.5.7 susfs-1.5.6 builtin main; do
-            if git rev-parse --verify --quiet "refs/remotes/origin/$ref" >/dev/null; then
-              if git ls-tree -r --name-only "refs/remotes/origin/$ref" | grep -qx 'kernel/include/linux/susfs.h' && \
-                 git ls-tree -r --name-only "refs/remotes/origin/$ref" | grep -qx 'kernel/fs/susfs.c'; then
-                selected="$ref"
-                break
-              fi
-            fi
-          done
-          if [ -z "$selected" ]; then
-            echo 'ERROR: no official SukiSU ref containing kernel/include/linux/susfs.h and kernel/fs/susfs.c was found.'
-            git branch -r | sed -n '1,120p'
-            exit 1
-          fi
-          echo "Selected SukiSU SUSFS ref=$selected" | tee "$GITHUB_WORKSPACE/artifacts/sukisu-selected-ref.txt"
-          git checkout --detach "refs/remotes/origin/$selected"
-          cd "$GITHUB_WORKSPACE/src/kernel"
-          DRIVER_DIR="$GITHUB_WORKSPACE/src/kernel/drivers"
-          ln -sf ../KernelSU/kernel "$DRIVER_DIR/kernelsu"
-          grep -q 'obj-\$(CONFIG_KSU) += kernelsu/' "$DRIVER_DIR/Makefile" || printf '\nobj-\$(CONFIG_KSU) += kernelsu/\n' >> "$DRIVER_DIR/Makefile"
-          grep -q 'source "drivers/kernelsu/Kconfig"' "$DRIVER_DIR/Kconfig" || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' "$DRIVER_DIR/Kconfig"
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
+          test -d KernelSU/kernel
           test -f KernelSU/kernel/Kconfig
           test -f KernelSU/kernel/Makefile
-          test -f KernelSU/kernel/include/linux/susfs.h
-          test -f KernelSU/kernel/fs/susfs.c
-          test -L drivers/kernelsu
-          grep -Rqs 'config KSU_SUSFS' KernelSU/kernel
-          echo "SukiSU commit=$(git -C KernelSU rev-parse HEAD)"
+          echo "SukiSU ref=builtin" | tee "$GITHUB_WORKSPACE/artifacts/sukisu-selected-ref.txt"
+          echo "SukiSU commit=$(git -C KernelSU rev-parse HEAD)" | tee "$GITHUB_WORKSPACE/artifacts/sukisu-commit.txt"
+
+      - name: 07b - Fix SUSFS kernel integration for Linux 4.19 only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/07b-susfs.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=07b rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
+          cd src/kernel
+          SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
+          SUSFS_REF="kernel-4.19"
+          git clone --depth=1 --branch "$SUSFS_REF" "$SUSFS_REPO" "$GITHUB_WORKSPACE/susfs-src"
+          test -f "$GITHUB_WORKSPACE/susfs-src/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+          test -f "$GITHUB_WORKSPACE/susfs-src/kernel_patches/fs/susfs.c"
+          test -f "$GITHUB_WORKSPACE/susfs-src/kernel_patches/include/linux/susfs.h"
+          test -f "$GITHUB_WORKSPACE/susfs-src/kernel_patches/include/linux/susfs_def.h"
+
+          # Do not use the old KernelSU-side 10_enable_susfs patch here: that
+          # patch targets the legacy KernelSU tree layout and is not appropriate
+          # for current SukiSU-Ultra. Apply only the Linux-4.19 kernel-side patch
+          # and copy its kernel-side SUSFS sources.
+          cp "$GITHUB_WORKSPACE/susfs-src/kernel_patches/fs/susfs.c" fs/susfs.c
+          mkdir -p include/linux
+          cp "$GITHUB_WORKSPACE/susfs-src/kernel_patches/include/linux/"susfs*.h include/linux/
+          patch --dry-run -p1 < "$GITHUB_WORKSPACE/susfs-src/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+          patch -p1 < "$GITHUB_WORKSPACE/susfs-src/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+          # KSU-side SUSFS config is supplied below without applying the legacy
+          # KernelSU integration patch, which targets an older KSU source layout.
+          # The actual SUSFS implementation remains the Linux-4.19 kernel patch.
+          KCFG=KernelSU/kernel/Kconfig
+          if ! grep -q '^config KSU_SUSFS$' "$KCFG"; then
+            cat >> "$KCFG" <<'KSU_SUSFS_EOF'
+          
+          menu "KernelSU - SUSFS"
+          config KSU_SUSFS
+              bool "KernelSU addon - SUSFS"
+              depends on KSU
+              default y
+          config KSU_SUSFS_HAS_MAGIC_MOUNT
+              bool "SUSFS magic mount compatibility"
+              depends on KSU_SUSFS
+              default y
+          config KSU_SUSFS_SUS_PATH
+              bool "Hide suspicious paths"
+              depends on KSU_SUSFS
+              default y
+          config KSU_SUSFS_SUS_MOUNT
+              bool "Hide suspicious mounts"
+              depends on KSU_SUSFS
+              default y
+          config KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+              bool "Auto hide KSU default mounts"
+              depends on KSU_SUSFS_SUS_MOUNT
+              default y
+          config KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+              bool "Auto hide suspicious bind mounts"
+              depends on KSU_SUSFS_SUS_MOUNT
+              default y
+          config KSU_SUSFS_SUS_KSTAT
+              bool "Spoof suspicious kstat"
+              depends on KSU_SUSFS
+              default y
+          config KSU_SUSFS_TRY_UMOUNT
+              bool "SUSFS try umount"
+              depends on KSU_SUSFS
+              default y
+          config KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
+              bool "Auto try umount bind mounts"
+              depends on KSU_SUSFS_TRY_UMOUNT
+              default y
+          config KSU_SUSFS_SPOOF_UNAME
+              bool "Spoof uname"
+              depends on KSU_SUSFS
+              default y
+          config KSU_SUSFS_ENABLE_LOG
+              bool "Enable SUSFS kernel logging"
+              depends on KSU_SUSFS
+              default y
+          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+              bool "Hide KSU/SUSFS symbols"
+              depends on KSU_SUSFS
+              default y
+          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+              bool "Spoof cmdline or bootconfig"
+              depends on KSU_SUSFS
+              default y
+          config KSU_SUSFS_OPEN_REDIRECT
+              bool "SUSFS open redirect"
+              depends on KSU_SUSFS
+              default y
+          endmenu
+          KSU_SUSFS_EOF
+          fi
+          echo "SUSFS kernel integration ref=$SUSFS_REF" | tee "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
 
       - name: 08 - Generate config with the REAL device defconfig (toolchain already verified)
         shell: bash
@@ -562,14 +626,19 @@ jobs:
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
           target="$DTBO_TARGET"
-          # Use the full top-level Kbuild path. The previous relative
-          # vendor/lge target was not registered by this tree.
+          # FIX ONLY: invoke the DTBO through the top-level ARM64 Kbuild path.
           make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
             AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$target"
           produced="$GITHUB_WORKSPACE/out/$target"
-          test -s "$produced"
+          test -s "$produced" || {
+            echo "ERROR: DTBO output not found: $produced"
+            find "$GITHUB_WORKSPACE/out/arch/arm64/boot/dts" -type f -name '*.dtbo' -print | sort || true
+            exit 1
+          }
           mkdir -p "$GITHUB_WORKSPACE/artifacts/dtbo"
+          # The artifact's primary/original DTBO is exactly ONE file: the .dtbo.
+          # Hash/source dumps stay out of the primary DTBO artifact.
           cp "$produced" "$GITHUB_WORKSPACE/artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo"
           sha256sum "$produced" > "$GITHUB_WORKSPACE/artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo.sha256"
           "$GITHUB_WORKSPACE/out/scripts/dtc/dtc" -I dtb -O dts -o "$GITHUB_WORKSPACE/artifacts/dtbo/overlay.dts" "$produced"
@@ -587,7 +656,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LG-G900-Global-DTBO
-          path: artifacts/dtbo/**
+          path: artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
       - name: 08 - Upload DTBO diagnostics ALWAYS
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
