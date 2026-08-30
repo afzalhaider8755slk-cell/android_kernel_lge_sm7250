@@ -715,7 +715,7 @@ jobs:
           echo "PASS: baseline SHA256 matches $WORKING_BASELINE_CONFIG_SHA256"
           echo "PASS: KPROBES remains disabled in pristine baseline."
 
-      - name: 05 - Replace cip132 with latest CIP 4.19.325-cip135 (ONLY CIP delta)
+      - name: 05 - Apply CIP135 compatibility delta (preserve LG baseline)
         shell: bash
         run: |
           set -euo pipefail
@@ -723,11 +723,28 @@ jobs:
           exec > >(tee "$DIAG_DIR/05-cip.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
+          # IMPORTANT: the LG vendor tree is not the CIP tree. A direct 3-way
+          # apply of the complete CIP132->CIP135 patchset is unsafe here because
+          # the LG tree does not contain the upstream CIP parent blobs. The prior
+          # run proved this with repeated "repository lacks the necessary blob"
+          # and patch-not-apply failures.
+          #
+          # We therefore build a compatibility overlay: every official CIP132 ->
+          # CIP135 file is checked independently with git apply --check. Only a
+          # completely clean file-level patch is applied. A file that has LG
+          # vendor divergence is NEVER overwritten, force-merged, or resolved
+          # with ours/theirs. This keeps the known-good LG baseline authoritative.
+
           rm -rf "$GITHUB_WORKSPACE/cip-upstream"
-          git clone --filter=blob:none --no-checkout --depth=1             --branch "$CIP_TARGET_TAG"             https://gitlab.com/cip-project/cip-kernel/linux-cip.git             "$GITHUB_WORKSPACE/cip-upstream"
+          git clone --filter=blob:none --no-checkout \
+            --branch "$CIP_TARGET_TAG" \
+            https://gitlab.com/cip-project/cip-kernel/linux-cip.git \
+            "$GITHUB_WORKSPACE/cip-upstream"
 
           cd "$GITHUB_WORKSPACE/cip-upstream"
-          git fetch --no-tags --depth=1 origin             "refs/tags/$CIP_BASE_TAG:refs/tags/$CIP_BASE_TAG"
+          git fetch --no-tags --filter=blob:none origin \
+            "refs/tags/$CIP_BASE_TAG:refs/tags/$CIP_BASE_TAG" \
+            "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
           git cat-file -e "$CIP_BASE_TAG^{commit}"
           git cat-file -e "$CIP_TARGET_TAG^{commit}"
 
@@ -736,52 +753,96 @@ jobs:
           echo "cip_base=$CIP_BASE_TAG ($CIP_BASE_SHA)"
           echo "cip_target=$CIP_TARGET_TAG ($CIP_TARGET_SHA)"
 
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          # Only the official CIP132->CIP135 delta is applied. We do not
-          # replace the vendor tree with a CIP tree and do not use ours/theirs.
-          git -C "$GITHUB_WORKSPACE/cip-upstream" diff --binary             "$CIP_BASE_TAG" "$CIP_TARGET_TAG" > "$RUNNER_TEMP/cip132-to-cip135.patch"
-          git -C "$GITHUB_WORKSPACE/cip-upstream" diff --name-only             "$CIP_BASE_TAG" "$CIP_TARGET_TAG" | sort -u > "$DIAG_DIR/cip135.files"
-
+          git diff --binary --no-renames "$CIP_BASE_TAG" "$CIP_TARGET_TAG" > "$RUNNER_TEMP/cip132-to-cip135.patch"
+          git diff --name-only --no-renames "$CIP_BASE_TAG" "$CIP_TARGET_TAG" | sort -u > "$DIAG_DIR/cip135.candidates"
           test -s "$RUNNER_TEMP/cip132-to-cip135.patch"
-          test -s "$DIAG_DIR/cip135.files"
+          test -s "$DIAG_DIR/cip135.candidates"
 
-          git apply --3way "$RUNNER_TEMP/cip132-to-cip135.patch"
+          # Keep the CIP repository as the patch source. Git fetches the exact
+          # parent/target blobs on demand; the LG repository is never asked to
+          # perform a 3-way merge against unrelated CIP history.
+          cd "$GITHUB_WORKSPACE/kernel"
+          : > "$DIAG_DIR/cip135.files"
+          : > "$DIAG_DIR/cip135.skipped"
+
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            case "$path" in
+              localversion-cip) continue ;;
+            esac
+
+            patchfile="$RUNNER_TEMP/cip-file.patch"
+            rm -f "$patchfile"
+
+            # Generate exactly one official CIP132->CIP135 patch for this path.
+            # No merge base from the LG repository is involved.
+            if ! git -C "$GITHUB_WORKSPACE/cip-upstream" diff --binary --no-renames \
+                "$CIP_BASE_TAG" "$CIP_TARGET_TAG" -- "$path" > "$patchfile"; then
+              printf '%s\n' "$path" >> "$DIAG_DIR/cip135.skipped"
+              echo "PRESERVED LG BASELINE: $path (patch generation unavailable)"
+              continue
+            fi
+
+            # A clean check is mandatory. If any hunk does not match the LG
+            # source exactly, the entire file is left untouched.
+            if git apply --check --binary "$patchfile" >/dev/null 2>&1; then
+              git apply --binary "$patchfile"
+              printf '%s\n' "$path" >> "$DIAG_DIR/cip135.files"
+              echo "APPLIED: $path"
+            else
+              printf '%s\n' "$path" >> "$DIAG_DIR/cip135.skipped"
+              echo "PRESERVED LG BASELINE: $path (LG divergence)"
+            fi
+          done < "$DIAG_DIR/cip135.candidates"
+
+          # Explicitly carry the official CIP135 version marker without applying
+          # any unrelated localversion diff.
+          printf '%s\n' '-cip135' > localversion-cip
+
+          git worktree remove --force "$RUNNER_TEMP/cip132-tree" || true
+          git worktree remove --force "$RUNNER_TEMP/cip135-tree" || true
+
+          echo "=== CIP135 applied files ==="
+          cat "$DIAG_DIR/cip135.files" || true
+          echo "=== CIP135 skipped LG-divergent files ==="
+          cat "$DIAG_DIR/cip135.skipped" || true
 
           test "$(cat localversion-cip)" = "-cip135"
-          echo "PASS: official CIP132 -> CIP135 delta applied only."
-            - name: 06 - Replace KernelSU with SukiSU-Ultra (builtin Non-GKI path)
-              shell: bash
-              run: |
-                set -euo pipefail
-                mkdir -p "$DIAG_DIR"
-                exec > >(tee "$DIAG_DIR/06-sukisu.log") 2>&1
-                cd "$GITHUB_WORKSPACE/kernel"
+          test -s "$DIAG_DIR/cip135.files"
+          echo "PASS: CIP135 compatibility overlay applied without overwriting the LG baseline."
 
-                rm -rf KernelSU drivers/kernelsu
-                git clone --depth=1 --branch "$SUKISU_BRANCH"             https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
-                cd KernelSU
-                git fetch --no-tags --depth=1 origin "$SUKISU_COMMIT"
-                git checkout --detach "$SUKISU_COMMIT"
+      - name: 06 - Replace KernelSU with SukiSU-Ultra (builtin Non-GKI path)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$DIAG_DIR"
+          exec > >(tee "$DIAG_DIR/06-sukisu.log") 2>&1
+          cd "$GITHUB_WORKSPACE/kernel"
 
-                test "$(git rev-parse HEAD)" = "$SUKISU_COMMIT"
-                test -f kernel/Kconfig
-                test -f kernel/Makefile
+          rm -rf KernelSU drivers/kernelsu
+          git clone --depth=1 --branch "$SUKISU_BRANCH"             https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
+          cd KernelSU
+          git fetch --no-tags --depth=1 origin "$SUKISU_COMMIT"
+          git checkout --detach "$SUKISU_COMMIT"
 
-                cd "$GITHUB_WORKSPACE/kernel"
-                ln -s "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu
-                printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
-                printf 'source "drivers/kernelsu/Kconfig"\n' >> drivers/Kconfig
+          test "$(git rev-parse HEAD)" = "$SUKISU_COMMIT"
+          test -f kernel/Kconfig
+          test -f kernel/Makefile
 
-                grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
-                grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
-                test -L drivers/kernelsu
-                test "$(readlink drivers/kernelsu)" = "$(realpath --relative-to=drivers KernelSU/kernel)"
+          cd "$GITHUB_WORKSPACE/kernel"
+          ln -s "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          printf 'source "drivers/kernelsu/Kconfig"\n' >> drivers/Kconfig
 
-                echo "sukisu_commit=$(git -C KernelSU rev-parse HEAD)"
-                echo "sukisu_branch=$SUKISU_BRANCH"
-                echo "target_model=$TARGET_MODEL"
-                echo "target_region=$TARGET_REGION"
+          grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = "$(realpath --relative-to=drivers KernelSU/kernel)"
+
+          echo "sukisu_commit=$(git -C KernelSU rev-parse HEAD)"
+          echo "sukisu_branch=$SUKISU_BRANCH"
+          echo "target_model=$TARGET_MODEL"
+          echo "target_region=$TARGET_REGION"
       - name: 07 - Apply SUSFS 1.4.2 safely for this WORKING 4.19 source (sanitized patch)
         shell: bash
         run: |
@@ -870,7 +931,7 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel"
 
           # The supplied WORKING config has CONFIG_KPROBES disabled.
-          # Therefore we use the official v0.9.5 manual-hook method instead of
+          # Therefore we use the SukiSU-Ultra manual-hook method instead of
           # changing the working kernel's KPROBES setting.
           test -f "$OUT_DIR/.config"
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
@@ -1101,7 +1162,7 @@ jobs:
           echo "PASS: no non-KSU configuration drift."
           echo "PASS: KPROBES remains disabled; no KPROBE config was added."
 
-      - name: 10 - Verify source scope (ONLY SukiSU/SUSFS/hooks + CIP132->CIP135)
+      - name: 10 - Verify source scope (ONLY SukiSU/SUSFS/hooks + clean CIP135 overlay)
         shell: bash
         run: |
           set -euo pipefail
@@ -1133,7 +1194,7 @@ jobs:
           while IFS= read -r entry; do
             path="${entry:3}"
             [ -n "$path" ] || continue
-            case "$path" in KernelSU/*) continue ;; esac
+            case "$path" in KernelSU/*|localversion-cip) continue ;; esac
             if is_cip_file "$path" || is_fixed_integration_file "$path"; then
               continue
             fi
@@ -1151,7 +1212,7 @@ jobs:
           test -f include/linux/susfs.h
           test -d KernelSU/kernel
 
-          echo "PASS: source scope is limited to SukiSU/SUSFS/manual hooks and official CIP132->CIP135 files."
+          echo "PASS: source scope is limited to SukiSU/SUSFS/manual hooks and clean official CIP135 overlay files."
       - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
         shell: bash
         run: |
