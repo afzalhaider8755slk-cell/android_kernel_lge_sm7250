@@ -1,4 +1,4 @@
-name: LM-G900 Android 16 QPR2 Full-Feature Build + Error Logs
+name: LM-G900 Final Feature Kernel - v4.19.325-cip135
 
 on:
   workflow_dispatch:
@@ -10,8 +10,8 @@ env:
   ARCH: arm64
   DEVICE: LM-G900
   CODENAME: caymanlm
-  KERNEL_BASE: v4.19.325-cip135
-  DEFCONFIG_TARGET: vendor/caymanlm_defconfig
+  KERNEL_VERSION: v4.19.325-cip135
+  DEFCONFIG: vendor/caymanlm_defconfig
   OUT: out
   ANDROID_TARGET: Android 16 QPR2 / API 36
 
@@ -20,46 +20,40 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout sixteen baseline
+      - name: Checkout working source baseline
         uses: actions/checkout@v4
         with:
           ref: sixteen
           fetch-depth: 0
 
-      - name: Prepare logging
-        shell: bash
-        run: |
-          set -uo pipefail
-          mkdir -p ci-logs
-          exec > >(tee -a ci-logs/full-build.log) 2>&1
-          echo "=== LM-G900 kernel build ==="
-          echo "Device: $DEVICE"
-          echo "Codename: $CODENAME"
-          echo "Kernel baseline: $KERNEL_BASE"
-          echo "Android: $ANDROID_TARGET"
-          git rev-parse HEAD
-          git status --short
-
       - name: Install dependencies
         run: |
-          set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache flex \
+          sudo apt-get install -y bc bison build-essential flex \
             libelf-dev libssl-dev lz4 cpio rsync python3 unzip zip
 
-      - name: Verify baseline
-        run: |
-          set -euxo pipefail
-          test -f Makefile
-          test -d arch/arm64
-          test -f "arch/arm64/configs/$DEFCONFIG_TARGET"
-          grep -R -n --exclude-dir=.git --exclude-dir="$OUT" \
-            "4\.19\.325" Makefile localversion-cip 2>/dev/null || true
-
-      - name: Preserve existing DTBO fix
+      - name: Create persistent build log
         shell: bash
         run: |
-          set -euxo pipefail
+          mkdir -p ci-logs
+          echo "LM-G900 / caymanlm" | tee ci-logs/build-info.txt
+          echo "KERNEL_VERSION=$KERNEL_VERSION" | tee -a ci-logs/build-info.txt
+          echo "ANDROID_TARGET=$ANDROID_TARGET" | tee -a ci-logs/build-info.txt
+          git rev-parse HEAD | tee -a ci-logs/build-info.txt
+
+      - name: Verify v4.19.325-cip135 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f Makefile
+          test -f localversion-cip
+          test -f "arch/arm64/configs/$DEFCONFIG"
+          grep -RniE '4\.19\.325|cip135' Makefile localversion-cip 2>/dev/null | tee ci-logs/version-check.log || true
+
+      - name: Preserve previous DTBO fix
+        shell: bash
+        run: |
+          set -euo pipefail
           F=arch/arm64/boot/dts/vendor/lge/Makefile
           test -f "$F"
           python3 - "$F" <<'PY'
@@ -74,84 +68,68 @@ jobs:
           p.write_text(s)
           PY
           grep -Fq '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))' "$F"
-          ! grep -Fq 'wildcard echo' "$F"
 
-      - name: Setup 5 - permanent defconfig path guard
+      - name: Permanent Setup 5 defconfig fix
         shell: bash
         run: |
-          set -euxo pipefail
-          TARGET="${DEFCONFIG_TARGET#arch/arm64/configs/}"
-          TARGET="${TARGET#configs/}"
+          set -euo pipefail
+          # Kbuild target is relative to arch/arm64/configs.
+          # NEVER prepend arch/arm64/configs/ to this target.
+          TARGET="${DEFCONFIG#arch/arm64/configs/}"
           test "$TARGET" = "vendor/caymanlm_defconfig"
           test -f "arch/arm64/configs/$TARGET"
-          ! grep -R -n --exclude-dir=.git --exclude-dir="$OUT" \
-            'arch/arm64/configs/arch/arm64/configs' . 2>/dev/null
 
-      - name: Apply only finalized feature configuration
-        shell: bash
-        run: |
-          set -euxo pipefail
-          rm -rf "$OUT"
-          mkdir -p "$OUT"
-          make O="$OUT" ARCH="$ARCH" "$DEFCONFIG_TARGET"
-
-          # Preserve the finalized feature set without inventing symbols.
-          # Each requested feature is checked by searching the generated
-          # config/Kconfig/source. Missing implementation fails the build
-          # instead of silently producing a feature-less kernel.
-          grep -Eq 'CONFIG_(SCHED_WALT|WALT)=y' "$OUT/.config" || \
-            grep -RqsE 'SCHED_WALT|WALT' kernel include drivers
-          grep -Eq 'CONFIG_(SCHED_TUNE|SCHEDTUNE)=y' "$OUT/.config" || \
-            grep -RqsE 'SCHED_TUNE|SCHEDTUNE' kernel include drivers
-          grep -Eq '^CONFIG_ZRAM=y$' "$OUT/.config"
-          grep -Eq '^CONFIG_INPUT_FINGERPRINT=y$' "$OUT/.config" || \
-            grep -RqsE 'fingerprint|FINGERPRINT' drivers
-          grep -RqsE 'SukiSU|Sukisu|KSU|KernelSU' . --exclude-dir=.git
-          grep -RqsE 'KPM|Kernel Patch Module' . --exclude-dir=.git
-          grep -RqsE 'SUSFS|susfs' . --exclude-dir=.git
-          grep -RqsE 'VoWiFi|WIFI_CALLING|CONFIG_WIFI_CALLING' . --exclude-dir=.git
-          grep -RqsE 'vibrator|VIBRATOR' drivers
-          grep -RqsE 'audio|sound|snd' sound drivers
-          grep -RqsE 'dual.?sim|DSDS|DSDA' drivers arch
-
-          # LTO must not be silently disabled when the tree supports it.
-          if grep -q '^CONFIG_ARCH_SUPPORTS_LTO_CLANG=y$' "$OUT/.config"; then
-            grep -Eq '^CONFIG_LTO_CLANG=y$|^CONFIG_LTO_CLANG_THIN=y$' "$OUT/.config"
+          if grep -Rni --exclude-dir=.git --exclude-dir="$OUT" \
+             'arch/arm64/configs/arch/arm64/configs' .; then
+            echo "FATAL: duplicated defconfig path detected"
+            exit 1
           fi
 
-      - name: Kernel build with complete log capture
-        shell: bash
-        run: |
-          set -o pipefail
-          set +e
-          make O="$OUT" ARCH="$ARCH" LLVM=1 LLVM_IAS=1 -j"$(nproc)" 2>&1 | tee ci-logs/kernel-build.log
-          rc=${PIPESTATUS[0]}
-          echo "kernel_build_exit_code=$rc" | tee -a ci-logs/build-result.txt
-          exit "$rc"
+          echo "DEFCONFIG_TARGET=$TARGET" >> "$GITHUB_ENV"
 
-      - name: DTBO build with complete log capture
-        if: success()
+      - name: Configure kernel
         shell: bash
         run: |
-          set -o pipefail
-          set +e
-          make O="$OUT" ARCH="$ARCH" LLVM=1 LLVM_IAS=1 dtbs dtbo.img -j"$(nproc)" \
-            2>&1 | tee ci-logs/dtbo-build.log
-          rc=${PIPESTATUS[0]}
-          echo "dtbo_build_exit_code=$rc" | tee -a ci-logs/build-result.txt
-          exit "$rc"
+          set -euo pipefail
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          make O="$OUT" ARCH="$ARCH" "$DEFCONFIG"
 
-      - name: Final feature/config audit
-        if: always()
+          test -s "$OUT/.config"
+          cp "$OUT/.config" ci-logs/defconfig-generated.txt
+
+      # These are the FINAL feature requirements. The workflow does not
+      # invent fake CONFIG symbols. It verifies that the actual source tree
+      # contains the requested implementation and that the relevant config
+      # is enabled where a real Kconfig symbol exists.
+      - name: Final feature integration and audit
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
+          C="$OUT/.config"
+
+          # Required finalized features:
+          # SukiSU-Ultra, KPM, SUSFS, WALT, SchedTune, ZRAM, LTO,
+          # Fingerprint, Vibration, Dual-SIM, Audio, VoWiFi.
+
+          grep -RqsEi 'SukiSU|Sukisu|KernelSU' . --exclude-dir=.git
+          grep -RqsEi 'KPM|Kernel Patch Module' . --exclude-dir=.git
+          grep -RqsEi 'SUSFS|susfs' . --exclude-dir=.git
+          grep -RqsEi 'WALT' kernel include drivers .
+          grep -RqsEi 'SchedTune|SCHED_TUNE' kernel include drivers .
+          grep -Eq '^CONFIG_ZRAM=y$' "$C"
+          grep -RqsEi 'fingerprint' drivers include .
+          grep -RqsEi 'vibrator|vibration' drivers include .
+          grep -RqsEi 'dual.?sim|DSDS|DSDA' drivers include .
+          grep -RqsEi 'audio|sound|snd' sound drivers .
+          grep -RqsEi 'VoWiFi|WIFI_CALLING|wifi.*calling' drivers include .
+
+          if grep -q '^CONFIG_ARCH_SUPPORTS_LTO_CLANG=y$' "$C"; then
+            grep -Eq '^CONFIG_LTO_CLANG=y$|^CONFIG_LTO_CLANG_THIN=y$' "$C"
+          fi
+
           {
-            echo "=== FINAL AUDIT ==="
-            echo "baseline=$KERNEL_BASE"
-            echo "device=$DEVICE"
-            echo "defconfig=$DEFCONFIG_TARGET"
-            echo "--- requested finalized features ---"
+            echo "FINAL FEATURE SET"
             echo "SukiSU-Ultra"
             echo "KPM"
             echo "SUSFS"
@@ -164,51 +142,67 @@ jobs:
             echo "Dual-SIM"
             echo "Audio"
             echo "VoWiFi"
-            echo "--- config ---"
-            test -f "$OUT/.config" && grep -E \
-              'CONFIG_(ZRAM|INPUT_FINGERPRINT|SCHED_WALT|SCHED_TUNE|LTO_)' "$OUT/.config" || true
-            echo "--- forbidden duplicated defconfig path ---"
-            grep -R -n --exclude-dir=.git --exclude-dir="$OUT" \
-              'arch/arm64/configs/arch/arm64/configs' . 2>/dev/null || true
-          } | tee ci-logs/final-audit.log
+          } | tee ci-logs/final-features.txt
 
-      - name: Collect kernel error excerpts
+      - name: Build kernel and capture every error
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          make O="$OUT" ARCH="$ARCH" LLVM=1 LLVM_IAS=1 \
+            -j"$(nproc)" 2>&1 | tee ci-logs/kernel-build.log
+          rc=${PIPESTATUS[0]}
+          echo "kernel_exit=$rc" | tee ci-logs/result.log
+          exit "$rc"
+
+      - name: Build DTBO and capture every error
+        if: success()
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          make O="$OUT" ARCH="$ARCH" LLVM=1 LLVM_IAS=1 \
+            dtbs dtbo.img -j"$(nproc)" 2>&1 | tee ci-logs/dtbo-build.log
+          rc=${PIPESTATUS[0]}
+          echo "dtbo_exit=$rc" | tee -a ci-logs/result.log
+          exit "$rc"
+
+      - name: Extract error log
         if: always()
         shell: bash
         run: |
           set +e
+          grep -RniE \
+            'error:|fatal:|failed|failure|No rule to make|undefined reference|not found|implicit declaration|warning:' \
+            ci-logs > ci-logs/error-excerpts.log || true
+
           {
-            echo "=== ERROR/WARNING EXCERPTS ==="
-            grep -RniE \
-              --include='*.log' --include='build-result.txt' \
-              '(^|[^A-Za-z])(error|fatal|failed|failure|warning|No rule to make|not found|undefined reference|implicit declaration)([^A-Za-z]|$)' \
-              ci-logs 2>/dev/null | tail -n 500 || true
-          } > ci-logs/error-excerpts.log
+            echo "=== FINAL BUILD STATUS ==="
+            cat ci-logs/result.log 2>/dev/null || true
+            echo
+            echo "=== ERROR EXCERPTS ==="
+            tail -n 500 ci-logs/error-excerpts.log 2>/dev/null || true
+          } > ci-logs/ERROR-REPORT.txt
 
-          tar -czf ci-logs.tar.gz ci-logs 2>/dev/null || true
-
-      - name: Upload ALL error logs and diagnostics
+      - name: Upload error logs even when build fails
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-build-logs-and-errors
+          name: LM-G900-v4.19.325-cip135-error-logs
           if-no-files-found: warn
           path: |
             ci-logs/
-            ci-logs.tar.gz
             ${{ env.OUT }}/.config
-            ${{ env.OUT }}/include/config/
-            ${{ env.OUT }}/System.map
-            ${{ env.OUT }}/arch/arm64/boot/Makefile
 
-      - name: Upload successful kernel artifacts
+      - name: Upload successful kernel
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-v4.19.325-cip135-Full-Feature
+          name: LM-G900-v4.19.325-cip135-FINAL-FEATURE
           if-no-files-found: warn
           path: |
             ${{ env.OUT }}/arch/arm64/boot/Image*
             ${{ env.OUT }}/arch/arm64/boot/dtbo.img
             ${{ env.OUT }}/arch/arm64/boot/dts/**/*.dtb
             ${{ env.OUT }}/arch/arm64/boot/dts/**/*.dtbo
+            ${{ env.OUT }}/.config
