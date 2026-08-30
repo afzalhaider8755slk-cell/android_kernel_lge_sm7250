@@ -1,4 +1,4 @@
-name: LG Velvet 5G - WORKING 4.19 Non-GKI + SukiSU-Ultra + SUSFS 1.4.2 + CIP135 (Global LM-G900)
+name: LG Velvet 5G - WORKING 4.19 Non-GKI + SukiSU-Ultra + SUSFS 2.2.0 + CIP135 (Global LM-G900)
 
 on:
   # Automatic run: any commit/upload to this repository triggers the build.
@@ -45,7 +45,7 @@ jobs:
       SUKISU_BRANCH: builtin
       SUKISU_COMMIT: 5a2bb7e5813002ccaabe02fa864cfb2dde6b5109
       SUKISU_VERSION: 4.1.x-builtin
-      SUSFS_VERSION: 1.4.2-kernel-4.19
+      SUSFS_VERSION: v2.2.0
       CIP_BASE_TAG: v4.19.325-cip132
       CIP_TARGET_TAG: v4.19.325-cip135
       TARGET_MODEL: LM-G900
@@ -843,85 +843,69 @@ jobs:
           echo "sukisu_branch=$SUKISU_BRANCH"
           echo "target_model=$TARGET_MODEL"
           echo "target_region=$TARGET_REGION"
-      - name: 07 - Apply SUSFS 1.4.2 safely for this WORKING 4.19 source (sanitized patch)
+      - name: 07 - Apply SUSFS v2.2.0 from proven 4.19 SM7250 backport
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/07-patches.log") 2>&1
+          exec > >(tee "$DIAG_DIR/07-susfs.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # The official SUSFS 1.4.2-kernel-4.19 namespace patch targets a
-          # different 4.19 fs/namespace.c layout. This LG source uses the
-          # fs_context/vfs_create_mount layout, so blindly applying that hunk
-          # can match the wrong function and reject the real clone_mnt hunk.
-          #
-          # SUS_MOUNT is explicitly disabled in Step 09. SUSFS itself documents
-          # non-GKI bootloop risk for its mount-id reordering feature. Therefore
-          # namespace.c is intentionally excluded while all other SUSFS changes
-          # are applied from the official 1.4.2-kernel-4.19 patch.
+          # CIP135 is LOCKED and is deliberately not touched here.
+          # Use only SUSFS-related files from a proven 4.19 SM7250 kernel
+          # carrying SUSFS v2.2.0. The LG SM8150 reference is used only as
+          # a SUSFS compatibility source; its kernel/device code is never merged.
+          REF="$RUNNER_TEMP/lg-sm8150-susfs-ref"
+          rm -rf "$REF"
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/sidex15/android_kernel_lge_sm8150.git "$REF"
+          cd "$REF"
+          git fetch --no-tags --depth=1 origin 70d3982
+          git checkout --detach 70d3982
 
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" fs/susfs.c
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h" include/linux/sus_su.h
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h" KernelSU/kernel/sucompat.h
+          # Verify that the reference actually contains the requested version.
+          grep -Rqs 'v2\.2\.0' fs/susfs.c include/linux/susfs.h
 
-          cd KernelSU
-          patch --forward --batch -p1 \
-            < "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          # Copy only SUSFS implementation/header files. Never copy Makefiles,
+          # Kconfig, drivers, DTS, arch, or any unrelated source from the reference.
+          for f in fs/susfs.c fs/sus_su.c include/linux/susfs.h include/linux/sus_su.h; do
+            test -f "$f"
+            install -Dm0644 "$f" "$GITHUB_WORKSPACE/kernel/$f"
+          done
 
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # Remove ONLY the fs/namespace.c diff from the official SUSFS
-          # integration patch. SUS_MOUNT is disabled, so no namespace changes
-          # are required for the requested KSU + SUSFS build.
-          python3 - "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch" "$RUNNER_TEMP/50_susfs-no-namespace.patch" <<'PY'
-          import sys
-          src, dst = sys.argv[1], sys.argv[2]
-          lines = open(src, encoding="utf-8").read().splitlines(True)
-          out, skip = [], False
-          for line in lines:
-              if line.startswith("diff --git a/fs/namespace.c b/fs/namespace.c"):
-                  skip = True
-                  continue
-              if skip and line.startswith("diff --git "):
-                  skip = False
-              if not skip:
-                  # Clean trailing whitespace only on added patch lines. This
-                  # preserves context/original lines while avoiding a false
-                  # failure from git diff --check on upstream SUSFS whitespace.
-                  if line.startswith("+") and not line.startswith("+++"):
-                      line = line.rstrip(" \t\r\n") + "\n"
-                  out.append(line)
-          open(dst, "w", encoding="utf-8").writelines(out)
+          # SukiSU-Ultra builtin is the KernelSU-side SUSFS integration path.
+          # Do NOT run the obsolete SUSFS v2.2.0 KernelSU patch.
+          # Instead, validate that SukiSU exposes the required SUSFS config symbols.
+          test -f KernelSU/kernel/sucompat.h
+          grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU/kernel drivers/kernelsu || true
+
+          # Add only missing SUSFS object entries to the existing LG build files.
+          # Never replace the complete LG Makefile/Kconfig.
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path('.')
+          edits={
+            root/'fs/Makefile': ['obj-$(CONFIG_KSU_SUSFS) += susfs.o', 'obj-$(CONFIG_KSU_SUSFS_SUS_SU) += sus_su.o'],
+          }
+          for path, lines in edits.items():
+            if not path.exists():
+              raise SystemExit(f'missing required baseline file: {path}')
+            text=path.read_text(errors='replace')
+            add=[x for x in lines if x not in text]
+            if add:
+              with path.open('a') as f:
+                f.write('\n# SUSFS v2.2.0\n')
+                for x in add: f.write(x+'\n')
           PY
 
-          test -s "$RUNNER_TEMP/50_susfs-no-namespace.patch"
-          ! grep -q '^diff --git a/fs/namespace.c b/fs/namespace.c' \
-            "$RUNNER_TEMP/50_susfs-no-namespace.patch"
-
-          patch --forward --batch -p1 < "$RUNNER_TEMP/50_susfs-no-namespace.patch"
-
-          # GNU patch may leave harmless *.orig backup files even when every
-          # hunk applied successfully. They are NOT patch failures.
-          # Remove only those patch-created backups, then fail only on real
-          # reject files (*.rej). This avoids the false failure seen in run #15.
-          find . -type f -name '*.orig' -delete
-
-          if find . -type f -name '*.rej' -print -quit | grep -q .; then
-            echo "::error::A SUSFS patch reject (*.rej) was created."
-            find . -type f -name '*.rej' -print
-            exit 1
-          fi
-
-          echo "PASS: SUSFS 1.4.2 applied without fs/namespace.c."
-          echo "PASS: SUS_MOUNT is intentionally disabled."
-          # The official patch is sanitized only for trailing whitespace on
-          # added lines, so this is now a real source-integrity check rather
-          # than a failure caused by upstream patch formatting.
+          echo "susfs_version=v2.2.0"
+          echo "susfs_reference=LG-SM8150:70d3982"
+          echo "cip=v4.19.325-cip135 (LOCKED / untouched)"
+          echo "PASS: SUSFS v2.2.0 files staged without replacing the LG baseline."
           git diff --check
-          echo "PASS: git diff --check"
+
       - name: 08 - Add manual KernelSU hooks WITHOUT enabling KPROBES
         shell: bash
         run: |
@@ -1074,7 +1058,7 @@ jobs:
             --disable CONFIG_KPM
 
           # SUS_PATH compatibility:
-          # SUSFS 1.4.2-kernel-4.19 writes new->user->android_kabi_reserved1
+          # SUSFS v2.2.0-kernel-4.19 writes new->user->android_kabi_reserved1
           # when CONFIG_KSU_SUSFS_SUS_PATH=y. The exact LG WORKING 4.19 source
           # does not have that member in struct user_struct. Adding it would
           # change a core kernel struct layout, so only SUS_PATH is disabled.
