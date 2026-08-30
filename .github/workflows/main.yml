@@ -22,7 +22,7 @@ env:
   DEFCONFIG: vendor/lineageos_cayman_defconfig
 
   SUKISU_REPO: https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
-  SUKISU_REF: builtin
+  SUKISU_REF: auto-susfs
   SUSFS_MODULE_REPO: https://github.com/sidex15/susfs4ksu-module.git
   SUSFS_MODULE_REF: v1.5.2+
   ANYKERNEL3_REPO: https://github.com/osm0sis/AnyKernel3.git
@@ -33,7 +33,7 @@ env:
   CIP_TARGET_TAG: v4.19.325-cip135
 
   DTB_TARGET: vendor/qcom/lito-mtp.dtb
-  DTBO_TARGET: arch/arm64/boot/dts/vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
+  DTBO_TARGET: vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
   DTBO_DTS: arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-rev-1.0_overlay.dts
 
 jobs:
@@ -139,6 +139,7 @@ jobs:
           # not exist in this vendor 4.19 tree. Keep this vendor file intact
           # while retaining the other CIP135 changes.
           cp arch/arm64/kernel/cpu_errata.c "$GITHUB_WORKSPACE/artifacts/cpu_errata.lg-base.c"
+          cp sound/core/compress_offload.c "$GITHUB_WORKSPACE/artifacts/compress_offload.lg-base.c"
           git remote add cip "$CIP_REPO"
           git fetch cip "refs/tags/$CIP_BASE_TAG:refs/tags/$CIP_BASE_TAG"                        "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
           base=$(git rev-parse "refs/tags/$CIP_BASE_TAG^{commit}")
@@ -187,7 +188,8 @@ jobs:
           # This fixes the exact compiler failure seen in the previous run:
           # undeclared identifier 'arm64_repeat_tlbi_list'.
           cp "$GITHUB_WORKSPACE/artifacts/cpu_errata.lg-base.c" arch/arm64/kernel/cpu_errata.c
-          git add arch/arm64/kernel/cpu_errata.c
+          cp "$GITHUB_WORKSPACE/artifacts/compress_offload.lg-base.c" sound/core/compress_offload.c
+          git add arch/arm64/kernel/cpu_errata.c sound/core/compress_offload.c
           if ! git diff --cached --quiet; then
             git commit --amend --no-edit
           fi
@@ -203,11 +205,41 @@ jobs:
           trap 'rc=$?; echo "FAILED step=07 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           rm -rf KernelSU drivers/kernelsu
-          git ls-remote --exit-code --heads "$SUKISU_REPO" "refs/heads/$SUKISU_REF"
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$SUKISU_REF"
-          test -d KernelSU/kernel
+          # The previous run used the plain builtin branch and proved that it does
+          # not contain the kernel-side SUSFS header for this build. Do not change
+          # any other SukiSU behavior: select, at runtime, the official SukiSU
+          # branch/tag that actually contains susfs.h + susfs.c, then perform the
+          # same integration performed by setup.sh.
+          rm -rf KernelSU
+          git clone --filter=blob:none --no-checkout "$SUKISU_REPO" KernelSU
+          cd KernelSU
+          git fetch --quiet --depth=1 origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
+          selected=''
+          for ref in susfs-main susfs-test susfs-1.5.7 susfs-1.5.6 builtin main; do
+            if git rev-parse --verify --quiet "refs/remotes/origin/$ref" >/dev/null; then
+              if git ls-tree -r --name-only "refs/remotes/origin/$ref" | grep -qx 'kernel/include/linux/susfs.h' && \
+                 git ls-tree -r --name-only "refs/remotes/origin/$ref" | grep -qx 'kernel/fs/susfs.c'; then
+                selected="$ref"
+                break
+              fi
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo 'ERROR: no official SukiSU ref containing kernel/include/linux/susfs.h and kernel/fs/susfs.c was found.'
+            git branch -r | sed -n '1,120p'
+            exit 1
+          fi
+          echo "Selected SukiSU SUSFS ref=$selected" | tee "$GITHUB_WORKSPACE/artifacts/sukisu-selected-ref.txt"
+          git checkout --detach "refs/remotes/origin/$selected"
+          cd "$GITHUB_WORKSPACE/src/kernel"
+          DRIVER_DIR="$GITHUB_WORKSPACE/src/kernel/drivers"
+          ln -sf ../KernelSU/kernel "$DRIVER_DIR/kernelsu"
+          grep -q 'obj-\$(CONFIG_KSU) += kernelsu/' "$DRIVER_DIR/Makefile" || printf '\nobj-\$(CONFIG_KSU) += kernelsu/\n' >> "$DRIVER_DIR/Makefile"
+          grep -q 'source "drivers/kernelsu/Kconfig"' "$DRIVER_DIR/Kconfig" || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' "$DRIVER_DIR/Kconfig"
           test -f KernelSU/kernel/Kconfig
           test -f KernelSU/kernel/Makefile
+          test -f KernelSU/kernel/include/linux/susfs.h
+          test -f KernelSU/kernel/fs/susfs.c
           test -L drivers/kernelsu
           grep -Rqs 'config KSU_SUSFS' KernelSU/kernel
           echo "SukiSU commit=$(git -C KernelSU rev-parse HEAD)"
@@ -430,6 +462,9 @@ jobs:
           }
           mkdir -p "$GITHUB_WORKSPACE/artifacts/dtb"
           cp "$produced" "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dtb"
+          if [ -s "$GITHUB_WORKSPACE/reference/dtb/lito-mtp.dtb" ]; then
+            cp "$GITHUB_WORKSPACE/reference/dtb/lito-mtp.dtb" "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dtb.completed-reference"
+          fi
           sha256sum "$produced" > "$GITHUB_WORKSPACE/artifacts/dtb/lito-mtp.dtb.sha256"
       - name: 05 - Validate DTB structure
         shell: bash
