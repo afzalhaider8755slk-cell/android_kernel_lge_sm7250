@@ -43,8 +43,8 @@ jobs:
 
       # ONLY the three requested changes are intended.
       SUKISU_BRANCH: builtin
-      SUKISU_COMMIT: 5a2bb7e5813002ccaabe02fa864cfb2dde6b5109
-      SUKISU_VERSION: 4.1.x-builtin
+      SUKISU_COMMIT: 6c5603f0c853a94256940273efc433cbbc85f57a
+      SUKISU_VERSION: latest-builtin-6c5603f
       SUSFS_VERSION: v2.2.0
       CIP_BASE_TAG: v4.19.325-cip132
       CIP_TARGET_TAG: v4.19.325-cip135
@@ -843,7 +843,7 @@ jobs:
           echo "sukisu_branch=$SUKISU_BRANCH"
           echo "target_model=$TARGET_MODEL"
           echo "target_region=$TARGET_REGION"
-      - name: 07 - Apply SUSFS v2.2.0 from pinned LG SUSFS v2.2.0 reference
+      - name: 07 - Apply SUSFS v2.2.0 4.19 backport (strict SUSFS-only patch)
         shell: bash
         run: |
           set -euo pipefail
@@ -851,111 +851,135 @@ jobs:
           exec > >(tee "$DIAG_DIR/07-susfs.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # CIP135 is LOCKED and is deliberately not touched here.
-          # Use only SUSFS-related files from a pinned LG kernel reference carrying SUSFS v2.2.0
-          # carrying SUSFS v2.2.0. The The LG SM8150 reference is used only as
-          # a SUSFS compatibility source; its device-tree/board code is never merged.
-          REF="$RUNNER_TEMP/lg-sm8150-susfs-ref"
-          rm -rf "$REF"
-          git clone --filter=blob:none --no-checkout \
-            https://github.com/sidex15/android_kernel_lge_sm8150.git "$REF"
-          cd "$REF"
-          git fetch --no-tags --depth=1 origin 70d3982
-          git checkout --detach 70d3982
+          # IMPORTANT: CIP135 is already established and is NEVER fetched,
+          # regenerated, rebased, or modified here.
+          test -f localversion-cip
+          test "$(cat localversion-cip)" = "-cip135"
 
-          # Verify that the reference actually contains the requested version.
-          grep -Rqs 'v2\.2\.0' fs/susfs.c include/linux/susfs.h
+          # The previous failure came from an invalid remote object lookup:
+          # 70d3982. That path is completely removed.
+          #
+          # For Linux 4.19, use the maintained non-GKI v2.2.0 backport from
+          # JackA1ltman. The upstream helper explicitly states it is tested on
+          # 4.19 and supports SUSFS v2.2.00.
+          SUSFS_RAW="https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
+          HOOK_RAW="https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/susfs_inline_hook_patches.sh"
 
-          # Copy only SUSFS implementation/header files. Never copy Makefiles,
-          # Kconfig, drivers, DTS, arch, or any unrelated source from the reference.
-          for f in fs/susfs.c fs/sus_su.c include/linux/susfs.h include/linux/sus_su.h; do
-            test -f "$f"
-            install -Dm0644 "$f" "$GITHUB_WORKSPACE/kernel/$f"
-          done
+          curl -fL --retry 4 --retry-delay 2 "$SUSFS_RAW" -o "$RUNNER_TEMP/susfs-4.19.patch"
+          curl -fL --retry 4 --retry-delay 2 "$HOOK_RAW" -o "$RUNNER_TEMP/susfs-inline-hooks.sh"
+          chmod +x "$RUNNER_TEMP/susfs-inline-hooks.sh"
 
-          cd "$GITHUB_WORKSPACE/kernel"
+          # Sanity check the downloaded source really is v2.2.0.
+          grep -q 'SUSFS_VERSION "v2.2.0"' "$RUNNER_TEMP/susfs-4.19.patch"
+          grep -q 'PATCH_LEVEL="2.2.00"' "$RUNNER_TEMP/susfs-inline-hooks.sh"
 
-          # The baseline already contains the older SUSFS integration. This step
-          # updates the SUSFS implementation/header in-place; it never replaces
-          # the surrounding LG kernel tree.
-          test -f fs/susfs.c
-          test -f include/linux/susfs.h
-
-          # v2.2.0 is an integrated SUSFS release, not merely a filename bump.
-          # Refuse to proceed if the implementation and header advertise
-          # different versions.
-          impl_ver="$(grep -o 'SUSFS_VERSION[[:space:]]*"v[0-9.]*"' fs/susfs.c include/linux/susfs.h 2>/dev/null | head -n1 || true)"
-          header_ver="$(grep -o 'SUSFS_VERSION[[:space:]]*"v[0-9.]*"' include/linux/susfs.h 2>/dev/null | head -n1 || true)"
-          echo "susfs_impl_version=$impl_ver"
-          echo "susfs_header_version=$header_ver"
-
-          # SukiSU-Ultra builtin is the KernelSU-side SUSFS integration path.
-          # Do NOT run the obsolete SUSFS v2.2.0 KernelSU patch.
-          # Instead, validate that SukiSU exposes the required SUSFS config symbols.
-          test -f KernelSU/kernel/sucompat.h
-          grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU/kernel drivers/kernelsu || true
-
-          # Add only missing SUSFS object entries to the existing LG build files.
-          # Never replace the complete LG Makefile/Kconfig.
-          python3 - <<'PY'
-          from pathlib import Path
-          root=Path('.')
-          edits={
-            root/'fs/Makefile': ['obj-$(CONFIG_KSU_SUSFS) += susfs.o', 'obj-$(CONFIG_KSU_SUSFS_SUS_SU) += sus_su.o'],
-          }
-          for path, lines in edits.items():
-            if not path.exists():
-              raise SystemExit(f'missing required baseline file: {path}')
-            text=path.read_text(errors='replace')
-            add=[x for x in lines if x not in text]
-            if add:
-              with path.open('a') as f:
-                f.write('\n# SUSFS v2.2.0\n')
-                for x in add: f.write(x+'\n')
+          # The published 4.19 patch contains unrelated upstream changes too.
+          # Never apply those to the LG baseline. Build a derived patch that
+          # retains ONLY hunks whose added code is SUSFS/KSU-SUSFS code, plus
+          # the three new SUSFS implementation/header files.
+          python3 - "$RUNNER_TEMP/susfs-4.19.patch" "$RUNNER_TEMP/susfs-4.19-susfs-only.patch" <<'PY'
+          import re, sys
+          src, dst = sys.argv[1], sys.argv[2]
+          text = open(src, encoding="utf-8").read().splitlines(True)
+          out=[]
+          i=0
+          token=re.compile(r'(KSU_SUSFS|SUSFS_|susfs_|ksu_handle_)')
+          while i < len(text):
+              if not text[i].startswith("diff --git "):
+                  i += 1; continue
+              j=i+1
+              while j < len(text) and not text[j].startswith("diff --git "):
+                  j += 1
+              sec=text[i:j]
+              path=sec[0].split(" b/",1)[-1].strip()
+              is_new=any(x.startswith("new file mode ") for x in sec)
+              if is_new and path in {"fs/susfs.c","include/linux/susfs.h","include/linux/susfs_def.h"}:
+                  out.extend(sec)
+                  i=j; continue
+              # Split file section into header and hunks.
+              h=[k for k,x in enumerate(sec) if x.startswith("@@ ")]
+              if not h:
+                  i=j; continue
+              selected=[]
+              for n,hs in enumerate(h):
+                  he=h[n+1] if n+1<len(h) else len(sec)
+                  chunk=sec[hs:he]
+                  if any(x.startswith("+") and not x.startswith("+++") and token.search(x) for x in chunk):
+                      selected.append(chunk)
+              if selected:
+                  out.extend(sec[:h[0]])
+                  for chunk in selected: out.extend(chunk)
+              i=j
+          open(dst,"w",encoding="utf-8").writelines(out)
           PY
 
+          # No unrelated arch/documentation/upstream hunks are allowed.
+          if grep -Eq '^diff --git a/(arch|Documentation|tools)/' "$RUNNER_TEMP/susfs-4.19-susfs-only.patch"; then
+            echo "ERROR: filtered SUSFS patch still contains unrelated top-level paths."
+            exit 1
+          fi
+
+          # The clean baseline does not contain SUSFS yet. Apply atomically:
+          # check first, then apply. Any real LG/CIP135 context conflict stops
+          # the build rather than silently fuzzing/overwriting the baseline.
+          if ! git apply --check --binary "$RUNNER_TEMP/susfs-4.19-susfs-only.patch"; then
+            echo "ERROR: SUSFS v2.2.0 4.19 patch is not compatible with this exact"
+            echo "LG/CIP135 baseline. Baseline has NOT been force-overwritten."
+            exit 1
+          fi
+          git apply --binary "$RUNNER_TEMP/susfs-4.19-susfs-only.patch"
+
+          # The 4.19 SUSFS patch supplies the implementation and all kernel
+          # integration points. Now apply the v2.2 inline-hook adaptation.
+          if ! bash "$RUNNER_TEMP/susfs-inline-hooks.sh"; then
+            echo "ERROR: SUSFS v2.2 inline-hook adaptation failed."
+            exit 1
+          fi
+
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+          grep -q '#define SUSFS_VERSION "v2.2.0"' include/linux/susfs.h
+          grep -q 'CONFIG_KSU_SUSFS' fs/Makefile
+
+          # Do not permit the old manual-hook mechanism to be introduced.
+          ! grep -Rqs 'CONFIG_KSU_MANUAL_HOOK=y' "$OUT_DIR/.config" || {
+            echo "ERROR: legacy KSU manual-hook config detected."
+            exit 1
+          }
+
           echo "susfs_version=v2.2.0"
-          echo "susfs_reference=LG-SM8150:70d3982"
-          echo "cip=v4.19.325-cip135 (LOCKED / untouched)"
-          echo "PASS: SUSFS v2.2.0 files staged without replacing the LG baseline."
+          echo "susfs_patch=JackA1ltman 4.19 backport / mainline"
+          echo "inline_hook=JackA1ltman SUSFS 2.2.00"
+          echo "cip135=LOCKED / unchanged"
           git diff --check
 
-      - name: 08 - SUSFS v2.x inline-hook guard (NO legacy manual hooks)
+      - name: 08 - Verify SUSFS inline hooks and KPROBES baseline
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/08-susfs-inline-hook.log") 2>&1
+          exec > >(tee "$DIAG_DIR/08-hooks.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # SUSFS v2.x moved KernelSU integration to inline hooks. The old
-          # CONFIG_KSU_MANUAL_HOOK source edits must NOT be layered on top.
-          # KPROBES stays exactly as in the known-good baseline.
-          test -f KernelSU/kernel/Kconfig
-          test -f KernelSU/kernel/Makefile
           test -f "$OUT_DIR/.config"
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
 
-          # Hard fail if the obsolete hook block survived from an earlier tree.
-          if grep -Rqs 'ksu_handle_execveat_sucompat' fs/exec.c &&              grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT_DIR/.config"; then
-            echo "ERROR: legacy manual-hook integration detected."
-            exit 1
-          fi
+          # SUSFS v2.x non-GKI path must contain the inline-hook symbols that
+          # the v2.2 helper integrates.
+          grep -Rqs 'ksu_handle_execveat_sucompat' fs/exec.c
+          grep -Rqs 'ksu_handle_setresuid' kernel/sys.c
+          grep -Rqs 'CONFIG_KSU_SUSFS' fs/exec.c
 
-          echo "PASS: SUSFS inline-hook model selected; legacy manual hooks are absent."
-          echo "PASS: CONFIG_KPROBES remains disabled."
+          # Old manual-hook config must remain absent.
+          ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT_DIR/.config"
+
+          echo "PASS: SUSFS v2.2 inline hooks present."
+          echo "PASS: KPROBES remains disabled."
+          echo "PASS: legacy manual-hook mode absent."
           git diff --check
 
-      - name: 08b - LOCK established CIP135 (do not modify)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel"
-          test -f localversion-cip
-          test "$(cat localversion-cip)" = "-cip135"
-          echo "CIP135 is locked and this stage performs no CIP changes."
-
-      - name: 09 - Configure ONLY KSU/SUSFS; preserve every WORKING config value
+      - name: 09 - Configure ONLY SukiSU/SUSFS; preserve every WORKING config value
         shell: bash
         run: |
           set -euo pipefail
@@ -1067,7 +1091,7 @@ jobs:
           echo "PASS: no non-KSU configuration drift."
           echo "PASS: KPROBES remains disabled; no KPROBE config was added."
 
-      - name: 10 - Verify source scope (ONLY SukiSU/SUSFS/hooks + clean CIP135 overlay)
+      - name: 10 - Verify source scope (ONLY SukiSU/SUSFS inline hooks + clean CIP135 overlay)
         shell: bash
         run: |
           set -euo pipefail
