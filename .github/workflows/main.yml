@@ -34,6 +34,7 @@ env:
 
   DTB_TARGET: vendor/qcom/lito-mtp.dtb
   DTBO_TARGET: arch/arm64/boot/dts/vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
+  DTBO_BUILD_DIR: arch/arm64/boot/dts/vendor/lge
   DTBO_DTS: arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-rev-1.0_overlay.dts
 
 jobs:
@@ -236,9 +237,15 @@ jobs:
           cp "$GITHUB_WORKSPACE/susfs-src/kernel_patches/include/linux/"susfs*.h include/linux/
           patch --dry-run -p1 < "$GITHUB_WORKSPACE/susfs-src/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
           patch -p1 < "$GITHUB_WORKSPACE/susfs-src/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
-          test -f fs/susfs.c
-          test -f include/linux/susfs.h
-          test -f include/linux/susfs_def.h
+
+          # FIX ONLY: re-install the SUSFS public headers after the kernel patch.
+          # SukiSU-Ultra's kernel_includes.h includes linux/susfs.h directly.
+          install -m 0644 "$GITHUB_WORKSPACE/susfs-src/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
+          install -m 0644 "$GITHUB_WORKSPACE/susfs-src/kernel_patches/include/linux/susfs_def.h" include/linux/susfs_def.h
+
+          test -s fs/susfs.c
+          test -s include/linux/susfs.h
+          test -s include/linux/susfs_def.h
           # KSU-side SUSFS config is supplied below without applying the legacy
           # KernelSU integration patch, which targets an older KSU source layout.
           # The actual SUSFS implementation remains the Linux-4.19 kernel patch.
@@ -626,10 +633,12 @@ jobs:
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
           target="$DTBO_TARGET"
-          # FIX ONLY: invoke the DTBO through the top-level ARM64 Kbuild path.
+          # FIX ONLY: build the LGE DTBO directory target.
+          # This 4.19 Kbuild Makefile exposes DTBOs through its directory/always target,
+          # while a direct arch/.../*.dtbo goal is not registered as a top-level target.
           make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
-            AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$target"
+            AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$DTBO_BUILD_DIR"
           produced="$GITHUB_WORKSPACE/out/$target"
           test -s "$produced" || {
             echo "ERROR: DTBO output not found: $produced"
@@ -656,7 +665,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LG-G900-Global-DTBO
-          path: artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
+          path: |
+            artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
+            artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo.sha256
       - name: 08 - Upload DTBO diagnostics ALWAYS
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -725,8 +736,8 @@ jobs:
           exec > >(tee -a ci-diagnostics/03-dtbo-package.log) 2>&1
           trap 'rc=$?; echo "FAILED step=03 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           mkdir -p artifacts/dtbo
-          cp downloaded/LG-G900-Global-DTBO/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo artifacts/dtbo/
-          cp downloaded/LG-G900-Global-DTBO/dtbo/*.sha256 artifacts/dtbo/
+          cp downloaded/LG-G900-Global-DTBO/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo artifacts/dtbo/
+          cp downloaded/LG-G900-Global-DTBO/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo.sha256 artifacts/dtbo/
           (cd artifacts/dtbo && zip -9 "$GITHUB_WORKSPACE/artifacts/LG-G900-Global-DTBO.zip" ./*)
           unzip -t artifacts/LG-G900-Global-DTBO.zip
       - name: 04 - Package SUSFS userspace module source
