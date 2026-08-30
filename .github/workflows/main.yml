@@ -1,47 +1,48 @@
-name: LM-G900 Android 16 QPR2 — Vendor Only Fix
+name: "LM-G900 Android 16 QPR2 - Vendor Only Fix"
 
-on:
+"on":
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: lm-g900-vendor-${{ github.ref }}
-  cancel-in-progress: false
-
 env:
-  MANIFEST_URL: https://github.com/LineageOS/android.git
-  MANIFEST_BRANCH: lineage-23.2
-  DEVICE_CODENAME: caymanln
-  MODEL: LM-G900
-  DIAG_DIR: ci-diagnostics/vendor
+  MANIFEST_URL: "https://github.com/LineageOS/android.git"
+  MANIFEST_BRANCH: "lineage-23.2"
+  DEVICE_CODENAME: "caymanln"
+  MODEL: "LM-G900"
+  PRODUCT: "lineage_caymanln-userdebug"
+  DIAG_DIR: "ci-diagnostics/vendor"
 
 jobs:
   vendor:
-    name: Vendor — LM-G900 / Android 16 QPR2
+    name: "Vendor only - LM-G900"
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
-      - name: V00 — Set up numbered runner + diagnostics
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          mkdir -p "$DIAG_DIR" vendor_out
-          : > "$DIAG_DIR/00-vendor-run.log"
-          exec > >(tee -a "$DIAG_DIR/00-vendor-run.log") 2>&1
-          echo "=== VENDOR RUN START ==="
-          echo "run_id=${GITHUB_RUN_ID}"
-          echo "sha=${GITHUB_SHA}"
-          echo "model=${MODEL} codename=${DEVICE_CODENAME}"
-
-      - name: V01 — Checkout workflow source
+      - name: "V00 - Checkout repository"
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          clean: false
 
-      - name: V02 — Install Android build dependencies
+      - name: "V00 - Create diagnostics"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/$DIAG_DIR" "$GITHUB_WORKSPACE/vendor_out"
+          {
+            echo "LG Velvet LM-G900 - VENDOR ONLY"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "sha=$GITHUB_SHA"
+            echo "model=$MODEL"
+            echo "codename=$DEVICE_CODENAME"
+            echo "product=$PRODUCT"
+            echo "started=$(date -u +%FT%TZ)"
+          } | tee "$GITHUB_WORKSPACE/$DIAG_DIR/00-run.log"
+
+      - name: "V01 - Install build dependencies"
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -50,96 +51,109 @@ jobs:
             git-core gnupg flex bison build-essential zip curl zstd \
             unzip rsync bc ccache libssl-dev libelf-dev \
             python3 python3-pip jq lz4 liblz4-tool libxml2-utils \
-            xsltproc repo
-          git --version
-          repo --version
-          python3 --version
+            xsltproc
+          if ! command -v repo >/dev/null 2>&1; then
+            curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo \
+              -o "$HOME/repo"
+            chmod +x "$HOME/repo"
+            sudo install -m 0755 "$HOME/repo" /usr/local/bin/repo
+          fi
+          {
+            git --version
+            repo --version
+            python3 --version
+          } | tee "$GITHUB_WORKSPACE/$DIAG_DIR/01-dependencies.log"
 
-      - name: V03 — Initialize official Android source correctly
+      - name: "V02 - Initialize Android source"
         shell: bash
         run: |
           set -Eeuo pipefail
+          rm -rf "$GITHUB_WORKSPACE/android"
           mkdir -p "$GITHUB_WORKSPACE/android"
           cd "$GITHUB_WORKSPACE/android"
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
-          mkdir -p .repo/local_manifests
-          git -C .repo/manifests rev-parse HEAD | tee "$GITHUB_WORKSPACE/$DIAG_DIR/03-manifest-head.txt"
-          repo manifest -r > "$GITHUB_WORKSPACE/$DIAG_DIR/03-initial-manifest.xml"
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1 2>&1 |
+            tee "$GITHUB_WORKSPACE/$DIAG_DIR/02-repo-init.log"
+          repo manifest -r > "$GITHUB_WORKSPACE/$DIAG_DIR/02-manifest.xml"
 
-      - name: V04 — FIX: verify vendor/device refs before repo sync
+      - name: "V03 - Create vendor manifest"
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -Eeuo pipefail
           cd "$GITHUB_WORKSPACE/android"
-
-          # Never use an invalid remote/revision combination in local_manifests.
-          # The refs are checked first; only verified refs are written to the manifest.
-          mkdir -p "$GITHUB_WORKSPACE/$DIAG_DIR"
-          : > "$GITHUB_WORKSPACE/$DIAG_DIR/04-ref-check.log"
-
-          verify_ref() {
-            local repo_url="$1"
-            local ref="$2"
-            echo "CHECK $repo_url @ $ref" | tee -a "$GITHUB_WORKSPACE/$DIAG_DIR/04-ref-check.log"
-            if git ls-remote --exit-code --heads "$repo_url" "$ref" \
-              >> "$GITHUB_WORKSPACE/$DIAG_DIR/04-ref-check.log" 2>&1; then
-              echo "OK $repo_url @ $ref" | tee -a "$GITHUB_WORKSPACE/$DIAG_DIR/04-ref-check.log"
-              return 0
-            fi
-            echo "FAIL $repo_url @ $ref" | tee -a "$GITHUB_WORKSPACE/$DIAG_DIR/04-ref-check.log"
-            return 1
-          }
-
-          # These are the three vendor/device projects used by this workflow.
-          # Keep the repository names in one place so a failed ref is obvious.
-          DEVICE_REPO="https://github.com/lge-qcom-dev/android_device_lge_caymanln.git"
-          DEVICE_PATH="device/lge/caymanln"
-          DEVICE_REF="$MANIFEST_BRANCH"
-
-          VENDOR_REPO="https://github.com/lge-qcom-dev/proprietary_vendor_lge_caymanln.git"
-          VENDOR_PATH="vendor/lge/caymanln"
-          VENDOR_REF="$MANIFEST_BRANCH"
-
-          COMMON_REPO="https://github.com/Sparkle-OS/proprietary_vendor_lge_sm7250-common.git"
-          COMMON_PATH="vendor/lge/sm7250-common"
-          COMMON_REF="$MANIFEST_BRANCH"
-
-          # If a repository/ref is unavailable, stop here with a useful diagnostic.
-          verify_ref "$DEVICE_REPO" "$DEVICE_REF"
-          verify_ref "$VENDOR_REPO" "$VENDOR_REF"
-          verify_ref "$COMMON_REPO" "$COMMON_REF"
-
-          cat > .repo/local_manifests/g900emw.xml <<EOF
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/g900emw.xml <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
-            <project name="lge-qcom-dev/android_device_lge_caymanln" path="device/lge/caymanln" remote="github" revision="lineage-23.2" />
-            <project name="lge-qcom-dev/proprietary_vendor_lge_caymanln" path="vendor/lge/caymanln" remote="github" revision="lineage-23.2" />
-            <project name="Sparkle-OS/proprietary_vendor_lge_sm7250-common" path="vendor/lge/sm7250-common" remote="github" revision="lineage-23.2" />
+            <remote name="g900github" fetch="https://github.com/" />
+            <project name="lge-qcom-dev/android_device_lge_caymanln"
+                     path="device/lge/caymanln"
+                     remote="g900github"
+                     revision="lineage-23.2" />
+            <project name="lge-qcom-dev/proprietary_vendor_lge_caymanln"
+                     path="vendor/lge/caymanln"
+                     remote="g900github"
+                     revision="lineage-23.2" />
+            <project name="Sparkle-OS/proprietary_vendor_lge_sm7250-common"
+                     path="vendor/lge/sm7250-common"
+                     remote="g900github"
+                     revision="lineage-23.2" />
           </manifest>
           EOF
+          repo manifest -r > "$GITHUB_WORKSPACE/$DIAG_DIR/03-manifest.xml"
 
-          # Validate the manifest before doing the expensive sync.
-          repo manifest -r > "$GITHUB_WORKSPACE/$DIAG_DIR/04-manifest-before-sync.xml"
-          repo sync --force-sync --no-clone-bundle --no-tags --optimized-fetch \
-            --prune --fail-fast -j2 2>&1 | tee "$GITHUB_WORKSPACE/$DIAG_DIR/04-repo-sync.log"
+      - name: "V04 - Verify vendor repositories and refs BEFORE sync"
+        id: v04
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$GITHUB_WORKSPACE/android"
+          ref_log="$GITHUB_WORKSPACE/$DIAG_DIR/04-ref-check.log"
+          sync_log="$GITHUB_WORKSPACE/$DIAG_DIR/04-repo-sync.log"
+          : > "$ref_log"
+          : > "$sync_log"
 
-      - name: V05 — Verify source refs + Android 16 QPR2 product tree
+          check_ref() {
+            local url="$1"
+            local ref="$2"
+            echo "CHECK $url @ $ref" | tee -a "$ref_log"
+            if git ls-remote --exit-code --heads "$url" "$ref" >> "$ref_log" 2>&1; then
+              echo "PASS $url @ $ref" | tee -a "$ref_log"
+            else
+              echo "FAIL $url @ $ref" | tee -a "$ref_log"
+              return 1
+            fi
+          }
+
+          check_ref \
+            "https://github.com/lge-qcom-dev/android_device_lge_caymanln.git" \
+            "$MANIFEST_BRANCH"
+          check_ref \
+            "https://github.com/lge-qcom-dev/proprietary_vendor_lge_caymanln.git" \
+            "$MANIFEST_BRANCH"
+          check_ref \
+            "https://github.com/Sparkle-OS/proprietary_vendor_lge_sm7250-common.git" \
+            "$MANIFEST_BRANCH"
+
+          repo sync --force-sync --no-clone-bundle --no-tags \
+            --optimized-fetch --prune --fail-fast -j2 2>&1 |
+            tee "$sync_log"
+
+      - name: "V05 - Verify synced vendor source"
+        if: ${{ always() && steps.v04.outcome == 'success' }}
         shell: bash
         run: |
           set -Eeuo pipefail
           cd "$GITHUB_WORKSPACE/android"
           {
-            echo "=== synced projects ==="
-            repo list | grep -E 'device/lge/caymanln|vendor/lge/caymanln|vendor/lge/sm7250-common' || true
+            echo "=== required projects ==="
+            repo list | grep -E \
+              'device/lge/caymanln|vendor/lge/caymanln|vendor/lge/sm7250-common'
             echo "=== manifest ==="
             repo manifest -r
-            echo "=== Android version markers ==="
-            grep -R "PLATFORM_VERSION\|PLATFORM_SDK_VERSION" build/core/version_defaults.mk 2>/dev/null || true
           } | tee "$GITHUB_WORKSPACE/$DIAG_DIR/05-source-verification.log"
 
-      - name: V06 — Normalize global model identity to LM-G900
+      - name: "V06 - Verify LM-G900 identity"
+        if: ${{ always() && steps.v04.outcome == 'success' }}
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -148,72 +162,105 @@ jobs:
             echo "MODEL=$MODEL"
             echo "DEVICE_CODENAME=$DEVICE_CODENAME"
             echo "Expected: LM-G900 / caymanln"
-            grep -R "LM-G900\|caymanln" device/lge/caymanln vendor/lge/caymanln 2>/dev/null | head -200 || true
+            grep -RniE 'LM-G900|caymanln' \
+              device/lge/caymanln \
+              vendor/lge/caymanln \
+              vendor/lge/sm7250-common 2>/dev/null | head -300 || true
           } | tee "$GITHUB_WORKSPACE/$DIAG_DIR/06-model-identity.log"
 
-      - name: V07 — Prepare Android vendor build environment
+      - name: "V07 - Prepare vendor build environment"
+        if: ${{ always() && steps.v04.outcome == 'success' }}
         shell: bash
         run: |
           set -Eeuo pipefail
           cd "$GITHUB_WORKSPACE/android"
           source build/envsetup.sh
-          lunch lineage_caymanln-userdebug
-          get_build_var PRODUCT_DEVICE | tee "$GITHUB_WORKSPACE/$DIAG_DIR/07-product-device.txt"
-          get_build_var TARGET_PRODUCT | tee "$GITHUB_WORKSPACE/$DIAG_DIR/07-target-product.txt"
+          lunch "$PRODUCT"
+          {
+            echo "PRODUCT_DEVICE=$(get_build_var PRODUCT_DEVICE)"
+            echo "TARGET_PRODUCT=$(get_build_var TARGET_PRODUCT)"
+            echo "TARGET_BUILD_VARIANT=$(get_build_var TARGET_BUILD_VARIANT)"
+          } | tee "$GITHUB_WORKSPACE/$DIAG_DIR/07-product-config.log"
 
-      - name: V08 — Mandatory hardware integration audit
+      - name: "V08 - Mandatory hardware integration audit"
+        if: ${{ always() && steps.v04.outcome == 'success' }}
         shell: bash
         run: |
           set -Eeuo pipefail
           cd "$GITHUB_WORKSPACE/android"
-          : > "$GITHUB_WORKSPACE/$DIAG_DIR/08-hardware-audit.log"
+          log="$GITHUB_WORKSPACE/$DIAG_DIR/08-hardware-audit.log"
+          : > "$log"
+
           audit() {
-            local label="$1"; shift
-            echo "=== $label ===" | tee -a "$GITHUB_WORKSPACE/$DIAG_DIR/08-hardware-audit.log"
-            if "$@" >> "$GITHUB_WORKSPACE/$DIAG_DIR/08-hardware-audit.log" 2>&1; then
-              echo "PASS: $label" | tee -a "$GITHUB_WORKSPACE/$DIAG_DIR/08-hardware-audit.log"
+            local label="$1"
+            local pattern="$2"
+            shift 2
+            echo "=== $label ===" | tee -a "$log"
+            if grep -RniE "$pattern" "$@" >> "$log" 2>&1; then
+              echo "PASS: $label" | tee -a "$log"
             else
-              echo "WARN/FAIL: $label" | tee -a "$GITHUB_WORKSPACE/$DIAG_DIR/08-hardware-audit.log"
+              echo "FAIL: $label" | tee -a "$log"
+              return 1
             fi
           }
-          audit fingerprint grep -RniE 'fingerprint|fpc|goodix' device/lge/caymanln vendor/lge/caymanln vendor/lge/sm7250-common
-          audit vibration grep -RniE 'vibrator|haptics|ff-memless' device/lge/caymanln vendor/lge/caymanln
-          audit dual-sim grep -RniE 'dual.?sim|dsds|simslot' device/lge/caymanln vendor/lge/caymanln
-          audit audio grep -RniE 'audio|mixer_paths|audio_policy' vendor/lge/caymanln vendor/lge/sm7250-common
-          audit vowifi grep -RniE 'ims|iwlan|vowifi|wifi.?calling' vendor/lge/caymanln vendor/lge/sm7250-common
 
-      - name: V09 — Build vendor image only
+          audit "Fingerprint" \
+            'fingerprint|fpc|goodix|biometric' \
+            device/lge/caymanln vendor/lge/caymanln vendor/lge/sm7250-common
+
+          audit "Vibration" \
+            'vibrator|haptics|ff-memless|timed_output' \
+            device/lge/caymanln vendor/lge/caymanln vendor/lge/sm7250-common
+
+          audit "Dual-SIM" \
+            'dual.?sim|dsds|simslot|sim.?slot|multisim' \
+            device/lge/caymanln vendor/lge/caymanln vendor/lge/sm7250-common
+
+          audit "Audio" \
+            'mixer_paths|audio_policy|audio_hw|primary\.sm|tinyalsa|snd' \
+            device/lge/caymanln vendor/lge/caymanln vendor/lge/sm7250-common
+
+          audit "Wi-Fi Calling / VoWiFi / IMS" \
+            'ims|iwlan|vowifi|wifi.?calling|volte|carrier.?config' \
+            device/lge/caymanln vendor/lge/caymanln vendor/lge/sm7250-common
+
+      - name: "V09 - Build vendor.img ONLY"
+        if: ${{ always() && steps.v04.outcome == 'success' }}
         shell: bash
         run: |
           set -Eeuo pipefail
           cd "$GITHUB_WORKSPACE/android"
           source build/envsetup.sh
-          lunch lineage_caymanln-userdebug
+          lunch "$PRODUCT"
           set +e
-          mka vendorimage 2>&1 | tee "$GITHUB_WORKSPACE/$DIAG_DIR/09-vendorimage-build.log"
+          mka vendorimage 2>&1 |
+            tee "$GITHUB_WORKSPACE/$DIAG_DIR/09-vendorimage-build.log"
           rc=${PIPESTATUS[0]}
           set -e
           echo "$rc" > "$GITHUB_WORKSPACE/$DIAG_DIR/09-vendorimage-exit-code.txt"
           exit "$rc"
 
-      - name: V10 — Verify vendor.img + VINTF + LM-G900 identity
-        if: ${{ always() }}
+      - name: "V10 - Verify vendor image and VINTF"
+        if: ${{ always() && steps.v04.outcome == 'success' }}
         shell: bash
         run: |
           set -Eeuo pipefail
           cd "$GITHUB_WORKSPACE/android"
+          out="out/target/product/$DEVICE_CODENAME"
           {
-            echo "=== vendor artifacts ==="
-            find out/target/product/caymanln -maxdepth 1 -type f \
-              \( -name 'vendor.img' -o -name 'vendor-debug.img' \) -printf '%p %s bytes\n' 2>/dev/null || true
+            echo "=== vendor images ==="
+            find "$out" -maxdepth 1 -type f \
+              -name 'vendor*.img' -printf '%p %s bytes\n' 2>/dev/null || true
             echo "=== VINTF ==="
-            find out/target/product/caymanln/vendor/etc/vintf -type f -maxdepth 2 \
+            find "$out/vendor/etc/vintf" -type f \
               -print 2>/dev/null | sort || true
-            echo "=== identity ==="
-            grep -RniE 'LM-G900|caymanln' device/lge/caymanln vendor/lge/caymanln 2>/dev/null | head -200 || true
+            echo "=== required feature payload scan ==="
+            grep -RniE \
+              'fingerprint|vibrator|haptics|dual.?sim|dsds|mixer_paths|audio_policy|ims|iwlan|vowifi|wifi.?calling' \
+              "$out/vendor" 2>/dev/null | head -500 || true
           } | tee "$GITHUB_WORKSPACE/$DIAG_DIR/10-vendor-verification.log"
 
-      - name: V11 — Package vendor result + ALWAYS include exact error log
+      - name: "V11 - ALWAYS create complete error log and artifact"
         if: ${{ always() }}
         shell: bash
         run: |
@@ -221,41 +268,84 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           mkdir -p vendor_out
 
-          # Capture the GitHub runner failure context as well as the numbered logs.
           {
-            echo "LG Velvet LM-G900 — Android 16 QPR2 — VENDOR ONLY"
+            echo "LG Velvet LM-G900 - VENDOR ONLY"
             echo "run_id=$GITHUB_RUN_ID"
             echo "sha=$GITHUB_SHA"
             echo "job_status=${{ job.status }}"
+            echo "v04_outcome=${{ steps.v04.outcome }}"
             echo "timestamp=$(date -u +%FT%TZ)"
             echo
-            echo "=== ERROR/FAILURE SUMMARY ==="
-            grep -RniE '(^|[^A-Za-z])(error|fatal|failed|failure|FAIL|ERROR)([^A-Za-z]|$)' "$DIAG_DIR" \
-              2>/dev/null | tail -300 || true
+            echo "=== FAILURE / ERROR SUMMARY ==="
+            grep -RniE \
+              'error|fatal|failed|failure|FAIL|ERROR|invalid|not found|does not exist' \
+              "$DIAG_DIR" 2>/dev/null | tail -500 || true
+            echo
+            echo "=== REQUIRED FEATURES ==="
+            echo "Fingerprint"
+            echo "Vibration / haptics"
+            echo "Dual-SIM / DSDS"
+            echo "Audio"
+            echo "Wi-Fi Calling / VoWiFi / IMS"
           } > "$DIAG_DIR/99-ERROR-SUMMARY.log"
 
-          # Copy vendor.img only if it exists; never make artifact upload depend on it.
-          find android/out/target/product/caymanln -maxdepth 1 -type f \
+          out="android/out/target/product/$DEVICE_CODENAME"
+          find "$out" -maxdepth 1 -type f \
             -name 'vendor*.img' -exec cp -v {} vendor_out/ \; 2>/dev/null || true
 
-          # The diagnostics directory is ALWAYS packaged, even when V04/V09 fails.
-          tar -czf "vendor_out/LM-G900-VENDOR-DIAGNOSTICS-${GITHUB_RUN_ID}.tar.gz" "$DIAG_DIR"
+          tar -czf \
+            "vendor_out/LM-G900-VENDOR-DIAGNOSTICS-${GITHUB_RUN_ID}.tar.gz" \
+            "$DIAG_DIR"
+
           {
-            echo "vendor.img:"
-            find vendor_out -maxdepth 1 -type f -name 'vendor*.img' -printf '%f %s bytes\n' || true
-            echo "diagnostics: LM-G900-VENDOR-DIAGNOSTICS-${GITHUB_RUN_ID}.tar.gz"
-            echo "ERROR LOG: ci-diagnostics/vendor/99-ERROR-SUMMARY.log"
-            echo "V04 LOG: ci-diagnostics/vendor/04-repo-sync.log"
-            echo "V09 LOG: ci-diagnostics/vendor/09-vendorimage-build.log"
+            echo "LM-G900 VENDOR ARTIFACTS"
+            find vendor_out -maxdepth 1 -type f \
+              -printf '%f %s bytes\n' | sort || true
+            echo
+            echo "MANDATORY ERROR LOG:"
+            echo "ci-diagnostics/vendor/99-ERROR-SUMMARY.log"
+            echo
+            echo "V04:"
+            echo "ci-diagnostics/vendor/04-ref-check.log"
+            echo "ci-diagnostics/vendor/04-repo-sync.log"
+            echo
+            echo "V08:"
+            echo "ci-diagnostics/vendor/08-hardware-audit.log"
+            echo
+            echo "V09:"
+            echo "ci-diagnostics/vendor/09-vendorimage-build.log"
           } > vendor_out/ARTIFACT-LIST.txt
 
-      - name: Upload vendor artifact + error logs ALWAYS
+      - name: "Upload vendor diagnostics ALWAYS"
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-VENDOR-${{ github.run_id }}
+          name: "LM-G900-VENDOR-${{ github.run_id }}"
           path: |
             vendor_out/**
             ci-diagnostics/vendor/**
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
+
+      - name: "Final - return correct vendor failure status"
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "${{ steps.v04.outcome }}" != "success" ]]; then
+            echo "VENDOR FAILURE: V04 failed. Check 99-ERROR-SUMMARY.log and 04-*.log."
+            exit 1
+          fi
+
+          if [[ -f "$DIAG_DIR/09-vendorimage-exit-code.txt" ]] &&
+             [[ "$(cat "$DIAG_DIR/09-vendorimage-exit-code.txt")" != "0" ]]; then
+            echo "VENDOR FAILURE: vendorimage failed. Check 09-vendorimage-build.log."
+            exit 1
+          fi
+
+          if grep -q '^FAIL:' "$DIAG_DIR/08-hardware-audit.log" 2>/dev/null; then
+            echo "VENDOR FAILURE: mandatory hardware audit failed."
+            exit 1
+          fi
+
+          echo "VENDOR SUCCESS: vendor-only workflow completed."
