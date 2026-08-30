@@ -1,4 +1,4 @@
-name: LG Velvet LM-G900 — Android 16 QPR2 Kernel + DTBO (matched)
+name: LG Velvet LM-G900 — Android 16 QPR2 Kernel + DTBO (matched, CIP135 hardened v17)
 
 on:
   workflow_dispatch:
@@ -89,6 +89,15 @@ jobs:
           git status --short | tee "$DIAG_ROOT/kernel/00-git-status-before.txt"
           git rev-parse HEAD | tee "$DIAG_ROOT/kernel/00-source-commit.txt"
           git describe --always --dirty | tee "$DIAG_ROOT/kernel/00-source-describe.txt"
+          git config --local user.name "LM-G900 CI"
+          git config --local user.email "lm-g900-ci@localhost"
+          git config --local commit.gpgsign false
+          {
+            echo "git_user_name=$(git config --local user.name)"
+            echo "git_user_email=$(git config --local user.email)"
+            git var GIT_AUTHOR_IDENT
+            git var GIT_COMMITTER_IDENT
+          } | tee "$DIAG_ROOT/kernel/00-git-identity.txt"
 
       - name: K04 — Force LLVM toolchain and legacy 4.19 helpers
         shell: bash
@@ -129,55 +138,97 @@ jobs:
             "$DEFCONFIG" 2>&1 | tee "$DIAG_ROOT/kernel/03-defconfig.log"
           cp "$KERNEL_OUT/.config" "$DIAG_ROOT/kernel/baseline.config"
 
-      - name: K06 — Integrate official CIP135 without clobbering LG device code
+      - name: K06 — Integrate official CIP135 delta from Linux 4.19.325 — no skipped conflicts
         shell: bash
         run: |
-          set -u -o pipefail
-          CIP="${{ inputs.cip_ref || 'v4.19.325-cip135' }}"
+          set -u
+          mkdir -p "$DIAG_ROOT/kernel"
           LOG="$DIAG_ROOT/kernel/04-cip-integration.log"
           : > "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
 
-          echo "=== CIP target: $CIP ===" | tee -a "$LOG"
+          CIP="${{ inputs.cip_ref || 'v4.19.325-cip135' }}"
+          BASE_TAG="v4.19.325"
+
+          # Defensive identity setup immediately before any operation that may
+          # create a commit. This fixes the runner failure seen in the uploaded
+          # run even if the workflow was started from an older checkout.
+          git config --local user.name "LM-G900 CI"
+          git config --local user.email "lm-g900-ci@localhost"
+          git config --local commit.gpgsign false
+          git var GIT_AUTHOR_IDENT
+          git var GIT_COMMITTER_IDENT
+
+          echo "=== CIP target: $CIP ==="
           git fetch --no-tags https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git \
-            "refs/tags/v4.19.325:refs/tags/v4.19.325" 2>&1 | tee -a "$LOG"
+            "refs/tags/${BASE_TAG}:refs/tags/${BASE_TAG}"
           git fetch --no-tags https://gitlab.com/cip-project/cip-kernel/linux-cip.git \
-            "refs/tags/$CIP:refs/tags/$CIP" 2>&1 | tee -a "$LOG"
+            "refs/tags/${CIP}:refs/tags/${CIP}"
 
-          test -n "$(git rev-parse --verify "refs/tags/v4.19.325^{commit}")"
-          test -n "$(git rev-parse --verify "refs/tags/$CIP^{commit}")"
+          BASE_SHA="$(git rev-parse "refs/tags/${BASE_TAG}^{commit}")"
+          CIP_SHA="$(git rev-parse "refs/tags/${CIP}^{commit}")"
+          echo "base_tag=${BASE_TAG}" | tee "$DIAG_ROOT/kernel/04-cip-resolved.txt"
+          echo "base_commit=${BASE_SHA}" | tee -a "$DIAG_ROOT/kernel/04-cip-resolved.txt"
+          echo "cip_tag=${CIP}" | tee -a "$DIAG_ROOT/kernel/04-cip-resolved.txt"
+          echo "cip_commit=${CIP_SHA}" | tee -a "$DIAG_ROOT/kernel/04-cip-resolved.txt"
 
-          if git merge-base --is-ancestor "refs/tags/$CIP" HEAD; then
-            echo "CIP already present in source history; no merge performed." | tee -a "$LOG"
-          else
-            # The CIP135 tag is a full CIP tree, not just a version-string patch.
-            # Generate the official delta from stable 4.19.325.
-            rm -rf "$RUNNER_TEMP/cip135-patches"
-            mkdir -p "$RUNNER_TEMP/cip135-patches"
-            git format-patch --binary --full-index \
-              --output-directory "$RUNNER_TEMP/cip135-patches" \
-              "refs/tags/v4.19.325..refs/tags/$CIP" 2>&1 | tee -a "$LOG"
+          git rev-parse HEAD | tee "$DIAG_ROOT/kernel/04-lg-before-cip.txt"
 
-            PATCHES=$(find "$RUNNER_TEMP/cip135-patches" -type f -name '*.patch' | sort | wc -l)
-            echo "CIP patch count=$PATCHES" | tee -a "$LOG"
-            test "$PATCHES" -gt 0
+          # CIP135 is released from Linux 4.19.325. Apply the exact upstream
+          # tree delta with Git's 3-way machinery instead of feeding 4453
+          # individual mail patches to `git am`. This removes the committer-
+          # identity failure and gives us an exact index conflict if the LG
+          # downstream tree genuinely diverges.
+          git diff --binary "$BASE_SHA" "$CIP_SHA" > "$DIAG_ROOT/kernel/04-cip135.delta.patch"
+          test -s "$DIAG_ROOT/kernel/04-cip135.delta.patch"
+          sha256sum "$DIAG_ROOT/kernel/04-cip135.delta.patch" | tee "$DIAG_ROOT/kernel/04-cip135.delta.sha256"
+          git diff --stat "$BASE_SHA" "$CIP_SHA" | tee "$DIAG_ROOT/kernel/04-cip135.delta-stat.txt"
 
-            # Apply non-conflicting CIP changes normally. Device-specific LG
-            # paths are deliberately protected because replacing them with the
-            # generic CIP tree can make the phone unbootable.
-            if ! git am --3way --keep-non-patch \
-              "$RUNNER_TEMP/cip135-patches"/*.patch 2>&1 | tee -a "$LOG"; then
-              echo "CIP generic/device conflict detected; aborting instead of silently skipping it." | tee -a "$LOG"
-              git am --abort || true
-              git diff --check | tee "$DIAG_ROOT/kernel/04-cip-conflict-diffcheck.txt" || true
-              git status --short | tee "$DIAG_ROOT/kernel/04-cip-conflict-status.txt" || true
-              echo "ERROR: CIP135 could not be integrated cleanly. No conflict was hidden." | tee -a "$LOG"
-              exit 1
-            fi
+          set +e
+          git apply --3way --index "$DIAG_ROOT/kernel/04-cip135.delta.patch" \
+            2>&1 | tee "$DIAG_ROOT/kernel/05-cip-apply.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+
+          git diff --name-only --diff-filter=U > "$DIAG_ROOT/kernel/05-cip-unmerged.txt" || true
+          if [ -s "$DIAG_ROOT/kernel/05-cip-unmerged.txt" ]; then
+            echo "::error::CIP135 has real unresolved conflicts; nothing was skipped."
+            git status --short | tee "$DIAG_ROOT/kernel/05-cip-status.txt" || true
+            git diff --cc | tee "$DIAG_ROOT/kernel/05-cip-conflict.diff" >/dev/null || true
+            git diff --check | tee "$DIAG_ROOT/kernel/05-cip-diff-check.txt" || true
+            git checkout --conflict=merge -- . >/dev/null 2>&1 || true
+            exit 1
           fi
+
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::CIP135 delta application failed without an index conflict; refusing a partial build."
+            git status --short | tee "$DIAG_ROOT/kernel/05-cip-status.txt" || true
+            git diff --check | tee "$DIAG_ROOT/kernel/05-cip-diff-check.txt" || true
+            git reset --hard HEAD
+            exit "$rc"
+          fi
+
+          git diff --check
+          git diff --cached --stat | tee "$DIAG_ROOT/kernel/05-cip-applied-stat.txt"
+          git status --short | tee "$DIAG_ROOT/kernel/05-cip-status.txt"
+
+          test -f localversion-cip
+          grep -q -- '-cip135' localversion-cip
+          cat localversion-cip | tee "$DIAG_ROOT/kernel/05-localversion-cip.txt"
+
+          # Commit only the actual source delta. Diagnostics remain outside
+          # the commit so they cannot contaminate the kernel tree.
+          git reset >/dev/null
+          git add -A -- . ':(exclude)ci-diagnostics'
+          git commit -m "CI: apply Linux ${CIP} delta to LG Velvet kernel" \
+            2>&1 | tee "$DIAG_ROOT/kernel/05-cip-commit.log"
+          echo "CIP135 integration completed with zero unresolved conflicts and no skipped files." \
+            | tee "$DIAG_ROOT/kernel/05-cip-merge-status.txt"
 
           git log -1 --oneline | tee "$DIAG_ROOT/kernel/04-cip-head.txt"
           make -s kernelversion O="$KERNEL_OUT" 2>&1 | tee "$DIAG_ROOT/kernel/04-kernelversion.txt"
-          grep -R -- '-cip135' Makefile localversion* 2>/dev/null | head -20 | tee "$DIAG_ROOT/kernel/04-cip-version-marker.txt" || true
+          grep -R -- '-cip135' Makefile localversion* 2>/dev/null | head -20 \
+            | tee "$DIAG_ROOT/kernel/04-cip-version-marker.txt" || true
 
       - name: K07 — Integrate SukiSU-Ultra and KPM deterministically
         shell: bash
@@ -236,6 +287,7 @@ jobs:
             --enable DM_VERITY \
             --enable DM_VERITY_FEC \
             --enable FS_VERITY \
+            --enable BUILD_ARM64_DT_OVERLAY \
             --enable ZRAM \
             --enable ZSMALLOC \
             --enable KALLSYMS \
@@ -396,39 +448,65 @@ jobs:
           } | tee "$DIAG_ROOT/dtbo/00-context.txt"
           git rev-parse HEAD | tee "$DIAG_ROOT/dtbo/00-source-commit.txt"
 
-      - name: D04 — Restore defconfig and verify exact caymanlm overlay configuration
+      - name: D04 — Restore defconfig, enable DT overlay support, verify caymanlm configuration
         shell: bash
         run: |
           set -euxo pipefail
           CFG="arch/arm64/configs/$DEFCONFIG"
           git restore --source=HEAD -- "$CFG"
+          # Android/QCOM 4.19 trees may reference this legacy helper during
+          # host-tool preparation. Keep the source tree change CI-only.
+          if test ! -f scripts/min-tool-version.sh; then
+            cat > scripts/min-tool-version.sh <<'SH'
+          #!/bin/sh
+          case "$1" in
+            binutils) echo 2.25.0 ;;
+            gcc) echo 5.1.0 ;;
+            llvm) echo 10.0.1 ;;
+            *) echo "$1: unknown tool" >&2; exit 1 ;;
+          esac
+          SH
+          fi
+          chmod +x scripts/min-tool-version.sh
+          test -x scripts/min-tool-version.sh
+          printf 'legacy_helper=scripts/min-tool-version.sh\n' | tee "$DIAG_ROOT/dtbo/00-legacy-helper.txt"
           make O="$DTBO_OUT" ARCH="$ARCH" \
             LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
             LD=ld.lld AR=llvm-ar NM=llvm-nm \
             "$DEFCONFIG" 2>&1 | tee "$DIAG_ROOT/dtbo/01-defconfig.log"
+          make O="$DTBO_OUT" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm scripts 2>&1 \
+            | tee "$DIAG_ROOT/dtbo/02-overlay-scripts.log"
+          scripts/config --file "$DTBO_OUT/.config" --enable BUILD_ARM64_DT_OVERLAY
+          make O="$DTBO_OUT" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm olddefconfig 2>&1 \
+            | tee "$DIAG_ROOT/dtbo/03-overlay-olddefconfig.log"
           {
             grep '^CONFIG_BUILD_ARM64_DT_OVERLAY=' "$DTBO_OUT/.config"
             grep '^CONFIG_MACH_LITO_CAYMANLM=' "$DTBO_OUT/.config"
             grep '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=' "$DTBO_OUT/.config"
-          } | tee "$DIAG_ROOT/dtbo/02-device-config.txt"
+          } | tee "$DIAG_ROOT/dtbo/04-device-config.txt"
           grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y' "$DTBO_OUT/.config"
           grep -q '^CONFIG_MACH_LITO_CAYMANLM=y' "$DTBO_OUT/.config"
           grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y' "$DTBO_OUT/.config"
+          sha256sum "$DTBO_OUT/.config" | tee "$DIAG_ROOT/dtbo/04-config.sha256"
 
       - name: D05 — Repair only the known LGE DTBO Makefile discovery typo
         shell: bash
         run: |
           set -euxo pipefail
           F=arch/arm64/boot/dts/vendor/lge/Makefile
-          cp "$F" "$DIAG_ROOT/dtbo/03-makefile-before"
+          cp "$F" "$DIAG_ROOT/dtbo/05-makefile-before"
           if grep -qF '$(wildcard echo $(srctree)' "$F"; then
             sed -i 's#$(wildcard echo $(srctree)#$(wildcard $(srctree)#' "$F"
-            echo "KNOWN_FIX_APPLIED=wildcard-echo" | tee "$DIAG_ROOT/dtbo/03-makefile-fix.txt"
+            echo "KNOWN_FIX_APPLIED=wildcard-echo" | tee "$DIAG_ROOT/dtbo/05-makefile-fix.txt"
           else
-            echo "KNOWN_FIX_APPLIED=not-needed" | tee "$DIAG_ROOT/dtbo/03-makefile-fix.txt"
+            echo "KNOWN_FIX_APPLIED=not-needed" | tee "$DIAG_ROOT/dtbo/05-makefile-fix.txt"
           fi
-          cp "$F" "$DIAG_ROOT/dtbo/03-makefile-after"
-          git diff --no-ext-diff -- "$F" | tee "$DIAG_ROOT/dtbo/03-makefile-fix.diff" || true
+          cp "$F" "$DIAG_ROOT/dtbo/05-makefile-after"
+          git diff --no-ext-diff -- "$F" | tee "$DIAG_ROOT/dtbo/05-makefile-fix.diff" || true
 
       - name: D06 — Inventory all selected LGE overlays and validate DTS syntax individually
         shell: bash
@@ -436,18 +514,18 @@ jobs:
           set -u -o pipefail
           ROOT=arch/arm64/boot/dts/vendor/lge/lito-caymanlm
           find "$ROOT" -type f \( -name '*.dts' -o -name '*.dtsi' \) -print | sort \
-            | tee "$DIAG_ROOT/dtbo/04-dts-inventory.txt"
-          : > "$DIAG_ROOT/dtbo/05-dts-syntax.log"
+            | tee "$DIAG_ROOT/dtbo/06-dts-inventory.txt"
+          : > "$DIAG_ROOT/dtbo/07-dts-syntax.log"
           status=0
           # Do not use -f/force-output: a DTBO with DTC errors can boot-fail.
           while IFS= read -r f; do
-            echo "=== DTC CHECK: $f ===" | tee -a "$DIAG_ROOT/dtbo/05-dts-syntax.log"
+            echo "=== DTC CHECK: $f ===" | tee -a "$DIAG_ROOT/dtbo/07-dts-syntax.log"
             if ! clang -E -x assembler-with-cpp -undef -D__DTS__ -nostdinc \
               -Iinclude -Iarch/arm64/boot/dts \
               -Iarch/arm64/boot/dts/vendor/qcom \
               -Iarch/arm64/boot/dts/vendor/lge \
               "$f" 2>&1 | dtc -@ -I dts -O dtb -o /dev/null \
-              2>&1 | tee -a "$DIAG_ROOT/dtbo/05-dts-syntax.log"; then
+              2>&1 | tee -a "$DIAG_ROOT/dtbo/07-dts-syntax.log"; then
               status=1
             fi
           done < <(find "$ROOT" -type f -name '*.dts' | sort)
@@ -462,7 +540,7 @@ jobs:
           make O="$DTBO_OUT" ARCH="$ARCH" \
             LLVM=1 LLVM_IAS=1 CC=clang HOSTCC=clang AS=clang HOSTAS=clang \
             LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            dtbs -j1 2>&1 | tee "$DIAG_ROOT/dtbo/06-dtbo-build.log"
+            dtbs -j1 2>&1 | tee "$DIAG_ROOT/dtbo/08-dtbo-build.log"
 
       - name: D08 — Require real DTBO outputs and verify every generated file
         if: success()
@@ -470,13 +548,13 @@ jobs:
         run: |
           set -euxo pipefail
           find "$DTBO_OUT" -type f -name '*.dtbo' -size +0c -print | sort \
-            | tee "$DIAG_ROOT/dtbo/07-built-dtbo-list.txt"
-          test -s "$DIAG_ROOT/dtbo/07-built-dtbo-list.txt"
+            | tee "$DIAG_ROOT/dtbo/09-built-dtbo-list.txt"
+          test -s "$DIAG_ROOT/dtbo/09-built-dtbo-list.txt"
           while IFS= read -r f; do
             file "$f"
             sha256sum "$f"
-          done < "$DIAG_ROOT/dtbo/07-built-dtbo-list.txt" \
-            | tee "$DIAG_ROOT/dtbo/08-dtbo-hashes.txt"
+          done < "$DIAG_ROOT/dtbo/09-built-dtbo-list.txt" \
+            | tee "$DIAG_ROOT/dtbo/10-dtbo-hashes.txt"
 
       - name: D09 — Obtain Android 16 QPR2 mkdtboimg.py
         if: success()
@@ -490,7 +568,7 @@ jobs:
           test -s "$RUNNER_TEMP/libufdt/utils/src/mkdtboimg.py"
           cp "$RUNNER_TEMP/libufdt/utils/src/mkdtboimg.py" "$RUNNER_TEMP/mkdtboimg.py"
           python3 "$RUNNER_TEMP/mkdtboimg.py" --help \
-            | tee "$DIAG_ROOT/dtbo/09-mkdtboimg-help.txt"
+            | tee "$DIAG_ROOT/dtbo/11-mkdtboimg-help.txt"
 
       - name: D10 — Package DTBO using Android 16 QPR2 tooling and enforce partition size
         if: success()
@@ -506,10 +584,10 @@ jobs:
             "${DTBO_FILES[@]}"
           test -s "$GITHUB_WORKSPACE/artifacts/dtbo/LM-G900-Android16QPR2-dtbo.img"
           SIZE=$(stat -c '%s' "$GITHUB_WORKSPACE/artifacts/dtbo/LM-G900-Android16QPR2-dtbo.img")
-          echo "dtbo_img_size=$SIZE" | tee "$DIAG_ROOT/dtbo/10-dtbo-size.txt"
+          echo "dtbo_img_size=$SIZE" | tee "$DIAG_ROOT/dtbo/12-dtbo-size.txt"
           test "$SIZE" -le "$DTBO_PARTITION_SIZE"
           sha256sum "$GITHUB_WORKSPACE/artifacts/dtbo/LM-G900-Android16QPR2-dtbo.img" \
-            | tee "$DIAG_ROOT/dtbo/10-dtbo-sha256.txt"
+            | tee "$DIAG_ROOT/dtbo/12-dtbo-sha256.txt"
 
       - name: D11 — DTBO header/entry verification
         if: success()
@@ -518,9 +596,9 @@ jobs:
           set -euxo pipefail
           python3 "$RUNNER_TEMP/mkdtboimg.py" dump \
             "$GITHUB_WORKSPACE/artifacts/dtbo/LM-G900-Android16QPR2-dtbo.img" \
-            2>&1 | tee "$DIAG_ROOT/dtbo/11-dtbo-dump.txt"
-          grep -q 'dt_entry' "$DIAG_ROOT/dtbo/11-dtbo-dump.txt" || \
-            grep -q 'dt_table_header' "$DIAG_ROOT/dtbo/11-dtbo-dump.txt"
+            2>&1 | tee "$DIAG_ROOT/dtbo/13-dtbo-dump.txt"
+          grep -q 'dt_entry' "$DIAG_ROOT/dtbo/13-dtbo-dump.txt" || \
+            grep -q 'dt_table_header' "$DIAG_ROOT/dtbo/13-dtbo-dump.txt"
 
       - name: D12 — Package DTBO flash ZIP
         if: success()
@@ -532,9 +610,21 @@ jobs:
           (cd "$GITHUB_WORKSPACE/artifacts/dtbo" && \
             zip -9 "LM-G900-Android16QPR2-DTBO.zip" dtbo.img)
           sha256sum "$GITHUB_WORKSPACE/artifacts/dtbo/LM-G900-Android16QPR2-DTBO.zip" \
-            | tee "$DIAG_ROOT/dtbo/12-dtbo-zip.sha256"
+            | tee "$DIAG_ROOT/dtbo/14-dtbo-zip.sha256"
 
-      - name: D13 — Upload DTBO diagnostics/result ALWAYS
+      - name: D13 — Final DTBO state and complete diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "SETUP=D13"
+            echo "source_head=$(git rev-parse HEAD 2>/dev/null || true)"
+            find "$DIAG_ROOT/dtbo" -maxdepth 1 -type f -printf '%f\\n' | sort
+            df -h
+          } | tee "$DIAG_ROOT/dtbo/99-final-state.txt"
+
+      - name: D14 — Upload DTBO diagnostics/result ALWAYS
         if: always()
         uses: actions/upload-artifact@v4
         with:
