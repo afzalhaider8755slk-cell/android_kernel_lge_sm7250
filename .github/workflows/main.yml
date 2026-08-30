@@ -1,25 +1,61 @@
-name: LG G900 Global - CIP135 + SukiSU-Ultra + SUSFS + KPROBES + A16 QPR2
+name: LG G900 Global - CIP135 + SukiSU-Ultra + SUSFS + KPROBES + A16QPR2
 
 on:
   workflow_dispatch:
     inputs:
+      source_repo:
+        description: Kernel source repository
+        required: true
+        default: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
+        type: string
       source_branch:
-        description: Exact working LG kernel branch
+        description: Kernel source branch
         required: true
         default: sixteen
         type: string
       source_commit:
-        description: Known-good source commit from the supplied bundle
+        description: Known-good kernel commit from the supplied working bundle
         required: true
         default: 6f4cab15a4e8f5e3400e95d17517fd8b24b37b49
+        type: string
+      dual_sim_profile:
+        description: Dual-SIM handling; auto never forces unsupported modem properties
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - dsds
+      sukisu_ref:
+        description: SukiSU reference; susfs-main keeps SUSFS integrated in the kernel tree
+        required: true
+        default: susfs-main
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: lg-g900-cip135-sukisu-a16-${{ github.ref }}
+  group: lg-g900-a16qpr2-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  ARCH: arm64
+  DEFCONFIG: vendor/caymanlm_defconfig
+  OUT_DIR: ${{ github.workspace }}/out
+  DIAG_DIR: ${{ github.workspace }}/ci-diagnostics
+  CLANG_REVISION: clang-r563880c
+  CLANG_PREBUILT_TAG: ndk-r29
+  CIP_REPO: https://gitlab.com/cip-project/cip-kernel/linux-cip.git
+  CIP_BASE_TAG: v4.19.325-cip132
+  CIP_TARGET_TAG: v4.19.325-cip135
+  COMMON_REPO: https://github.com/lge-qcom-dev/android_device_lge_sm7250-common.git
+  DEVICE_REPO: https://github.com/lge-qcom-dev/android_device_lge_caymanlm.git
+  VENDOR_REPO: https://github.com/lge-qcom-dev/proprietary_vendor_lge_caymanlm.git
+  ANDROID_TREE_BRANCH: lineage-22.2
+  SUSFS_MODULE_REPO: https://github.com/sidex15/susfs4ksu-module.git
+  SUSFS_MODULE_REF: v1.5.2+_R28
+  SUKISU_REPO: https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
 
 jobs:
   build:
@@ -27,384 +63,533 @@ jobs:
     timeout-minutes: 210
 
     env:
-      KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
-      CIP_REPO: https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-      CIP_TAG: v4.19.325-cip135
-      CIP_COMMIT_PREFIX: ba164392
+      KERNEL_REPO: ${{ inputs.source_repo }}
       SOURCE_BRANCH: ${{ inputs.source_branch }}
       SOURCE_COMMIT: ${{ inputs.source_commit }}
-      DEFCONFIG: vendor/caymanlm_defconfig
-      ARCH: arm64
-      OUT_DIR: ${{ github.workspace }}/out
-      DIAG_DIR: ${{ github.workspace }}/ci-diagnostics
-      CLANG_REVISION: clang-r563880c
-      CLANG_PREBUILT_TAG: ndk-r29
-      GCC64_BRANCH: lineage-19.1
-      GCC32_BRANCH: lineage-19.1
-      G900_GLOBAL_TARGET: LG-G900-GLOBAL
-      ANDROID_GSI_TARGET: Android-16-QPR2
-      ANDROID_GSI_API: 36.1
-      BASELINE_SHA256: 8b931841bcfcfad0b8ed596fbc156e67a6da8f32f226753ffabc89c907accffa
+      DUAL_SIM_PROFILE: ${{ inputs.dual_sim_profile }}
+      SUKISU_REF: ${{ inputs.sukisu_ref }}
 
     steps:
-      - name: 01 - Checkout exact working LG source
+      - name: 00 - Initialize diagnostics
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/01-checkout.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "01 - Checkout exact working LG source FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "sha=${GITHUB_SHA}"
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$DIAG_DIR/run.txt"
+
+      - name: 01 - Checkout exact kernel source
+        shell: bash
+        run: |
+          set -uo pipefail
+          LOG="$DIAG_DIR/01-checkout.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "01 - Checkout FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
+          rm -rf kernel
           git clone --depth=1 --branch "$SOURCE_BRANCH" "$KERNEL_REPO" kernel
           cd kernel
           git fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
           git checkout --detach "$SOURCE_COMMIT"
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
-          printf 'source_branch=%s\nsource_commit=%s\ndefconfig=%s\n' "$SOURCE_BRANCH" "$SOURCE_COMMIT" "$DEFCONFIG" > "$DIAG_DIR/source.txt"
+          {
+            echo "source_repo=$KERNEL_REPO"
+            echo "source_branch=$SOURCE_BRANCH"
+            echo "source_commit=$SOURCE_COMMIT"
+            echo "defconfig=$DEFCONFIG"
+          } | tee "$DIAG_DIR/source.txt"
 
-      - name: 02 - Install dependencies and legacy GCC wrapper support
+      - name: 02 - Install build dependencies
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/02-dependencies.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "02 - Install dependencies FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
+          set -uo pipefail
+          LOG="$DIAG_DIR/02-dependencies.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "02 - Dependencies FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             bc bison build-essential ccache curl flex git libelf-dev libssl-dev \
             lld llvm python3 python-is-python3 rsync unzip wget xz-utils
-          test -x /usr/bin/python
-          /usr/bin/python --version
 
-      - name: 03 - Download exact Android Clang r563880c and GCC 4.9 wrappers
+      - name: 03 - Download exact Android Clang r563880c
         shell: bash
         run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/03-toolchain.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "03 - Toolchain FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
-          rm -rf clang-prebuilt gcc64 gcc32
+          set -uo pipefail
+          LOG="$DIAG_DIR/03-toolchain.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "03 - Toolchain FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
+          rm -rf clang-prebuilt
           git clone --depth=1 --filter=blob:none --sparse --branch "$CLANG_PREBUILT_TAG" \
             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-prebuilt
           cd clang-prebuilt
           git sparse-checkout set "$CLANG_REVISION"
-          cd "$GITHUB_WORKSPACE"
-          git clone --depth=1 --branch "$GCC64_BRANCH" \
-            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git gcc64
-          git clone --depth=1 --branch "$GCC32_BRANCH" \
-            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git gcc32
           test -x "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang"
-          test -x "$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc"
-          test -x "$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc"
-          "$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-gcc" --version | head -n 1
-          "$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-gcc" --version | head -n 1
+          test -x "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/ld.lld"
           "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang" --version | head -n 2
-          "$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin/clang" --version | grep -q '21\.0\.0'
           echo "CLANG_DIR=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION" >> "$GITHUB_ENV"
-          echo "GCC64_DIR=$GITHUB_WORKSPACE/gcc64" >> "$GITHUB_ENV"
-          echo "GCC32_DIR=$GITHUB_WORKSPACE/gcc32" >> "$GITHUB_ENV"
-          echo "PATH=$GITHUB_WORKSPACE/clang-prebuilt/$CLANG_REVISION/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH" >> "$GITHUB_ENV"
 
-      - name: 04 - Load exact supplied baseline config (fixes the previous failure)
+      - name: 04 - Load supplied working baseline WITHOUT defconfig regeneration
         shell: bash
         run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/04-baseline-config.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "04 - Baseline config FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
+          set -uo pipefail
+          LOG="$DIAG_DIR/04-baseline-config.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "04 - Baseline config FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
           cd kernel
           mkdir -p "$OUT_DIR"
-          BASELINE="$GITHUB_WORKSPACE/.github/kernel-baseline/working.config"
-          test -s "$BASELINE"
-          sha256sum "$BASELINE" | tee "$DIAG_DIR/reference-config.sha256"
-          test "$(sha256sum "$BASELINE" | awk '{print $1}')" = "$BASELINE_SHA256"
-          cp "$BASELINE" "$OUT_DIR/.config"
-          # Do not run vendor/caymanlm_defconfig here. The supplied baseline is
-          # the known-good config and avoids the exact assembler/Kconfig failure
-          # shown in the user's failed run.
-          make O="$OUT_DIR" ARCH=arm64 olddefconfig
-          cp "$OUT_DIR/.config" "$DIAG_DIR/baseline.config"
-          sha256sum "$OUT_DIR/.config" | tee "$DIAG_DIR/baseline-after-olddefconfig.sha256"
-          test -s "$OUT_DIR/.config"
 
-      - name: 05 - Verify CIP135 tag and vendor-tree relationship
+          # Critical fix: the supplied working config is the baseline.
+          # Do NOT run vendor/caymanlm_defconfig here. That was the source of
+          # the repeated "scripts/Kconfig.include: assembler is not supported"
+          # failure in the previous workflow.
+          cp "$GITHUB_WORKSPACE/.github/kernel-baseline/working.config" "$OUT_DIR/.config"
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export CC="$CLANG_DIR/bin/clang"
+          export CXX="$CLANG_DIR/bin/clang++"
+          export HOSTCC="$CLANG_DIR/bin/clang"
+          export HOSTCXX="$CLANG_DIR/bin/clang++"
+          export LD="$CLANG_DIR/bin/ld.lld"
+          export HOSTLD="$CLANG_DIR/bin/ld.lld"
+          export LLVM=1
+          export LLVM_IAS=1
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          test -x "$CC"
+          test -x "$LD"
+          "$CC" --version | head -n 1
+          "$LD" --version | head -n 1
+
+          # Validate/refresh the supplied config only after the exact LLVM
+          # toolchain is exported. No make <defconfig> call is used.
+          make O="$OUT_DIR" ARCH=arm64 \
+            CC="$CC" HOSTCC="$HOSTCC" LD="$LD" HOSTLD="$HOSTLD" \
+            LLVM=1 LLVM_IAS=1 olddefconfig
+
+          grep -q '^CONFIG_CC_IS_CLANG=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_LD_IS_LLD=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_AS_IS_LLVM=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KALLSYMS=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_KALLSYMS_ALL=y$' "$OUT_DIR/.config"
+          grep -q '^CONFIG_EXT4_FS=y$' "$OUT_DIR/.config"
+
+          sha256sum "$GITHUB_WORKSPACE/.github/kernel-baseline/working.config" > "$DIAG_DIR/reference-config.sha256"
+          sha256sum "$OUT_DIR/.config" > "$DIAG_DIR/loaded-config.sha256"
+
+      - name: 05 - Fetch official CIP135 and build a patch-series delta
         shell: bash
         run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/05-cip-check.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "05 - CIP135 check FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
+          set -uo pipefail
+          LOG="$DIAG_DIR/05-cip135.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "05 - CIP135 preparation FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
           cd kernel
-          git remote add cip "$CIP_REPO" || true
-          git fetch --no-tags --depth=1 cip "refs/tags/$CIP_TAG:refs/tags/$CIP_TAG"
-          case "$(git rev-parse "refs/tags/$CIP_TAG")" in "${CIP_COMMIT_PREFIX}"*) ;; *) echo "Unexpected CIP tag commit"; exit 1;; esac
-          git show -s --format='%H %s' "refs/tags/$CIP_TAG" | tee "$DIAG_DIR/cip-tag.txt"
-          BASE="$(git merge-base HEAD "refs/tags/$CIP_TAG" || true)"
-          if [ -z "$BASE" ]; then
-            echo 'STOP: vendor tree and CIP135 have no common history.'
+          git remote add cip "$CIP_REPO" 2>/dev/null || true
+          git fetch --no-tags --depth=1 cip \
+            "refs/tags/$CIP_BASE_TAG:refs/tags/$CIP_BASE_TAG" \
+            "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
+
+          git cat-file -e "refs/tags/$CIP_BASE_TAG^{commit}"
+          git cat-file -e "refs/tags/$CIP_TARGET_TAG^{commit}"
+
+          BASE="$(git rev-parse "refs/tags/$CIP_BASE_TAG^{commit}")"
+          TARGET="$(git rev-parse "refs/tags/$CIP_TARGET_TAG^{commit}")"
+          printf 'cip_base=%s\ncip_target=%s\n' "$BASE" "$TARGET" | tee "$DIAG_DIR/cip-refs.txt"
+
+          CURRENT_VERSION="$(make -s O="$OUT_DIR" ARCH=arm64 kernelversion)"
+          echo "vendor_kernelversion=$CURRENT_VERSION" | tee "$DIAG_DIR/vendor-kernelversion.txt"
+          case "$CURRENT_VERSION" in
+            4.19.325-cip132*) ;;
+            *) echo "STOP: supplied vendor source is not the expected cip132 baseline."; exit 1 ;;
+          esac
+
+          # Never merge the whole CIP tree into the LG vendor tree.
+          # The supplied working kernel identifies itself as cip132, so only
+          # the small official cip132 -> cip135 delta is considered.
+          git diff --binary "$BASE" "$TARGET" > "$GITHUB_WORKSPACE/cip135.delta.patch"
+          test -s "$GITHUB_WORKSPACE/cip135.delta.patch"
+          wc -l "$GITHUB_WORKSPACE/cip135.delta.patch" | tee "$DIAG_DIR/cip-delta-size.txt"
+
+      - name: 06 - Apply only CIP135 delta, abort on conflict
+        shell: bash
+        run: |
+          set -uo pipefail
+          LOG="$DIAG_DIR/06-apply-cip135.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "06 - CIP135 apply FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
+          cd kernel
+
+          # The supplied kernel is cip132. Require that exact CIP baseline to
+          # be present in history before applying only cip132 -> cip135.
+          if ! git merge-base --is-ancestor "refs/tags/$CIP_BASE_TAG" HEAD; then
+            echo 'STOP: LG vendor HEAD is not based on official v4.19.325-cip132.'
+            echo 'CIP135 was NOT force-merged or fabricated.'
             exit 1
           fi
-          printf 'merge_base=%s\n' "$BASE" | tee "$DIAG_DIR/cip-relationship.txt"
 
-      - name: 06 - Apply CIP135 only when ancestry is safe
+          cp "$GITHUB_WORKSPACE/cip135.delta.patch" "$DIAG_DIR/cip135.delta.patch"
+          git apply --check --3way "$GITHUB_WORKSPACE/cip135.delta.patch"
+          git apply --3way "$GITHUB_WORKSPACE/cip135.delta.patch"
+
+          echo "CIP135 delta applied cleanly."
+          make -s O="$OUT_DIR" ARCH=arm64 kernelversion | tee "$DIAG_DIR/kernel-version-after-cip.txt"
+          git diff --stat | tee "$DIAG_DIR/post-cip-diffstat.txt"
+
+      - name: 07 - Checkout Android 16 QPR2 compatibility trees for validation only
         shell: bash
         run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/06-cip-apply.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "06 - CIP135 apply FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
-          cd kernel
-          if git merge-base --is-ancestor HEAD "refs/tags/$CIP_TAG"; then
-            git merge --no-edit --no-ff "refs/tags/$CIP_TAG" || { git merge --abort || true; exit 1; }
-          elif git merge-base --is-ancestor "refs/tags/$CIP_TAG" HEAD; then
-            echo 'Vendor tree is already ahead of CIP135; no CIP merge performed.'
-          else
-            echo 'Vendor tree is related to CIP135 but diverged; refusing a blind vendor-tree merge.'
-            echo 'A compatible CIP135 backport set must be applied explicitly for this vendor tree.'
-            exit 1
-          fi
-          make -s O="$OUT_DIR" kernelversion || true
-          git status --short > "$DIAG_DIR/post-cip-status.txt"
+          set -uo pipefail
+          LOG="$DIAG_DIR/07-device-trees.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "07 - Android trees FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
 
-      - name: 07 - Remove legacy KernelSU
+          rm -rf android-trees
+          mkdir -p android-trees
+          git clone --depth=1 --branch "$ANDROID_TREE_BRANCH" "$COMMON_REPO" android-trees/sm7250-common
+          git clone --depth=1 --branch "$ANDROID_TREE_BRANCH" "$DEVICE_REPO" android-trees/caymanlm
+          git clone --depth=1 --branch "$ANDROID_TREE_BRANCH" "$VENDOR_REPO" android-trees/vendor-caymanlm
+
+          {
+            echo "common_tree=$COMMON_REPO"
+            echo "device_tree=$DEVICE_REPO"
+            echo "vendor_tree=$VENDOR_REPO"
+            echo "branch=$ANDROID_TREE_BRANCH"
+          } > "$DIAG_DIR/android-tree-refs.txt"
+
+          # These trees are NOT copied into the kernel source. They are used
+          # only to validate Android 16/GSI, radio and device integration.
+          grep -RniE 'persist\.vendor\.radio|ro\.telephony|iwlan|ims|volte|wfc|wifi.?calling|sim|slot' \
+            android-trees > "$DIAG_DIR/radio-tree-scan.txt" || true
+
+      - name: 08 - Integrate SukiSU-Ultra with SUSFS using a verified ref
         shell: bash
         run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/07-kernelsu-remove.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "07 - KernelSU removal FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
+          set -uo pipefail
+          LOG="$DIAG_DIR/08-sukisu-susfs.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "08 - SukiSU/SUSFS FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
           cd kernel
+
+          # Ref must exist. setup.sh otherwise falls back silently when an
+          # invalid ref is supplied; that is unacceptable for this build.
+          git ls-remote --exit-code --heads "$SUKISU_REPO" "refs/heads/$SUKISU_REF" > "$DIAG_DIR/sukisu-ref.txt"
+
           rm -rf KernelSU drivers/kernelsu
           sed -i '/^[[:space:]]*source "drivers\/kernelsu\/Kconfig"/d' drivers/Kconfig 2>/dev/null || true
           sed -i '/^[[:space:]]*obj-[^#]*+= kernelsu\//d' drivers/Makefile 2>/dev/null || true
-          test ! -e KernelSU
-          test ! -e drivers/kernelsu
 
-      - name: 08 - Integrate SukiSU-Ultra SUSFS non-GKI path
+          curl -fL --retry 3 --retry-delay 2 \
+            https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh \
+            -o "$GITHUB_WORKSPACE/setup-sukisu.sh"
+          chmod +x "$GITHUB_WORKSPACE/setup-sukisu.sh"
+          "$GITHUB_WORKSPACE/setup-sukisu.sh" "$SUKISU_REF"
+
+          test -e drivers/kernelsu
+          test -d KernelSU
+
+          # The sidex15 repository is a userspace module, not a kernel patch.
+          # Pin the current stable release and package it separately.
+          rm -rf susfs4ksu-module
+          git clone --depth=1 --branch "$SUSFS_MODULE_REF" "$SUSFS_MODULE_REPO" susfs4ksu-module
+          mkdir -p "$GITHUB_WORKSPACE/release/modules"
+          tar -czf "$GITHUB_WORKSPACE/release/modules/susfs4ksu-module-$SUSFS_MODULE_REF.tar.gz" \
+            --exclude=.git susfs4ksu-module
+
+          # SUSFS must be present in the integrated source. Do not download
+          # sidex15's userspace module as a fake kernel patch.
+          grep -RniE 'SUSFS|KSU_SUSFS|susfs' KernelSU/kernel drivers/kernelsu \
+            > "$DIAG_DIR/susfs-source-scan.txt" || true
+          test -s "$DIAG_DIR/susfs-source-scan.txt"
+
+      - name: 09 - Configure only required root/hook options
         shell: bash
         run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/08-sukisu-susfs.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "08 - SukiSU integration FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
-          cd kernel
-          curl -LSs 'https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh' | bash -s susfs-main
-          test -d drivers/kernelsu
-          grep -Rsn -E 'SukiSU|susfs' drivers/kernelsu 2>/dev/null | head -80 || true
+          set -uo pipefail
+          LOG="$DIAG_DIR/09-kconfig.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "09 - Kconfig FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
 
-      - name: 09 - Configure KPROBES + SukiSU + SUSFS + GSI/network support
-        shell: bash
-        run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/09-kconfig.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "09 - Kconfig FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
           cd kernel
-          export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
-          export HOSTCC="$CLANG_DIR/bin/clang"
-          export HOSTCXX="$CLANG_DIR/bin/clang++"
+          export PATH="$CLANG_DIR/bin:$PATH"
           export CC="$CLANG_DIR/bin/clang"
+          export CXX="$CLANG_DIR/bin/clang++"
+          export HOSTCC="$CC"
+          export HOSTCXX="$CXX"
           export LD="$CLANG_DIR/bin/ld.lld"
+          export HOSTLD="$LD"
+          export LLVM=1
+          export LLVM_IAS=1
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          # Minimal changes only. Do not enable KPM, LTO, extra schedulers,
+          # debug tracing, or speculative performance patches.
           scripts/config --file "$OUT_DIR/.config" \
             --enable CONFIG_KPROBES \
             --enable CONFIG_KALLSYMS \
             --enable CONFIG_KALLSYMS_ALL \
             --enable CONFIG_KSU \
             --disable CONFIG_KSU_MANUAL_HOOK \
-            --disable CONFIG_KSU_TRACEPOINT_HOOK \
-            --enable CONFIG_KSU_SUSFS \
-            --enable CONFIG_KSU_SUSFS_SUS_KSTAT \
-            --enable CONFIG_KSU_SUSFS_SUS_OVERLAYFS \
-            --enable CONFIG_KSU_SUSFS_TRY_UMOUNT \
-            --enable CONFIG_KSU_SUSFS_SPOOF_UNAME \
-            --enable CONFIG_KSU_SUSFS_ENABLE_LOG \
-            --disable CONFIG_KSU_SUSFS_SUS_PATH \
-            --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
-            --disable CONFIG_KSU_SUSFS_SUS_SU
-          # Android 16 QPR2 / GSI transport and accounting support. These are
-          # mostly already present in the known-good LG config; only enable
-          # symbols that exist in this tree.
+            --disable CONFIG_KSU_TRACEPOINT_HOOK
+
+          # Enable SUSFS symbols only if this exact SukiSU tree exposes them.
           for sym in \
-            CONFIG_ANDROID_BINDER_IPC \
-            CONFIG_ANDROID_BINDERFS \
-            CONFIG_ASHMEM \
-            CONFIG_OVERLAY_FS \
-            CONFIG_DM_VERITY \
-            CONFIG_DM_VERITY_FEC \
-            CONFIG_FS_ENCRYPTION \
-            CONFIG_CGROUPS \
-            CONFIG_NAMESPACES \
-            CONFIG_BPF \
-            CONFIG_BPF_SYSCALL \
-            CONFIG_CGROUP_BPF \
-            CONFIG_BPF_EVENTS \
-            CONFIG_BPF_JIT \
-            CONFIG_UID_SYS_STATS \
-            CONFIG_NETFILTER_XT_MATCH_OWNER \
-            CONFIG_NETFILTER_XT_MATCH_BPF \
-            CONFIG_NETFILTER_XT_TARGET_MARK \
-            CONFIG_RMNET \
-            CONFIG_RMNET_IPA3 \
-            CONFIG_IPA3 \
-            CONFIG_QCOM_QMI_HELPERS \
-            CONFIG_QCOM_QMI_RMNET \
-            CONFIG_WLAN \
-            CONFIG_CFG80211; do
-            if grep -q "^config ${sym#CONFIG_}\\|^menuconfig ${sym#CONFIG_}" Kconfig 2>/dev/null || grep -Rqs "^config ${sym#CONFIG_}\\|^menuconfig ${sym#CONFIG_}" --include='Kconfig*' .; then
-              scripts/config --file "$OUT_DIR/.config" --enable "$sym" || true
+            CONFIG_KSU_SUSFS \
+            CONFIG_KSU_SUSFS_SUS_KSTAT \
+            CONFIG_KSU_SUSFS_SUS_OVERLAYFS \
+            CONFIG_KSU_SUSFS_TRY_UMOUNT \
+            CONFIG_KSU_SUSFS_SPOOF_UNAME \
+            CONFIG_KSU_SUSFS_ENABLE_LOG; do
+            if grep -Rqs "config ${sym#CONFIG_}" KernelSU/kernel; then
+              scripts/config --file "$OUT_DIR/.config" --enable "$sym"
             fi
           done
-          make O="$OUT_DIR" ARCH=arm64 olddefconfig
+
+          # Known-problematic SUS_PATH is deliberately left off on this LG
+          # 4.19 tree unless the source proves the required user_struct field.
+          scripts/config --file "$OUT_DIR/.config" --disable CONFIG_KSU_SUSFS_SUS_PATH || true
+
+          # Never enable KPM: SukiSU explicitly notes that it can affect
+          # stability, and it is not required for the requested root/hook stack.
+          scripts/config --file "$OUT_DIR/.config" --disable CONFIG_KPM || true
+
+          make O="$OUT_DIR" ARCH=arm64 \
+            CC="$CC" HOSTCC="$HOSTCC" LD="$LD" HOSTLD="$HOSTLD" \
+            LLVM=1 LLVM_IAS=1 olddefconfig
+
           grep -q '^CONFIG_KPROBES=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KALLSYMS=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KALLSYMS_ALL=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
+          ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT_DIR/.config"
+          ! grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' "$OUT_DIR/.config"
+          ! grep -q '^CONFIG_KPM=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
 
-      - name: 10 - Verify hooks, Android 16 QPR2 baseline and network features
+      - name: 10 - Validate modem, Wi-Fi, traffic accounting and GSI-safe baseline
         shell: bash
         run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/10-feature-validation.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "10 - Feature validation FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
+          set -uo pipefail
+          LOG="$DIAG_DIR/10-platform-config.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "10 - Platform config FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
           cd kernel
-          CONFIG="$OUT_DIR/.config"
-          grep -q '^CONFIG_KPROBES=y$' "$CONFIG"
-          ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$CONFIG"
-          if grep -Rsn -E 'ksu_handle_execveat|ksu_handle_faccessat|ksu_handle_vfs_read|ksu_handle_stat' fs/exec.c fs/open.c fs/read_write.c fs/stat.c 2>/dev/null; then
-            echo 'Legacy manual KernelSU hooks detected.'
-            exit 1
-          fi
+          C="$OUT_DIR/.config"
+
+          # These are already present in the supplied working config. We only
+          # fail if a later change accidentally removes them.
           required=(
-            CONFIG_ANDROID_BINDER_IPC CONFIG_ANDROID_BINDERFS CONFIG_ASHMEM
-            CONFIG_OVERLAY_FS CONFIG_DM_VERITY CONFIG_FS_ENCRYPTION
-            CONFIG_CGROUPS CONFIG_NAMESPACES CONFIG_BPF CONFIG_BPF_SYSCALL
-            CONFIG_CGROUP_BPF CONFIG_UID_SYS_STATS CONFIG_NETFILTER_XT_MATCH_OWNER
-            CONFIG_NETFILTER_XT_MATCH_BPF CONFIG_RMNET CONFIG_RMNET_IPA3
-            CONFIG_IPA3 CONFIG_QCOM_QMI_HELPERS CONFIG_QCOM_QMI_RMNET CONFIG_WLAN
+            CONFIG_RMNET
+            CONFIG_RMNET_IPA3
+            CONFIG_QCOM_QMI_RMNET
+            CONFIG_QCOM_QMI_HELPERS
+            CONFIG_ICNSS_QMI
+            CONFIG_USB_NET_QMI_WWAN
+            CONFIG_WLAN
+            CONFIG_CFG80211
+            CONFIG_NETFILTER
+            CONFIG_NETFILTER_XT_MATCH_OWNER
+            CONFIG_BPF
+            CONFIG_CGROUP_BPF
+            CONFIG_BPF_SYSCALL
+            CONFIG_BPF_JIT
+            CONFIG_BPF_EVENTS
+            CONFIG_ANDROID_BINDER_IPC
+            CONFIG_ANDROID_BINDERFS
+            CONFIG_OVERLAY_FS
+            CONFIG_DM_VERITY
+            CONFIG_DM_CRYPT
+            CONFIG_EXT4_FS
+            CONFIG_F2FS_FS
+            CONFIG_NAMESPACES
+            CONFIG_CGROUPS
+            CONFIG_SECCOMP
+            CONFIG_SECCOMP_FILTER
           )
-          for sym in "${required[@]}"; do grep -q "^${sym}=y$" "$CONFIG" || { echo "Missing $sym"; exit 1; }; done
-          {
-            echo "GSI_TARGET=$ANDROID_GSI_TARGET"
-            echo "GSI_API=$ANDROID_GSI_API"
-            echo 'GSI note: kernel validation covers Treble/binder/filesystem/network primitives; actual GSI compatibility also depends on vendor HAL/VINTF/modem userspace.'
-            echo 'IMS note: VoLTE/Wi-Fi Calling are not kernel-only features; the workflow preserves RMNET/IPA/QMI/WLAN paths and records the required kernel support.'
-            echo 'Traffic monitor: BPF + cgroup + UID stats + netfilter owner/BPF accounting paths are enabled/validated.'
-          } | tee "$DIAG_DIR/android16-network-ims.txt"
 
-      - name: 11 - Global G900 target validation
-        shell: bash
-        run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/11-global-target.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "11 - Global target validation FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
-          cd kernel
-          {
-            echo "target=$G900_GLOBAL_TARGET"
-            echo 'Hardware family=caymanlm/SM7250 from supplied working tree.'
-            echo 'LM-G900N is not a requested target.'
-            echo 'No fabricated global DTB is substituted.'
-            grep -Rsn -E 'LM-G900N|G900N|LM-G900EMW|G900EMW' arch/arm64/configs arch/arm64/boot/dts 2>/dev/null | head -100 || true
-          } | tee "$DIAG_DIR/global-target.txt"
-
-      - name: 12 - Preserve required modem/IMS/Wi-Fi paths
-        shell: bash
-        run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/12-ims-wifi.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "12 - IMS/Wi-Fi validation FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
-          cd kernel
-          CONFIG="$OUT_DIR/.config"
-          for sym in CONFIG_RMNET CONFIG_RMNET_IPA3 CONFIG_IPA3 CONFIG_QCOM_QMI_HELPERS CONFIG_QCOM_QMI_RMNET CONFIG_WLAN CONFIG_CFG80211; do
-            grep -q "^${sym}=y$" "$CONFIG" || { echo "Required transport symbol missing: $sym"; exit 1; }
+          : > "$DIAG_DIR/platform-config.txt"
+          for sym in "${required[@]}"; do
+            if grep -q "^${sym}=y$" "$C"; then
+              echo "$sym=y" >> "$DIAG_DIR/platform-config.txt"
+            else
+              echo "MISSING $sym" | tee -a "$DIAG_DIR/platform-config.txt"
+              exit 1
+            fi
           done
-          echo 'VoLTE/Wi-Fi Calling kernel transport prerequisites preserved.'
-          echo 'Actual IMS registration, carrier provisioning, APN/IMS config and modem firmware remain vendor/userspace responsibilities.'
 
-      - name: 13 - Final config drift and version report
+          echo "Android 16 QPR2 GSI target: API 36.1" | tee "$DIAG_DIR/gsi-target.txt"
+          echo "No Android-16-specific experimental kernel patch is forced." | tee -a "$DIAG_DIR/gsi-target.txt"
+          echo "VoLTE/Wi-Fi Calling depend on modem firmware + IMS/vendor/carrier configuration; kernel transport is preserved." | tee "$DIAG_DIR/ims-note.txt"
+
+      - name: 11 - Dual-SIM validation/profile (no blind modem property injection)
         shell: bash
         run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/13-config-report.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "13 - Config report FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
-          cd kernel
-          cp "$OUT_DIR/.config" "$DIAG_DIR/final.config"
-          diff -u "$GITHUB_WORKSPACE/.github/kernel-baseline/working.config" "$OUT_DIR/.config" > "$DIAG_DIR/config-diff.txt" || true
+          set -uo pipefail
+          LOG="$DIAG_DIR/11-dual-sim.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "11 - Dual SIM FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
+          mkdir -p release/device-profile
           {
-            echo "kernelversion=$(make -s O=\"$OUT_DIR\" kernelversion || true)"
-            echo "baseline_sha256=$BASELINE_SHA256"
-            echo "final_sha256=$(sha256sum \"$OUT_DIR/.config\" | awk '{print $1}')"
-            echo "cip_tag=$CIP_TAG"
-            echo "cip_commit=$(git rev-parse refs/tags/$CIP_TAG)"
-          } | tee "$DIAG_DIR/build-metadata.txt"
+            echo "requested_profile=$DUAL_SIM_PROFILE"
+            echo "mode=DSDS"
+            echo "policy=do_not_force_if_hardware_or_vendor_tree_does_not_expose_dual_modem"
+          } > release/device-profile/dual-sim.txt
 
-      - name: 14 - Build ARM64 Image and modules
+          if [ "$DUAL_SIM_PROFILE" = "dsds" ]; then
+            # A kernel cannot create a second physical modem/SIM path. The
+            # profile is emitted for the Android device/vendor integration job;
+            # it is NOT injected into the kernel command line or DTB.
+            printf '%s\n' \
+              '# Optional Android device/vendor profile for genuine DSDS hardware.' \
+              '# Do not flash/apply this property on a single-SIM G900 variant.' \
+              'persist.vendor.radio.multisim.config=dsds' \
+              > release/device-profile/dual-sim.prop
+          fi
+
+          # Current public G900EM and related variants are not uniformly dual-SIM;
+          # therefore auto mode must never force DSDS. The supplied device/vendor
+          # trees are the authority for the actual hardware SKU.
+          if [ "$DUAL_SIM_PROFILE" = "auto" ]; then
+            echo 'AUTO mode: DSDS property NOT injected.' | tee -a "$DIAG_DIR/11-dual-sim.log"
+          fi
+
+      - name: 12 - Final config drift and boot-risk gate
         shell: bash
         run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/14-build.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "14 - ARM64 build FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
+          set -uo pipefail
+          LOG="$DIAG_DIR/12-safety-gate.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "12 - Safety gate FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
           cd kernel
-          export ARCH=arm64 LLVM=1 LLVM_IAS=1
-          export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
-          export CC="$CLANG_DIR/bin/clang"
-          export LD="$CLANG_DIR/bin/ld.lld"
-          export HOSTCC="$CLANG_DIR/bin/clang"
-          export HOSTCXX="$CLANG_DIR/bin/clang++"
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          make -Oline O="$OUT_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-            CC="$CC" LD="$LD" HOSTCC="$HOSTCC" HOSTCXX="$HOSTCXX" \
-            CLANG_TRIPLE="$CLANG_TRIPLE" -j"$(nproc)" Image modules 2>&1
-          test -s "$OUT_DIR/arch/arm64/boot/Image"
-          file "$OUT_DIR/arch/arm64/boot/Image" | tee "$DIAG_DIR/Image-file.txt"
-          sha256sum "$OUT_DIR/arch/arm64/boot/Image" | tee "$DIAG_DIR/Image.sha256"
+          C="$OUT_DIR/.config"
+          cp "$C" "$DIAG_DIR/final.config"
+          diff -u "$GITHUB_WORKSPACE/.github/kernel-baseline/working.config" "$C" > "$DIAG_DIR/config-diff.txt" || true
 
-      - name: 15 - Package Image + supplied DTB/DTBO/header
+          # Hard safety gates: no legacy manual hooks, no KPM, no forced module
+          # signature changes, no removal of core modem/graphics/storage support.
+          ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$C"
+          ! grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' "$C"
+          ! grep -q '^CONFIG_KPM=y$' "$C"
+          grep -q '^CONFIG_MODULE_SIG_FORCE=y$' "$C"
+          grep -q '^CONFIG_RMNET=y$' "$C"
+          grep -q '^CONFIG_WLAN=y$' "$C"
+          grep -q '^CONFIG_EXT4_FS=y$' "$C"
+          grep -q '^CONFIG_F2FS_FS=y$' "$C"
+
+          # Record only the intended configuration additions.
+          grep -E '^\+CONFIG_(KPROBES|KSU|KSU_SUSFS|KALLSYMS|KALLSYMS_ALL)' \
+            "$DIAG_DIR/config-diff.txt" > "$DIAG_DIR/intended-config-additions.txt" || true
+
+      - name: 13 - Build ARM64 Image and modules
         shell: bash
         run: |
-          set -euo pipefail
-          exec > >(tee "$DIAG_DIR/15-package.log") 2>&1
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "15 - Packaging FAILED rc=$rc" >> "$DIAG_DIR/error.log"; fi' EXIT
+          set -uo pipefail
+          LOG="$DIAG_DIR/13-build.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "13 - Build FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
+          cd kernel
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC="$CLANG_DIR/bin/clang"
+          export CXX="$CLANG_DIR/bin/clang++"
+          export HOSTCC="$CC"
+          export HOSTCXX="$CXX"
+          export LD="$CLANG_DIR/bin/ld.lld"
+          export HOSTLD="$LD"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          make -Oline O="$OUT_DIR" ARCH=arm64 \
+            CC="$CC" HOSTCC="$HOSTCC" LD="$LD" HOSTLD="$HOSTLD" \
+            LLVM=1 LLVM_IAS=1 CLANG_TRIPLE="$CLANG_TRIPLE" \
+            -j"$(nproc)" Image modules
+
+          test -s "$OUT_DIR/arch/arm64/boot/Image"
+
+      - name: 14 - Package kernel and supplied boot assets
+        shell: bash
+        run: |
+          set -uo pipefail
+          LOG="$DIAG_DIR/14-package.log"
+          exec > >(tee "$LOG") 2>&1
+          trap 'rc=$?; echo "14 - Package FAILED rc=$rc" >> "$DIAG_DIR/error-summary.log"; exit $rc' ERR
+
           mkdir -p release
           cp kernel/out/arch/arm64/boot/Image release/Image
           cp input-assets/dtb release/dtb
           cp input-assets/dtbo.img release/dtbo.img
           cp input-assets/header release/header
-          sha256sum release/* > release/SHA256SUMS
-          cat > release/BUILD-INFO.txt <<EOF
-          target=LG-G900-GLOBAL
-          kernel_target=4.19.325-cip135
-          cip_commit=$(git rev-parse refs/tags/$CIP_TAG)
-          root=SukiSU-Ultra
-          susfs=enabled
-          hook=KPROBES
-          legacy_kernelsu=removed
-          android_gsi=16-QPR2
-          android_gsi_api=36.1
-          network_traffic_monitor=enabled
-          rmnet_ipa_qmi=preserved
-          volte_wifi_calling=transport_prerequisites_preserved
-          LM-G900N=not_target
-          EOF
+          cp kernel/out/.config release/kernel.config
+          cp "$DIAG_DIR/final.config" release/final.config
 
-      - name: 16 - Finalize diagnostics even when the build fails
+          printf '%s\n' \
+            'target=LG-G900-GLOBAL' \
+            'kernel_source=android_kernel_lge_sm7250' \
+            'common_tree=android_device_lge_sm7250-common' \
+            'device_tree=android_device_lge_caymanlm' \
+            'vendor_tree=proprietary_vendor_lge_caymanlm' \
+            'cip=v4.19.325-cip132->v4.19.325-cip135' \
+            "sukisu_ref=$SUKISU_REF" \
+            'susfs=integrated-via-SukiSU-tree' \
+            'hook=KPROBES' \
+            'legacy_kernelsu=removed' \
+            'kpm=disabled-for-stability' \
+            "dual_sim_profile=$DUAL_SIM_PROFILE" \
+            'android_16_qpr2_gsi=API-36.1-validation' \
+            'LM-G900N=not-target' \
+            > release/BUILD-INFO.txt
+
+          sha256sum release/* > release/SHA256SUMS
+
+      - name: 15 - Collect failure diagnostics (always)
         if: ${{ always() }}
         shell: bash
         run: |
+          set +e
           mkdir -p "$DIAG_DIR"
           {
             echo "job_status=${{ job.status }}"
-            echo "run_id=${{ github.run_id }}"
-            echo "run_attempt=${{ github.run_attempt }}"
-            echo "sha=${{ github.sha }}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
             echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            if [ -s "$DIAG_DIR/error.log" ]; then
-              echo '--- step failures ---'
-              cat "$DIAG_DIR/error.log"
-            else
-              echo 'No shell-step failure was recorded by the workflow trap.'
-              if [ "${{ job.status }}" != "success" ]; then
-                echo 'Job failed outside the shell traps; inspect the per-step *.log files and GitHub Actions annotation.'
-              fi
-            fi
-          } > "$DIAG_DIR/error-summary.log"
-          if [ "${{ job.status }}" != "success" ] && [ ! -s "$DIAG_DIR/error.log" ]; then
-            printf 'job_status=%s\nSee per-step logs for the failing command.\n' '${{ job.status }}' > "$DIAG_DIR/error.log"
-          fi
+            echo '--- step failures ---'
+            if [ -s "$DIAG_DIR/error-summary.log" ]; then cat "$DIAG_DIR/error-summary.log"; else echo 'No trapped step failure recorded.'; fi
+          } > "$DIAG_DIR/error-summary.final.log"
 
-      - name: 17 - Upload diagnostics and artifacts (always)
+          {
+            echo "GitHub job status: ${{ job.status }}"
+            echo
+            echo '=== STEP FAILURE SUMMARY ==='
+            cat "$DIAG_DIR/error-summary.log" 2>/dev/null || true
+            echo
+            echo '=== ERROR/WARNING LINES FROM ALL LOGS ==='
+            grep -RniE '(^|[^A-Za-z])(error|fatal|failed|failure|undefined reference|No rule to make target|not found|assembler is not supported)([^A-Za-z]|$)' "$DIAG_DIR" 2>/dev/null | tail -n 300 || true
+            echo
+            echo '=== LAST 200 LINES OF EACH LOG ==='
+            for f in "$DIAG_DIR"/*.log; do
+              [ -f "$f" ] || continue
+              echo "===== $f ====="
+              tail -n 200 "$f"
+            done
+          } > "$DIAG_DIR/error.log"
+
+          cp "$DIAG_DIR/error.log" "$GITHUB_WORKSPACE/error.log"
+          cp "$DIAG_DIR/error-summary.final.log" "$GITHUB_WORKSPACE/error-summary.log"
+
+      - name: 16 - Upload artifacts and diagnostics (always)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -413,4 +598,7 @@ jobs:
           path: |
             release/
             ci-diagnostics/
+            error.log
+            error-summary.log
             out/.config
+            cip135.delta.patch
