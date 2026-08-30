@@ -1,4 +1,4 @@
-name: LM-G900 FINAL - Kernel + DTBO Separate - v4.19.325-cip135
+name: LM-G900 FINAL - Manual SukiSU Ultra + KPM + SUSFS + LTO
 
 on:
   workflow_dispatch:
@@ -11,25 +11,17 @@ env:
   DEVICE: LM-G900
   CODENAME: caymanlm
   BRANCH: sixteen
-  KERNEL_BASE: v4.19.325-cip135
+  KERNEL_VERSION: v4.19.325-cip135
   DEFCONFIG: vendor/caymanlm_defconfig
   ANDROID_TARGET: Android 16 QPR2 / API 36
+  SUSFS_BRANCH: susfs-main
 
 jobs:
-
-  # ============================================================
-  # KERNEL JOB
-  # Actual source integration:
-  #   SukiSU-Ultra + KPM + SUSFS
-  # Existing scheduler/ZRAM/LTO/device features are preserved
-  # and explicitly enabled where their real Kconfig symbols exist.
-  # ============================================================
   kernel:
-    name: Kernel - Full Features
+    name: Kernel - manual source integration
     runs-on: ubuntu-22.04
-
     steps:
-      - name: Checkout sixteen
+      - name: Checkout working LM-G900 source
         uses: actions/checkout@v4
         with:
           ref: sixteen
@@ -38,55 +30,47 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential flex \
-            libelf-dev libssl-dev lz4 cpio rsync \
-            python3 python3-pip unzip zip git curl
+          sudo apt-get install -y bc bison build-essential flex \
+            libelf-dev libssl-dev lz4 cpio rsync python3 git curl \
+            clang lld llvm
 
-      - name: Start persistent logging
+      - name: Logging
         shell: bash
         run: |
           mkdir -p ci-logs
-          exec > >(tee -a ci-logs/kernel-full.log) 2>&1
-          echo "=== LM-G900 FINAL KERNEL ==="
-          echo "Device=$DEVICE"
-          echo "Branch=$BRANCH"
-          echo "Kernel target=$KERNEL_BASE"
-          echo "Android=$ANDROID_TARGET"
+          exec > >(tee -a ci-logs/full.log) 2>&1
+          echo "DEVICE=$DEVICE"
+          echo "CODENAME=$CODENAME"
+          echo "KERNEL_VERSION=$KERNEL_VERSION"
+          echo "BRANCH=$BRANCH"
+          echo "ANDROID_TARGET=$ANDROID_TARGET"
           git rev-parse HEAD
 
-      - name: Verify exact 4.19.325 source baseline
+      - name: Verify exact working baseline
         shell: bash
         run: |
           set -euo pipefail
-          test -f Makefile
-          test -f arch/arm64/configs/$DEFCONFIG
           grep -q '^VERSION = 4$' Makefile
           grep -q '^PATCHLEVEL = 19$' Makefile
           grep -q '^SUBLEVEL = 325$' Makefile
+          test -f "arch/arm64/configs/$DEFCONFIG"
+          test -d drivers
+          echo "-cip135" > localversion-cip
+          grep -q -- '-cip135' localversion-cip
 
-      - name: Set cip135 version string only
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The source is already 4.19.325. The repository currently carries
-          # a cip localversion; change ONLY that suffix to the requested cip135.
-          printf '%s\n' '-cip135' > localversion-cip
-          test "$(cat localversion-cip)" = "-cip135"
-
-      - name: Permanent Setup 5 defconfig guard
+      - name: Preserve previous Setup 5 fix
         shell: bash
         run: |
           set -euo pipefail
           test "$DEFCONFIG" = "vendor/caymanlm_defconfig"
           test -f "arch/arm64/configs/$DEFCONFIG"
           if grep -Rni --exclude-dir=.git \
-            'arch/arm64/configs/arch/arm64/configs' .; then
-            echo "FATAL: duplicated defconfig path detected"
+             'arch/arm64/configs/arch/arm64/configs' .; then
+            echo "ERROR: duplicated defconfig path"
             exit 1
           fi
 
-      - name: Preserve previous DTBO Makefile fix
+      - name: Preserve previous DTBO fix in source
         shell: bash
         run: |
           set -euo pipefail
@@ -106,122 +90,197 @@ jobs:
           grep -Fq '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))' "$F"
           ! grep -Fq 'wildcard echo' "$F"
 
-      - name: Integrate SukiSU-Ultra + KPM + SUSFS
+      # ============================================================
+      # MANUAL SukiSU-Ultra source integration
+      # We clone the actual kernel source and wire drivers/Kernelsu
+      # ourselves instead of executing setup.sh.
+      # susfs-main is the integrated SUSFS branch documented by SukiSU.
+      # ============================================================
+      - name: Manually add SukiSU-Ultra + integrated SUSFS source
         shell: bash
         run: |
           set -euo pipefail
 
-          # Official SukiSU-Ultra integration for non-GKI/built-in kernels.
-          # susfs-main is the documented integrated SUSFS branch.
-          curl -LSsf \
-            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
-            -o /tmp/sukisu-setup.sh
-          chmod +x /tmp/sukisu-setup.sh
+          rm -rf KernelSU
+          git clone --depth=1 --branch "$SUSFS_BRANCH" \
+            https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
 
-          /tmp/sukisu-setup.sh susfs-main
+          test -d KernelSU/kernel
+          test -f KernelSU/kernel/Kconfig
+          test -f KernelSU/kernel/Makefile
 
-          test -d KernelSU
+          rm -f drivers/kernelsu
+          ln -s ../KernelSU/kernel drivers/kernelsu
+
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || \
+            sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          grep -q 'kernelsu' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+
           test -L drivers/kernelsu
           grep -q 'kernelsu' drivers/Makefile
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
 
-      - name: Configure finalized kernel feature set
+          {
+            echo "SukiSU repository:"
+            git -C KernelSU rev-parse HEAD
+            echo "SukiSU branch:"
+            git -C KernelSU branch --show-current || true
+            echo "SUSFS source:"
+            grep -RniE 'SUSFS|susfs' KernelSU/kernel | head -100 || true
+          } | tee ci-logs/sukisu-source.log
+
+      # ============================================================
+      # KPM is part of SukiSU-Ultra. The official project documents:
+      # CONFIG_KPM=y, plus KALLSYMS/KALLSYMS_ALL for non-GKI.
+      # ============================================================
+      - name: Enable real SukiSU KPM configuration
         shell: bash
         run: |
           set -euo pipefail
           rm -rf out
           mkdir -p out
 
-          # Correct Kbuild target: relative to arch/arm64/configs.
           make O=out ARCH=arm64 "$DEFCONFIG"
-
-          # Build the real Kconfig helper.
           make O=out ARCH=arm64 scripts
 
-          CONFIG_TOOL=out/scripts/config
-          test -x "$CONFIG_TOOL"
+          CFG=out/.config
+          SC=out/scripts/config
 
-          # --- Actual finalized feature integrations ---
-          "$CONFIG_TOOL" --enable CONFIG_KSU
-          "$CONFIG_TOOL" --enable CONFIG_KPM
-          "$CONFIG_TOOL" --enable CONFIG_KALLSYMS
-          "$CONFIG_TOOL" --enable CONFIG_KALLSYMS_ALL
+          "$SC" --enable CONFIG_KSU
+          "$SC" --enable CONFIG_KPM
+          "$SC" --enable CONFIG_KALLSYMS
+          "$SC" --enable CONFIG_KALLSYMS_ALL
 
-          # SUSFS is supplied by the susfs-main SukiSU integration.
-          # Enable the real symbols if this branch exposes them.
-          "$CONFIG_TOOL" --enable CONFIG_KSU_SUSFS 2>/dev/null || true
-
-          # Scheduler / memory features requested for this kernel.
-          "$CONFIG_TOOL" --enable CONFIG_ZRAM
-
-          if grep -q 'config SCHED_WALT' kernel/Kconfig 2>/dev/null || \
-             grep -Rqs 'config SCHED_WALT' kernel; then
-            "$CONFIG_TOOL" --enable CONFIG_SCHED_WALT || true
+          # Non-GKI/manual hook mode.
+          if grep -Rqs 'config KSU_MANUAL_HOOK' KernelSU/kernel; then
+            "$SC" --enable CONFIG_KSU_MANUAL_HOOK
           fi
 
-          if grep -Rqs 'config SCHED_TUNE' kernel; then
-            "$CONFIG_TOOL" --enable CONFIG_SCHED_TUNE || true
-          fi
+          # Enable every real SUSFS symbol exposed by the integrated source.
+          SUSFS_KEYS="$(
+            grep -RhoE 'config KSU_SUSFS_[A-Z0-9_]+' KernelSU/kernel \
+              | sed 's/^config //' | sort -u
+          )"
+          for k in $SUSFS_KEYS; do
+            "$SC" --enable "$k" 2>/dev/null || true
+          done
+          "$SC" --enable CONFIG_KSU_SUSFS 2>/dev/null || true
 
-          # LTO: enable the real clang LTO option only if this tree exposes it.
-          if grep -Rqs 'config LTO_CLANG' arch kernel; then
-            "$CONFIG_TOOL" --enable CONFIG_LTO_CLANG || true
-          fi
-
-          # Keep every existing device/hardware option from caymanlm_defconfig.
-          # We do NOT replace the defconfig with a generic GKI config.
           make O=out ARCH=arm64 olddefconfig
 
-          cp out/.config ci-logs/final.config
+          grep -q '^CONFIG_KSU=y$' "$CFG"
+          grep -q '^CONFIG_KPM=y$' "$CFG"
+          grep -q '^CONFIG_KALLSYMS=y$' "$CFG"
+          grep -q '^CONFIG_KALLSYMS_ALL=y$' "$CFG"
+          grep -q '^CONFIG_KSU_SUSFS=y$' "$CFG"
 
-      - name: Final feature verification
+      # ============================================================
+      # MANUAL LTO SOURCE BACKPORT
+      #
+      # The LM-G900 tree is 4.19.325 but its defconfig does not expose
+      # the required Clang-LTO Kconfig. We do not fake-enable CONFIG_LTO.
+      #
+      # Instead, obtain the documented Android common 4.19 LTO source
+      # change, apply it to this source tree, then require the real
+      # Kconfig/build machinery to accept LTO.
+      #
+      # If the patch does not apply cleanly, STOP. Never silently fall
+      # back to LTO_NONE.
+      # ============================================================
+      - name: Manually backport Android 4.19 Clang LTO source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -Rqs '^config LTO_CLANG' arch Kconfig lib 2>/dev/null && \
+             grep -Rqs '^config LTO_NONE' arch Kconfig lib 2>/dev/null; then
+            echo "LTO Kconfig infrastructure already exists; no backport needed."
+          else
+            rm -rf /tmp/android-common
+            git clone --filter=blob:none --no-checkout \
+              https://android.googlesource.com/kernel/common /tmp/android-common
+
+            cd /tmp/android-common
+            git fetch --no-tags origin \
+              6b1f307bd09fa1e91520e1362e95a640809d7b26 \
+              40321f254df9b7229e98e33c501e346a372e4856
+
+            # The commits are from Android's 4.19 kernel line and contain
+            # the Clang-LTO build machinery. Generate only the LTO-related
+            # Makefile/Kbuild hunks instead of replacing the OEM tree.
+            git show --format= --no-ext-diff \
+              6b1f307bd09fa1e91520e1362e95a640809d7b26 \
+              -- Makefile scripts/Makefile.build scripts/Makefile.modpost \
+                 scripts/link-vmlinux.sh scripts/mod/modpost.c \
+              > /tmp/lto-4.19-a.patch || true
+
+            git show --format= --no-ext-diff \
+              40321f254df9b7229e98e33c501e346a372e4856 \
+              -- Makefile scripts/Makefile.build scripts/Makefile.modpost \
+                 scripts/link-vmlinux.sh scripts/mod/modpost.c \
+              > /tmp/lto-4.19-b.patch || true
+
+            cd "$GITHUB_WORKSPACE"
+
+            # Apply only if the patch is relevant and cleanly applies.
+            # A failed source backport is a hard error.
+            if test -s /tmp/lto-4.19-a.patch; then
+              git apply --3way /tmp/lto-4.19-a.patch
+            fi
+            if test -s /tmp/lto-4.19-b.patch; then
+              git apply --3way /tmp/lto-4.19-b.patch
+            fi
+          fi
+
+          # Require real LTO Kconfig/source, never a fake config line.
+          grep -Rqs '^config LTO_CLANG' arch Kconfig .config 2>/dev/null || \
+            grep -Rqs '^config LTO_CLANG' arch Kconfig .
+          grep -Rqs 'lto-clang-flags' Makefile
+          grep -Rqs 'CONFIG_LTO_CLANG' Makefile scripts arch
+
+      - name: Enable real Clang LTO and re-resolve config
+        shell: bash
+        run: |
+          set -euo pipefail
+          SC=out/scripts/config
+
+          "$SC" --enable CONFIG_LTO
+          "$SC" --enable CONFIG_LTO_CLANG
+
+          if grep -Rqs 'config THINLTO' arch Kconfig; then
+            "$SC" --enable CONFIG_THINLTO 2>/dev/null || true
+          fi
+
+          "$SC" --disable CONFIG_LTO_NONE 2>/dev/null || true
+
+          make O=out ARCH=arm64 olddefconfig
+
+          grep -q '^CONFIG_LTO=y$' out/.config
+          grep -q '^CONFIG_LTO_CLANG=y$' out/.config
+          ! grep -q '^CONFIG_LTO_NONE=y$' out/.config
+
+      - name: Preserve all finalized existing device features
         shell: bash
         run: |
           set -euo pipefail
           C=out/.config
 
-          echo "=== FINAL FEATURE VERIFICATION ===" | tee ci-logs/feature-audit.log
+          # Existing finalized device/kernel features must remain enabled.
+          grep -q '^CONFIG_SCHED_WALT=y$' "$C"
+          grep -q '^CONFIG_SCHED_TUNE=y$' "$C"
+          grep -q '^CONFIG_ZRAM=y$' "$C"
+          grep -q '^CONFIG_INPUT_FINGERPRINT=y$' "$C"
+          grep -q '^CONFIG_FPR_FPC=y$' "$C"
+          grep -q '^CONFIG_VIB_DW7800=y$' "$C"
+          grep -q '^CONFIG_MACH_LITO_CAYMANLM=y$'
 
-          for x in \
-            CONFIG_KSU \
-            CONFIG_KPM \
-            CONFIG_KALLSYMS \
-            CONFIG_KALLSYMS_ALL \
-            CONFIG_ZRAM
-          do
-            grep -q "^${x}=y$" "$C" || {
-              echo "MISSING: $x"
-              exit 1
-            }
-            echo "OK: $x=y"
-          done | tee -a ci-logs/feature-audit.log
+          cp "$C" ci-logs/final.config
+          grep -E '^CONFIG_(KSU|KPM|KALLSYMS|KSU_SUSFS|LTO|SCHED_WALT|SCHED_TUNE|ZRAM|INPUT_FINGERPRINT|FPR_FPC|VIB_DW7800|MACH_LITO_CAYMANLM)' \
+            "$C" | tee ci-logs/final-feature-config.log
 
-          # SUSFS must be present in the integrated source/config.
-          grep -Eq '^CONFIG_KSU_SUSFS=y$|^CONFIG_KSU_SUSFS_[A-Z0-9_]+=y$' "$C" || {
-            echo "MISSING: SUSFS configuration"
-            exit 1
-          }
-
-          # Required device hardware remains inherited from caymanlm config.
-          # Do not invent generic replacement symbols; audit source/config.
-          {
-            echo "Fingerprint:"
-            grep -Ei 'FINGERPRINT|GOODIX|FPC|SYNAPTICS' "$C" || true
-            echo "Vibration:"
-            grep -Ei 'VIBRATOR|HAPTIC' "$C" || true
-            echo "Dual-SIM/modem:"
-            grep -Ei 'SIM|MODEM|RMNET|QMI' "$C" | head -80 || true
-            echo "Audio:"
-            grep -Ei 'SOUND|SND|AUDIO|WCD|APR' "$C" | head -100 || true
-            echo "VoWiFi:"
-            grep -Ei 'IMS|VO_W|WIFI_CALL|WLAN' "$C" | head -100 || true
-            echo "WALT/SchedTune:"
-            grep -Ei 'WALT|SCHED_TUNE|SCHEDTUNE' "$C" || true
-            echo "LTO:"
-            grep -Ei '^CONFIG_LTO_' "$C" || true
-          } | tee -a ci-logs/feature-audit.log
-
-      - name: Build kernel only
+      - name: Build kernel
         shell: bash
         run: |
           set -o pipefail
@@ -229,42 +288,34 @@ jobs:
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
             V=1 -j"$(nproc)" 2>&1 | tee ci-logs/kernel-build.log
           rc=${PIPESTATUS[0]}
-          echo "kernel_exit=$rc" >> ci-logs/result.log
+          echo "kernel_exit=$rc" | tee ci-logs/result.log
           exit "$rc"
 
-      - name: Kernel artifact
+      - name: Upload kernel
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-v4.19.325-cip135-FULL-FEATURE-KERNEL
+          name: LM-G900-v4.19.325-cip135-SukiSU-KPM-SUSFS-LTO
           path: |
             out/arch/arm64/boot/Image*
             out/.config
             localversion-cip
 
-      - name: Kernel logs - always
+      - name: Upload complete diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-KERNEL-ERROR-LOG
+          name: LM-G900-v4.19.325-cip135-SukiSU-KPM-SUSFS-LTO-LOGS
           if-no-files-found: warn
           path: |
             ci-logs/
             out/.config
 
-
-  # ============================================================
-  # DTBO JOB
-  # Completely separate build. No SukiSU/SUSFS modification.
-  # Uses the same working source/defconfig and only preserves the
-  # already-fixed DTBO Makefile.
-  # ============================================================
   dtbo:
-    name: DTBO - Separate Build
+    name: DTBO - Separate, unchanged feature baseline
     runs-on: ubuntu-22.04
-
     steps:
-      - name: Checkout sixteen
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           ref: sixteen
@@ -274,19 +325,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential flex \
-            libelf-dev libssl-dev lz4 cpio rsync python3 git curl
+            libelf-dev libssl-dev lz4 cpio rsync python3
 
-      - name: Start DTBO logging
-        shell: bash
-        run: |
-          mkdir -p ci-logs
-          exec > >(tee -a ci-logs/dtbo-full.log) 2>&1
-          echo "=== LM-G900 SEPARATE DTBO BUILD ==="
-          echo "Device=$DEVICE"
-          echo "Kernel=$KERNEL_BASE"
-          git rev-parse HEAD
-
-      - name: Verify 4.19.325 and Setup 5 target
+      - name: Verify 4.19.325 and preserve DTBO fix
         shell: bash
         run: |
           set -euo pipefail
@@ -294,12 +335,7 @@ jobs:
           grep -q '^PATCHLEVEL = 19$' Makefile
           grep -q '^SUBLEVEL = 325$' Makefile
           test -f "arch/arm64/configs/$DEFCONFIG"
-          test "$DEFCONFIG" = "vendor/caymanlm_defconfig"
 
-      - name: Preserve DTBO fix only
-        shell: bash
-        run: |
-          set -euo pipefail
           F=arch/arm64/boot/dts/vendor/lge/Makefile
           python3 - "$F" <<'PY'
           from pathlib import Path
@@ -315,49 +351,43 @@ jobs:
           grep -Fq '$(notdir $(wildcard $(srctree)/$(src)/$(DTS_PROJECT)/$(DTS_TARGET)/*.dts))' "$F"
           ! grep -Fq 'wildcard echo' "$F"
 
-      - name: Permanent Setup 5 guard
-        run: |
-          set -euo pipefail
           ! grep -Rni --exclude-dir=.git \
             'arch/arm64/configs/arch/arm64/configs' .
 
-      - name: Configure DTBO
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf dtbo-out
-          mkdir -p dtbo-out
-          make O=dtbo-out ARCH=arm64 "$DEFCONFIG"
-          test -s dtbo-out/.config
-
-      - name: Build DTBs and DTBO only
+      - name: Build DTBO separately
         shell: bash
         run: |
           set -o pipefail
           set +e
-          make O=dtbo-out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-            V=1 dtbs dtbo.img -j"$(nproc)" \
-            2>&1 | tee ci-logs/dtbo-build.log
+          rm -rf dtbo-out
+          make O=dtbo-out ARCH=arm64 "$DEFCONFIG" 2>&1 | tee dtbo-config.log
           rc=${PIPESTATUS[0]}
-          echo "dtbo_exit=$rc" >> ci-logs/result.log
+          test "$rc" -eq 0 || exit "$rc"
+
+          make O=dtbo-out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            V=1 dtbs dtbo.img -j"$(nproc)" 2>&1 | tee dtbo-build.log
+          rc=${PIPESTATUS[0]}
+          echo "dtbo_exit=$rc" | tee dtbo-result.log
           exit "$rc"
 
-      - name: DTBO artifact
+      - name: Upload DTBO
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-v4.19.325-cip135-SEPARATE-DTBO
+          name: LM-G900-v4.19.325-cip135-DTBO
           path: |
             dtbo-out/arch/arm64/boot/dtbo.img
             dtbo-out/arch/arm64/boot/dts/**/*.dtb
             dtbo-out/arch/arm64/boot/dts/**/*.dtbo
 
-      - name: DTBO logs - always
+      - name: Upload DTBO diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LM-G900-DTBO-ERROR-LOG
+          name: LM-G900-v4.19.325-cip135-DTBO-LOGS
           if-no-files-found: warn
           path: |
-            ci-logs/
+            dtbo-config.log
+            dtbo-build.log
+            dtbo-result.log
             dtbo-out/.config
