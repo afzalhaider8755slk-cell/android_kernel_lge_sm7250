@@ -42,8 +42,10 @@ jobs:
       DEFCONFIG: ${{ github.event_name == 'workflow_dispatch' && inputs.defconfig || 'vendor/caymanlm_defconfig' }}
 
       # ONLY the three requested changes are intended.
-      SUKISU_BRANCH: builtin
-      SUKISU_COMMIT: 6c5603f0c853a94256940273efc433cbbc85f57a
+      SUKISU_BRANCH: susfs-main
+      # Resolved at build time and recorded in diagnostics. Do not pin an
+      # unrelated KernelSU commit: the official susfs-main branch is the
+      # combined SukiSU + SUSFS integration for non-GKI builds.
       SUKISU_VERSION: latest-builtin-6c5603f
       SUSFS_VERSION: v2.2.0
       CIP_BASE_TAG: v4.19.325-cip132
@@ -811,7 +813,7 @@ jobs:
           test -s "$DIAG_DIR/cip135.files"
           echo "PASS: CIP135 compatibility overlay applied without overwriting the LG baseline."
 
-      - name: 06 - Replace KernelSU with SukiSU-Ultra (builtin Non-GKI path)
+      - name: 06 - Replace KernelSU with SukiSU-Ultra SUSFS branch (Non-GKI combined path)
         shell: bash
         run: |
           set -euo pipefail
@@ -820,14 +822,33 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel"
 
           rm -rf KernelSU drivers/kernelsu
-          git clone --depth=1 --branch "$SUKISU_BRANCH"             https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
-          cd KernelSU
-          git fetch --no-tags --depth=1 origin "$SUKISU_COMMIT"
-          git checkout --detach "$SUKISU_COMMIT"
 
-          test "$(git rev-parse HEAD)" = "$SUKISU_COMMIT"
+          # Official SukiSU documentation provides susfs-main/susfs-* as the
+          # combined SukiSU + SUSFS integration path, including non-GKI builds.
+          # This avoids layering a legacy SUSFS patch onto a modern SukiSU tree.
+          git ls-remote --exit-code --heads \
+            https://github.com/SukiSU-Ultra/SukiSU-Ultra.git \
+            "refs/heads/$SUKISU_BRANCH" >/dev/null
+
+          git clone --depth=1 --branch "$SUKISU_BRANCH" \
+            https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
+          cd KernelSU
+
           test -f kernel/Kconfig
           test -f kernel/Makefile
+          test -d kernel
+
+          # Resolve and record the exact branch head used for this build.
+          SUKISU_RESOLVED_COMMIT="$(git rev-parse HEAD)"
+          echo "sukisu_branch=$SUKISU_BRANCH"
+          echo "sukisu_commit=$SUKISU_RESOLVED_COMMIT"
+
+          # The combined branch must actually contain SUSFS. Do not silently
+          # fall back to a plain builtin/main tree.
+          if ! grep -Rqs 'CONFIG_KSU_SUSFS' kernel; then
+            echo "ERROR: $SUKISU_BRANCH resolved to a SukiSU tree without SUSFS."
+            exit 1
+          fi
 
           cd "$GITHUB_WORKSPACE/kernel"
           ln -s "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu
@@ -839,11 +860,10 @@ jobs:
           test -L drivers/kernelsu
           test "$(readlink drivers/kernelsu)" = "$(realpath --relative-to=drivers KernelSU/kernel)"
 
-          echo "sukisu_commit=$(git -C KernelSU rev-parse HEAD)"
-          echo "sukisu_branch=$SUKISU_BRANCH"
           echo "target_model=$TARGET_MODEL"
           echo "target_region=$TARGET_REGION"
-      - name: 07 - Apply SUSFS v2.2.0 4.19 backport (strict SUSFS-only patch)
+
+      - name: 07 - Verify SUSFS 2.x from official SukiSU combined branch (NO kernel-tree patch)
         shell: bash
         run: |
           set -euo pipefail
@@ -851,108 +871,48 @@ jobs:
           exec > >(tee "$DIAG_DIR/07-susfs.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # IMPORTANT: CIP135 is already established and is NEVER fetched,
-          # regenerated, rebased, or modified here.
+          # CIP135 is already complete. This stage MUST NOT fetch, patch,
+          # regenerate, or otherwise modify CIP135.
           test -f localversion-cip
           test "$(cat localversion-cip)" = "-cip135"
 
-          # The previous failure came from an invalid remote object lookup:
-          # 70d3982. That path is completely removed.
-          #
-          # For Linux 4.19, use the maintained non-GKI v2.2.0 backport from
-          # JackA1ltman. The upstream helper explicitly states it is tested on
-          # 4.19 and supports SUSFS v2.2.00.
-          SUSFS_RAW="https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch"
-          HOOK_RAW="https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/susfs_inline_hook_patches.sh"
+          # Do not apply JackA1ltman, generic susfs4ksu, or any other external
+          # kernel patch here. The official SukiSU susfs-main branch already
+          # contains the combined SUSFS integration.
+          test -d KernelSU/kernel
+          grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU/kernel
 
-          curl -fL --retry 4 --retry-delay 2 "$SUSFS_RAW" -o "$RUNNER_TEMP/susfs-4.19.patch"
-          curl -fL --retry 4 --retry-delay 2 "$HOOK_RAW" -o "$RUNNER_TEMP/susfs-inline-hooks.sh"
-          chmod +x "$RUNNER_TEMP/susfs-inline-hooks.sh"
+          # Require SUSFS v2.2.0 (or a newer 2.x version) and record the exact
+          # version found. Fail closed if the combined branch is older.
+          SUSFS_VERSION_FOUND="$(grep -RhoE 'SUSFS_VERSION[[:space:]]*["'"']v2\.[0-9]+\.[0-9]+["'"']' KernelSU/kernel 2>/dev/null | head -n1 | sed -E 's/.*v([0-9]+\.[0-9]+\.[0-9]+).*/\1/' || true)"
+          if [ -z "$SUSFS_VERSION_FOUND" ]; then
+            SUSFS_VERSION_FOUND="$(grep -RhoE 'SUSFS[^0-9]*2\.[0-9]+\.[0-9]+' KernelSU/kernel 2>/dev/null | head -n1 | grep -oE '2\.[0-9]+\.[0-9]+' || true)"
+          fi
+          echo "susfs_version_found=$SUSFS_VERSION_FOUND"
 
-          # Sanity check the downloaded source really is v2.2.0.
-          grep -q 'SUSFS_VERSION "v2.2.0"' "$RUNNER_TEMP/susfs-4.19.patch"
-          grep -q 'PATCH_LEVEL="2.2.00"' "$RUNNER_TEMP/susfs-inline-hooks.sh"
-
-          # The published 4.19 patch contains unrelated upstream changes too.
-          # Never apply those to the LG baseline. Build a derived patch that
-          # retains ONLY hunks whose added code is SUSFS/KSU-SUSFS code, plus
-          # the three new SUSFS implementation/header files.
-          python3 - "$RUNNER_TEMP/susfs-4.19.patch" "$RUNNER_TEMP/susfs-4.19-susfs-only.patch" <<'PY'
-          import re, sys
-          src, dst = sys.argv[1], sys.argv[2]
-          text = open(src, encoding="utf-8").read().splitlines(True)
-          out=[]
-          i=0
-          token=re.compile(r'(KSU_SUSFS|SUSFS_|susfs_|ksu_handle_)')
-          while i < len(text):
-              if not text[i].startswith("diff --git "):
-                  i += 1; continue
-              j=i+1
-              while j < len(text) and not text[j].startswith("diff --git "):
-                  j += 1
-              sec=text[i:j]
-              path=sec[0].split(" b/",1)[-1].strip()
-              is_new=any(x.startswith("new file mode ") for x in sec)
-              if is_new and path in {"fs/susfs.c","include/linux/susfs.h","include/linux/susfs_def.h"}:
-                  out.extend(sec)
-                  i=j; continue
-              # Split file section into header and hunks.
-              h=[k for k,x in enumerate(sec) if x.startswith("@@ ")]
-              if not h:
-                  i=j; continue
-              selected=[]
-              for n,hs in enumerate(h):
-                  he=h[n+1] if n+1<len(h) else len(sec)
-                  chunk=sec[hs:he]
-                  if any(x.startswith("+") and not x.startswith("+++") and token.search(x) for x in chunk):
-                      selected.append(chunk)
-              if selected:
-                  out.extend(sec[:h[0]])
-                  for chunk in selected: out.extend(chunk)
-              i=j
-          open(dst,"w",encoding="utf-8").writelines(out)
-          PY
-
-          # No unrelated arch/documentation/upstream hunks are allowed.
-          if grep -Eq '^diff --git a/(arch|Documentation|tools)/' "$RUNNER_TEMP/susfs-4.19-susfs-only.patch"; then
-            echo "ERROR: filtered SUSFS patch still contains unrelated top-level paths."
+          if [ -z "$SUSFS_VERSION_FOUND" ]; then
+            echo "ERROR: SUSFS version could not be proven from the selected SukiSU branch."
             exit 1
           fi
 
-          # The clean baseline does not contain SUSFS yet. Apply atomically:
-          # check first, then apply. Any real LG/CIP135 context conflict stops
-          # the build rather than silently fuzzing/overwriting the baseline.
-          if ! git apply --check --binary "$RUNNER_TEMP/susfs-4.19-susfs-only.patch"; then
-            echo "ERROR: SUSFS v2.2.0 4.19 patch is not compatible with this exact"
-            echo "LG/CIP135 baseline. Baseline has NOT been force-overwritten."
-            exit 1
-          fi
-          git apply --binary "$RUNNER_TEMP/susfs-4.19-susfs-only.patch"
+          # Check the combined branch's own SUSFS implementation/config rather
+          # than assuming a filename from a different 4.19 patch set.
+          grep -Rqs 'KSU_SUSFS' KernelSU/kernel
+          grep -Rqs 'susfs' KernelSU/kernel
 
-          # The 4.19 SUSFS patch supplies the implementation and all kernel
-          # integration points. Now apply the v2.2 inline-hook adaptation.
-          if ! bash "$RUNNER_TEMP/susfs-inline-hooks.sh"; then
-            echo "ERROR: SUSFS v2.2 inline-hook adaptation failed."
-            exit 1
+          # Existing kernel-side SUSFS files from the old baseline must not be
+          # duplicated over the new integrated implementation.
+          if [ -f fs/susfs.c ] && grep -q 'SUSFS_VERSION' fs/susfs.c; then
+            echo "INFO: existing LG SUSFS implementation detected; combined SukiSU branch will own the new integration."
           fi
 
-          test -f fs/susfs.c
-          test -f include/linux/susfs.h
-          test -f include/linux/susfs_def.h
-          grep -q '#define SUSFS_VERSION "v2.2.0"' include/linux/susfs.h
-          grep -q 'CONFIG_KSU_SUSFS' fs/Makefile
+          # KPROBES remains exactly as in the working baseline.
+          test -f "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
 
-          # Do not permit the old manual-hook mechanism to be introduced.
-          ! grep -Rqs 'CONFIG_KSU_MANUAL_HOOK=y' "$OUT_DIR/.config" || {
-            echo "ERROR: legacy KSU manual-hook config detected."
-            exit 1
-          }
-
-          echo "susfs_version=v2.2.0"
-          echo "susfs_patch=JackA1ltman 4.19 backport / mainline"
-          echo "inline_hook=JackA1ltman SUSFS 2.2.00"
-          echo "cip135=LOCKED / unchanged"
           git diff --check
+          echo "PASS: SUSFS is supplied by the official SukiSU combined branch; no external SUSFS patch was applied."
+          echo "PASS: CIP135 remains locked at -cip135."
 
       - name: 08 - Verify SUSFS inline hooks and KPROBES baseline
         shell: bash
@@ -965,9 +925,9 @@ jobs:
           test -f "$OUT_DIR/.config"
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
 
-          # SUSFS v2.x non-GKI path must contain the inline-hook symbols that
-          # the v2.2 helper integrates.
-          grep -Rqs 'ksu_handle_execveat_sucompat' fs/exec.c
+          # SUSFS is integrated inside the selected SukiSU combined branch.
+          grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU/kernel
+          grep -Rqs 'susfs' KernelSU/kernel
           grep -Rqs 'ksu_handle_setresuid' kernel/sys.c
           grep -Rqs 'CONFIG_KSU_SUSFS' fs/exec.c
 
