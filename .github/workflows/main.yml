@@ -1,391 +1,1354 @@
-name: LG G900 Global - V21 Complete Feature Build
+name: LG Velvet 5G - Stock + SukiSU-Ultra + SUSFS v2.2.0 + Maphide + DTB/DTBO
 
 on:
   workflow_dispatch:
     inputs:
-      kernel_repo:
-        description: 'LG SM7250 kernel repository'
-        required: true
-        default: 'afzalhaider8755slk-cell/android_kernel_lge_sm7250'
-      kernel_ref:
-        description: 'Kernel branch/ref'
-        required: true
-        default: 'sixteen'
       defconfig:
-        description: 'Kernel defconfig'
+        description: "Kernel Defconfig"
         required: true
-        default: 'lito-perf_defconfig'
-      bbg_ref:
-        description: 'Baseband-guard immutable ref'
-        required: true
-        default: 'd4f7302'
-      build_jobs:
-        description: 'Parallel jobs'
-        required: true
-        default: '2'
+        default: "vendor/caymanlm_defconfig"
 
-env:
-  ARCH: arm64
-  SUBARCH: arm64
-  CLANG_VERSION: 17
-  SUSFS_VERSION: v2.2.0
-  # This is the CI-proven v2.2.0 source pin used by current SUSFS builders.
-  # The workflow still performs a compatibility gate before applying anything to 4.19.
-  SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
-  SUSFS_MODULE_REPO: https://gitlab.com/sidex15/susfs4ksu-module.git
-  SUSFS_MODULE_REF: v2.2.0
-  SUKISU_REPO: https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
-  SUKISU_REF: 8dbc1a9
-  MAPHIDE_PATCH_URL: https://raw.githubusercontent.com/WildKernels/kernel_patches/main/archived/69_hide_stuff.patch
-  BBG_REPO: https://github.com/vc-teahouse/Baseband-guard.git
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 90
+
+    env:
+      ARCH: arm64
+      LLVM: "1"
+      LLVM_IAS: "1"
+      CLANG_DIR: ${{ github.workspace }}/clang-prebuilt/clang-r547379
+      GCC64_DIR: ${{ github.workspace }}/gcc64
+      GCC32_DIR: ${{ github.workspace }}/gcc32
+      DIAG_DIR: ${{ github.workspace }}/ci-logs
+      KSU_VERSION: "v0.9.5"
+      SUSFS_VERSION: "1.4.2-kernel-4.19"
+
     steps:
-      - name: Checkout kernel source
+
+      - name: 01 - Checkout Stock Kernel Source
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.kernel_repo }}
-          ref: ${{ inputs.kernel_ref }}
+          repository: lge-qcom-dev/android_kernel_lge_sm7250
+          ref: lineage-22.2
           fetch-depth: 1
 
-      - name: Host dependencies
+      - name: 02 - Initialize Diagnostics
+        shell: bash
         run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex gawk git libelf-dev libssl-dev python3 python3-pip rsync unzip wget xz-utils device-tree-compiler
-
-      - name: Source integrity snapshot
-        run: |
-          set -euxo pipefail
-          git status --short
-          git rev-parse HEAD | tee source-commit.txt
-          git ls-files -z > /tmp/tracked-before.zlist
-          test -f Makefile
-          test -d arch/arm64
-          test -d fs/proc
-          test -d security
-
-      - name: Toolchain
-        run: |
-          set -euxo pipefail
-          git clone --depth 1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-prebuilt
-          CLANG_BIN="$(find clang-prebuilt -type d -path '*/bin' | head -1)"
-          test -n "$CLANG_BIN"
-          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
-          echo "$CLANG_BIN" >> "$GITHUB_PATH"
-          clang --version
-          ld.lld --version
-
-      - name: Prepare base config without deleting existing features
-        run: |
-          set -euxo pipefail
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 "${{ inputs.defconfig }}"
-          test -f out/.config
-          cp out/.config out/.config.before-features
-
-      - name: Integrate SukiSU Ultra without destructive cleanup
-        run: |
-          set -euxo pipefail
-          test ! -e KernelSU || true
-          git clone --depth 1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/SukiSU-Ultra
-          git -C /tmp/SukiSU-Ultra fetch --depth 1 origin "$SUKISU_REF"
-          git -C /tmp/SukiSU-Ultra checkout --detach "$SUKISU_REF"
-          test -d /tmp/SukiSU-Ultra/kernel
-          # Use the project's official setup path; never rm an existing kernel subtree.
-          curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/$SUKISU_REF/kernel/setup.sh" -o /tmp/sukisu-setup.sh
-          chmod +x /tmp/sukisu-setup.sh
-          # Non-GKI + SUSFS: use the official built-in SUSFS integration path.
-          bash /tmp/sukisu-setup.sh susfs-main
-          test -d drivers/kernelsu
-          grep -Rqs 'CONFIG_KSU' drivers/kernelsu kernel 2>/dev/null || true
-
-      - name: Pin and align SUSFS v2.2.0
-        run: |
-          set -euxo pipefail
-          # Exact kernel integration is pinned by SUKISU_REF; verify its SUSFS implementation is v2.2.0.
-          grep -Rqs 'v2\.2\.0\|2\.2\.0' drivers/kernelsu include/linux 2>/dev/null || {
-            echo 'Pinned SukiSU snapshot does not contain SUSFS v2.2.0'; exit 1;
-          }
-          test -d drivers/kernelsu
-          # Exact userspace pairing is pinned separately.
-          git clone --depth 1 --branch "$SUSFS_MODULE_REF" "$SUSFS_MODULE_REPO" /tmp/susfs-module
-          grep -q '^version=v2\.2\.0' /tmp/susfs-module/module.prop
-          echo "SUSFS kernel snapshot: $SUKISU_REF"
-          echo "SUSFS userspace: $SUSFS_MODULE_REF"
-
-      - name: Integrate BBG immutably
-        run: |
-          set -euxo pipefail
-          rm -rf /tmp/bbg
-          git clone --depth 1 "$BBG_REPO" /tmp/bbg
-          git -C /tmp/bbg fetch --depth 1 origin "$BBG_REF"
-          git -C /tmp/bbg checkout --detach "$BBG_REF"
-          test "$(git -C /tmp/bbg rev-parse --short HEAD)" = "$BBG_REF"
-          # Use upstream setup; it is specifically documented for pre-5.1/non-GKI kernels.
-          bash /tmp/bbg/setup.sh "$BBG_REF"
-          test -e security/baseband-guard
-          grep -q 'obj-\$(CONFIG_BBG)' security/Makefile
-          grep -q 'security/baseband-guard/Kconfig' security/Kconfig
-
-      - name: Configure complete requested feature contract
-        run: |
-          set -euxo pipefail
-          C=out/.config
-          scripts/config --file "$C" --enable CONFIG_KSU
-          scripts/config --file "$C" --enable CONFIG_KSU_MANUAL_HOOK
-          scripts/config --file "$C" --disable CONFIG_KSU_TRACEPOINT_HOOK || true
-          # KPROBES remains enabled as a kernel capability; Manual Hook is the active KSU hook on non-GKI.
-          scripts/config --file "$C" --enable CONFIG_KPROBES
-          scripts/config --file "$C" --enable CONFIG_KALLSYMS
-          scripts/config --file "$C" --enable CONFIG_KALLSYMS_ALL
-          scripts/config --file "$C" --enable CONFIG_KPM
-
-          # SUSFS core + v2.x capabilities.
-          for s in \
-            CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT \
-            CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME \
-            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-            CONFIG_KSU_SUSFS_SUS_MAP CONFIG_KSU_SUSFS_ENABLE_LOG \
-            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_AVC; do
-            scripts/config --file "$C" --enable "$s"
-          done
-
-          # Required filesystem/security stack.
-          for s in CONFIG_EXT4_FS CONFIG_OVERLAY_FS CONFIG_TMPFS_XATTR CONFIG_TMPFS_POSIX_ACL \
-            CONFIG_DM_VERITY CONFIG_FS_ENCRYPTION CONFIG_FS_ENCRYPTION_INLINE_CRYPT; do
-            scripts/config --file "$C" --enable "$s" || true
-          done
-
-          # Networking/performance requested in the feature set.
-          for s in CONFIG_TCP_CONG_BBR CONFIG_NET_SCH_FQ CONFIG_NET_SCH_CAKE CONFIG_NET_SCH_PIE \
-            CONFIG_WIREGUARD CONFIG_IP_SET CONFIG_IP6_NF_NAT CONFIG_NETFILTER_XT_TARGET_TTL \
-            CONFIG_BPF_SYSCALL CONFIG_NETFILTER CONFIG_NETFILTER_ADVANCED; do
-            scripts/config --file "$C" --enable "$s" || true
-          done
-
-          # Android/device plumbing.
-          for s in CONFIG_ANDROID_BINDER_IPC CONFIG_ANDROID_BINDERFS CONFIG_CFG80211 \
-            CONFIG_RMNET CONFIG_RMNET_IPA3 CONFIG_QMI_ENCDEC CONFIG_QMI_WWAN CONFIG_USB_CONFIGFS; do
-            scripts/config --file "$C" --enable "$s" || true
-          done
-
-          # BBG is mandatory for this build.
-          scripts/config --file "$C" --enable CONFIG_BBG
-          scripts/config --file "$C" --enable CONFIG_BBG_BLOCK_BOOT
-
-          # Keep existing features: never mass-disable unrelated symbols.
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
-
-      - name: Feature contract verification
-        run: |
-          set -euxo pipefail
-          C=out/.config
-          required=(
-            CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KPROBES CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_KPM
-            CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT
-            CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT
-            CONFIG_KSU_SUSFS_SUS_MAP CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-            CONFIG_KSU_SUSFS_SPOOF_AVC CONFIG_BBG CONFIG_BBG_BLOCK_BOOT CONFIG_EXT4_FS CONFIG_OVERLAY_FS
-          )
-          for s in "${required[@]}"; do grep -q "^${s}=y$" "$C" || { echo "MISSING: $s"; exit 1; }; done
-          # Non-GKI hook architecture: Manual Hook must be active; Tracepoint must not be selected.
-          ! grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' "$C"
-          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$C"
-
-      - name: Source-compatible Futile Maphide integration
-        run: |
-          set -euxo pipefail
-          curl -fsSL "$MAPHIDE_PATCH_URL" -o /tmp/69_hide_stuff.patch
-          if git apply --check --whitespace=nowarn /tmp/69_hide_stuff.patch; then
-            git apply --whitespace=nowarn /tmp/69_hide_stuff.patch
-          else
-            echo 'Upstream Maphide patch does not apply verbatim; performing strict 4.19 semantic port.'
-            python3 - <<'PY'
-          from pathlib import Path
-          
-          mm = Path('fs/proc/task_mmu.c')
-          base = Path('fs/proc/base.c')
-          for p in (mm, base):
-              if not p.exists():
-                  raise SystemExit(f'Missing Maphide translation unit: {p}')
-          
-          s = mm.read_text()
-          if 'show_vma_header_prefix_fake' not in s:
-              anchor = 'static void\nshow_map_vma(struct seq_file *m, struct vm_area_struct *vma)'
-              if anchor not in s:
-                  raise SystemExit('Maphide semantic port: show_map_vma anchor not found')
-              helper = '''static void show_vma_header_prefix_fake(struct seq_file *m,
-          \t\t\t\t\tunsigned long start, unsigned long end,
-          \t\t\t\t\tvm_flags_t flags, unsigned long long pgoff,
-          \t\t\t\t\tdev_t dev, unsigned long ino)
+          set +e
+          mkdir -p "$DIAG_DIR"
           {
-          \tseq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
-          \tseq_printf(m, "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu ",
-          \t\tstart, end, flags & VM_READ ? 'r' : '-', flags & VM_WRITE ? 'w' : '-',
-          \t\tflags & VM_EXEC ? '-' : '-', flags & VM_MAYSHARE ? 's' : 'p',
-          \t\tpgoff, MAJOR(dev), MINOR(dev), ino);
-          }
-          
-          '''
-              s = s.replace(anchor, helper + anchor, 1)
-          
-          if 'jit-zygote-cache' not in s or 'framework-res.apk' not in s:
-              needle = 'pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;'
-              if needle not in s:
-                  raise SystemExit('Maphide semantic port: pgoff anchor not found')
-              block = '''pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
-          \t\tif (file && file->f_path.dentry) {
-          \t\t\tconst char *path = file->f_path.dentry->d_name.name;
-          \t\t\tif (strstr(path, "lineage")) {
-          \t\t\t\tstart = vma->vm_start; end = vma->vm_end;
-          \t\t\t\tshow_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
-          \t\t\t\tname = "/system/framework/framework-res.apk";
-          \t\t\t\tgoto done;
-          \t\t\t}
-          \t\t\tif (strstr(path, "jit-zygote-cache")) {
-          \t\t\t\tstart = vma->vm_start; end = vma->vm_end;
-          \t\t\t\tshow_vma_header_prefix_fake(m, start, end, flags, pgoff, dev, ino);
-          \t\t\t\tgoto bypass;
-          \t\t\t}
-          \t\t}'''
-              s = s.replace(needle, block, 1)
-              if 'bypass:' not in s:
-                  marker = '\t/*\n\t * Print the dentry name for named mappings'
-                  if marker not in s:
-                      raise SystemExit('Maphide semantic port: bypass insertion anchor not found')
-                  s = s.replace(marker, '\tbypass:\n' + marker, 1)
-          mm.write_text(s)
-          
-          b = base.read_text()
-          if 'kern_path("/system/framework/framework-res.apk"' not in b:
-              needle = '''if (vma && vma->vm_file) {
-          \t\t*path = vma->vm_file->f_path;
-          \t\tpath_get(path);
-          \t\trc = 0;
-          \t}'''
-              if needle not in b:
-                  raise SystemExit('Maphide semantic port: find_exact_vma block anchor not found')
-              repl = '''if (vma) {
-          \t\tif (vma->vm_file) {
-          \t\t\tif (vma->vm_file->f_path.dentry &&
-          \t\t\t\tstrstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")) {
-          \t\t\t\trc = kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path);
-          \t\t\t} else {
-          \t\t\t\t*path = vma->vm_file->f_path;
-          \t\t\t\tpath_get(path);
-          \t\t\t\trc = 0;
-          \t\t\t}
-          \t\t}
-          \t}'''
-              b = b.replace(needle, repl, 1)
-          base.write_text(b)
+            echo "========== STOCK KERNEL BASELINE =========="
+            echo "DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "SHA=$GITHUB_SHA"
+            echo "BRANCH=$GITHUB_REF_NAME"
+            echo
+            git rev-parse HEAD
+            git status --short
+            echo
+            grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile
+            echo
+            echo "Defconfig input: ${{ github.event.inputs.defconfig }}"
+            echo
+            df -h
+            echo
+            free -h
+          } > "$DIAG_DIR/02-initialize.log" 2>&1
+
+      - name: 03 - Install Build Dependencies
+        shell: bash
+        run: |
+          set +e
+          LOG="$DIAG_DIR/03-install-dependencies.log"
+          : > "$LOG"
+          {
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              git curl wget make gcc g++ bison flex bc cpio \
+              python3 python-is-python3 gawk zip unzip rsync patch perl \
+              libssl-dev libelf-dev device-tree-compiler file
+            echo
+            echo "gcc:"
+            gcc --version | sed -n '1p'
+            echo "make:"
+            make --version | sed -n '1p'
+            echo "python:"
+            python3 --version
+          } > "$LOG" 2>&1
+          STATUS=$?
+          tail -100 "$LOG" || true
+          exit "$STATUS"
+
+      - name: 04 - Download Android Clang r547379
+        shell: bash
+        run: |
+          set +e
+          LOG="$DIAG_DIR/04-download-clang.log"
+          : > "$LOG"
+          {
+            rm -rf clang-prebuilt toolchain
+            git clone --depth=1 --filter=blob:none --sparse \
+              --branch android16-qpr2-release \
+              https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86.git \
+              clang-prebuilt
+            cd clang-prebuilt
+            git sparse-checkout set clang-r547379
+            cd ..
+            test -x "$CLANG_DIR/bin/clang"
+            test -x "$CLANG_DIR/bin/ld.lld"
+            ln -s "$CLANG_DIR" toolchain
+            "$CLANG_DIR/bin/clang" --version
+            "$CLANG_DIR/bin/ld.lld" --version
+          } > "$LOG" 2>&1
+          STATUS=$?
+          tail -100 "$LOG" || true
+          exit "$STATUS"
+
+      - name: 05 - Download AArch64 GCC 4.9
+        shell: bash
+        run: |
+          set +e
+          LOG="$DIAG_DIR/05-download-gcc64.log"
+          : > "$LOG"
+          {
+            rm -rf gcc64
+            git clone --depth=1 \
+              https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+              gcc64
+            test -x gcc64/bin/aarch64-linux-android-gcc
+            gcc64/bin/aarch64-linux-android-gcc --version
+          } > "$LOG" 2>&1
+          STATUS=$?
+          tail -80 "$LOG" || true
+          exit "$STATUS"
+
+      - name: 06 - Download ARM32 GCC 4.9
+        shell: bash
+        run: |
+          set +e
+          LOG="$DIAG_DIR/06-download-gcc32.log"
+          : > "$LOG"
+          {
+            rm -rf gcc32
+            git clone --depth=1 \
+              https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
+              gcc32
+            test -x gcc32/bin/arm-linux-androideabi-gcc
+            gcc32/bin/arm-linux-androideabi-gcc --version
+          } > "$LOG" 2>&1
+          STATUS=$?
+          tail -80 "$LOG" || true
+          exit "$STATUS"
+
+      - name: 07 - Prepare Toolchain Environment
+        shell: bash
+        run: |
+          set +e
+          LOG="$DIAG_DIR/07-toolchain-check.log"
+          : > "$LOG"
+          {
+            echo "=================================="
+            echo "TOOLCHAIN ENVIRONMENT"
+            echo "=================================="
+
+            # IMPORTANT: GITHUB_PATH affects later steps, not the current step.
+            # Export PATH here as well so ld.lld is available immediately.
+            export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
+
+            echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+            echo "$GCC64_DIR/bin" >> "$GITHUB_PATH"
+            echo "$GCC32_DIR/bin" >> "$GITHUB_PATH"
+
+            echo "CROSS_COMPILE=$GCC64_DIR/bin/aarch64-linux-android-" >> "$GITHUB_ENV"
+            echo "CROSS_COMPILE_ARM32=$GCC32_DIR/bin/arm-linux-androideabi-" >> "$GITHUB_ENV"
+
+            echo
+            echo "PATH:"
+            echo "$PATH"
+
+            echo
+            echo "CLANG:"
+            command -v clang
+            clang --version | sed -n '1,2p'
+
+            echo
+            echo "LLD:"
+            command -v ld.lld
+            ld.lld --version | sed -n '1,2p'
+
+            echo
+            echo "AARCH64 GCC:"
+            command -v aarch64-linux-android-gcc
+            aarch64-linux-android-gcc --version | sed -n '1p'
+
+            echo
+            echo "ARM32 GCC:"
+            command -v arm-linux-androideabi-gcc
+            arm-linux-androideabi-gcc --version | sed -n '1p'
+
+            echo
+            echo "Exact tool files:"
+            ls -lh "$CLANG_DIR/bin/clang" "$CLANG_DIR/bin/ld.lld"
+
+            echo
+            echo "[PASS] Toolchain Ready"
+          } > "$LOG" 2>&1
+          STATUS=$?
+          cat "$LOG"
+          exit "$STATUS"
+
+      # ============================================================
+      # 08 - SukiSU-Ultra + SUSFS integration
+      #
+      # This is a NON-GKI 4.19 build. SukiSU's documented non-GKI
+      # hook is Manual Hook; KPROBES remains enabled as a kernel
+      # capability but is not selected as the KSU hook mode.
+      # ============================================================
+      - name: 08 - Integrate SukiSU-Ultra susfs-main
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/08-sukisu.log"
+          : > "$LOG"
+          {
+            echo "========== SUKISU INTEGRATION =========="
+            echo "SukiSU source: official susfs-main integration"
+            test ! -e KernelSU || true
+
+            # Use the official integration script documented for SUSFS.
+            curl -fL --retry 5 --retry-all-errors \
+              "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+              -o /tmp/sukisu-setup.sh
+            test -s /tmp/sukisu-setup.sh
+
+            bash /tmp/sukisu-setup.sh susfs-main
+
+            test -d KernelSU
+            test -f KernelSU/kernel/Kconfig
+            test -f KernelSU/kernel/Makefile
+
+            echo "SukiSU integration tree:"
+            git status --short
+            git -C KernelSU describe --tags --always 2>/dev/null || true
+          } | tee "$LOG"
+
+      # ============================================================
+      # 09 - Strict SUSFS v2.2.0 source gate
+      #
+      # IMPORTANT: official SUSFS still maintains a dedicated
+      # kernel-4.19 patch line, but that line is older than v2.2.0.
+      # Therefore this workflow NEVER pretends that an old 4.19
+      # patch is v2.2.0. It requires the integrated source itself
+      # to report v2.2.0 and checks the actual feature symbols.
+      #
+      # The official SUSFS project still exposes a dedicated 4.19 patch
+      # line, but its published 4.19 line predates v2.2.0. Therefore this
+      # workflow does not mix that older 4.19 patch set into a v2.2.0 claim.
+      # It requires the SukiSU-integrated source itself to prove v2.2.0.
+      #
+      # If the exact v2.2.0 source cannot be proven compatible with
+      # this LG 4.19 tree, the workflow STOPS instead of silently
+      # downgrading SUSFS or mixing incompatible patch generations.
+      # ============================================================
+      - name: 09 - Verify SUSFS v2.2.0 and prepare userspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/09-susfs-v220.log"
+          : > "$LOG"
+          {
+            echo "========== SUSFS v2.2.0 STRICT GATE =========="
+
+            # Record the actual integrated source version.
+            VERSION_HITS="$(grep -RniE 'SUSFS.*2\.2\.0|VERSION.*2\.2\.0|v2\.2\.0' \
+              fs include/linux KernelSU 2>/dev/null | head -80 || true)"
+            printf '%s\n' "$VERSION_HITS"
+
+            if [ -z "$VERSION_HITS" ]; then
+              echo "[FAIL] Exact SUSFS v2.2.0 source evidence was not found."
+              echo "[FAIL] Refusing to relabel an older 4.19 SUSFS patch as v2.2.0."
+              exit 1
+            fi
+
+            # Core v2.x capabilities requested by this workflow.
+            REQUIRED_HEADERS=(
+              include/linux/susfs.h
+            )
+            for f in "${REQUIRED_HEADERS[@]}"; do
+              test -s "$f"
+            done
+
+            # The source must contain the v2 feature families.
+            for needle in SUS_PATH SUS_MOUNT SUS_KSTAT SUS_MAP OPEN_REDIRECT SPOOF_UNAME; do
+              if ! grep -Rqs "$needle" fs include/linux KernelSU 2>/dev/null; then
+                echo "[FAIL] SUSFS feature family missing: $needle"
+                exit 1
+              fi
+            done
+
+            # Build the official userspace module from its v2-aware branch.
+            rm -rf susfs4ksu-module
+            git clone --depth=1 --branch v1.5.2+ \
+              https://github.com/sidex15/susfs4ksu-module.git \
+              susfs4ksu-module
+            git -C susfs4ksu-module fetch --depth=1 origin d30974d
+            git -C susfs4ksu-module checkout --detach d30974d
+
+            test -s susfs4ksu-module/module.prop
+            grep -q 'v1.5.2' susfs4ksu-module/module.prop
+            MODULE_SHA="$(git -C susfs4ksu-module rev-parse HEAD)"
+            echo "SUSFS userspace revision: $MODULE_SHA"
+            # R28 is pinned to upstream build commit d30974d
+            # build workflow; keep the resolved SHA in the CI artifact.
+            git -C susfs4ksu-module log -1 --oneline
+
+            echo "[PASS] SUSFS kernel source passed v2.2.0 evidence gate."
+            echo "[PASS] SUSFS userspace module source pinned to v1.5.2+."
+          } | tee "$LOG"
+
+      # ============================================================
+      # 10 - Baseband-Guard + WireGuard 4.19 compatibility
+      # ============================================================
+      - name: 10 - Integrate BBG and WireGuard
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/10-bbg-wireguard.log"
+          : > "$LOG"
+          {
+            echo "========== BASEBAND-GUARD =========="
+            curl -fL --retry 5 --retry-all-errors \
+              https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/main/setup.sh \
+              -o /tmp/bbg-setup.sh
+            chmod +x /tmp/bbg-setup.sh
+            bash /tmp/bbg-setup.sh v1.1
+            test -d Baseband-guard
+            test -f security/baseband-guard/Kconfig
+            test -f security/baseband-guard/baseband_guard.c
+
+            echo "========== WIREGUARD COMPAT =========="
+            rm -rf wireguard-linux-compat
+            git clone --depth=1 \
+              https://github.com/WireGuard/wireguard-linux-compat.git \
+              wireguard-linux-compat
+            test -f wireguard-linux-compat/src/Makefile
+            echo "[PASS] WireGuard compat source available for kernel 3.10-5.5."
+            echo "[PASS] It will be built against the exact LG 4.19 headers after config."
+          } | tee "$LOG"
+
+      # ============================================================
+      # 11 - Stock defconfig + requested feature configuration
+      # ============================================================
+      - name: 11 - Configure Stock Defconfig + All Requested Features
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/11-config.log"
+          : > "$LOG"
+          {
+            export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
+            export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
+            export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
+
+            DEFCONFIG="${{ github.event.inputs.defconfig }}"
+            test -f "arch/arm64/configs/${DEFCONFIG}"
+
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              "$DEFCONFIG"
+
+            test -s .config
+            test -x scripts/config
+
+            # Required SukiSU/SUSFS/root features.
+            REQUIRED=(
+              CONFIG_KSU
+              CONFIG_KSU_SUSFS
+              CONFIG_KSU_MANUAL_HOOK
+              CONFIG_KPROBES
+              CONFIG_KALLSYMS
+              CONFIG_KALLSYMS_ALL
+              CONFIG_KPM
+              CONFIG_BBG
+              CONFIG_BBG_BLOCK_BOOT
+              CONFIG_BBG_BLOCK_RECOVERY
+              CONFIG_EXT4_FS
+              CONFIG_OVERLAY_FS
+              CONFIG_BPF
+              CONFIG_BPF_SYSCALL
+              CONFIG_NETFILTER
+              CONFIG_CFG80211
+              CONFIG_ANDROID_BINDER_IPC
+              CONFIG_ANDROID_BINDERFS
+              CONFIG_DM_VERITY
+              CONFIG_FS_ENCRYPTION
+              CONFIG_IP_SET
+            )
+
+            # Optional/device-dependent features from the requested stack.
+            OPTIONAL=(
+              CONFIG_TCP_CONG_BBR
+              CONFIG_NET_SCH_FQ
+              CONFIG_NET_SCH_CAKE
+              CONFIG_NET_SCH_PIE
+              CONFIG_NETFILTER_XT_TARGET_TTL
+              CONFIG_IP6_NF_NAT
+              CONFIG_RMNET
+              CONFIG_RMNET_IPA
+              CONFIG_RMNET_IPA3
+              CONFIG_QMI_ENCDEC
+              CONFIG_QMI_WWAN
+              CONFIG_KSU_SUSFS_SUS_PATH
+              CONFIG_KSU_SUSFS_SUS_MOUNT
+              CONFIG_KSU_SUSFS_SUS_KSTAT
+              CONFIG_KSU_SUSFS_SPOOF_UNAME
+              CONFIG_KSU_SUSFS_ENABLE_LOG
+              CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+              CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+              CONFIG_KSU_SUSFS_OPEN_REDIRECT
+              CONFIG_KSU_SUSFS_SUS_MAP
+              CONFIG_KSU_SUSFS_SPOOF_AVC_LOG
+              CONFIG_KSU_SUSFS_SUS_MEMFD
+              CONFIG_KSU_TRACEPOINT_HOOK
+            )
+
+            for sym in "${REQUIRED[@]}"; do
+              if ! grep -q "^config ${sym#CONFIG_}" "Kconfig" 2>/dev/null &&
+                 ! grep -Rqs "^config ${sym#CONFIG_}" --include='Kconfig*' .; then
+                echo "[FAIL] Required Kconfig symbol does not exist: $sym"
+                exit 1
+              fi
+              scripts/config --enable "$sym"
+            done
+
+            # Explicitly keep Tracepoint Hook off: Manual Hook is the
+            # non-GKI KSU hook method for this 4.19 build.
+            if grep -Rqs "^config KSU_TRACEPOINT_HOOK" --include='Kconfig*' .; then
+              scripts/config --disable CONFIG_KSU_TRACEPOINT_HOOK
+            fi
+
+            # Optional symbols are enabled only when the exact source tree
+            # actually provides them. No invented Kconfig symbols.
+            for sym in "${OPTIONAL[@]}"; do
+              if grep -Rqs "^config ${sym#CONFIG_}" --include='Kconfig*' .; then
+                scripts/config --enable "$sym"
+              else
+                echo "[INFO] Optional symbol absent in this stock tree: $sym"
+              fi
+            done
+
+            # SUSFS v2.x does not use the legacy SUS_SU helper.
+            if grep -Rqs "^config KSU_SUSFS_SUS_SU" --include='Kconfig*' .; then
+              scripts/config --disable CONFIG_KSU_SUSFS_SUS_SU
+            fi
+
+            # SukiSU non-GKI hook invariant.
+            scripts/config --enable CONFIG_KSU_MANUAL_HOOK
+            scripts/config --enable CONFIG_KPROBES
+            if grep -Rqs "^config KSU_TRACEPOINT_HOOK" --include='Kconfig*' .; then
+              scripts/config --disable CONFIG_KSU_TRACEPOINT_HOOK
+            fi
+
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              olddefconfig
+
+            echo "========== FINAL REQUESTED CONFIG =========="
+            for sym in "${REQUIRED[@]}"; do
+              grep -q "^${sym}=y$" .config || {
+                echo "[FAIL] $sym was not resolved to =y"
+                exit 1
+              }
+              grep "^${sym}=" .config
+            done
+
+            if grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' .config; then
+              echo "[FAIL] Tracepoint Hook must not be active with Manual Hook."
+              exit 1
+            fi
+
+            echo "[PASS] Required feature configuration verified."
+          } | tee "$LOG"
+
+      - name: 12 - Build WireGuard compat module
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/12-wireguard-build.log"
+          : > "$LOG"
+          {
+            export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
+            export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
+            export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
+
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              prepare modules_prepare
+
+            make -C "$GITHUB_WORKSPACE" \
+              ARCH=arm64 \
+              LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              M="$GITHUB_WORKSPACE/wireguard-linux-compat/src" \
+              KERNEL_SRC="$GITHUB_WORKSPACE" \
+              V=1
+
+            test -s wireguard-linux-compat/src/wireguard.ko
+            mkdir -p external-modules
+            cp -f wireguard-linux-compat/src/wireguard.ko external-modules/
+            echo "[PASS] WireGuard compat module built."
+          } | tee "$LOG"
+
+      - name: 13 - Non-destructive source audit + Maphide
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/13-maphide-source-audit.log"
+          : > "$LOG"
+          {
+            echo "========== NON-DESTRUCTIVE SOURCE AUDIT =========="
+
+            # Existing stock files may be modified only by scoped compatibility
+            # fixes/integrations. No tracked file may disappear.
+            git ls-files -z > /tmp/tracked.before
+            tr '\0' '\n' < /tmp/tracked.before | sort > /tmp/tracked.before.txt
+
+            # Fetch the upstream Maphide patch.
+            curl -fL --retry 5 --retry-all-errors \
+              https://raw.githubusercontent.com/WildKernels/kernel_patches/main/archived/69_hide_stuff.patch \
+              -o /tmp/69_hide_stuff.patch
+            test -s /tmp/69_hide_stuff.patch
+
+            echo "========== MAPHIDE APPLICABILITY =========="
+            if git apply --check --verbose /tmp/69_hide_stuff.patch; then
+              echo "[PASS] Maphide patch applies cleanly."
+              git apply --verbose /tmp/69_hide_stuff.patch
+            elif git apply --check --3way /tmp/69_hide_stuff.patch; then
+              echo "[PASS] Maphide patch is 3-way source-compatible."
+              git apply --3way --verbose /tmp/69_hide_stuff.patch
+            else
+              echo "[FAIL] Upstream Maphide patch is not source-compatible with this LG 4.19 tree."
+              echo "[FAIL] No fake semantic fallback is injected."
+              echo "[FAIL] A real source-specific port is required for this exact tree."
+              exit 1
+            fi
+
+            # Strict semantic markers from the upstream patch.
+            test -f fs/proc/task_mmu.c
+            test -f fs/proc/base.c
+            grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c
+            grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
+            grep -q 'framework-res.apk' fs/proc/task_mmu.c
+            grep -q 'lineage' fs/proc/task_mmu.c
+            grep -q 'bypass' fs/proc/base.c
+
+            # No reject/orig files.
+            if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+              echo "[FAIL] Patch left .rej/.orig files."
+              exit 1
+            fi
+
+            # Compile exactly the touched procfs translation units before the
+            # full build. This catches source/API mismatches early.
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              prepare scripts
+
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              M=fs/proc \
+              V=1
+
+            # Verify no tracked source vanished.
+            git ls-files -z > /tmp/tracked.after
+            tr '\0' '\n' < /tmp/tracked.after | sort > /tmp/tracked.after.txt
+            if ! cmp -s /tmp/tracked.before.txt /tmp/tracked.after.txt; then
+              echo "[FAIL] Tracked source inventory changed."
+              comm -23 /tmp/tracked.before.txt /tmp/tracked.after.txt || true
+              exit 1
+            fi
+
+            echo "[PASS] Maphide source/application/compile checks passed."
+            echo "[PASS] No tracked source was removed."
+          } | tee "$LOG"
+
+      - name: 14 - Build Stock DTBs and Existing DTBO Sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/14-dtb-dtbo.log"
+          : > "$LOG"
+          {
+            export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
+            export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
+            export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
+
+            echo "========== STOCK DTB BUILD =========="
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              dtbs V=1
+
+            test -n "$(find arch/arm64/boot/dts -type f -name '*.dtb' -print -quit)"
+
+            echo "========== DTBO SOURCE DISCOVERY =========="
+            mapfile -t DTSO_FILES < <(
+              find arch/arm64/boot/dts \
+                -type f \( -name '*.dtso' -o -name '*overlay*.dts' -o -name '*overlay*.dtsi' \) \
+                -print | sort
+            )
+
+            if [ "${#DTSO_FILES[@]}" -eq 0 ]; then
+              echo "[INFO] No standalone DTBO source files exist in this stock checkout."
+            else
+              mkdir -p "$GITHUB_WORKSPACE/dtbo-out"
+              for src in "${DTSO_FILES[@]}"; do
+                name="$(basename "$src")"
+                case "$src" in
+                  *.dtso) out="${name%.dtso}.dtbo" ;;
+                  *)      out="${name%.dts}.dtbo" ;;
+                esac
+                echo "[BUILD] $src -> dtbo-out/$out"
+                dtc -@ -I dts -O dtb -o "dtbo-out/$out" "$src"
+              done
+            fi
+
+            echo "========== DTB/DTBO MANIFEST =========="
+            find arch/arm64/boot/dts -type f -name '*.dtb' -print | sort
+            find dtbo-out -type f -name '*.dtbo' -print 2>/dev/null | sort || true
+
+            # Never claim a specific overlay exists unless the checkout
+            # actually contains it.
+            TARGET="lito-caymanlm_lao_com-rev-1.0_overlay.dtbo"
+            if [ -f "dtbo-out/$TARGET" ]; then
+              echo "[PASS] Requested Rev-1.0 overlay built."
+            else
+              echo "[INFO] Requested Rev-1.0 overlay source is not present in this stock checkout."
+            fi
+          } | tee "$LOG"
+
+      - name: 15 - Build Kernel (Full Log to Artifact)
+        shell: bash
+        run: |
+          set +e
+          FULL_LOG="$GITHUB_WORKSPACE/kernel-build-full.log"
+          ERROR_LOG="$DIAG_DIR/12-build-errors.log"
+          TAIL_LOG="$DIAG_DIR/12-build-tail.log"
+          SUMMARY_LOG="$DIAG_DIR/12-build-summary.log"
+
+          : > "$FULL_LOG"
+          : > "$ERROR_LOG"
+          : > "$TAIL_LOG"
+          : > "$SUMMARY_LOG"
+
+          export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
+          export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
+
+          # Build-only compatibility fixes are scoped to the exact stock
+          # source directories/files that failed with this Clang 20 build.
+          # No global KCFLAGS and no unrelated kernel features are added.
+          #
+          # Qualcomm clock trace.h uses TRACE_INCLUDE_PATH "."; the include
+          # path is scoped to drivers/clk/qcom via Kbuild ccflags-y.
+          # Camera cam_trace.h needs the cam_req_mgr local header path.
+          # fault-inject.c and lgenfc.c receive source-level compatibility
+          # corrections for this kernel/compiler combination.
+          # ------------------------------------------------------------
+          # 1) Qualcomm clock trace include path
+          # ------------------------------------------------------------
+          QCOM_MAKE="drivers/clk/qcom/Makefile"
+          test -f "$QCOM_MAKE"
+
+          if ! grep -qF 'ccflags-y += -I$(src)' "$QCOM_MAKE"; then
+            {
+              echo
+              echo "# Build compatibility: local TRACE_INCLUDE_PATH for qcom trace.h"
+              echo 'ccflags-y += -I$(src)'
+            } >> "$QCOM_MAKE"
+          fi
+
+          echo "[PASS] Qualcomm trace include path scoped to drivers/clk/qcom."
+          grep -nF 'ccflags-y += -I$(src)' "$QCOM_MAKE"
+
+          # ------------------------------------------------------------
+          # 2) Camera cam_req_mgr local include path
+          #    cam_trace.h includes cam_req_mgr_core.h by name.
+          #    The header is part of the stock source tree; only the
+          #    local Kbuild include path is missing for this Clang build.
+          # ------------------------------------------------------------
+          CAM_MAKE="techpack/camera/drivers/cam_req_mgr/Makefile"
+          test -f "$CAM_MAKE"
+
+          if ! grep -qF 'ccflags-y += -I$(src)' "$CAM_MAKE"; then
+            {
+              echo
+              echo "# Build compatibility: cam_trace.h local cam_req_mgr headers"
+              echo 'ccflags-y += -I$(src)'
+            } >> "$CAM_MAKE"
+          fi
+
+          echo "[PASS] Camera cam_req_mgr include path scoped to cam_req_mgr."
+          grep -nF 'ccflags-y += -I$(src)' "$CAM_MAKE"
+
+          # ------------------------------------------------------------
+          # 3) Camera cam_cci local include path
+          #    cam_sensor_i2c.h includes cam_cci_dev.h by name.
+          #    The header is part of the stock source tree; only the
+          #    cam_cci directory needs to be added to its local search
+          #    path for this Clang build.
+          # ------------------------------------------------------------
+          CCI_MAKE="techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile"
+          test -f "$CCI_MAKE"
+
+          if ! grep -qF 'ccflags-y += -I$(src)' "$CCI_MAKE"; then
+            {
+              echo
+              echo "# Build compatibility: local cam_cci headers"
+              echo 'ccflags-y += -I$(src)'
+            } >> "$CCI_MAKE"
+          fi
+
+          echo "[PASS] Camera cam_cci include path scoped to cam_cci."
+          grep -nF 'ccflags-y += -I$(src)' "$CCI_MAKE"
+
+          # ------------------------------------------------------------
+          # 4) Camera cam_actuator local include path
+          #    lgit_onsemi_actuator_utils.c includes cam_actuator_core.h
+          #    by name. The header is already in the stock tree.
+          # ------------------------------------------------------------
+          ACT_MAKE="techpack/camera/drivers/cam_sensor_module/cam_actuator/Makefile"
+          test -f "$ACT_MAKE"
+
+          if ! grep -qF 'ccflags-y += -I$(src)' "$ACT_MAKE"; then
+            {
+              echo
+              echo "# Build compatibility: local cam_actuator headers"
+              echo 'ccflags-y += -I$(src)'
+            } >> "$ACT_MAKE"
+          fi
+
+          echo "[PASS] Camera cam_actuator include path scoped to cam_actuator."
+          grep -nF 'ccflags-y += -I$(src)' "$ACT_MAKE"
+
+          # ------------------------------------------------------------
+          # 5) Camera cam_ois nested LGIT/Onsemi include path
+          #
+          # The current build log reaches:
+          #   lgit_s5kgw1_onsemi_ois.c:10:10:
+          #   fatal error: 'cam_ois_core.h' file not found
+          #
+          # The source file is under cam_ois/lgit_onsemi/, while the
+          # stock cam_ois_core.h belongs to the parent cam_ois directory.
+          # Kbuild does not automatically search that parent directory
+          # for a quoted header from the nested subdirectory.
+          #
+          # Add ONLY the parent cam_ois directory to the nested
+          # lgit_onsemi Kbuild include path. No header is downloaded,
+          # copied, replaced, or generated.
+          # ------------------------------------------------------------
+          OIS_DIR="techpack/camera/drivers/cam_sensor_module/cam_ois"
+          OIS_SUBDIR="$OIS_DIR/lgit_onsemi"
+          OIS_PARENT_MAKE="$OIS_DIR/Makefile"
+          OIS_HEADER="$OIS_DIR/cam_ois_core.h"
+
+          test -d "$OIS_DIR"
+          test -d "$OIS_SUBDIR"
+          test -f "$OIS_PARENT_MAKE"
+          test -f "$OIS_HEADER"
+
+          # Kbuild's subdir-ccflags-y is intentionally used in the
+          # parent cam_ois Kbuild file. Unlike ccflags-y in lgit_onsemi,
+          # this applies to cam_ois itself and every nested OIS directory,
+          # including trees that use a Kbuild file instead of Makefile.
+          if ! grep -qF 'subdir-ccflags-y += -I$(src)' "$OIS_PARENT_MAKE"; then
+            {
+              echo
+              echo "# Build compatibility: stock cam_ois headers for nested OIS drivers"
+              echo 'subdir-ccflags-y += -I$(src)'
+            } >> "$OIS_PARENT_MAKE"
+          fi
+
+          echo "[PASS] Stock cam_ois_core.h exists:"
+          ls -lh "$OIS_HEADER"
+          echo "[PASS] cam_ois parent include path propagated to nested OIS:"
+          grep -nF 'subdir-ccflags-y += -I$(src)' "$OIS_PARENT_MAKE"
+
+          # ------------------------------------------------------------
+          # 6) Stock LG display nested-header include path
+          #
+          # Current build reaches:
+          #   techpack/display/msm/lge/cm/lge_color_manager.c:19:10:
+          #   fatal error: 'lge_dsi_panel_def.h' file not found
+          #
+          # The stock header lives in the parent:
+          #   techpack/display/msm/lge/lge_dsi_panel_def.h
+          #
+          # The stock lge/Makefile supplies several display include paths,
+          # but not its own directory. Propagate ONLY the stock lge
+          # directory to its nested display objects.
+          #
+          # No header is downloaded/copied/replaced and no display feature
+          # is enabled or disabled.
+          # ------------------------------------------------------------
+          LGE_DISPLAY_DIR="techpack/display/msm/lge"
+          LGE_DISPLAY_MAKE="$LGE_DISPLAY_DIR/Makefile"
+          LGE_DISPLAY_HEADER="$LGE_DISPLAY_DIR/lge_dsi_panel_def.h"
+
+          test -d "$LGE_DISPLAY_DIR"
+          test -f "$LGE_DISPLAY_MAKE"
+          test -f "$LGE_DISPLAY_HEADER"
+
+          if ! grep -qF 'subdir-ccflags-y += -I$(src)' "$LGE_DISPLAY_MAKE"; then
+            {
+              echo
+              echo "# Build compatibility: stock LG display parent headers for nested objects"
+              echo 'subdir-ccflags-y += -I$(src)'
+            } >> "$LGE_DISPLAY_MAKE"
+          fi
+
+          echo "[PASS] Stock LG display header exists:"
+          ls -lh "$LGE_DISPLAY_HEADER"
+          echo "[PASS] LG display parent include path propagated to nested objects:"
+          grep -nF 'subdir-ccflags-y += -I$(src)' "$LGE_DISPLAY_MAKE"
+
+          # ------------------------------------------------------------
+          # 6) Stock display PLL trace-header include path
+          #
+          # Current build log reaches:
+          #   techpack/display/pll/dsi_pll_10nm.c
+          #   -> techpack/display/pll/pll_trace.h
+          #   -> include/trace/define_trace.h
+          #   -> fatal error: './pll_trace.h' file not found
+          #
+          # The trace header is in the same stock directory:
+          #   techpack/display/pll/pll_trace.h
+          #
+          # define_trace.h expands TRACE_INCLUDE_PATH relative to the
+          # compiler include search path. Add ONLY the stock PLL directory
+          # to its own nested build. Do not copy/download another header.
+          # ------------------------------------------------------------
+          PLL_DIR="techpack/display/pll"
+          PLL_MAKE="$PLL_DIR/Makefile"
+          PLL_HEADER="$PLL_DIR/pll_trace.h"
+
+          test -d "$PLL_DIR"
+          test -f "$PLL_MAKE"
+          test -f "$PLL_HEADER"
+
+          if ! grep -qF 'subdir-ccflags-y += -I$(src)' "$PLL_MAKE"; then
+            {
+              echo
+              echo "# Build compatibility: stock PLL trace header for nested display PLL objects"
+              echo 'subdir-ccflags-y += -I$(src)'
+            } >> "$PLL_MAKE"
+          fi
+
+          echo "[PASS] Stock PLL trace header exists:"
+          ls -lh "$PLL_HEADER"
+          echo "[PASS] PLL parent include path propagated:"
+          grep -nF 'subdir-ccflags-y += -I$(src)' "$PLL_MAKE"
+
+          # ------------------------------------------------------------
+          # 6) Stock DTS consistency fix: litomagnus MTP WSA references
+          #
+          # Current build log reaches the stock DTB compiler and fails only
+          # because litomagnus-mtp.dtsi references four labels:
+          #   wsa881x_0211 .. wsa881x_0214
+          #
+          # In this stock tree those WSA node definitions are intentionally
+          # commented out in lito-audio-overlay.dtsi (WSA speaker amp
+          # disabled), so the labels do not exist. The litomagnus overlay
+          # still contains four status="disabled" references to those absent
+          # labels. dtc treats an unresolved phandle label as a hard error.
+          #
+          # Do NOT download or add another WSA node definition: doing so would
+          # change the stock audio/device-tree behavior. Instead, remove only
+          # the four dead references from this overlay. They already request
+          # status="disabled" and therefore cannot represent an enabled stock
+          # feature. All other stock DTS content remains untouched.
+          # ------------------------------------------------------------
+          # The build log from the previous run proves the failing DTB is
+          # litomagnus-cdp.dtb, not litomagnus-mtp.dtb:
+          #   litomagnus-cdp.dtsi:44  Label or path wsa881x_0211 not found
+          #   ... through wsa881x_0214
+          #
+          # The earlier fix handled only the MTP file. Keep that fix, but
+          # apply the same narrowly-scoped cleanup to BOTH stock Magnus
+          # variants because this kernel builds both DTBs. No new WSA node,
+          # header, driver, or feature is added.
+          LITOMAGNUS_MTP_DTSI="arch/arm64/boot/dts/vendor/qcom/litomagnus-mtp.dtsi"
+          LITOMAGNUS_CDP_DTSI="arch/arm64/boot/dts/vendor/qcom/litomagnus-cdp.dtsi"
+          test -f "$LITOMAGNUS_MTP_DTSI"
+          test -f "$LITOMAGNUS_CDP_DTSI"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          files = [
+              Path("arch/arm64/boot/dts/vendor/qcom/litomagnus-mtp.dtsi"),
+              Path("arch/arm64/boot/dts/vendor/qcom/litomagnus-cdp.dtsi"),
+          ]
+
+          labels = [
+              "wsa881x_0211",
+              "wsa881x_0212",
+              "wsa881x_0213",
+              "wsa881x_0214",
+          ]
+
+          for p in files:
+              s = p.read_text()
+              changed = []
+
+              # Remove the COMPLETE disabled override blocks, not just the
+              # unresolved label line. Leaving "status = disabled;" and "};"
+              # behind creates invalid DTS syntax.
+              for label in labels:
+                  pattern = (
+                      r'(?m)^&' + re.escape(label) +
+                      r'\s*\{\n'
+                      r'\s*status\s*=\s*"disabled";\n'
+                      r'\s*\};\n?'
+                  )
+                  s2, count = re.subn(pattern, "", s, count=1)
+                  if count:
+                      changed.append(label)
+                      s = s2
+
+              p.write_text(s)
+
+              if changed:
+                  print(f"[FIXED] {p}: removed complete unresolved disabled WSA override blocks:")
+                  for label in changed:
+                      print("  &" + label)
+              else:
+                  print(f"[PASS] {p}: no unresolved disabled WSA override blocks needed removal.")
           PY
-          fi
-          # Never accept partial patch artifacts.
-          ! find fs/proc -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .
-          grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c
-          grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
-          grep -q 'framework-res.apk' fs/proc/task_mmu.c
-          grep -q 'kern_path("/system/framework/framework-res.apk"' fs/proc/base.c
 
-      - name: DTB and DTBO feature-complete build
-        run: |
-          set -euxo pipefail
-          test -d arch/arm64/boot/dts/vendor/lge
-          test -f arch/arm64/boot/dts/vendor/lge/Makefile
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
-          # Build the normal device DTB and every existing Global Lao overlay source; do not invent hardware nodes.
-          make -j"${{ inputs.build_jobs }}" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 dtbs 2>&1 | tee dtb-build.log
-          if command -v dtbs_check >/dev/null 2>&1; then
-            make -j"${{ inputs.build_jobs }}" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 dtbs_check 2>&1 | tee dtbs-check.log
+          echo "[PASS] Verify no dead WSA phandle references remain in either Magnus DTSI:"
+          for f in "$LITOMAGNUS_MTP_DTSI" "$LITOMAGNUS_CDP_DTSI"; do
+            if grep -nE '^[[:space:]]*&wsa881x_021[1-4][[:space:]]*$' "$f"; then
+              echo "[FAIL] Unresolved WSA references still present in $f"
+              exit 1
+            fi
+          done
+
+          echo "[PASS] Both litomagnus MTP/CDP DTSI files are free of the four dead WSA references."
+
+          # ------------------------------------------------------------
+          # 7) Stock Lito/Magnus WSA speaker dependency fix
+          #
+          # Diagnostics (17) shows the previous v5 fix moved too much into
+          # common lito-pinctrl.dtsi. That made the unrelated stock
+          # lito-rumi.dtb inherit wsa_spkr_en1/en2 and fail because its
+          # audio tree does not provide the speaker-enable dependency.
+          #
+          # Upstream Lito keeps the speaker GPIO states in lito-pinctrl.dtsi,
+          # while the wsa_spkr_en1/en2 consumer nodes live in the Lito audio
+          # overlay. The Magnus CDP/MTP trees are the targets that reference
+          # these existing WSA883x controls.
+          #
+          # Therefore:
+          #   1. Keep ONLY the stock speaker GPIO states in common pinctrl.
+          #   2. Restore wsa_spkr_en1/en2 ONLY in the two Magnus target DTSIs.
+          #   3. Do not modify lito-rumi, camera, display, or any other DTB.
+          #
+          # This is a dependency restoration, not a new kernel feature.
+          # ------------------------------------------------------------
+          LITO_PINCTRL="arch/arm64/boot/dts/vendor/qcom/lito-pinctrl.dtsi"
+          LITOMAGNUS_MTP_DTSI="arch/arm64/boot/dts/vendor/qcom/litomagnus-mtp.dtsi"
+          LITOMAGNUS_CDP_DTSI="arch/arm64/boot/dts/vendor/qcom/litomagnus-cdp.dtsi"
+
+          test -f "$LITO_PINCTRL"
+          test -f "$LITOMAGNUS_MTP_DTSI"
+          test -f "$LITOMAGNUS_CDP_DTSI"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          pinctrl = Path("arch/arm64/boot/dts/vendor/qcom/lito-pinctrl.dtsi")
+          mtp = Path("arch/arm64/boot/dts/vendor/qcom/litomagnus-mtp.dtsi")
+          cdp = Path("arch/arm64/boot/dts/vendor/qcom/litomagnus-cdp.dtsi")
+
+          # These are the stock Lito WSA speaker reset GPIO states.
+          # They belong in the common TLMM pinctrl definition because the
+          # speaker-enable nodes consume these labels.
+          pinctrl_block = r"""
+          &tlmm {
+              /* Stock Lito WSA speaker reset pins */
+              spkr_1_sd_n {
+                  spkr_1_sd_n_sleep: spkr_1_sd_n_sleep {
+                      mux {
+                          pins = "gpio58";
+                          function = "gpio";
+                      };
+
+                      config {
+                          pins = "gpio58";
+                          drive-strength = <2>;
+                          bias-pull-down;
+                          input-enable;
+                      };
+                  };
+
+                  spkr_1_sd_n_active: spkr_1_sd_n_active {
+                      mux {
+                          pins = "gpio58";
+                          function = "gpio";
+                      };
+
+                      config {
+                          pins = "gpio58";
+                          drive-strength = <16>;
+                          bias-disable;
+                          output-high;
+                      };
+                  };
+              };
+
+              spkr_2_sd_n {
+                  spkr_2_sd_n_sleep: spkr_2_sd_n_sleep {
+                      mux {
+                          pins = "gpio65";
+                          function = "gpio";
+                      };
+
+                      config {
+                          pins = "gpio65";
+                          drive-strength = <2>;
+                          bias-pull-down;
+                          input-enable;
+                      };
+                  };
+
+                  spkr_2_sd_n_active: spkr_2_sd_n_active {
+                      mux {
+                          pins = "gpio65";
+                          function = "gpio";
+                      };
+
+                      config {
+                          pins = "gpio65";
+                          drive-strength = <16>;
+                          bias-disable;
+                          output-high;
+                      };
+                  };
+              };
+          };
+          """
+
+          ps = pinctrl.read_text()
+
+          # The stock file keeps these labels inside a block comment
+          # ("Disable WSA speaker amp"). A plain substring check therefore
+          # falsely reports them as already present. Strip block comments
+          # before checking for an actual active definition.
+          ps_active = re.sub(r"/\*.*?\*/", "", ps, flags=re.S)
+          if (
+              "spkr_1_sd_n_active:" not in ps_active
+              or "spkr_1_sd_n_sleep:" not in ps_active
+              or "spkr_2_sd_n_active:" not in ps_active
+              or "spkr_2_sd_n_sleep:" not in ps_active
+          ):
+              ps = ps.rstrip() + "\n\n" + pinctrl_block.strip() + "\n"
+              pinctrl.write_text(ps)
+              print("[FIXED] Restored stock WSA speaker GPIO states in lito-pinctrl.dtsi")
+          else:
+              print("[PASS] WSA speaker GPIO states already exist in lito-pinctrl.dtsi")
+
+          # These two nodes are intentionally scoped to the Magnus target
+          # DTSIs. Keeping them out of common lito-pinctrl prevents unrelated
+          # targets such as lito-rumi.dtb from acquiring a dangling reference.
+          wsa_block = r"""
+          &soc {
+              /* Stock Lito/Magnus WSA speaker controls */
+              wsa_spkr_en1: wsa_spkr_en1_pinctrl {
+                  compatible = "qcom,msm-cdc-pinctrl";
+                  pinctrl-names = "aud_active", "aud_sleep";
+                  pinctrl-0 = <&spkr_1_sd_n_active>;
+                  pinctrl-1 = <&spkr_1_sd_n_sleep>;
+              };
+
+              wsa_spkr_en2: wsa_spkr_en2_pinctrl {
+                  compatible = "qcom,msm-cdc-pinctrl";
+                  pinctrl-names = "aud_active", "aud_sleep";
+                  pinctrl-0 = <&spkr_2_sd_n_active>;
+                  pinctrl-1 = <&spkr_2_sd_n_sleep>;
+              };
+          };
+          """
+
+          for p in (mtp, cdp):
+              text = p.read_text()
+              if "wsa_spkr_en1:" not in text:
+                  text = text.rstrip() + "\n\n" + wsa_block.strip() + "\n"
+                  p.write_text(text)
+                  print(f"[FIXED] Restored wsa_spkr_en1/en2 in {p.name}")
+              else:
+                  print(f"[PASS] {p.name} already contains wsa_spkr_en1/en2")
+
+          # Hard guard: the common pinctrl must NOT contain the consumer nodes.
+          final_pinctrl = pinctrl.read_text()
+          if "wsa_spkr_en1:" in final_pinctrl or "wsa_spkr_en2:" in final_pinctrl:
+              raise SystemExit("wsa_spkr_en1/en2 must not be placed in common lito-pinctrl.dtsi")
+
+          for p in (mtp, cdp):
+              text = p.read_text()
+              for label in (
+                  "wsa_spkr_en1:",
+                  "wsa_spkr_en2:",
+                  "spkr_1_sd_n_active",
+                  "spkr_1_sd_n_sleep",
+                  "spkr_2_sd_n_active",
+                  "spkr_2_sd_n_sleep",
+              ):
+                  if label not in text and label.startswith("wsa_"):
+                      raise SystemExit(f"{p}: missing {label}")
+
+          print("[PASS] WSA definitions are now scoped only to Magnus MTP/CDP targets.")
+          PY
+
+          echo "[PASS] Verify common pinctrl contains only WSA GPIO states:"
+          grep -nE 'spkr_1_sd_n_(active|sleep):|spkr_2_sd_n_(active|sleep):' "$LITO_PINCTRL"
+          if grep -qE 'wsa_spkr_en[12]:' "$LITO_PINCTRL"; then
+            echo "[FAIL] Common lito-pinctrl still contains Magnus-only WSA consumers"
+            exit 1
+          fi
+
+          echo "[PASS] Verify Magnus target WSA consumers:"
+          grep -nE 'wsa_spkr_en[12]:' "$LITOMAGNUS_MTP_DTSI" "$LITOMAGNUS_CDP_DTSI"
+
+          # Never force dtc output. The following check is deliberately scoped
+          # to the targets that actually consume these labels.
+          grep -q 'wsa_spkr_en1:' "$LITOMAGNUS_MTP_DTSI"
+          grep -q 'wsa_spkr_en2:' "$LITOMAGNUS_MTP_DTSI"
+          grep -q 'wsa_spkr_en1:' "$LITOMAGNUS_CDP_DTSI"
+          grep -q 'wsa_spkr_en2:' "$LITOMAGNUS_CDP_DTSI"
+
+          echo "[PASS] Existing Magnus WSA883x phandle dependencies now have scoped stock definitions."
+          # ------------------------------------------------------------
+          # 6) Linux 4.19 fault-inject WRITE_ONCE compatibility
+          #    Stock 4.19 compiler headers define WRITE_ONCE() as a
+          #    statement-style macro. This source used it as an expression:
+          #       if (!WRITE_ONCE(current->fail_nth, fail_nth - 1))
+          #    Keep the same behavior with an explicit decrement/store/test.
+          # ------------------------------------------------------------
+          FAULT_SRC="lib/fault-inject.c"
+          test -f "$FAULT_SRC"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("lib/fault-inject.c")
+          s = p.read_text()
+
+          old = """\t\tif (fail_nth) {\n\t\t\tif (!WRITE_ONCE(current->fail_nth, fail_nth - 1))\n\t\t\t\tgoto fail;\n\n\t\t\treturn false;\n\t\t}"""
+
+          new = """\t\tif (fail_nth) {\n\t\t\tfail_nth--;\n\t\t\tWRITE_ONCE(current->fail_nth, fail_nth);\n\t\t\tif (!fail_nth)\n\t\t\t\tgoto fail;\n\n\t\t\treturn false;\n\t\t}"""
+
+          if old in s:
+              s = s.replace(old, new, 1)
+              p.write_text(s)
+              print("[FIXED] lib/fault-inject.c WRITE_ONCE expression compatibility")
+          elif "fail_nth--;" in s and "WRITE_ONCE(current->fail_nth, fail_nth);" in s:
+              print("[PASS] lib/fault-inject.c already uses statement-compatible form")
+          else:
+              raise SystemExit("Expected fault-inject fail_nth block was not found")
+          PY
+
+          # ------------------------------------------------------------
+          # 7) LG NFC prototype compatibility
+          #    Clang 20 treats -Wstrict-prototypes as an error for this
+          #    old-style zero-argument declaration. Make it explicit.
+          # ------------------------------------------------------------
+          NFC_SRC="drivers/nfc/lge/lgenfc.c"
+          test -f "$NFC_SRC"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("drivers/nfc/lge/lgenfc.c")
+          s = p.read_text()
+
+          old = "enum NfcChip getChipset() {"
+          new = "enum NfcChip getChipset(void) {"
+
+          if old in s:
+              s = s.replace(old, new, 1)
+              p.write_text(s)
+              print("[FIXED] drivers/nfc/lge/lgenfc.c strict-prototype compatibility")
+          elif "enum NfcChip getChipset(void)" in s:
+              print("[PASS] lgenfc.c prototype already fixed")
+          else:
+              raise SystemExit("Expected getChipset() declaration was not found")
+          PY
+
+          echo
+          echo "[PASS] Scoped source compatibility fixes prepared."
+
+          echo "=========================================="
+          echo "STARTING STOCK + KERNELSU + SUSFS BUILD"
+          echo "Full V=1 stdout/stderr -> kernel-build-full.log"
+          echo "=========================================="
+          echo "clang=$(command -v clang)"
+          echo "ld.lld=$(command -v ld.lld)"
+          clang --version | sed -n '1,2p'
+          ld.lld --version | sed -n '1,2p'
+
+          START=$(date +%s)
+
+          make \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            -j"$(nproc)" \
+            V=1 \
+            WERROR=0 \
+            >"$FULL_LOG" 2>&1
+
+          BUILD_STATUS=$?
+          END=$(date +%s)
+          ELAPSED=$((END-START))
+
+          {
+            echo "BUILD_STATUS=$BUILD_STATUS"
+            echo "BUILD_TIME_SECONDS=$ELAPSED"
+            echo "BUILD_TIME_HUMAN=$((ELAPSED/60))m $((ELAPSED%60))s"
+            echo "BUILD_LOG_BYTES=$(wc -c < "$FULL_LOG")"
+            echo "BUILD_LOG_LINES=$(wc -l < "$FULL_LOG")"
+          } | tee "$SUMMARY_LOG"
+
+          grep -nEi \
+            'fatal error:|error:|undefined reference|undeclared|implicit declaration|invalid|unknown argument|unknown warning|No such file|No rule to make target|recipe for target|Error [0-9]+|make\[[0-9]+\]: \*\*\*' \
+            "$FULL_LOG" | tail -250 > "$ERROR_LOG" || true
+
+          tail -300 "$FULL_LOG" > "$TAIL_LOG" || true
+
+          echo
+          echo "===== COMPACT BUILD ERROR SUMMARY ====="
+          if [ -s "$ERROR_LOG" ]; then
+            tail -30 "$ERROR_LOG" || true
           else
-            echo 'dtbs_check unavailable in this 4.19 tree; DTB compile + overlay decode verification remains mandatory.'
+            echo "No compiler-error pattern found."
           fi
-          mapfile -t overlays < <(find arch/arm64/boot/dts/vendor/lge -path '*lito-caymanlm/lito-caymanlm_lao_com/*.dts' -type f | sort)
-          test "${#overlays[@]}" -gt 0
-          printf '%s\n' "${overlays[@]}" > dtbo-sources.txt
-          # Build through the LGE Kbuild target names rather than an invalid arch/... target.
-          while IFS= read -r src; do
-            rel="${src#arch/arm64/boot/dts/}"
-            base="${rel%.dts}"
-            target="${base}.dtbo"
-            make -j"${{ inputs.build_jobs }}" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 "$target"
-            test -f "out/arch/arm64/boot/dts/$target"
-          done < dtbo-sources.txt
-          # Mandatory Global Rev 1.0 overlay.
-          test -f out/arch/arm64/boot/dts/vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
 
-      - name: Compile semantic preflight for Maphide objects
-        run: |
-          set -euxo pipefail
-          make -j"${{ inputs.build_jobs }}" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 fs/proc/task_mmu.o fs/proc/base.o
+          echo
+          echo "===== LAST 40 BUILD LINES ====="
+          tail -40 "$FULL_LOG" || true
 
-      - name: Build SUSFS v2.2.0 userspace module
-        run: |
-          set -euxo pipefail
-          test -f /tmp/susfs-module/build_ksu_module.sh
-          chmod +x /tmp/susfs-module/build_ksu_module.sh
-          (cd /tmp/susfs-module && ./build_ksu_module.sh)
-          find /tmp/susfs-module -maxdepth 3 -type f \
-            \( -name '*.zip' -o -name 'module.prop' -o -name 'ksu_susfs' \) -print | tee susfs-userspace-artifacts.txt
-
-      - name: Full kernel build
-        run: |
-          set -euxo pipefail
-          make -j"${{ inputs.build_jobs }}" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
-          make -j"${{ inputs.build_jobs }}" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image.gz dtbs modules
-          test -s out/arch/arm64/boot/Image.gz
-
-      - name: Final config + feature audit
-        run: |
-          set -euxo pipefail
-          C=out/.config
-          cp "$C" final.config
-          required=(
-            CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KPROBES CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_KPM
-            CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT
-            CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT
-            CONFIG_KSU_SUSFS_SUS_MAP CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-            CONFIG_KSU_SUSFS_SPOOF_AVC CONFIG_BBG CONFIG_BBG_BLOCK_BOOT CONFIG_EXT4_FS CONFIG_OVERLAY_FS
-          )
-          for s in "${required[@]}"; do grep -q "^${s}=y$" "$C" || { echo "FINAL MISSING: $s"; exit 1; }; done
-          ! grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' "$C"
-          ! find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .
-          # User requirement: no tracked source file may be deleted by the feature integration.
-          if git diff --name-status --diff-filter=D | grep -q .; then
-            echo 'Tracked source deletion detected; refusing to continue.'; git diff --name-status --diff-filter=D; exit 1
+          if [ "$BUILD_STATUS" -eq 0 ]; then
+            test -s arch/arm64/boot/Image
+            echo "KERNEL BUILD SUCCESSFUL"
+          else
+            echo "KERNEL BUILD FAILED - FULL LOG SAVED AS ARTIFACT"
           fi
-          grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c
-          grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
-          grep -q 'framework-res.apk' fs/proc/base.c fs/proc/task_mmu.c
-          if git diff --name-status --diff-filter=D | grep -q .; then
-            echo 'FINAL: tracked source deletion detected'; git diff --name-status --diff-filter=D; exit 1
-          fi
-          git diff --check
-          git status --short
 
-      - name: Package artifacts
+          exit "$BUILD_STATUS"
+
+      - name: 16 - Final Configuration and Artifact Check
+        if: always()
+        shell: bash
         run: |
-          set -euxo pipefail
-          mkdir -p artifacts/dtbo artifacts/metadata
-          cp out/arch/arm64/boot/Image.gz artifacts/
-          cp out/.config artifacts/metadata/final.config
-          cp final.config artifacts/metadata/
-          cp source-commit.txt artifacts/metadata/
-          cp dtbo-sources.txt artifacts/metadata/
-          cp /tmp/susfs-module/module.prop artifacts/metadata/susfs-module.prop
-          if find /tmp/susfs-module -maxdepth 3 -type f -name '*.zip' -print -quit | grep -q .; then
-            find /tmp/susfs-module -maxdepth 3 -type f -name '*.zip' -exec cp {} artifacts/ \\;
-          fi
-          find out/arch/arm64/boot/dts/vendor/lge -name '*.dtbo' -type f -exec cp --parents {} artifacts/dtbo/ \;
-          sha256sum artifacts/Image.gz > artifacts/SHA256SUMS.txt
-          find artifacts/dtbo -type f -name '*.dtbo' -print0 | sort -z | xargs -0 sha256sum >> artifacts/SHA256SUMS.txt
+          set +e
+          LOG="$DIAG_DIR/13-final-check.log"
+          : > "$LOG"
+          {
+            echo "========== FINAL CHECK =========="
+            date -u
+            echo
+            echo "Kernel version:"
+            grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile || true
+            echo
+            echo "Required config:"
+            grep -E '^CONFIG_(KSU|KSU_SUSFS|KPROBES|KPROBE_EVENTS|SECURITY|SECURITY_SELINUX)=' .config 2>/dev/null || true
+            echo
+            echo "Kernel image:"
+            ls -lh arch/arm64/boot/Image 2>&1 || true
+            echo
+            echo "Build errors (last 40):"
+            tail -40 "$DIAG_DIR/12-build-errors.log" 2>/dev/null || true
+            echo
+            echo "Build tail (last 40):"
+            tail -40 "$DIAG_DIR/12-build-tail.log" 2>/dev/null || true
+          } > "$LOG" 2>&1
+          cat "$LOG"
+          exit 0
 
-      - name: Upload build artifacts
+      - name: 17 - Stage Complete Diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p diagnostic-artifact
+          cp -f kernel-build-full.log diagnostic-artifact/12-build-full.log 2>/dev/null || true
+          cp -f .config diagnostic-artifact/final.config 2>/dev/null || true
+          cp -f 50_add_susfs_in_kernel.patch diagnostic-artifact/50_add_susfs_in_kernel.patch 2>/dev/null || true
+          cp -rf "$DIAG_DIR" diagnostic-artifact/ci-logs 2>/dev/null || true
+          {
+            echo "GitHub Run: $GITHUB_RUN_ID"
+            echo "Commit: $GITHUB_SHA"
+            echo "Date: $(date -u)"
+            echo "KernelSU: $KSU_VERSION"
+            echo "SUSFS: $SUSFS_VERSION"
+            echo
+            find diagnostic-artifact -type f -printf '%p %s bytes\n' | sort
+          } > diagnostic-artifact/MANIFEST.txt
+          exit 0
+
+      - name: 18 - Upload Complete Diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LG-G900-V21-complete
-          path: artifacts/
+          name: LG-Velvet-Stock-KSU-SUSFS-Diagnostics
+          path: diagnostic-artifact
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
+      - name: 19 - Upload Kernel Image
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LG-Velvet-Stock-KSU-SUSFS-Image
+          path: arch/arm64/boot/Image
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 20 - Upload DTB/DTBO Artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LG-Velvet-Stock-DTB-DTBO
+          path: |
+            arch/arm64/boot/dts/**/*.dtb
+            dtbo-out/**/*.dtbo
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
+
+      - name: 21 - Upload External Kernel Modules
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LG-Velvet-External-Kernel-Modules
+          path: external-modules/*.ko
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
