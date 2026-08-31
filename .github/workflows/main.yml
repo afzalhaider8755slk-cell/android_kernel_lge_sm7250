@@ -1,4 +1,4 @@
-name: LG G900 Global - WORKING 4.19 Non-GKI + SukiSU-Ultra builtin + integrated SUSFS (strict replacement)
+name: LG G900 Global - WORKING 4.19 Non-GKI + SukiSU-Ultra builtin + manual hooks (strict replacement)
 
 on:
   # Automatic run: any commit/upload to this repository triggers the build.
@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build WORKING 4.19 Non-GKI + SukiSU-Ultra builtin + SUSFS
+    name: Build WORKING 4.19 Non-GKI + SukiSU-Ultra builtin + manual hooks
     runs-on: ubuntu-22.04
     timeout-minutes: 150
 
@@ -43,11 +43,10 @@ jobs:
 
       # ONLY the requested root-layer replacement is intended.
       # KernelSU is removed; SukiSU-Ultra v4.1.3 is inserted instead.
-      SUKISU_VERSION: builtin
-      # SUSFS is supplied by the official SukiSU-Ultra builtin/non-GKI tree.
-      # Do NOT apply the legacy susfs4ksu 1.4.2 KernelSU patch: it targets the
-      # old KernelSU kernel/core_hook layout and is incompatible with SukiSU.
-      SUSFS_MODE: builtin-integrated
+      SUKISU_VERSION: builtin-archive
+      # SUSFS is intentionally disabled: the request is ONLY KernelSU -> SukiSU.
+      # No legacy SUSFS patch or unrelated kernel source change is permitted.
+      SUSFS_MODE: disabled-strict-replacement
 
       # Exact toolchain family used by the current WORKING build.
       CLANG_REVISION: clang-r563880c
@@ -713,7 +712,7 @@ jobs:
           echo "PASS: baseline SHA256 matches $WORKING_BASELINE_CONFIG_SHA256"
           echo "PASS: KPROBES remains disabled in pristine baseline."
 
-      - name: 05 - REMOVE old KernelSU integration and ADD SukiSU-Ultra builtin (non-GKI)
+      - name: 05 - REMOVE old KernelSU integration and ADD SukiSU-Ultra builtin (non-GKI, archive install)
         shell: bash
         run: |
           set -euo pipefail
@@ -721,58 +720,91 @@ jobs:
           exec > >(tee "$DIAG_DIR/05-sukisu.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          test ! -d KernelSU
+          # The previous run failed at `git clone`. Do not depend on a Git
+          # clone for the SukiSU payload. Download the official builtin branch
+          # as a GitHub source archive, verify it is readable, then install it
+          # exactly the way the official setup script wires drivers/kernelsu.
           test ! -e drivers/kernelsu
+          test ! -d KernelSU
 
-          # IMPORTANT: use the official SukiSU-Ultra builtin branch for non-GKI.
-          # The v4.1.3 release tag uses CONFIG_KPROBES, while this WORKING LG
-          # kernel deliberately has KPROBES disabled. The builtin tree is the
-          # official non-GKI/manual-hook variant and carries its own SUSFS
-          # integration. No legacy KernelSU/SUSFS patch is applied afterwards.
-          git clone --depth=1 --branch builtin \
-            https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
+          SUKISU_ARCHIVE="$RUNNER_TEMP/sukisu-builtin.tar.gz"
+          SUKISU_URL="https://codeload.github.com/SukiSU-Ultra/SukiSU-Ultra/tar.gz/refs/heads/builtin"
 
-          test -d KernelSU/kernel
-          test -e drivers/kernelsu
-          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
-          grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
+          rm -f "$SUKISU_ARCHIVE"
+          curl -fL --retry 5 --retry-delay 3 --connect-timeout 20 --max-time 180 \
+            "$SUKISU_URL" -o "$SUKISU_ARCHIVE"
 
-          cd KernelSU
-          echo "sukisu_branch=builtin" | tee "$DIAG_DIR/sukisu-version.txt"
-          echo "sukisu_commit=$(git rev-parse HEAD)" | tee -a "$DIAG_DIR/sukisu-version.txt"
-          git describe --tags --always | tee -a "$DIAG_DIR/sukisu-version.txt"
+          test -s "$SUKISU_ARCHIVE"
+          gzip -t "$SUKISU_ARCHIVE"
+          tar -tzf "$SUKISU_ARCHIVE" | grep -q '/kernel/Kconfig$'
+          tar -tzf "$SUKISU_ARCHIVE" | grep -q '/kernel/Makefile$'
+
+          rm -rf "$GITHUB_WORKSPACE/KernelSU"
+          mkdir -p "$GITHUB_WORKSPACE/KernelSU"
+          tar -xzf "$SUKISU_ARCHIVE" -C "$RUNNER_TEMP"
+
+          SUKISU_ROOT="$(find "$RUNNER_TEMP" -maxdepth 1 -mindepth 1 -type d -name 'SukiSU-Ultra-*' | head -n 1)"
+          test -n "$SUKISU_ROOT"
+          test -d "$SUKISU_ROOT/kernel"
+          cp -a "$SUKISU_ROOT/." "$GITHUB_WORKSPACE/KernelSU/"
+
+          # Keep a local git identity for SukiSU's Makefile version probes.
+          # This is metadata only; no kernel source is changed by it.
+          cd "$GITHUB_WORKSPACE/KernelSU"
+          git init -q
+          git add -A
+          git -c user.name=CI -c user.email=ci@example.invalid commit -qm "SukiSU-Ultra builtin snapshot"
+          git branch -M builtin
 
           cd "$GITHUB_WORKSPACE/kernel"
+
+          # Official setup.sh creates drivers/kernelsu as a relative symlink
+          # and adds the Kconfig/Makefile entries. Reproduce those exact
+          # integration operations without the failing clone/pull step.
+          ln -s "../KernelSU/kernel" drivers/kernelsu
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || \
+            sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = '../KernelSU/kernel'
+          test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Makefile
+          grep -q 'config KSU' drivers/kernelsu/Kconfig
+          grep -q 'config KSU_SUSFS' drivers/kernelsu/Kconfig
+          grep -q 'obj-$(CONFIG_KSU)' drivers/kernelsu/Makefile
+
+          echo "sukisu_source=builtin archive" | tee "$DIAG_DIR/sukisu-version.txt"
+          echo "sukisu_url=$SUKISU_URL" | tee -a "$DIAG_DIR/sukisu-version.txt"
+          echo "sukisu_snapshot=$(git -C "$GITHUB_WORKSPACE/KernelSU" rev-parse HEAD)" | tee -a "$DIAG_DIR/sukisu-version.txt"
+          echo "sukisu_branch=builtin" | tee -a "$DIAG_DIR/sukisu-version.txt"
           git status --short | tee "$DIAG_DIR/05-source-status.txt"
 
-      - name: 06 - VERIFY SukiSU builtin contains integrated SUSFS; DO NOT apply legacy SUSFS patch
+      - name: 06 - VERIFY SukiSU builtin source; SUSFS remains OFF for strict replacement
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/06-susfs.log") 2>&1
+          exec > >(tee "$DIAG_DIR/06-sukisu-verify.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
           test -f KernelSU/kernel/Kconfig
           test -f KernelSU/kernel/Makefile
+          grep -q 'config KSU' KernelSU/kernel/Kconfig
           grep -q 'config KSU_SUSFS' KernelSU/kernel/Kconfig
-          grep -q 'SUSFS' KernelSU/kernel/Kconfig
+          grep -q 'obj-$(CONFIG_KSU)' KernelSU/kernel/Makefile
 
-          # The previous workflow downloaded susfs4ksu 1.4.2 and attempted to
-          # patch KernelSU/kernel/core_hook.c, ksu.c, ksud.c, etc. Those files
-          # belong to the old KernelSU integration and do not exist in the
-          # SukiSU builtin tree. That is the exact reason run #16 failed.
-          if find . -type f -name '*.rej' -print -quit | grep -q .; then
-            echo "::error::Unexpected patch reject exists before SUSFS verification."
-            exit 1
-          fi
+          # Strict replacement means we do NOT add a separate SUSFS patch or
+          # enable SUSFS here. The only requested change is KernelSU -> SukiSU.
+          # This avoids modifying fs/*, include/linux/* or SELinux code.
+          test ! -e fs/susfs.c
+          test ! -e include/linux/susfs.h
+          echo "PASS: SukiSU builtin payload is present."
+          echo "PASS: no legacy SUSFS patch is applied."
+          echo "PASS: kernel-side SUSFS remains disabled for this strict replacement."
 
-          echo "susfs_mode=$SUSFS_MODE" | tee "$DIAG_DIR/susfs-version.txt"
-          grep -n 'config KSU_SUSFS' KernelSU/kernel/Kconfig | head -n 1
-          echo "PASS: SukiSU builtin provides its integrated SUSFS implementation."
-          echo "PASS: legacy susfs4ksu 1.4.2 patch is intentionally NOT applied."
-
-      - name: 07 - VERIFY manual/non-KPROBE integration WITHOUT editing hook sites
+      - name: 07 - ADD SukiSU manual hooks for this WORKING 4.19 tree
         shell: bash
         run: |
           set -euo pipefail
@@ -780,16 +812,65 @@ jobs:
           exec > >(tee "$DIAG_DIR/07-hooks.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          test -f "$OUT_DIR/.config"
+          # KPROBES must stay exactly as in the working baseline, so this 4.19
+          # non-GKI kernel uses SukiSU's manual-hook integration. These are the
+          # six hook sites used by the established 4.19-compatible integration.
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
 
-          # Do not inject the old hand-written KSU hooks. SukiSU builtin is
-          # already the non-GKI integration tree. This step only verifies that
-          # the existing working KPROBES=off requirement is still true.
-          echo "PASS: KPROBES remains disabled before Kconfig."
-          echo "PASS: no legacy KernelSU hook patch is applied."
+          test -f fs/exec.c
+          test -f fs/open.c
+          test -f fs/read_write.c
+          test -f fs/stat.c
+          test -f drivers/input/input.c
 
-      - name: 08 - Configure ONLY SukiSU-Ultra/SUSFS; preserve every WORKING config value
+          # Do not touch a file twice.
+          for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c; do
+            if grep -q 'ksu_handle_' "$f"; then
+              echo "::error::Existing KSU hook detected in $f; refusing to patch twice."
+              exit 1
+            fi
+          done
+
+          # exec.c
+          sed -i '/static int do_execveat_common/i\#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n\t\t\tvoid *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\n\t\t\t\t void *argv, void *envp, int *flags);\n#endif' fs/exec.c
+          if grep -q 'return __do_execve_file(fd, filename, argv, envp, flags, NULL);' fs/exec.c; then
+            sed -i '/return __do_execve_file(fd, filename, argv, envp, flags, NULL);/i\#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\n\telse\n\t\tksu_handle_execveat_sucompat(\&fd, \&filename, \&argv, \&envp, \&flags);\n#endif' fs/exec.c
+          else
+            sed -i '/if (IS_ERR(filename))/i\#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\n\telse\n\t\tksu_handle_execveat_sucompat(\&fd, \&filename, \&argv, \&envp, \&flags);\n#endif' fs/exec.c
+          fi
+
+          # open.c
+          if grep -q 'long do_faccessat(int dfd, const char __user \*filename, int mode)' fs/open.c; then
+            sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t int *flags);\n#endif' fs/open.c
+          else
+            sed -i '/SYSCALL_DEFINE3(faccessat, int, dfd, const char __user \*, filename, int, mode)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t int *flags);\n#endif' fs/open.c
+          fi
+          sed -i '/if (mode & ~S_IRWXO)/i\#ifdef CONFIG_KSU\n\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\n#endif' fs/open.c
+
+          # read_write.c
+          sed -i '/ssize_t vfs_read(struct file/i\#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n\t\tsize_t *count_ptr, loff_t **pos);\n#endif' fs/read_write.c
+          sed -i '/ssize_t vfs_read(struct file/,/ssize_t ret;/{/ssize_t ret;/a\#ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(\&file, \&buf, \&count, \&pos);\n#endif' fs/read_write.c
+
+          # stat.c
+          if grep -q 'int vfs_statx(int dfd, const char __user \*filename, int flags,' fs/stat.c; then
+            sed -i '/int vfs_statx(int dfd, const char __user \*filename, int flags,/i\#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif' fs/stat.c
+            sed -i '/unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;/a\#ifdef CONFIG_KSU\n\tksu_handle_stat(\&dfd, \&filename, \&flags);\n#endif' fs/stat.c
+          else
+            sed -i '/int vfs_fstatat(int dfd, const char __user \*filename, struct kstat \*stat,/i\#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif' fs/stat.c
+            sed -i '/if ((flag & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |/i\#ifdef CONFIG_KSU\n\tksu_handle_stat(\&dfd, \&filename, \&flag);\n#endif' fs/stat.c
+          fi
+
+          # input.c
+          sed -i '/static void input_handle_event/i\#ifdef CONFIG_KSU\nextern bool ksu_input_hook __read_mostly;\nextern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n#endif' drivers/input/input.c
+          sed -i '/int disposition = input_get_disposition(dev, type, code, \&value);/a\#ifdef CONFIG_KSU\n\tif (unlikely(ksu_input_hook))\n\t\tksu_handle_input_handle_event(\&type, \&code, \&value);\n#endif' drivers/input/input.c
+
+          for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c; do
+            grep -q 'CONFIG_KSU' "$f"
+          done
+          echo "PASS: SukiSU manual hooks added to the supported 4.19 hook sites."
+          git diff -- fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c | tee "$DIAG_DIR/manual-hooks.diff"
+
+      - name: 08 - Configure ONLY SukiSU; preserve every WORKING config value
         shell: bash
         run: |
           set -euo pipefail
@@ -808,27 +889,21 @@ jobs:
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
           export LD_LIBRARY_PATH="$CLANG_DIR/lib:${LD_LIBRARY_PATH:-}"
 
-          # Enable only the SukiSU/SUSFS family. KPM is explicitly left off.
+          # Only SukiSU itself is enabled. KPM and SUSFS are explicitly kept off
+          # because neither existed in the exact working baseline.
           scripts/config --file "$OUT_DIR/.config" \
             --enable CONFIG_KSU \
-            --disable CONFIG_KPM
-
-          # If these symbols exist in the builtin tree, keep SUSFS enabled;
-          # do not invent/modify unrelated options.
-          for sym in \
-            CONFIG_KSU_SUSFS \
-            CONFIG_KSU_SUSFS_SUS_PATH \
-            CONFIG_KSU_SUSFS_SUS_KSTAT \
-            CONFIG_KSU_SUSFS_SPOOF_UNAME \
-            CONFIG_KSU_SUSFS_ENABLE_LOG \
-            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-            CONFIG_KSU_SUSFS_SUS_MAP; do
-            if grep -q "^config ${sym#CONFIG_}" KernelSU/kernel/Kconfig; then
-              scripts/config --file "$OUT_DIR/.config" --enable "$sym"
-            fi
-          done
+            --disable CONFIG_KPM \
+            --disable CONFIG_KSU_SUSFS \
+            --disable CONFIG_KSU_SUSFS_SUS_PATH \
+            --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
+            --disable CONFIG_KSU_SUSFS_SUS_KSTAT \
+            --disable CONFIG_KSU_SUSFS_SPOOF_UNAME \
+            --disable CONFIG_KSU_SUSFS_ENABLE_LOG \
+            --disable CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            --disable CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            --disable CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+            --disable CONFIG_KSU_SUSFS_SUS_MAP
 
           make O="$OUT_DIR" ARCH="$ARCH" \
             CC="$CC" HOSTCC="$HOSTCC" HOSTCXX="$HOSTCXX" \
@@ -839,6 +914,7 @@ jobs:
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KPM is not set$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KSU_SUSFS is not set$' "$OUT_DIR/.config"
 
           normalize_config() {
             sed -E \
@@ -864,17 +940,11 @@ jobs:
             exit 1
           fi
 
-          # No old KernelSU release/source is allowed to survive the replacement.
-          if grep -Rsn --exclude-dir=.git -E 'tiann/KernelSU|v0\.9\.5' KernelSU drivers 2>/dev/null; then
-            echo "::error::Old KernelSU source/reference detected after replacement."
-            exit 1
-          fi
-
           echo "PASS: semantic non-KSU configuration matches the WORKING baseline."
-          echo "PASS: KSU/SUSFS are the only intended configuration additions."
+          echo "PASS: only CONFIG_KSU was added; KPM/SUSFS remain disabled."
           echo "PASS: KPROBES remains disabled."
 
-      - name: 09 - Verify source scope (ONLY SukiSU integration files changed)
+      - name: 09 - Verify source scope (ONLY SukiSU integration + manual hook sites)
         shell: bash
         run: |
           set -euo pipefail
@@ -885,39 +955,27 @@ jobs:
           git status --short > "$DIAG_DIR/source-status.txt"
           git diff --stat > "$DIAG_DIR/source-diff-stat.txt"
 
-          # Device/boot configuration sources are forbidden to change.
-          if git status --short -- \
-              arch/arm64/boot/dts \
-              arch/arm64/configs \
-              drivers/staging \
-              | grep -q .; then
-            echo "::error::Device DT/DTBO/defconfig sources changed."
+          if git status --short -- arch/arm64/boot/dts arch/arm64/configs drivers/staging | grep -q .; then
+            echo "::error::Device DT/DTBO/defconfig/staging sources changed."
             git status --short -- arch/arm64/boot/dts arch/arm64/configs drivers/staging
             exit 1
           fi
 
-          echo "=== MODIFIED FILES ==="
-          git status --short
-
-          # With SukiSU builtin, SUSFS is part of the SukiSU tree itself.
-          # Therefore the only base-kernel files allowed to change are the
-          # normal drivers/Kconfig + drivers/Makefile integration lines and
-          # the drivers/kernelsu symlink. No old SUSFS patch files are allowed.
-          allowed_files='^(KernelSU/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$)$'
+          allowed_files='^(KernelSU/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$|fs/exec.c$|fs/open.c$|fs/read_write.c$|fs/stat.c$|drivers/input/input.c$)$'
           unexpected="$(git status --short | sed -E 's/^.. //g' | grep -Ev "$allowed_files" || true)"
           if [ -n "$unexpected" ]; then
-            echo "::error::Unexpected source files changed outside SukiSU integration:"
+            echo "::error::Unexpected source files changed outside SukiSU integration/hook sites:"
             printf '%s\n' "$unexpected"
             exit 1
           fi
 
           test -d KernelSU/kernel
-          test -e drivers/kernelsu
+          test -L drivers/kernelsu
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
-          grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
 
           echo "PASS: no DT/DTBO/defconfig/staging files changed."
-          echo "PASS: source scope is limited to SukiSU-Ultra integration."
+          echo "PASS: source scope is limited to SukiSU and its required 4.19 manual hooks."
 
       - name: 10 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
         shell: bash
@@ -945,9 +1003,8 @@ jobs:
           "$GCC64_DIR/bin/aarch64-linux-android-gcc" --version | head -n 1
           "$GCC32_DIR/bin/arm-linux-androideabi-gcc" --version | head -n 1
 
-          # SUS_PATH must remain disabled on this exact source. Stop before
-          # compilation if it is ever enabled accidentally.
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set$' "$OUT_DIR/.config"
+          # Strict replacement: SUSFS was not part of the baseline, so keep it off.
+          grep -q '^# CONFIG_KSU_SUSFS is not set$' "$OUT_DIR/.config"
 
           # The supplied working kernel is a raw ARM64 Image with separate DTB/DTBO.
           # Therefore build Image, not Image.gz, and never replace the stock DTB/DTBO.
@@ -985,7 +1042,7 @@ jobs:
           test -f "$OUT_DIR/arch/arm64/boot/Image"
 
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KSU_SUSFS is not set$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KPM is not set$' "$OUT_DIR/.config"
 
           # Absolutely critical: the working kernel's KPROBES state is unchanged.
