@@ -1,4 +1,4 @@
-name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v11
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v12
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-g900-global-v11-${{ github.ref }}
+  group: lg-g900-global-v12-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -22,7 +22,7 @@ env:
   DEFCONFIG: vendor/lineageos_cayman_defconfig
 
   SUKISU_REPO: https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
-  SUKISU_REF: susfs-main
+  SUKISU_REF: builtin
   SUSFS_MODULE_REPO: https://github.com/sidex15/susfs4ksu-module.git
   SUSFS_MODULE_REF: v1.5.2+
   ANYKERNEL3_REPO: https://github.com/osm0sis/AnyKernel3.git
@@ -52,7 +52,7 @@ jobs:
           trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           uname -a
           date -u +%FT%TZ
-          echo "workflow=v7"
+          echo "workflow=v12"
 
       - name: 01 - Checkout all LG trees
         shell: bash
@@ -230,13 +230,13 @@ jobs:
 
           curl -LSs \
             "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
-            | bash -s susfs-main
+            | bash -s builtin
 
           test -d KernelSU/kernel
           test -f KernelSU/kernel/Kconfig
           test -f KernelSU/kernel/Makefile
 
-          echo "SukiSU ref=susfs-main" \
+          echo "SukiSU ref=builtin" \
             | tee "$GITHUB_WORKSPACE/artifacts/sukisu-selected-ref.txt"
 
           echo "SukiSU commit=$(git -C KernelSU rev-parse HEAD)" \
@@ -272,7 +272,7 @@ jobs:
           echo "Native SukiSU SUSFS integration: PASS" \
             | tee "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
 
-          echo "SUSFS source is provided by SukiSU-Ultra ref=susfs-main; no legacy 4.19 patch applied." \
+          echo "SUSFS source is provided by SukiSU-Ultra ref=builtin; no legacy 4.19 patch applied." \
             | tee -a "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
 
       - name: 08 - Generate config with the REAL device defconfig (toolchain already verified)
@@ -823,10 +823,10 @@ jobs:
           target="$DTBO_TARGET"
 
           # FIX ONLY:
-          # Build the LGE DTBO directory target.
-          # The vendor 4.19 Kbuild exposes its DTBO objects through
-          # this directory/always path; the direct full .dtbo target
-          # is not a top-level Kbuild target.
+          # The vendor directory is not a top-level Kbuild target and
+          # therefore returned "Nothing to be done" without creating the DTBO.
+          # Use the kernel's standard top-level dtbs target so the existing
+          # DTBO Kbuild rules are traversed without changing any source feature.
 
           make -Oline \
             O="$GITHUB_WORKSPACE/out" \
@@ -840,7 +840,7 @@ jobs:
             HOSTLD="$CLANG_DIR/bin/ld.lld" \
             AR="$CLANG_DIR/bin/llvm-ar" \
             NM="$CLANG_DIR/bin/llvm-nm" \
-            "$DTBO_BUILD_DIR"
+            dtbs
 
           produced="$GITHUB_WORKSPACE/out/$target"
 
