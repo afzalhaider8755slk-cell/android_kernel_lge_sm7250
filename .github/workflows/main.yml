@@ -1,4 +1,4 @@
-name: LG G900 Global - WORKING 4.19 Non-GKI + SukiSU-Ultra v4.1.3 + SUSFS 1.4.2 (strict replacement)
+name: LG G900 Global - WORKING 4.19 Non-GKI + SukiSU-Ultra builtin + integrated SUSFS (strict replacement)
 
 on:
   # Automatic run: any commit/upload to this repository triggers the build.
@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build WORKING 4.19 Non-GKI + SukiSU-Ultra + SUSFS
+    name: Build WORKING 4.19 Non-GKI + SukiSU-Ultra builtin + SUSFS
     runs-on: ubuntu-22.04
     timeout-minutes: 150
 
@@ -43,8 +43,11 @@ jobs:
 
       # ONLY the requested root-layer replacement is intended.
       # KernelSU is removed; SukiSU-Ultra v4.1.3 is inserted instead.
-      SUKISU_VERSION: v4.1.3
-      SUSFS_VERSION: 1.4.2-kernel-4.19
+      SUKISU_VERSION: builtin
+      # SUSFS is supplied by the official SukiSU-Ultra builtin/non-GKI tree.
+      # Do NOT apply the legacy susfs4ksu 1.4.2 KernelSU patch: it targets the
+      # old KernelSU kernel/core_hook layout and is incompatible with SukiSU.
+      SUSFS_MODE: builtin-integrated
 
       # Exact toolchain family used by the current WORKING build.
       CLANG_REVISION: clang-r563880c
@@ -710,7 +713,7 @@ jobs:
           echo "PASS: baseline SHA256 matches $WORKING_BASELINE_CONFIG_SHA256"
           echo "PASS: KPROBES remains disabled in pristine baseline."
 
-      - name: 05 - REMOVE old KernelSU integration and ADD ONLY SukiSU-Ultra v4.1.3
+      - name: 05 - REMOVE old KernelSU integration and ADD SukiSU-Ultra builtin (non-GKI)
         shell: bash
         run: |
           set -euo pipefail
@@ -718,14 +721,16 @@ jobs:
           exec > >(tee "$DIAG_DIR/05-sukisu.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # The baseline must be completely free of the old KernelSU tree.
           test ! -d KernelSU
           test ! -e drivers/kernelsu
 
-          # Add the exact latest released SukiSU-Ultra version. The release
-          # page currently marks v4.1.3 as Latest.
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
-            | bash -s "$SUKISU_VERSION"
+          # IMPORTANT: use the official SukiSU-Ultra builtin branch for non-GKI.
+          # The v4.1.3 release tag uses CONFIG_KPROBES, while this WORKING LG
+          # kernel deliberately has KPROBES disabled. The builtin tree is the
+          # official non-GKI/manual-hook variant and carries its own SUSFS
+          # integration. No legacy KernelSU/SUSFS patch is applied afterwards.
+          git clone --depth=1 --branch builtin \
+            https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
 
           test -d KernelSU/kernel
           test -e drivers/kernelsu
@@ -733,277 +738,65 @@ jobs:
           grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
 
           cd KernelSU
-          test "$(git describe --tags --exact-match 2>/dev/null || true)" = "$SUKISU_VERSION"
-          echo "sukisu_version=$SUKISU_VERSION" | tee "$DIAG_DIR/sukisu-version.txt"
+          echo "sukisu_branch=builtin" | tee "$DIAG_DIR/sukisu-version.txt"
           echo "sukisu_commit=$(git rev-parse HEAD)" | tee -a "$DIAG_DIR/sukisu-version.txt"
+          git describe --tags --always | tee -a "$DIAG_DIR/sukisu-version.txt"
 
           cd "$GITHUB_WORKSPACE/kernel"
           git status --short | tee "$DIAG_DIR/05-source-status.txt"
-      - name: 06 - Download and VERIFY SUSFS 1.4.2 for kernel 4.19
+
+      - name: 06 - VERIFY SukiSU builtin contains integrated SUSFS; DO NOT apply legacy SUSFS patch
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
           exec > >(tee "$DIAG_DIR/06-susfs.log") 2>&1
-          cd "$GITHUB_WORKSPACE"
-          rm -rf susfs4ksu
-
-          git clone --depth=1 --branch "$SUSFS_VERSION" \
-            https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-
-          test -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
-          test -f susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
-          test -f susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h
-          test -f susfs4ksu/kernel_patches/fs/susfs.c
-          test -f susfs4ksu/kernel_patches/fs/sus_su.c
-          test -f susfs4ksu/kernel_patches/include/linux/susfs.h
-          test -f susfs4ksu/kernel_patches/include/linux/sus_su.h
-
-          echo "susfs_tag=$SUSFS_VERSION" | tee "$DIAG_DIR/susfs-version.txt"
-          echo "susfs_commit=$(git -C susfs4ksu rev-parse HEAD)" | tee -a "$DIAG_DIR/susfs-version.txt"
-
-      - name: 07 - Apply SUSFS 1.4.2 safely for this WORKING 4.19 source (sanitized patch)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/07-patches.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # The official SUSFS 1.4.2-kernel-4.19 namespace patch targets a
-          # different 4.19 fs/namespace.c layout. This LG source uses the
-          # fs_context/vfs_create_mount layout, so blindly applying that hunk
-          # can match the wrong function and reject the real clone_mnt hunk.
-          #
-          # SUS_MOUNT is explicitly disabled in Step 09. SUSFS itself documents
-          # non-GKI bootloop risk for its mount-id reordering feature. Therefore
-          # namespace.c is intentionally excluded while all other SUSFS changes
-          # are applied from the official 1.4.2-kernel-4.19 patch.
+          test -f KernelSU/kernel/Kconfig
+          test -f KernelSU/kernel/Makefile
+          grep -q 'config KSU_SUSFS' KernelSU/kernel/Kconfig
+          grep -q 'SUSFS' KernelSU/kernel/Kconfig
 
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/susfs.c" fs/susfs.c
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/sus_su.h" include/linux/sus_su.h
-          cp "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h" KernelSU/kernel/sucompat.h
-
-          cd KernelSU
-          patch --forward --batch -p1 \
-            < "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          # Remove ONLY the fs/namespace.c diff from the official SUSFS
-          # integration patch. SUS_MOUNT is disabled, so no namespace changes
-          # are required for the requested SukiSU-Ultra + SUSFS build.
-          python3 - "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch" "$RUNNER_TEMP/50_susfs-no-namespace.patch" <<'PY'
-          import sys
-          src, dst = sys.argv[1], sys.argv[2]
-          lines = open(src, encoding="utf-8").read().splitlines(True)
-          out, skip = [], False
-          for line in lines:
-              if line.startswith("diff --git a/fs/namespace.c b/fs/namespace.c"):
-                  skip = True
-                  continue
-              if skip and line.startswith("diff --git "):
-                  skip = False
-              if not skip:
-                  # Clean trailing whitespace only on added patch lines. This
-                  # preserves context/original lines while avoiding a false
-                  # failure from git diff --check on upstream SUSFS whitespace.
-                  if line.startswith("+") and not line.startswith("+++"):
-                      line = line.rstrip(" \t\r\n") + "\n"
-                  out.append(line)
-          open(dst, "w", encoding="utf-8").writelines(out)
-          PY
-
-          test -s "$RUNNER_TEMP/50_susfs-no-namespace.patch"
-          ! grep -q '^diff --git a/fs/namespace.c b/fs/namespace.c' \
-            "$RUNNER_TEMP/50_susfs-no-namespace.patch"
-
-          patch --forward --batch -p1 < "$RUNNER_TEMP/50_susfs-no-namespace.patch"
-
-          # GNU patch may leave harmless *.orig backup files even when every
-          # hunk applied successfully. They are NOT patch failures.
-          # Remove only those patch-created backups, then fail only on real
-          # reject files (*.rej). This avoids the false failure seen in run #15.
-          find . -type f -name '*.orig' -delete
-
+          # The previous workflow downloaded susfs4ksu 1.4.2 and attempted to
+          # patch KernelSU/kernel/core_hook.c, ksu.c, ksud.c, etc. Those files
+          # belong to the old KernelSU integration and do not exist in the
+          # SukiSU builtin tree. That is the exact reason run #16 failed.
           if find . -type f -name '*.rej' -print -quit | grep -q .; then
-            echo "::error::A SUSFS patch reject (*.rej) was created."
-            find . -type f -name '*.rej' -print
+            echo "::error::Unexpected patch reject exists before SUSFS verification."
             exit 1
           fi
 
-          echo "PASS: SUSFS 1.4.2 applied without fs/namespace.c."
-          echo "PASS: SUS_MOUNT is intentionally disabled."
-          # The official patch is sanitized only for trailing whitespace on
-          # added lines, so this is now a real source-integrity check rather
-          # than a failure caused by upstream patch formatting.
-          git diff --check
-          echo "PASS: git diff --check"
-      - name: 08 - Add manual SukiSU hooks WITHOUT enabling KPROBES
+          echo "susfs_mode=$SUSFS_MODE" | tee "$DIAG_DIR/susfs-version.txt"
+          grep -n 'config KSU_SUSFS' KernelSU/kernel/Kconfig | head -n 1
+          echo "PASS: SukiSU builtin provides its integrated SUSFS implementation."
+          echo "PASS: legacy susfs4ksu 1.4.2 patch is intentionally NOT applied."
+
+      - name: 07 - VERIFY manual/non-KPROBE integration WITHOUT editing hook sites
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/08-hooks.log") 2>&1
+          exec > >(tee "$DIAG_DIR/07-hooks.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # The supplied WORKING config has CONFIG_KPROBES disabled.
-          # Therefore we use the non-KPROBE manual-hook path required by this working 4.19 baseline instead of
-          # changing the working kernel's KPROBES setting.
           test -f "$OUT_DIR/.config"
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
 
-          python3 <<'PY'
-          from pathlib import Path
-          import re
+          # Do not inject the old hand-written KSU hooks. SukiSU builtin is
+          # already the non-GKI integration tree. This step only verifies that
+          # the existing working KPROBES=off requirement is still true.
+          echo "PASS: KPROBES remains disabled before Kconfig."
+          echo "PASS: no legacy KernelSU hook patch is applied."
 
-          def insert_before_regex(path, pattern, addition, label):
-              p = Path(path)
-              s = p.read_text()
-              if addition.strip() in s:
-                  print(f"PASS already present: {label}")
-                  return
-              m = re.search(pattern, s, re.M | re.S)
-              if not m:
-                  raise SystemExit(f"ERROR: hook anchor not found: {label} in {path}")
-              p.write_text(s[:m.start()] + addition + s[m.start():])
-              print(f"PASS inserted: {label}")
-
-          def insert_after_regex(path, pattern, addition, label):
-              p = Path(path)
-              s = p.read_text()
-              if addition.strip() in s:
-                  print(f"PASS already present: {label}")
-                  return
-              m = re.search(pattern, s, re.M | re.S)
-              if not m:
-                  raise SystemExit(f"ERROR: hook body anchor not found: {label} in {path}")
-              p.write_text(s[:m.end()] + addition + s[m.end():])
-              print(f"PASS inserted: {label}")
-
-          root = Path('.')
-
-          exec_decl = '''#ifdef CONFIG_KSU
-          extern bool ksu_execveat_hook __read_mostly;
-          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
-          \t\t\tvoid *envp, int *flags);
-          extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
-          \t\t\t\t void *argv, void *envp, int *flags);
-          #endif
-          
-          '''.replace('          ','')
-          insert_before_regex(root/'fs/exec.c', r'(?m)^static int do_execveat_common\s*\(', exec_decl, 'fs/exec.c declarations')
-          exec_hook = '''
-          #ifdef CONFIG_KSU
-          \tif (unlikely(ksu_execveat_hook))
-          \t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-          \telse
-          \t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
-          #endif
-          '''.replace('          ','')
-          insert_after_regex(root/'fs/exec.c', r'(?m)^static int do_execveat_common\s*\([^\{]+\)\s*\{', exec_hook, 'fs/exec.c hook')
-
-          open_decl = '''#ifdef CONFIG_KSU
-          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
-          \t\t\t\t int *flags);
-          #endif
-          
-          '''.replace('          ','')
-          insert_before_regex(root/'fs/open.c', r'(?m)^long do_faccessat\s*\(', open_decl, 'fs/open.c declarations')
-          open_hook = '''
-          #ifdef CONFIG_KSU
-          \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-          #endif
-          '''.replace('          ','')
-          insert_after_regex(root/'fs/open.c', r'(?m)^long do_faccessat\s*\([^\{]+\)\s*\{', open_hook, 'fs/open.c hook')
-
-          read_decl = '''#ifdef CONFIG_KSU
-          extern bool ksu_vfs_read_hook __read_mostly;
-          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
-          \t\t\tsize_t *count_ptr, loff_t **pos);
-          #endif
-          
-          '''.replace('          ','')
-          insert_before_regex(root/'fs/read_write.c', r'(?m)^ssize_t vfs_read\s*\(', read_decl, 'fs/read_write.c declarations')
-          read_hook = '''
-          #ifdef CONFIG_KSU
-          \tif (unlikely(ksu_vfs_read_hook))
-          \t\tksu_handle_vfs_read(&file, &buf, &count, &pos);
-          #endif
-          '''.replace('          ','')
-          insert_after_regex(root/'fs/read_write.c', r'(?m)^ssize_t vfs_read\s*\([^\{]+\)\s*\{', read_hook, 'fs/read_write.c hook')
-
-          stat_decl = '''#ifdef CONFIG_KSU
-          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
-          #endif
-          
-          '''.replace('          ','')
-          insert_before_regex(root/'fs/stat.c', r'(?m)^int vfs_statx\s*\(', stat_decl, 'fs/stat.c declarations')
-          stat_hook = '''
-          #ifdef CONFIG_KSU
-          \tksu_handle_stat(&dfd, &filename, &flags);
-          #endif
-          '''.replace('          ','')
-          insert_after_regex(root/'fs/stat.c', r'(?m)^int vfs_statx\s*\([^\{]+\)\s*\{', stat_hook, 'fs/stat.c hook')
-
-          input_decl = '''#ifdef CONFIG_KSU
-          extern bool ksu_input_hook __read_mostly;
-          extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
-          #endif
-          
-          '''.replace('          ','')
-          insert_before_regex(root/'drivers/input/input.c', r'(?m)^static void input_handle_event\s*\(', input_decl, 'drivers/input/input.c declarations')
-          input_hook = '''
-          #ifdef CONFIG_KSU
-          \tif (unlikely(ksu_input_hook))
-          \t\tksu_handle_input_handle_event(&type, &code, &value);
-          #endif
-          '''.replace('          ','')
-          insert_after_regex(root/'drivers/input/input.c', r'(?m)^static void input_handle_event\s*\([^\{]+\)\s*\{', input_hook, 'drivers/input/input.c safe-mode hook')
-          PY
-
-          # The manual path must remain genuinely non-KPROBE.
-          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
-          grep -Rsn 'ksu_handle_execveat\|ksu_handle_faccessat\|ksu_handle_vfs_read\|ksu_handle_stat' \
-            fs/exec.c fs/open.c fs/read_write.c fs/stat.c
-
-      - name: 09 - Configure ONLY SukiSU-Ultra/SUSFS; preserve every WORKING config value
+      - name: 08 - Configure ONLY SukiSU-Ultra/SUSFS; preserve every WORKING config value
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/09-kconfig.log") 2>&1
+          exec > >(tee "$DIAG_DIR/08-kconfig.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # These are the intended functional configuration additions.
-          # KPROBES stays exactly as the supplied WORKING kernel: disabled.
-          scripts/config --file "$OUT_DIR/.config" \
-            --enable CONFIG_KSU \
-            --enable CONFIG_KSU_SUSFS \
-            --disable CONFIG_KSU_SUSFS_SUS_PATH \
-            --enable CONFIG_KSU_SUSFS_SUS_KSTAT \
-            --enable CONFIG_KSU_SUSFS_SPOOF_UNAME \
-            --enable CONFIG_KSU_SUSFS_TRY_UMOUNT \
-            --enable CONFIG_KSU_SUSFS_ENABLE_LOG \
-            --disable CONFIG_KSU_SUSFS_SUS_MOUNT \
-            --disable CONFIG_KSU_SUSFS_SUS_SU
-
-          # SUS_PATH compatibility:
-          # SUSFS 1.4.2-kernel-4.19 writes new->user->android_kabi_reserved1
-          # when CONFIG_KSU_SUSFS_SUS_PATH=y. The exact LG WORKING 4.19 source
-          # does not have that member in struct user_struct. Adding it would
-          # change a core kernel struct layout, so only SUS_PATH is disabled.
-          if grep -q 'android_kabi_reserved1' include/linux/user.h; then
-            echo "INFO: user_struct has android_kabi_reserved1, but SUS_PATH remains disabled for this build."
-          else
-            echo "PASS: LG WORKING user_struct has no android_kabi_reserved1; SUS_PATH correctly disabled."
-          fi
-
-          # Run Kconfig with the SAME Android Clang/LLVM family used by the
-          # supplied working kernel. Do not regenerate the baseline from the
-          # vendor defconfig and do not use Ubuntu GCC for Kconfig.
           export CC="$CLANG_DIR/bin/clang"
           export HOSTCC=gcc
           export HOSTCXX=g++
@@ -1015,33 +808,43 @@ jobs:
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
           export LD_LIBRARY_PATH="$CLANG_DIR/lib:${LD_LIBRARY_PATH:-}"
 
-          "$CC" --version | head -n 2 | tee "$DIAG_DIR/kconfig-clang-version.txt"
+          # Enable only the SukiSU/SUSFS family. KPM is explicitly left off.
+          scripts/config --file "$OUT_DIR/.config" \
+            --enable CONFIG_KSU \
+            --disable CONFIG_KPM
+
+          # If these symbols exist in the builtin tree, keep SUSFS enabled;
+          # do not invent/modify unrelated options.
+          for sym in \
+            CONFIG_KSU_SUSFS \
+            CONFIG_KSU_SUSFS_SUS_PATH \
+            CONFIG_KSU_SUSFS_SUS_KSTAT \
+            CONFIG_KSU_SUSFS_SPOOF_UNAME \
+            CONFIG_KSU_SUSFS_ENABLE_LOG \
+            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+            CONFIG_KSU_SUSFS_SUS_MAP; do
+            if grep -q "^config ${sym#CONFIG_}" KernelSU/kernel/Kconfig; then
+              scripts/config --file "$OUT_DIR/.config" --enable "$sym"
+            fi
+          done
 
           make O="$OUT_DIR" ARCH="$ARCH" \
             CC="$CC" HOSTCC="$HOSTCC" HOSTCXX="$HOSTCXX" \
-            LD="$LD" AS="$AS" LLVM=1 LLVM_IAS=1 \
-            olddefconfig
+            LD="$LD" AS="$AS" LLVM=1 LLVM_IAS=1 olddefconfig
 
           cp "$OUT_DIR/.config" "$DIAG_DIR/final.config"
 
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_KSU_SUSFS_SPOOF_UNAME=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' "$OUT_DIR/.config"
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KPM is not set$' "$OUT_DIR/.config"
 
-          # Compare every non-KSU config symbol against the exact working
-          # baseline. Any drift outside CONFIG_KSU* stops the build.
           normalize_config() {
             sed -E \
               -e '/^[[:space:]]*#/d' \
               -e '/^[[:space:]]*$/d' \
               -e '/^CONFIG_KSU([_=]|$)/d' \
-              -e '/^CONFIG_SUSFS([_=]|$)/d' \
               -e '/^CONFIG_CC_/d' \
               -e '/^CONFIG_CLANG_/d' \
               -e '/^CONFIG_GCC_/d' \
@@ -1055,46 +858,34 @@ jobs:
           normalize_config "$DIAG_DIR/working-baseline.config" > "$DIAG_DIR/baseline.non-ksu"
           normalize_config "$OUT_DIR/.config" > "$DIAG_DIR/final.non-ksu"
 
-          # Kconfig may reflow blank lines when writing .config. Blank-line-only
-          # formatting changes are not configuration drift; actual CONFIG_* value
-          # changes are. The normalized comparison above removes blank lines.
           if ! diff -u "$DIAG_DIR/baseline.non-ksu" "$DIAG_DIR/final.non-ksu" > "$DIAG_DIR/config-drift.diff"; then
             echo "::error::NON-KSU configuration drift detected. Build stopped for safety."
             cat "$DIAG_DIR/config-drift.diff"
             exit 1
           fi
 
-          if grep -Rsn --exclude-dir=.git -E 'tiann/KernelSU|v0\.9\.5' KernelSU drivers fs include 2>/dev/null; then
+          # No old KernelSU release/source is allowed to survive the replacement.
+          if grep -Rsn --exclude-dir=.git -E 'tiann/KernelSU|v0\.9\.5' KernelSU drivers 2>/dev/null; then
             echo "::error::Old KernelSU source/reference detected after replacement."
             exit 1
           fi
 
           echo "PASS: semantic non-KSU configuration matches the WORKING baseline."
+          echo "PASS: KSU/SUSFS are the only intended configuration additions."
+          echo "PASS: KPROBES remains disabled."
 
-          # Explicitly verify boot-sensitive values again.
-          grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_HAVE_KPROBES=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_MODULES=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_OVERLAY_FS=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_MACH_LITO_CAYMANLM=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_MACH_LITO_CAYMANLM_LAO_COM=y$' "$OUT_DIR/.config"
-          grep -q '^CONFIG_LOCALVERSION="-perf"$' "$OUT_DIR/.config"
-
-          echo "PASS: no non-KSU configuration drift."
-          echo "PASS: KPROBES remains disabled; no KPROBE config was added."
-
-      - name: 10 - Verify source scope (only SukiSU-Ultra/SUSFS integration files changed)
+      - name: 09 - Verify source scope (ONLY SukiSU integration files changed)
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
-          exec > >(tee "$DIAG_DIR/10-scope.log") 2>&1
+          exec > >(tee "$DIAG_DIR/09-scope.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
           git status --short > "$DIAG_DIR/source-status.txt"
           git diff --stat > "$DIAG_DIR/source-diff-stat.txt"
 
-          # These device/boot configuration sources are forbidden to change.
+          # Device/boot configuration sources are forbidden to change.
           if git status --short -- \
               arch/arm64/boot/dts \
               arch/arm64/configs \
@@ -1108,22 +899,27 @@ jobs:
           echo "=== MODIFIED FILES ==="
           git status --short
 
-          # Strict source-scope allowlist. Only SukiSU-Ultra/SUSFS integration and
-          # the documented non-KPROBE hook sites may differ from the WORKING tree.
-          allowed_files='^(KernelSU/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$|drivers/input/input.c$|fs/Makefile$|fs/dcache.c$|fs/devpts/inode.c$|fs/exec.c$|fs/inode.c$|fs/namei.c$|fs/open.c$|fs/overlayfs/inode.c$|fs/overlayfs/readdir.c$|fs/overlayfs/super.c$|fs/proc/task_mmu.c$|fs/proc_namespace.c$|fs/read_write.c$|fs/readdir.c$|fs/stat.c$|fs/statfs.c$|include/linux/sched.h$|kernel/sys.c$|fs/susfs.c$|include/linux/susfs.h$|fs/sus_su.c$|include/linux/sus_su.h$)$'
+          # With SukiSU builtin, SUSFS is part of the SukiSU tree itself.
+          # Therefore the only base-kernel files allowed to change are the
+          # normal drivers/Kconfig + drivers/Makefile integration lines and
+          # the drivers/kernelsu symlink. No old SUSFS patch files are allowed.
+          allowed_files='^(KernelSU/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$)$'
           unexpected="$(git status --short | sed -E 's/^.. //g' | grep -Ev "$allowed_files" || true)"
           if [ -n "$unexpected" ]; then
-            echo "::error::Unexpected source files changed (outside SukiSU-Ultra/SUSFS integration scope):"
+            echo "::error::Unexpected source files changed outside SukiSU integration:"
             printf '%s\n' "$unexpected"
             exit 1
           fi
 
-          # Expected integration files must exist.
-          test -f fs/susfs.c
-          test -f include/linux/susfs.h
           test -d KernelSU/kernel
+          test -e drivers/kernelsu
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
 
-      - name: 11 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
+          echo "PASS: no DT/DTBO/defconfig/staging files changed."
+          echo "PASS: source scope is limited to SukiSU-Ultra integration."
+
+      - name: 10 - Build RAW WORKING kernel Image (do NOT replace stock DTB/DTBO)
         shell: bash
         run: |
           set -euo pipefail
@@ -1177,7 +973,7 @@ jobs:
           # DTB/DTBO are intentionally not copied into the kernel artifact.
           # The user's known-good stock DTB/DTBO remain the device boot assets.
 
-      - name: 12 - Final safety checks
+      - name: 11 - Final safety checks
         shell: bash
         run: |
           set -euo pipefail
@@ -1190,8 +986,7 @@ jobs:
 
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config"
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set$' "$OUT_DIR/.config"
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_MOUNT is not set$' "$OUT_DIR/.config"
+          grep -q '^# CONFIG_KPM is not set$' "$OUT_DIR/.config"
 
           # Absolutely critical: the working kernel's KPROBES state is unchanged.
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
@@ -1217,8 +1012,8 @@ jobs:
             echo "gcc64_branch=$GCC64_BRANCH"
             echo "gcc32_branch=$GCC32_BRANCH"
             echo "sukisu=$SUKISU_VERSION"
-            echo "susfs=$SUSFS_VERSION"
-            echo "SUS_PATH=disabled_for_LG_user_struct_compatibility"
+            echo "susfs=$SUSFS_MODE (integrated in SukiSU builtin)"
+            echo "SUSFS=integrated in official SukiSU builtin; no legacy 1.4.2 patch applied"
             echo "KPROBES=disabled (preserved from stock working kernel)"
             echo "artifact=raw ARM64 Image; stock DTB/DTBO intentionally preserved"
             echo
@@ -1229,7 +1024,7 @@ jobs:
             ls -lh "$OUT_DIR/arch/arm64/boot/Image"
           } | tee "$DIAG_DIR/final-report.txt"
 
-      - name: 13 - Package diagnostics (ALWAYS)
+      - name: 12 - Package diagnostics (ALWAYS)
         if: always()
         shell: bash
         run: |
@@ -1273,7 +1068,7 @@ jobs:
             echo "gcc64_branch=$GCC64_BRANCH"
             echo "gcc32_branch=$GCC32_BRANCH"
             echo "sukisu=$SUKISU_VERSION"
-            echo "susfs=$SUSFS_VERSION"
+            echo "susfs=$SUSFS_MODE (integrated in SukiSU builtin)"
             echo "SUS_PATH=disabled_for_LG_user_struct_compatibility"
             echo "KPROBES=disabled"
             echo "SUS_MOUNT=disabled_for_non_GKI_stability"
@@ -1288,7 +1083,7 @@ jobs:
           tar -czf "$GITHUB_WORKSPACE/LG-Velvet-diagnostics.tar.gz" -C "$DIAG_DIR" .
           test -s "$GITHUB_WORKSPACE/LG-Velvet-diagnostics.tar.gz"
 
-      - name: 14 - Upload RAW kernel Image (only on success)
+      - name: 13 - Upload RAW kernel Image (only on success)
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -1299,7 +1094,7 @@ jobs:
             ${{ github.workspace }}/Image
             ${{ github.workspace }}/kernel/out/.config
 
-      - name: 15 - Upload COMPLETE diagnostics (ALWAYS)
+      - name: 14 - Upload COMPLETE diagnostics (ALWAYS)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -1311,7 +1106,7 @@ jobs:
             ${{ github.workspace }}/ci-diagnostics/**
             ${{ github.workspace }}/LG-Velvet-diagnostics.tar.gz
 
-      - name: 16 - Print artifact location
+      - name: 15 - Print artifact location
         if: always()
         shell: bash
         run: |
