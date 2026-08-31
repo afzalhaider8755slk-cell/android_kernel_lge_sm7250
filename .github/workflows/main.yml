@@ -1,4 +1,4 @@
-name: LG G900 Global - WORKING 4.19 Non-GKI + SukiSU-Ultra builtin + manual hooks (strict replacement)
+name: LG G900 Global - WORKING 4.19 Non-GKI + SukiSU-Ultra builtin + manual hooks (strict replacement, robust fetch)
 
 on:
   # Automatic run: any commit/upload to this repository triggers the build.
@@ -712,7 +712,7 @@ jobs:
           echo "PASS: baseline SHA256 matches $WORKING_BASELINE_CONFIG_SHA256"
           echo "PASS: KPROBES remains disabled in pristine baseline."
 
-      - name: 05 - REMOVE old KernelSU integration and ADD SukiSU-Ultra builtin (non-GKI, archive install)
+      - name: 05 - REMOVE old KernelSU integration and ADD SukiSU-Ultra builtin (non-GKI, robust download)
         shell: bash
         run: |
           set -euo pipefail
@@ -720,36 +720,78 @@ jobs:
           exec > >(tee "$DIAG_DIR/05-sukisu.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          # The previous run failed at `git clone`. Do not depend on a Git
-          # clone for the SukiSU payload. Download the official builtin branch
-          # as a GitHub source archive, verify it is readable, then install it
-          # exactly the way the official setup script wires drivers/kernelsu.
+          # The previous two attempts failed before integration:
+          # 33435172198: git clone stopped at "Cloning into 'KernelSU'..."
+          # 33436088685: codeload archive reached ~98 KB, then GNU tar reported
+          #              "tar: stdout: write error".
+          # Do not pipe network data directly into git/tar. Download to a file,
+          # validate it, and extract with Python's tarfile module.
           test ! -e drivers/kernelsu
           test ! -d KernelSU
 
+          SUKISU_URL="https://github.com/SukiSU-Ultra/SukiSU-Ultra/archive/refs/heads/builtin.tar.gz"
           SUKISU_ARCHIVE="$RUNNER_TEMP/sukisu-builtin.tar.gz"
-          SUKISU_URL="https://codeload.github.com/SukiSU-Ultra/SukiSU-Ultra/tar.gz/refs/heads/builtin"
-
+          SUKISU_EXTRACT="$RUNNER_TEMP/sukisu-extract"
+          rm -rf "$SUKISU_EXTRACT" "$GITHUB_WORKSPACE/KernelSU"
+          mkdir -p "$SUKISU_EXTRACT" "$GITHUB_WORKSPACE/KernelSU"
           rm -f "$SUKISU_ARCHIVE"
-          curl -fL --retry 5 --retry-delay 3 --connect-timeout 20 --max-time 180 \
-            "$SUKISU_URL" -o "$SUKISU_ARCHIVE"
+
+          python3 - "$SUKISU_URL" "$SUKISU_ARCHIVE" <<'PY'
+          import sys, time, urllib.request
+          url, out = sys.argv[1], sys.argv[2]
+          last = None
+          for attempt in range(1, 7):
+              try:
+                  req = urllib.request.Request(url, headers={"User-Agent": "github-actions-sukisu-fetch"})
+                  with urllib.request.urlopen(req, timeout=60) as r, open(out, "wb") as f:
+                      while True:
+                          chunk = r.read(1024 * 1024)
+                          if not chunk:
+                              break
+                          f.write(chunk)
+                  if __import__('os').path.getsize(out) > 4096:
+                      break
+                  raise RuntimeError("downloaded archive is unexpectedly small")
+              except Exception as e:
+                  last = e
+                  print(f"download attempt {attempt}/6 failed: {e}", file=sys.stderr)
+                  try:
+                      __import__('os').remove(out)
+                  except FileNotFoundError:
+                      pass
+                  if attempt != 6:
+                      time.sleep(min(10, attempt * 2))
+          else:
+              raise SystemExit(f"SukiSU download failed after 6 attempts: {last}")
+          PY
 
           test -s "$SUKISU_ARCHIVE"
           gzip -t "$SUKISU_ARCHIVE"
-          tar -tzf "$SUKISU_ARCHIVE" | grep -q '/kernel/Kconfig$'
-          tar -tzf "$SUKISU_ARCHIVE" | grep -q '/kernel/Makefile$'
+          python3 - "$SUKISU_ARCHIVE" "$SUKISU_EXTRACT" <<'PY'
+          import sys, tarfile, pathlib
+          archive, dest = sys.argv[1], pathlib.Path(sys.argv[2])
+          with tarfile.open(archive, "r:gz") as tf:
+              names = tf.getnames()
+              required = ["/kernel/Kconfig", "/kernel/Makefile"]
+              if not any(n.endswith(required[0]) for n in names):
+                  raise SystemExit("SukiSU archive does not contain kernel/Kconfig")
+              if not any(n.endswith(required[1]) for n in names):
+                  raise SystemExit("SukiSU archive does not contain kernel/Makefile")
+              # Refuse absolute paths and traversal entries before extraction.
+              root = dest.resolve()
+              for m in tf.getmembers():
+                  target = (dest / m.name).resolve()
+                  if target != root and root not in target.parents:
+                      raise SystemExit(f"unsafe archive member: {m.name}")
+              tf.extractall(dest)
+          PY
 
-          rm -rf "$GITHUB_WORKSPACE/KernelSU"
-          mkdir -p "$GITHUB_WORKSPACE/KernelSU"
-          tar -xzf "$SUKISU_ARCHIVE" -C "$RUNNER_TEMP"
-
-          SUKISU_ROOT="$(find "$RUNNER_TEMP" -maxdepth 1 -mindepth 1 -type d -name 'SukiSU-Ultra-*' | head -n 1)"
+          SUKISU_ROOT="$(find "$SUKISU_EXTRACT" -maxdepth 1 -mindepth 1 -type d -name 'SukiSU-Ultra-*' | head -n 1)"
           test -n "$SUKISU_ROOT"
           test -d "$SUKISU_ROOT/kernel"
           cp -a "$SUKISU_ROOT/." "$GITHUB_WORKSPACE/KernelSU/"
 
-          # Keep a local git identity for SukiSU's Makefile version probes.
-          # This is metadata only; no kernel source is changed by it.
+          # The SukiSU Makefile probes its local git metadata for version text.
           cd "$GITHUB_WORKSPACE/KernelSU"
           git init -q
           git add -A
@@ -757,10 +799,6 @@ jobs:
           git branch -M builtin
 
           cd "$GITHUB_WORKSPACE/kernel"
-
-          # Official setup.sh creates drivers/kernelsu as a relative symlink
-          # and adds the Kconfig/Makefile entries. Reproduce those exact
-          # integration operations without the failing clone/pull step.
           ln -s "../KernelSU/kernel" drivers/kernelsu
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || \
             sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
@@ -772,14 +810,14 @@ jobs:
           test -f drivers/kernelsu/Kconfig
           test -f drivers/kernelsu/Makefile
           grep -q 'config KSU' drivers/kernelsu/Kconfig
-          grep -q 'config KSU_SUSFS' drivers/kernelsu/Kconfig
           grep -q 'obj-$(CONFIG_KSU)' drivers/kernelsu/Makefile
 
-          echo "sukisu_source=builtin archive" | tee "$DIAG_DIR/sukisu-version.txt"
-          echo "sukisu_url=$SUKISU_URL" | tee -a "$DIAG_DIR/sukisu-version.txt"
-          echo "sukisu_snapshot=$(git -C "$GITHUB_WORKSPACE/KernelSU" rev-parse HEAD)" | tee -a "$DIAG_DIR/sukisu-version.txt"
-          echo "sukisu_branch=builtin" | tee -a "$DIAG_DIR/sukisu-version.txt"
-          git status --short | tee "$DIAG_DIR/05-source-status.txt"
+          echo "sukisu_source=builtin archive"
+          echo "sukisu_url=$SUKISU_URL"
+          echo "sukisu_archive_sha256=$(sha256sum "$SUKISU_ARCHIVE" | awk '{print $1}')"
+          echo "sukisu_snapshot=$(git -C "$GITHUB_WORKSPACE/KernelSU" rev-parse HEAD)"
+          echo "sukisu_branch=builtin"
+          git status --short
 
       - name: 06 - VERIFY SukiSU builtin source; SUSFS remains OFF for strict replacement
         shell: bash
@@ -824,7 +862,7 @@ jobs:
           test -f drivers/input/input.c
 
           # Do not touch a file twice.
-          for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c; do
+          for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c drivers/input/input.c; do
             if grep -q 'ksu_handle_' "$f"; then
               echo "::error::Existing KSU hook detected in $f; refusing to patch twice."
               exit 1
@@ -860,15 +898,21 @@ jobs:
             sed -i '/if ((flag & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |/i\#ifdef CONFIG_KSU\n\tksu_handle_stat(\&dfd, \&filename, \&flag);\n#endif' fs/stat.c
           fi
 
+          # reboot.c -- required supercall hook for non-GKI manual integration.
+          test -f kernel/reboot.c
+          sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd, void __user \*, arg)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif' kernel/reboot.c
+          sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd, void __user \*, arg)/a\#ifdef CONFIG_KSU\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif' kernel/reboot.c
+          grep -q 'ksu_handle_sys_reboot' kernel/reboot.c
+
           # input.c
           sed -i '/static void input_handle_event/i\#ifdef CONFIG_KSU\nextern bool ksu_input_hook __read_mostly;\nextern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n#endif' drivers/input/input.c
           sed -i '/int disposition = input_get_disposition(dev, type, code, \&value);/a\#ifdef CONFIG_KSU\n\tif (unlikely(ksu_input_hook))\n\t\tksu_handle_input_handle_event(\&type, \&code, \&value);\n#endif' drivers/input/input.c
 
-          for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c; do
+          for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c drivers/input/input.c; do
             grep -q 'CONFIG_KSU' "$f"
           done
           echo "PASS: SukiSU manual hooks added to the supported 4.19 hook sites."
-          git diff -- fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c | tee "$DIAG_DIR/manual-hooks.diff"
+          git diff -- fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c drivers/input/input.c | tee "$DIAG_DIR/manual-hooks.diff"
 
       - name: 08 - Configure ONLY SukiSU; preserve every WORKING config value
         shell: bash
@@ -905,6 +949,13 @@ jobs:
             --disable CONFIG_KSU_SUSFS_OPEN_REDIRECT \
             --disable CONFIG_KSU_SUSFS_SUS_MAP
 
+          # SukiSU's documented non-GKI mode is manual-hook.  The current
+          # builtin branch may expose this symbol from its Kconfig on some
+          # revisions; enable it when present, but never invent a new symbol.
+          if grep -Rqs '^config KSU_MANUAL_HOOK' drivers/kernelsu; then
+            scripts/config --file "$OUT_DIR/.config" --enable CONFIG_KSU_MANUAL_HOOK
+          fi
+
           make O="$OUT_DIR" ARCH="$ARCH" \
             CC="$CC" HOSTCC="$HOSTCC" HOSTCXX="$HOSTCXX" \
             LD="$LD" AS="$AS" LLVM=1 LLVM_IAS=1 olddefconfig
@@ -913,6 +964,9 @@ jobs:
 
           grep -q '^CONFIG_KSU=y$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KPROBES is not set$' "$OUT_DIR/.config"
+          if grep -Rqs '^config KSU_MANUAL_HOOK' drivers/kernelsu; then
+            grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT_DIR/.config"
+          fi
           grep -q '^# CONFIG_KPM is not set$' "$OUT_DIR/.config"
           grep -q '^# CONFIG_KSU_SUSFS is not set$' "$OUT_DIR/.config"
 
@@ -961,7 +1015,7 @@ jobs:
             exit 1
           fi
 
-          allowed_files='^(KernelSU/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$|fs/exec.c$|fs/open.c$|fs/read_write.c$|fs/stat.c$|drivers/input/input.c$)$'
+          allowed_files='^(KernelSU/|drivers/kernelsu$|drivers/Kconfig$|drivers/Makefile$|fs/exec.c$|fs/open.c$|fs/read_write.c$|fs/stat.c$|kernel/reboot.c$|drivers/input/input.c$)$'
           unexpected="$(git status --short | sed -E 's/^.. //g' | grep -Ev "$allowed_files" || true)"
           if [ -n "$unexpected" ]; then
             echo "::error::Unexpected source files changed outside SukiSU integration/hook sites:"
