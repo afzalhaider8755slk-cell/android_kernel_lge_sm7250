@@ -1,4 +1,4 @@
-name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v13
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v14
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-g900-global-v12-${{ github.ref }}
+  group: lg-g900-global-v14-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -33,7 +33,7 @@ env:
   CIP_TARGET_TAG: v4.19.325-cip135
 
   DTB_TARGET: vendor/qcom/lito-mtp.dtb
-  DTBO_TARGET: arch/arm64/boot/dts/vendor/lge/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
+  DTBO_TARGET: arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo
   DTBO_BUILD_DIR: arch/arm64/boot/dts/vendor/lge
   DTBO_DTS: arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-rev-1.0_overlay.dts
 
@@ -52,7 +52,7 @@ jobs:
           trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           uname -a
           date -u +%FT%TZ
-          echo "workflow=v12"
+          echo "workflow=v14"
 
       - name: 01 - Checkout all LG trees
         shell: bash
@@ -242,7 +242,7 @@ jobs:
           echo "SukiSU commit=$(git -C KernelSU rev-parse HEAD)" \
             | tee "$GITHUB_WORKSPACE/artifacts/sukisu-commit.txt"
 
-      - name: 07b - Integrate SUSFS kernel-4.19 source into SukiSU-Ultra
+      - name: 07b - Integrate SUSFS 4.19 non-GKI backport without removing LG sources
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -251,45 +251,53 @@ jobs:
 
           cd src/kernel
 
-          # FIX ONLY:
-          # The diagnostic proved that SukiSU-Ultra builtin supplies the
-          # CONFIG_KSU_SUSFS/KSU integration, but this kernel tree still
-          # lacks the actual 4.19 SUSFS kernel sources.  The official
-          # susfs4ksu kernel-4.19 tree provides the matching kernel patch
-          # and sources.  We add those files; nothing from the LG tree is
-          # removed or replaced.
+          # The previous build proved the stock susfs4ksu kernel-4.19 patch
+          # is not a clean match for this vendor/CIP135 tree:
+          # namespace.c, proc/cmdline.c, proc/task_mmu.c and mount.h rejected.
+          # Do NOT force those old hunks into the LG tree.
+          #
+          # Use the maintained Non-GKI 4.19 backport patch instead. It is
+          # specifically designed for fragmented/vendor 4.19 trees and keeps
+          # the existing LG source intact.
+          rm -rf "$GITHUB_WORKSPACE/NonGKI_Kernel_Build_2nd"
+          git clone --depth=1 --branch mainline \
+            https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git \
+            "$GITHUB_WORKSPACE/NonGKI_Kernel_Build_2nd"
+
           rm -rf "$GITHUB_WORKSPACE/susfs4ksu"
           git clone --depth=1 --branch kernel-4.19 \
             https://gitlab.com/simonpunk/susfs4ksu.git \
             "$GITHUB_WORKSPACE/susfs4ksu"
 
-          test -s "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+          test -s "$GITHUB_WORKSPACE/NonGKI_Kernel_Build_2nd/Patches/Patch/susfs_patch_to_4.19.patch"
           test -d "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs"
           test -d "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux"
 
+          # Add SUSFS implementation/header files only. Existing LG files are
+          # never deleted; patching is then performed by the 4.19 backport.
           cp -a "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/." fs/
           cp -a "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/." include/linux/
 
-          patch_file="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+          patch_file="$GITHUB_WORKSPACE/NonGKI_Kernel_Build_2nd/Patches/Patch/susfs_patch_to_4.19.patch"
 
-          # Apply only the kernel-side 4.19 patch.  Do not apply the old
-          # KernelSU-side patch because SukiSU-Ultra already owns the KSU
-          # integration and its directory layout is different.
-          patch -p1 --forward < "$patch_file" || {
-            echo "ERROR: SUSFS 4.19 kernel patch did not apply cleanly."
-            exit 1
-          }
+          # Apply the maintained 4.19 backport. Do not accept rejects.
+          patch -p1 --forward < "$patch_file"
 
+          ! find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .
+
+          # Required implementation/config integration checks.
           test -s include/linux/susfs.h
           test -s include/linux/susfs_def.h
           test -s fs/susfs.c
-          grep -Rqs 'KSU_SUSFS' KernelSU/kernel
+          grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU/kernel
 
-          cp "$patch_file" "$GITHUB_WORKSPACE/artifacts/susfs-4.19-kernel.patch"
+          cp "$patch_file" "$GITHUB_WORKSPACE/artifacts/susfs-4.19-nongki-backport.patch"
+          git -C "$GITHUB_WORKSPACE/NonGKI_Kernel_Build_2nd" rev-parse HEAD \
+            > "$GITHUB_WORKSPACE/artifacts/susfs-backport-source-commit.txt"
           git -C "$GITHUB_WORKSPACE/susfs4ksu" rev-parse HEAD \
-            > "$GITHUB_WORKSPACE/artifacts/susfs-4.19-commit.txt"
+            > "$GITHUB_WORKSPACE/artifacts/susfs-source-commit.txt"
 
-          echo "SukiSU builtin + SUSFS kernel-4.19 source/patch: PASS" \
+          echo "SukiSU builtin + SUSFS 4.19 Non-GKI backport: PASS" \
             | tee "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
           echo "No LG kernel source files were removed by this SUSFS step." \
             | tee -a "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
@@ -846,6 +854,13 @@ jobs:
           # Global overlay was produced. Build the exact requested .dtbo
           # target instead; no other DTB/DTBO source or feature is removed.
           target="$DTBO_TARGET"
+
+          # The LGE Makefile defines:
+          # $(obj)/%.dtbo: $(src)/$(DTS_PROJECT)/$(DTS_TARGET)/%.dts
+          # therefore the output target is nested under the project/device
+          # directories, not flattened directly under vendor/lge.
+          test -f "$DTBO_DTS"
+          test "${target##*/}" = "lito-caymanlm_lao_com-rev-1.0_overlay.dtbo"
 
           make -Oline \
             O="$GITHUB_WORKSPACE/out" \
