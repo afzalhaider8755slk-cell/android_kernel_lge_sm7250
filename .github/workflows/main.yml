@@ -1,4 +1,4 @@
-name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v15
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v16
 
 on:
   workflow_dispatch:
@@ -22,9 +22,9 @@ env:
   DEFCONFIG: vendor/lineageos_cayman_defconfig
 
   SUKISU_REPO: https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
-  SUKISU_REF: builtin
+  SUKISU_REF: susfs-main
   SUSFS_MODULE_REPO: https://github.com/sidex15/susfs4ksu-module.git
-  SUSFS_MODULE_REF: v1.5.2+
+  SUSFS_MODULE_REF: main
   ANYKERNEL3_REPO: https://github.com/osm0sis/AnyKernel3.git
   ANYKERNEL3_REF: master
 
@@ -230,19 +230,19 @@ jobs:
 
           curl -LSs \
             "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
-            | bash -s builtin
+            | bash -s "$SUKISU_REF"
 
           test -d KernelSU/kernel
           test -f KernelSU/kernel/Kconfig
           test -f KernelSU/kernel/Makefile
 
-          echo "SukiSU ref=builtin" \
+          echo "SukiSU ref=$SUKISU_REF" \
             | tee "$GITHUB_WORKSPACE/artifacts/sukisu-selected-ref.txt"
 
           echo "SukiSU commit=$(git -C KernelSU rev-parse HEAD)" \
             | tee "$GITHUB_WORKSPACE/artifacts/sukisu-commit.txt"
 
-      - name: 07b - Verify SukiSU-Ultra native SUSFS integration (no external patch overlay)
+      - name: 07b - Verify native SukiSU SUSFS v2.2.0 integration
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -251,27 +251,55 @@ jobs:
 
           cd src/kernel
 
-          # IMPORTANT: v14 failed because it copied SUSFS files and then applied
-          # an old external 4.19 patch to this already-modified vendor/CIP135
-          # tree. The patch rejected real LG contexts. SukiSU-Ultra's current
-          # builtin branch already contains its native SUSFS integration.
-          # Do not layer the stale susfs4ksu 4.19 patch on top of it.
-
           test -s KernelSU/kernel/Kconfig
           test -s KernelSU/kernel/Makefile
-
-          # Native SukiSU SUSFS implementation must be present after setup.
           test -s KernelSU/kernel/susfs.c || test -s fs/susfs.c
           test -s KernelSU/kernel/include/linux/susfs.h || test -s include/linux/susfs.h
           test -s KernelSU/kernel/include/linux/susfs_def.h || test -s include/linux/susfs_def.h
           grep -Rqs 'config KSU_SUSFS' KernelSU/kernel
 
-          echo "SukiSU builtin native SUSFS integration: PASS" \
-            | tee "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
-          echo "External stale susfs4ksu 4.19 patch was intentionally not layered onto the LG/CIP135 tree." \
-            | tee -a "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
-          echo "No LG kernel source files were removed by SUSFS integration." \
-            | tee -a "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
+          susfs_header=''
+          for f in KernelSU/kernel/include/linux/susfs.h include/linux/susfs.h; do
+            if [ -s "$f" ]; then susfs_header="$f"; break; fi
+          done
+          test -n "$susfs_header"
+          grep -Eiq 'SUSFS[^0-9]*2[.]2[.]0|VERSION.*2[.]2[.]0|v2[.]2[.]0' "$susfs_header" || {
+            echo "ERROR: native SukiSU SUSFS is present but v2.2.0 was not detected in $susfs_header"
+            head -80 "$susfs_header" || true
+            exit 1
+          }
+
+          git -C KernelSU rev-parse HEAD > "$GITHUB_WORKSPACE/artifacts/sukisu-susfs-commit.txt"
+          echo "Native SukiSU SUSFS v2.2.0 integration: PASS" | tee "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
+
+      - name: 07c - Integrate Baseband Guard (BBG) safely
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/07c-bbg.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=07c rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
+
+          cd src/kernel
+          if [ ! -d Baseband-guard ]; then
+            git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard.git Baseband-guard
+          fi
+          chmod +x Baseband-guard/setup.sh
+          ./Baseband-guard/setup.sh
+
+          test -f security/baseband-guard/Kconfig
+          test -f security/baseband-guard/Makefile
+          test -f security/baseband-guard/baseband_guard.c
+          grep -q 'obj-$(CONFIG_BBG) += baseband-guard/' security/Makefile
+          grep -q 'security/baseband-guard/Kconfig' security/Kconfig
+
+          # The 4.19 vendor LSM Kconfig may not automatically place BBG in the
+          # active LSM list. Add it to existing SELinux defaults without deleting
+          # or replacing any existing LSM. This is the documented CI integration.
+          if grep -q '^config LSM$' security/Kconfig; then
+            sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
+          fi
+
+          echo "BBG source integration: PASS" | tee "$GITHUB_WORKSPACE/artifacts/bbg-integration.txt"
 
       - name: 08 - Generate config with the REAL device defconfig (toolchain already verified)
         shell: bash
@@ -307,7 +335,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/out/.config" \
             "$GITHUB_WORKSPACE/artifacts/config-from-defconfig"
 
-      - name: 09 - Enable requested features conservatively
+      - name: 09 - Enable requested root, SUSFS, filesystem, security and networking features
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -315,71 +343,125 @@ jobs:
           trap 'rc=$?; echo "FAILED step=09 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
 
           cd src/kernel
+          cfg="$GITHUB_WORKSPACE/out/.config"
           export PATH="$CLANG_DIR/bin:$PATH"
 
-          scripts/config --file "$GITHUB_WORKSPACE/out/.config" \
+          # Requested core features. KPROBES remains enabled for the kernel,
+          # while Manual Hook is the selected SukiSU hook mode for this non-GKI 4.19 tree.
+          scripts/config --file "$cfg" \
             --enable CONFIG_KPROBES \
+            --enable CONFIG_KSU_MANUAL_HOOK \
             --enable CONFIG_KALLSYMS \
             --enable CONFIG_KALLSYMS_ALL \
             --enable CONFIG_KSU \
             --enable CONFIG_KSU_SUSFS \
-            --enable CONFIG_KSU_SUSFS_SUS_MAP
+            --enable CONFIG_KSU_SUSFS_SUS_MAP \
+            --enable CONFIG_EXT4_FS \
+            --enable CONFIG_EXT4_USE_FOR_EXT2 \
+            --enable CONFIG_OVERLAY_FS \
+            --enable CONFIG_BPF \
+            --enable CONFIG_BPF_SYSCALL \
+            --enable CONFIG_NETFILTER \
+            --enable CONFIG_NETFILTER_XTABLES \
+            --enable CONFIG_CFG80211 \
+            --enable CONFIG_UID_SYS_STATS \
+            --enable CONFIG_RMNET \
+            --enable CONFIG_IPA3 \
+            --enable CONFIG_RMNET_IPA3 \
+            --enable CONFIG_QCOM_QMI_HELPERS \
+            --enable CONFIG_QCOM_QMI_RMNET \
+            --enable CONFIG_ANDROID_BINDER_IPC \
+            --enable CONFIG_ANDROID_BINDERFS \
+            --enable CONFIG_DM_VERITY \
+            --enable CONFIG_FS_ENCRYPTION \
+            --enable CONFIG_TMPFS_XATTR \
+            --enable CONFIG_TMPFS_POSIX_ACL \
+            --enable CONFIG_NET_SCH_FQ \
+            --enable CONFIG_TCP_CONG_BBR \
+            --enable CONFIG_TCP_CONG_ADVANCED \
+            --enable CONFIG_IP_SET \
+            --enable CONFIG_NF_NAT_IPV6 \
+            --enable CONFIG_WIREGUARD \
+            --enable CONFIG_BBG
 
-          # Keep KPM disabled for stability.
-          scripts/config --file "$GITHUB_WORKSPACE/out/.config" \
-            --disable CONFIG_KPM 2>/dev/null || true
-
-          make O="$GITHUB_WORKSPACE/out" \
-            ARCH=arm64 \
-            SUBARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC="$CLANG_DIR/bin/clang" \
-            HOSTCC="$CLANG_DIR/bin/clang" \
-            LD="$CLANG_DIR/bin/ld.lld" \
-            HOSTLD="$CLANG_DIR/bin/ld.lld" \
-            AR="$CLANG_DIR/bin/llvm-ar" \
-            NM="$CLANG_DIR/bin/llvm-nm" \
-            OBJCOPY="$CLANG_DIR/bin/llvm-objcopy" \
-            OBJDUMP="$CLANG_DIR/bin/llvm-objdump" \
-            STRIP="$CLANG_DIR/bin/llvm-strip" \
-            olddefconfig
-
-          grep -q '^CONFIG_KPROBES=y$' \
-            "$GITHUB_WORKSPACE/out/.config"
-
-          grep -q '^CONFIG_KSU=y$' \
-            "$GITHUB_WORKSPACE/out/.config"
-
-          grep -q '^CONFIG_KSU_SUSFS=y$' \
-            "$GITHUB_WORKSPACE/out/.config"
-
-          grep -q '^# CONFIG_KPM is not set$' \
-            "$GITHUB_WORKSPACE/out/.config"
-
-          for c in \
-            CONFIG_KSU_SUSFS_SUS_PATH \
-            CONFIG_KSU_SUSFS_SUS_MOUNT \
-            CONFIG_KSU_SUSFS_SUS_KSTAT \
-            CONFIG_KSU_SUSFS_SPOOF_UNAME \
-            CONFIG_KSU_SUSFS_ENABLE_LOG \
-            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-            CONFIG_KSU_SUSFS_SUS_MAP; do
-
-            grep -q "^${c}=y$" \
-              "$GITHUB_WORKSPACE/out/.config" || {
-                echo "MISSING $c after olddefconfig"
-                exit 1
-              }
+          # Optional symbols vary between vendor 4.19 trees. Enable them when
+          # their Kconfig symbol exists; never invent a symbol that this tree lacks.
+          optional=(
+            CONFIG_BBG_ALLOW_IN_RECOVERY
+            CONFIG_BBG_DEBUG
+            CONFIG_BBG_ANTI_SPOOF_DOMAIN
+            CONFIG_IP6_NF_NAT
+            CONFIG_NETFILTER_XT_TARGET_TTL
+            CONFIG_NF_NAT
+            CONFIG_NF_CONNTRACK
+            CONFIG_NETFILTER_XT_MATCH_CONNTRACK
+            CONFIG_WIREGUARD_DEBUG
+            CONFIG_EXT4_FS_POSIX_ACL
+            CONFIG_EXT4_FS_SECURITY
+            CONFIG_EXT4_FS_ENCRYPTION
+            CONFIG_TCP_CONG_CUBIC
+            CONFIG_TCP_CONG_BBR
+            CONFIG_NET_SCH_FQ
+            CONFIG_IP_SET_HASH_IP
+            CONFIG_IP_SET_HASH_NET
+            CONFIG_IP_SET_HASH_MAC
+            CONFIG_IP_SET_LIST_SET
+          )
+          for c in "${optional[@]}"; do
+            if grep -Eq "^[[:space:]]*(config|menuconfig)[[:space:]]+${c#CONFIG_}([[:space:]]|$)" $(find . -path '*/Kconfig*' -type f -print) 2>/dev/null; then
+              scripts/config --file "$cfg" --enable "$c" 2>/dev/null || true
+            fi
           done
 
-          grep -q '^# CONFIG_KSU_MANUAL_HOOK is not set$' \
-            "$GITHUB_WORKSPACE/out/.config" || true
+          # Do not force BBG_BLOCK_BOOT: protecting boot itself can prevent normal
+          # OTA/kernel maintenance. BBG master protection remains enabled.
+          scripts/config --file "$cfg" --disable CONFIG_BBG_BLOCK_BOOT 2>/dev/null || true
 
-          cp "$GITHUB_WORKSPACE/out/.config" \
-            "$GITHUB_WORKSPACE/artifacts/final.config"
+          # KPM is not part of this requested stable stack; leave it off to avoid
+          # introducing a second patching/runtime mechanism into this 4.19 tree.
+          scripts/config --file "$cfg" --disable CONFIG_KPM 2>/dev/null || true
+
+          make O="$GITHUB_WORKSPACE/out" \
+            ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
+            LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
+            AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" \
+            OBJCOPY="$CLANG_DIR/bin/llvm-objcopy" OBJDUMP="$CLANG_DIR/bin/llvm-objdump" \
+            STRIP="$CLANG_DIR/bin/llvm-strip" olddefconfig
+
+          required=(
+            CONFIG_KPROBES CONFIG_KSU_MANUAL_HOOK CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL
+            CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_MAP
+            CONFIG_EXT4_FS CONFIG_OVERLAY_FS CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_BBG
+            CONFIG_NETFILTER CONFIG_NETFILTER_XTABLES CONFIG_CFG80211 CONFIG_UID_SYS_STATS
+            CONFIG_RMNET CONFIG_IPA3 CONFIG_RMNET_IPA3 CONFIG_QCOM_QMI_HELPERS CONFIG_QCOM_QMI_RMNET
+            CONFIG_ANDROID_BINDER_IPC CONFIG_ANDROID_BINDERFS CONFIG_DM_VERITY CONFIG_FS_ENCRYPTION
+          )
+          for c in "${required[@]}"; do
+            grep -q "^${c}=y$" "$cfg" || { echo "MISSING required $c"; exit 1; }
+          done
+
+          # BBG must be compiled and present in the active LSM ordering.
+          if grep -q '^CONFIG_LSM=' "$cfg"; then
+            grep '^CONFIG_LSM=' "$cfg" | grep -q 'baseband_guard' || {
+              echo "MISSING baseband_guard from CONFIG_LSM";
+              grep '^CONFIG_LSM=' "$cfg" || true;
+              exit 1;
+            }
+          fi
+
+          susfs_required=(
+            CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT
+            CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP
+          )
+          for c in "${susfs_required[@]}"; do
+            grep -q "^${c}=y$" "$cfg" || { echo "MISSING SUSFS feature $c"; exit 1; }
+          done
+
+          cp "$cfg" "$GITHUB_WORKSPACE/artifacts/final.config"
+          grep -E '^(CONFIG_(KPROBES|KSU_MANUAL_HOOK|KALLSYMS|KALLSYMS_ALL|KSU|KSU_SUSFS|EXT4_FS|OVERLAY_FS|BBG|TCP_CONG_BBR|IP_SET|WIREGUARD))=' "$cfg" \
+            > "$GITHUB_WORKSPACE/artifacts/requested-feature-config.txt" || true
 
       - name: 10 - Network / IMS / WLAN / traffic-monitor baseline
         shell: bash
@@ -433,6 +515,25 @@ jobs:
           echo 'Android 16 QPR2/GSI: kernel compatibility validation only; no experimental QPR2 backports.' \
             | tee -a "$report"
 
+      - name: 10b - Record device-safe feature manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cfg="$GITHUB_WORKSPACE/out/.config"
+          {
+            echo '=== LG G900 feature manifest ==='
+            echo 'SukiSU-Ultra: enabled'
+            echo 'SUSFS: native v2.2.0 target'
+            echo 'KPROBES: enabled'
+            echo 'KSU_MANUAL_HOOK: enabled (selected non-GKI hook)'
+            echo 'KALLSYMS/KALLSYMS_ALL: enabled'
+            echo 'EXT4_FS/OVERLAY_FS: enabled'
+            echo 'BBG: enabled; boot partition protection intentionally left off for maintenance/OTA safety'
+            echo 'Futile Maphide/JIT-Zygote: SUSFS hiding stack retained; no unverified third-party kernel patch injected'
+            echo 'DTB/DTBO: build uses existing LG device-tree source; no invented hardware nodes'
+            echo 'DTBO: all existing Global Lao overlay DTS files are compiled'
+          } | tee "$GITHUB_WORKSPACE/artifacts/feature-manifest.txt"
+
       - name: 11 - Build kernel Image + modules
         shell: bash
         run: |
@@ -480,7 +581,13 @@ jobs:
           grep -q '^CONFIG_KSU_SUSFS=y$' "$cfg"
           grep -q '^# CONFIG_KPM is not set$' "$cfg"
 
-          ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$cfg" || true
+          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$cfg"
+          grep -q '^CONFIG_KALLSYMS=y$' "$cfg"
+          grep -q '^CONFIG_KALLSYMS_ALL=y$' "$cfg"
+          grep -q '^CONFIG_EXT4_FS=y$' "$cfg"
+          grep -q '^CONFIG_OVERLAY_FS=y$' "$cfg"
+          grep -q '^CONFIG_BBG=y$' "$cfg"
+          if grep -q '^CONFIG_LSM=' "$cfg"; then grep '^CONFIG_LSM=' "$cfg" | grep -q 'baseband_guard'; fi
 
           for c in \
             CONFIG_KSU_SUSFS_SUS_PATH \
@@ -518,6 +625,10 @@ jobs:
             artifacts/build-info.txt
             artifacts/Image.sha256
             artifacts/network-connectivity-report.txt
+            artifacts/requested-feature-config.txt
+            artifacts/bbg-integration.txt
+            artifacts/susfs-kernel-ref.txt
+            artifacts/sukisu-susfs-commit.txt
             artifacts/cip*
 
       - name: 14 - Upload kernel diagnostics ALWAYS
