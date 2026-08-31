@@ -1,4 +1,4 @@
-name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v12
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v13
 
 on:
   workflow_dispatch:
@@ -242,7 +242,7 @@ jobs:
           echo "SukiSU commit=$(git -C KernelSU rev-parse HEAD)" \
             | tee "$GITHUB_WORKSPACE/artifacts/sukisu-commit.txt"
 
-      - name: 07b - Verify native SUSFS integration before Kconfig
+      - name: 07b - Integrate SUSFS kernel-4.19 source into SukiSU-Ultra
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -252,27 +252,46 @@ jobs:
           cd src/kernel
 
           # FIX ONLY:
-          # SukiSU-Ultra susfs-main already contains the SukiSU/SUSFS
-          # integration. Do NOT apply the old susfs4ksu 4.19 patch again.
-          # That legacy patch was responsible for the previous partial
-          # hunk failures against the modern SukiSU kernel layout.
+          # The diagnostic proved that SukiSU-Ultra builtin supplies the
+          # CONFIG_KSU_SUSFS/KSU integration, but this kernel tree still
+          # lacks the actual 4.19 SUSFS kernel sources.  The official
+          # susfs4ksu kernel-4.19 tree provides the matching kernel patch
+          # and sources.  We add those files; nothing from the LG tree is
+          # removed or replaced.
+          rm -rf "$GITHUB_WORKSPACE/susfs4ksu"
+          git clone --depth=1 --branch kernel-4.19 \
+            https://gitlab.com/simonpunk/susfs4ksu.git \
+            "$GITHUB_WORKSPACE/susfs4ksu"
 
-          test -d KernelSU/kernel
-          test -f KernelSU/kernel/Kconfig
-          test -f KernelSU/kernel/Makefile
+          test -s "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+          test -d "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs"
+          test -d "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux"
 
-          grep -Rqs 'KSU_SUSFS' KernelSU/kernel
-          grep -Rqs 'susfs' KernelSU/kernel
+          cp -a "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/." fs/
+          cp -a "$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/." include/linux/
 
-          # These are the headers required by the SukiSU SUSFS integration.
+          patch_file="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+
+          # Apply only the kernel-side 4.19 patch.  Do not apply the old
+          # KernelSU-side patch because SukiSU-Ultra already owns the KSU
+          # integration and its directory layout is different.
+          patch -p1 --forward < "$patch_file" || {
+            echo "ERROR: SUSFS 4.19 kernel patch did not apply cleanly."
+            exit 1
+          }
+
           test -s include/linux/susfs.h
           test -s include/linux/susfs_def.h
           test -s fs/susfs.c
+          grep -Rqs 'KSU_SUSFS' KernelSU/kernel
 
-          echo "Native SukiSU SUSFS integration: PASS" \
+          cp "$patch_file" "$GITHUB_WORKSPACE/artifacts/susfs-4.19-kernel.patch"
+          git -C "$GITHUB_WORKSPACE/susfs4ksu" rev-parse HEAD \
+            > "$GITHUB_WORKSPACE/artifacts/susfs-4.19-commit.txt"
+
+          echo "SukiSU builtin + SUSFS kernel-4.19 source/patch: PASS" \
             | tee "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
-
-          echo "SUSFS source is provided by SukiSU-Ultra ref=builtin; no legacy 4.19 patch applied." \
+          echo "No LG kernel source files were removed by this SUSFS step." \
             | tee -a "$GITHUB_WORKSPACE/artifacts/susfs-kernel-ref.txt"
 
       - name: 08 - Generate config with the REAL device defconfig (toolchain already verified)
@@ -820,13 +839,13 @@ jobs:
           cd src/kernel
           export PATH="$CLANG_DIR/bin:$PATH"
 
-          target="$DTBO_TARGET"
-
           # FIX ONLY:
-          # The vendor directory is not a top-level Kbuild target and
-          # therefore returned "Nothing to be done" without creating the DTBO.
-          # Use the kernel's standard top-level dtbs target so the existing
-          # DTBO Kbuild rules are traversed without changing any source feature.
+          # The previous directory target invoked dtbs and therefore caused
+          # every LGE overlay in arch/arm64/boot/dts/vendor/lge to compile.
+          # An unrelated CN overlay then failed DTC before the requested Lao
+          # Global overlay was produced. Build the exact requested .dtbo
+          # target instead; no other DTB/DTBO source or feature is removed.
+          target="$DTBO_TARGET"
 
           make -Oline \
             O="$GITHUB_WORKSPACE/out" \
@@ -840,25 +859,19 @@ jobs:
             HOSTLD="$CLANG_DIR/bin/ld.lld" \
             AR="$CLANG_DIR/bin/llvm-ar" \
             NM="$CLANG_DIR/bin/llvm-nm" \
-            dtbs
+            "$target"
 
           produced="$GITHUB_WORKSPACE/out/$target"
 
           test -s "$produced" || {
             echo "ERROR: DTBO output not found: $produced"
-
-            find "$GITHUB_WORKSPACE/out/arch/arm64/boot/dts" \
-              -type f \
-              -name '*.dtbo' \
-              -print \
-              | sort || true
-
+            find "$GITHUB_WORKSPACE/out/arch/arm64/boot/dts/vendor/lge" \
+              -type f -name 'lito-caymanlm_lao_com-rev-1.0_overlay.dtbo' -print || true
             exit 1
           }
 
           mkdir -p "$GITHUB_WORKSPACE/artifacts/dtbo"
 
-          # Primary DTBO artifact.
           cp "$produced" \
             "$GITHUB_WORKSPACE/artifacts/dtbo/lito-caymanlm_lao_com-rev-1.0_overlay.dtbo"
 
