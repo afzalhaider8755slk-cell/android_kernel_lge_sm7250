@@ -1,4 +1,4 @@
-name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v17
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v18
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-g900-global-v17-${{ github.ref }}
+  group: lg-g900-global-v18-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -52,7 +52,7 @@ jobs:
           trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           uname -a
           date -u +%FT%TZ
-          echo "workflow=v17"
+          echo "workflow=v18"
 
       - name: 01 - Checkout all LG trees
         shell: bash
@@ -413,11 +413,11 @@ jobs:
             fi
           done
 
-          # v17: user explicitly requested every previously-disabled feature to be enabled.
+          # v18: user explicitly requested every previously-disabled feature to be enabled.
           # BBG_BLOCK_BOOT is therefore enabled when present in this tree.
           scripts/config --file "$cfg" --enable CONFIG_BBG_BLOCK_BOOT
 
-          # v17: KPM is explicitly enabled. SukiSU documents CONFIG_KPM=y and
+          # v18: KPM is explicitly enabled. SukiSU documents CONFIG_KPM=y and
           # non-GKI KALLSYMS/KALLSYMS_ALL as the required configuration.
           scripts/config --file "$cfg" --enable CONFIG_KPM
 
@@ -530,12 +530,12 @@ jobs:
             echo 'EXT4_FS/OVERLAY_FS: enabled'
             echo 'BBG: enabled; BBG_BLOCK_BOOT: enabled per requested full-feature profile'
             echo 'KPM: enabled (CONFIG_KPM=y)'
-            echo 'Futile Maphide/JIT-Zygote: compatibility-gated 69_hide_stuff patch integration; exact kernel-tree compatibility is verified before application'
+            echo 'Futile Maphide/JIT-Zygote: source-compatible 69_hide_stuff integration; upstream-clean when possible, otherwise exact LG 4.19 semantic port with strict verification'
             echo 'DTB/DTBO: build uses existing LG device-tree source; no invented hardware nodes'
             echo 'DTBO: all existing Global Lao overlay DTS files are compiled'
           } | tee "$GITHUB_WORKSPACE/artifacts/feature-manifest.txt"
 
-      - name: 10c - Integrate Futile/Maphide patch only when source-compatible
+      - name: 10c - Integrate Futile Maphide with LG 4.19 source-compatible port
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -545,15 +545,151 @@ jobs:
           cd src/kernel
           git clone --depth=1 https://github.com/WildKernels/kernel_patches.git /tmp/kernel_patches
           patchfile="/tmp/kernel_patches/archived/69_hide_stuff.patch"
-          test -f "$patchfile"
+          test -s "$patchfile"
 
-          # Never force a patch onto an incompatible LG 4.19 tree. The check is
-          # intentionally strict: either the complete patch applies or the build stops.
-          # This prevents a false claim that Maphide/Futile Maphide was integrated.
-          git apply --check --verbose "$patchfile"
-          git apply --verbose "$patchfile"
+          # Prefer the upstream patch when it cleanly matches this exact tree.
+          if git apply --check "$patchfile" >/tmp/maphide-upstream-check.log 2>&1; then
+            git apply --verbose "$patchfile"
+            mode="upstream-clean"
+          else
+            # The upstream patch targets a different procfs layout. Port its
+            # actual Futile Maphide changes to this LG 4.19 source using strict
+            # semantic anchors. Never use -F/--reject or silently drop hunks.
+          python3 - <<'PYPORT'
+          from pathlib import Path
+          import re
+          
+          root = Path('.')
+          tmmu = root / 'fs/proc/task_mmu.c'
+          base = root / 'fs/proc/base.c'
+          if not tmmu.is_file() or not base.is_file():
+              raise SystemExit('Maphide port requires fs/proc/task_mmu.c and fs/proc/base.c')
+          
+          s = tmmu.read_text()
+          b = base.read_text()
+          
+          helper = '''
+          /* Futile Maphide: hide jit-zygote-cache VMA metadata. */
+          static void show_vma_header_prefix_fake(struct seq_file *m,
+                                                  unsigned long start, unsigned long end,
+                                                  vm_flags_t flags, unsigned long long pgoff,
+                                                  dev_t dev, unsigned long ino)
+          {
+              seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
+              seq_printf(m, "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu ",
+                         start, end,
+                         flags & VM_READ ? 'r' : '-',
+                         flags & VM_WRITE ? 'w' : '-',
+                         flags & VM_EXEC ? '-' : '-',
+                         flags & VM_MAYSHARE ? 's' : 'p',
+                         pgoff, MAJOR(dev), MINOR(dev), ino);
+          }
+          '''
+          
+          if 'show_vma_header_prefix_fake' not in s:
+              anchor = 'static void\nshow_map_vma(struct seq_file *m, struct vm_area_struct *vma)'
+              if anchor not in s:
+                  anchor = 'static void show_map_vma(struct seq_file *m, struct vm_area_struct *vma)'
+              if anchor not in s:
+                  raise SystemExit('Maphide port: show_map_vma anchor not found')
+              s = s.replace(anchor, helper + '\n' + anchor, 1)
+          
+          if 'struct dentry *dentry;' not in s:
+              pattern = r'(show_map_vma\(struct seq_file \*m, struct vm_area_struct \*vma\).*?const char \*name = NULL;)(\n)'
+              match = re.search(pattern, s, re.S)
+              if not match:
+                  raise SystemExit('Maphide port: show_map_vma variable anchor not found')
+              s = s[:match.end(1)] + '\n\tstruct dentry *dentry;' + s[match.end(1):]
+          
+          if 'strstr(path, "jit-zygote-cache")' not in s:
+              match = re.search(r'(pgoff\s*=\s*\(\(loff_t\)vma->vm_pgoff\)\s*<<\s*PAGE_SHIFT;\s*\n)', s)
+              if not match:
+                  raise SystemExit('Maphide port: pgoff calculation anchor not found')
+              block = '''
+          		dentry = file->f_path.dentry;
+          		if (dentry) {
+          			const char *path = (const char *)dentry->d_name.name;
+          			if (strstr(path, "lineage")) {
+          				start = vma->vm_start;
+          				end = vma->vm_end;
+          				show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
+          				name = "/system/framework/framework-res.apk";
+          				goto done;
+          			}
+          			if (strstr(path, "jit-zygote-cache")) {
+          				start = vma->vm_start;
+          				end = vma->vm_end;
+          				show_vma_header_prefix_fake(m, start, end, flags, pgoff, dev, ino);
+          				goto bypass;
+          			}
+          		}
+          '''
+              s = s[:match.end()] + block + s[match.end():]
+          
+          if 'bypass:' not in s:
+              pattern = r'(\n\s*if \(show_vma_header_prefix\(m, start, end, flags, pgoff, dev, ino\)\)\s*\n\s*return;)'
+              match = re.search(pattern, s)
+              if not match:
+                  raise SystemExit('Maphide port: normal VMA header return anchor not found')
+              s = s[:match.start()] + '\n\tbypass:' + s[match.start():]
+          
+          tmmu.write_text(s)
+          
+          if 'kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path)' not in b:
+              old = '''\tif (vma && vma->vm_file) {
+          \t\t*path = vma->vm_file->f_path;
+          \t\tpath_get(path);
+          \t\trc = 0;
+          \t}'''
+              new = '''\tif (vma) {
+          \t\tif (vma->vm_file) {
+          \t\t\tif (strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")) {
+          \t\t\t\trc = kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path);
+          \t\t\t} else {
+          \t\t\t\t*path = vma->vm_file->f_path;
+          \t\t\t\tpath_get(path);
+          \t\t\t\trc = 0;
+          \t\t\t}
+          \t\t}
+          \t}'''
+              if old in b:
+                  b = b.replace(old, new, 1)
+              else:
+                  pattern = r'\s*if \(vma && vma->vm_file\) \{\s*\*path = vma->vm_file->f_path;\s*path_get\(path\);\s*rc = 0;\s*\}'
+                  match = re.search(pattern, b)
+                  if not match:
+                      raise SystemExit('Maphide port: proc base VMA path anchor not found')
+                  b = b[:match.start()] + '\n' + new + b[match.end():]
+              base.write_text(b)
+          
+          s = tmmu.read_text()
+          b = base.read_text()
+          checks = {
+              'helper': 'show_vma_header_prefix_fake' in s,
+              'dentry': 'struct dentry *dentry;' in s,
+              'jit-zygote': 'strstr(path, "jit-zygote-cache")' in s,
+              'lineage-task': 'strstr(path, "lineage")' in s,
+              'bypass': 'bypass:' in s,
+              'lineage-base': 'strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")' in b,
+              'fake-base-path': 'kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path)' in b,
+          }
+          missing = [name for name, ok in checks.items() if not ok]
+          if missing:
+              raise SystemExit('Maphide source-port verification failed: ' + ', '.join(missing))
 
-          echo 'Maphide/Futile patch: APPLIED CLEANLY' | tee "$GITHUB_WORKSPACE/artifacts/maphide-integration.txt"
+          PYPORT
+            mode="source-compatible-port"
+          fi
+
+          git diff --check
+          grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c
+          grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
+          grep -q 'strstr(path, "lineage")' fs/proc/task_mmu.c
+          grep -q 'bypass:' fs/proc/task_mmu.c
+          grep -q 'kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path)' fs/proc/base.c
+          grep -q 'strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")' fs/proc/base.c
+
+          echo "Maphide/Futile source integration: $mode" | tee "$GITHUB_WORKSPACE/artifacts/maphide-integration.txt"
           git diff --check
 
       - name: 11 - Build kernel Image + modules
