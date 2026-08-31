@@ -810,7 +810,7 @@ jobs:
           test -f drivers/kernelsu/Kconfig
           test -f drivers/kernelsu/Makefile
           grep -q 'config KSU' drivers/kernelsu/Kconfig
-          grep -q 'obj-$(CONFIG_KSU)' drivers/kernelsu/Makefile
+          grep -Fq 'obj-$(CONFIG_KSU)' drivers/kernelsu/Makefile
 
           echo "sukisu_source=builtin archive"
           echo "sukisu_url=$SUKISU_URL"
