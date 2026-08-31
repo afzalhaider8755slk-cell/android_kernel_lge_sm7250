@@ -1,4 +1,4 @@
-name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v16
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v17
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-g900-global-v15-${{ github.ref }}
+  group: lg-g900-global-v17-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -52,7 +52,7 @@ jobs:
           trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           uname -a
           date -u +%FT%TZ
-          echo "workflow=v15"
+          echo "workflow=v17"
 
       - name: 01 - Checkout all LG trees
         shell: bash
@@ -413,13 +413,13 @@ jobs:
             fi
           done
 
-          # Do not force BBG_BLOCK_BOOT: protecting boot itself can prevent normal
-          # OTA/kernel maintenance. BBG master protection remains enabled.
-          scripts/config --file "$cfg" --disable CONFIG_BBG_BLOCK_BOOT 2>/dev/null || true
+          # v17: user explicitly requested every previously-disabled feature to be enabled.
+          # BBG_BLOCK_BOOT is therefore enabled when present in this tree.
+          scripts/config --file "$cfg" --enable CONFIG_BBG_BLOCK_BOOT
 
-          # KPM is not part of this requested stable stack; leave it off to avoid
-          # introducing a second patching/runtime mechanism into this 4.19 tree.
-          scripts/config --file "$cfg" --disable CONFIG_KPM 2>/dev/null || true
+          # v17: KPM is explicitly enabled. SukiSU documents CONFIG_KPM=y and
+          # non-GKI KALLSYMS/KALLSYMS_ALL as the required configuration.
+          scripts/config --file "$cfg" --enable CONFIG_KPM
 
           make O="$GITHUB_WORKSPACE/out" \
             ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
@@ -432,7 +432,7 @@ jobs:
           required=(
             CONFIG_KPROBES CONFIG_KSU_MANUAL_HOOK CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL
             CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_MAP
-            CONFIG_EXT4_FS CONFIG_OVERLAY_FS CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_BBG
+            CONFIG_EXT4_FS CONFIG_OVERLAY_FS CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_BBG CONFIG_BBG_BLOCK_BOOT CONFIG_KPM
             CONFIG_NETFILTER CONFIG_NETFILTER_XTABLES CONFIG_CFG80211 CONFIG_UID_SYS_STATS
             CONFIG_RMNET CONFIG_IPA3 CONFIG_RMNET_IPA3 CONFIG_QCOM_QMI_HELPERS CONFIG_QCOM_QMI_RMNET
             CONFIG_ANDROID_BINDER_IPC CONFIG_ANDROID_BINDERFS CONFIG_DM_VERITY CONFIG_FS_ENCRYPTION
@@ -528,11 +528,33 @@ jobs:
             echo 'KSU_MANUAL_HOOK: enabled (selected non-GKI hook)'
             echo 'KALLSYMS/KALLSYMS_ALL: enabled'
             echo 'EXT4_FS/OVERLAY_FS: enabled'
-            echo 'BBG: enabled; boot partition protection intentionally left off for maintenance/OTA safety'
-            echo 'Futile Maphide/JIT-Zygote: SUSFS hiding stack retained; no unverified third-party kernel patch injected'
+            echo 'BBG: enabled; BBG_BLOCK_BOOT: enabled per requested full-feature profile'
+            echo 'KPM: enabled (CONFIG_KPM=y)'
+            echo 'Futile Maphide/JIT-Zygote: compatibility-gated 69_hide_stuff patch integration; exact kernel-tree compatibility is verified before application'
             echo 'DTB/DTBO: build uses existing LG device-tree source; no invented hardware nodes'
             echo 'DTBO: all existing Global Lao overlay DTS files are compiled'
           } | tee "$GITHUB_WORKSPACE/artifacts/feature-manifest.txt"
+
+      - name: 10c - Integrate Futile/Maphide patch only when source-compatible
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/10c-maphide.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=10c rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
+
+          cd src/kernel
+          git clone --depth=1 https://github.com/WildKernels/kernel_patches.git /tmp/kernel_patches
+          patchfile="/tmp/kernel_patches/archived/69_hide_stuff.patch"
+          test -f "$patchfile"
+
+          # Never force a patch onto an incompatible LG 4.19 tree. The check is
+          # intentionally strict: either the complete patch applies or the build stops.
+          # This prevents a false claim that Maphide/Futile Maphide was integrated.
+          git apply --check --verbose "$patchfile"
+          git apply --verbose "$patchfile"
+
+          echo 'Maphide/Futile patch: APPLIED CLEANLY' | tee "$GITHUB_WORKSPACE/artifacts/maphide-integration.txt"
+          git diff --check
 
       - name: 11 - Build kernel Image + modules
         shell: bash
@@ -575,11 +597,13 @@ jobs:
           trap 'rc=$?; echo "FAILED step=12 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
 
           cfg="$GITHUB_WORKSPACE/out/.config"
+          test -s "$GITHUB_WORKSPACE/artifacts/maphide-integration.txt"
 
           grep -q '^CONFIG_KPROBES=y$' "$cfg"
           grep -q '^CONFIG_KSU=y$' "$cfg"
           grep -q '^CONFIG_KSU_SUSFS=y$' "$cfg"
-          grep -q '^# CONFIG_KPM is not set$' "$cfg"
+          grep -q '^CONFIG_KPM=y$' "$cfg"
+          grep -q '^CONFIG_BBG_BLOCK_BOOT=y$' "$cfg"
 
           grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$cfg"
           grep -q '^CONFIG_KALLSYMS=y$' "$cfg"
