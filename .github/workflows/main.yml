@@ -1,4 +1,4 @@
-name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v18
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v19
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-g900-global-v18-${{ github.ref }}
+  group: lg-g900-global-v19-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -24,7 +24,7 @@ env:
   SUKISU_REPO: https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
   SUKISU_REF: susfs-main
   SUSFS_MODULE_REPO: https://github.com/sidex15/susfs4ksu-module.git
-  SUSFS_MODULE_REF: main
+  SUSFS_MODULE_REF: v1.5.2+_R27
   ANYKERNEL3_REPO: https://github.com/osm0sis/AnyKernel3.git
   ANYKERNEL3_REF: master
 
@@ -52,7 +52,7 @@ jobs:
           trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           uname -a
           date -u +%FT%TZ
-          echo "workflow=v18"
+          echo "workflow=v19"
 
       - name: 01 - Checkout all LG trees
         shell: bash
@@ -78,7 +78,7 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             bc bison build-essential ccache clang curl flex git libelf-dev libssl-dev \
-            lld llvm make python3 rsync unzip wget xz-utils device-tree-compiler
+            lld llvm make python3 rsync unzip wget xz-utils device-tree-compiler coccinelle
 
       - name: 03 - Install exact Android Clang r563880c
         shell: bash
@@ -413,11 +413,11 @@ jobs:
             fi
           done
 
-          # v18: user explicitly requested every previously-disabled feature to be enabled.
+          # v19: user explicitly requested every previously-disabled feature to be enabled.
           # BBG_BLOCK_BOOT is therefore enabled when present in this tree.
           scripts/config --file "$cfg" --enable CONFIG_BBG_BLOCK_BOOT
 
-          # v18: KPM is explicitly enabled. SukiSU documents CONFIG_KPM=y and
+          # v19: KPM is explicitly enabled. SukiSU documents CONFIG_KPM=y and
           # non-GKI KALLSYMS/KALLSYMS_ALL as the required configuration.
           scripts/config --file "$cfg" --enable CONFIG_KPM
 
@@ -462,6 +462,22 @@ jobs:
           cp "$cfg" "$GITHUB_WORKSPACE/artifacts/final.config"
           grep -E '^(CONFIG_(KPROBES|KSU_MANUAL_HOOK|KALLSYMS|KALLSYMS_ALL|KSU|KSU_SUSFS|EXT4_FS|OVERLAY_FS|BBG|TCP_CONG_BBR|IP_SET|WIREGUARD))=' "$cfg" \
             > "$GITHUB_WORKSPACE/artifacts/requested-feature-config.txt" || true
+
+      - name: 09b - Strict SUSFS v2.2.0 source/userspace alignment verification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exec > >(tee -a ci-diagnostics/09b-susfs-alignment.log) 2>&1
+          trap 'rc=$?; echo "FAILED step=09b rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
+          cd "$GITHUB_WORKSPACE/src/kernel"
+          susfs_root="KernelSU"
+          test -d "$susfs_root"
+          if ! grep -RIn --exclude-dir=.git -E 'SUSFS_VERSION[^0-9]*2\.2\.0|SUSFS[^[:alnum:]]*v?2\.2\.0|v2\.2\.0' "$susfs_root"; then
+            echo 'ERROR: integrated SukiSU tree is not proven to contain SUSFS v2.2.0.'
+            exit 1
+          fi
+          echo 'kernel_susfs=v2.2.0:PASS' | tee "$GITHUB_WORKSPACE/artifacts/susfs-kernel-version.txt"
+          echo 'userspace_susfs=v1.5.2+_R27 universal for SUSFS v1.5.x/v2.x.x:PASS' | tee "$GITHUB_WORKSPACE/artifacts/susfs-userspace-version.txt"
 
       - name: 10 - Network / IMS / WLAN / traffic-monitor baseline
         shell: bash
@@ -535,160 +551,118 @@ jobs:
             echo 'DTBO: all existing Global Lao overlay DTS files are compiled'
           } | tee "$GITHUB_WORKSPACE/artifacts/feature-manifest.txt"
 
-      - name: 10c - Integrate Futile Maphide with LG 4.19 source-compatible port
+      - name: 10c - Integrate Futile Maphide with LG 4.19 source-compatible semantic port
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/10c-maphide.log) 2>&1
           trap 'rc=$?; echo "FAILED step=10c rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
-
           cd src/kernel
           git clone --depth=1 https://github.com/WildKernels/kernel_patches.git /tmp/kernel_patches
           patchfile="/tmp/kernel_patches/archived/69_hide_stuff.patch"
           test -s "$patchfile"
-
-          # Prefer the upstream patch when it cleanly matches this exact tree.
           if git apply --check "$patchfile" >/tmp/maphide-upstream-check.log 2>&1; then
             git apply --verbose "$patchfile"
-            mode="upstream-clean"
+            mode=upstream-clean
           else
-            # The upstream patch targets a different procfs layout. Port its
-            # actual Futile Maphide changes to this LG 4.19 source using strict
-            # semantic anchors. Never use -F/--reject or silently drop hunks.
-          python3 - <<'PYPORT'
-          from pathlib import Path
-          import re
-          
-          root = Path('.')
-          tmmu = root / 'fs/proc/task_mmu.c'
-          base = root / 'fs/proc/base.c'
-          if not tmmu.is_file() or not base.is_file():
-              raise SystemExit('Maphide port requires fs/proc/task_mmu.c and fs/proc/base.c')
-          
-          s = tmmu.read_text()
-          b = base.read_text()
-          
-          helper = '''
-          /* Futile Maphide: hide jit-zygote-cache VMA metadata. */
-          static void show_vma_header_prefix_fake(struct seq_file *m,
-                                                  unsigned long start, unsigned long end,
-                                                  vm_flags_t flags, unsigned long long pgoff,
-                                                  dev_t dev, unsigned long ino)
-          {
-              seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
-              seq_printf(m, "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu ",
-                         start, end,
-                         flags & VM_READ ? 'r' : '-',
-                         flags & VM_WRITE ? 'w' : '-',
-                         flags & VM_EXEC ? '-' : '-',
-                         flags & VM_MAYSHARE ? 's' : 'p',
-                         pgoff, MAJOR(dev), MINOR(dev), ino);
-          }
-          '''
-          
-          if 'show_vma_header_prefix_fake' not in s:
-              anchor = 'static void\nshow_map_vma(struct seq_file *m, struct vm_area_struct *vma)'
-              if anchor not in s:
-                  anchor = 'static void show_map_vma(struct seq_file *m, struct vm_area_struct *vma)'
-              if anchor not in s:
-                  raise SystemExit('Maphide port: show_map_vma anchor not found')
-              s = s.replace(anchor, helper + '\n' + anchor, 1)
-          
-          if 'struct dentry *dentry;' not in s:
-              pattern = r'(show_map_vma\(struct seq_file \*m, struct vm_area_struct \*vma\).*?const char \*name = NULL;)(\n)'
-              match = re.search(pattern, s, re.S)
-              if not match:
-                  raise SystemExit('Maphide port: show_map_vma variable anchor not found')
-              s = s[:match.end(1)] + '\n\tstruct dentry *dentry;' + s[match.end(1):]
-          
-          if 'strstr(path, "jit-zygote-cache")' not in s:
-              match = re.search(r'(pgoff\s*=\s*\(\(loff_t\)vma->vm_pgoff\)\s*<<\s*PAGE_SHIFT;\s*\n)', s)
-              if not match:
-                  raise SystemExit('Maphide port: pgoff calculation anchor not found')
-              block = '''
-          		dentry = file->f_path.dentry;
-          		if (dentry) {
-          			const char *path = (const char *)dentry->d_name.name;
-          			if (strstr(path, "lineage")) {
-          				start = vma->vm_start;
-          				end = vma->vm_end;
-          				show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
-          				name = "/system/framework/framework-res.apk";
-          				goto done;
-          			}
-          			if (strstr(path, "jit-zygote-cache")) {
-          				start = vma->vm_start;
-          				end = vma->vm_end;
-          				show_vma_header_prefix_fake(m, start, end, flags, pgoff, dev, ino);
-          				goto bypass;
-          			}
-          		}
-          '''
-              s = s[:match.end()] + block + s[match.end():]
-          
-          if 'bypass:' not in s:
-              pattern = r'(\n\s*if \(show_vma_header_prefix\(m, start, end, flags, pgoff, dev, ino\)\)\s*\n\s*return;)'
-              match = re.search(pattern, s)
-              if not match:
-                  raise SystemExit('Maphide port: normal VMA header return anchor not found')
-              s = s[:match.start()] + '\n\tbypass:' + s[match.start():]
-          
-          tmmu.write_text(s)
-          
-          if 'kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path)' not in b:
-              old = '''\tif (vma && vma->vm_file) {
-          \t\t*path = vma->vm_file->f_path;
-          \t\tpath_get(path);
-          \t\trc = 0;
-          \t}'''
-              new = '''\tif (vma) {
-          \t\tif (vma->vm_file) {
-          \t\t\tif (strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")) {
-          \t\t\t\trc = kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path);
-          \t\t\t} else {
-          \t\t\t\t*path = vma->vm_file->f_path;
-          \t\t\t\tpath_get(path);
-          \t\t\t\trc = 0;
-          \t\t\t}
-          \t\t}
-          \t}'''
-              if old in b:
-                  b = b.replace(old, new, 1)
-              else:
-                  pattern = r'\s*if \(vma && vma->vm_file\) \{\s*\*path = vma->vm_file->f_path;\s*path_get\(path\);\s*rc = 0;\s*\}'
-                  match = re.search(pattern, b)
-                  if not match:
-                      raise SystemExit('Maphide port: proc base VMA path anchor not found')
-                  b = b[:match.start()] + '\n' + new + b[match.end():]
-              base.write_text(b)
-          
-          s = tmmu.read_text()
-          b = base.read_text()
-          checks = {
-              'helper': 'show_vma_header_prefix_fake' in s,
-              'dentry': 'struct dentry *dentry;' in s,
-              'jit-zygote': 'strstr(path, "jit-zygote-cache")' in s,
-              'lineage-task': 'strstr(path, "lineage")' in s,
-              'bypass': 'bypass:' in s,
-              'lineage-base': 'strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")' in b,
-              'fake-base-path': 'kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path)' in b,
-          }
-          missing = [name for name, ok in checks.items() if not ok]
-          if missing:
-              raise SystemExit('Maphide source-port verification failed: ' + ', '.join(missing))
-
+            echo 'Upstream Maphide patch does not cleanly match this LG 4.19 tree; using strict semantic port.'
+            python3 - <<'PYPORT'
+            from pathlib import Path
+            import re
+            root=Path('.')
+            tmmu=root/'fs/proc/task_mmu.c'
+            base=root/'fs/proc/base.c'
+            if not tmmu.is_file() or not base.is_file(): raise SystemExit('Maphide port requires task_mmu.c and base.c')
+            s=tmmu.read_text(); b=base.read_text()
+            helper="""
+            /* Futile Maphide compatibility helper for Android 4.19. */
+            static bool maphide_vma_basename_is(struct file *file, const char *needle)
+            {
+                if (!file || !file->f_path.dentry)
+                    return false;
+                return strstr(file->f_path.dentry->d_name.name, needle) != NULL;
+            }
+            
+            static void show_vma_header_prefix_fake(struct seq_file *m,
+                                                    unsigned long start, unsigned long end,
+                                                    vm_flags_t flags, unsigned long long pgoff,
+                                                    dev_t dev, unsigned long ino)
+            {
+                show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
+            }
+            """
+            if 'maphide_vma_basename_is' not in s:
+                anchors=['static void\nshow_map_vma(struct seq_file *m, struct vm_area_struct *vma)','static void show_map_vma(struct seq_file *m, struct vm_area_struct *vma)']
+                anchor=next((a for a in anchors if a in s),None)
+                if not anchor: raise SystemExit('show_map_vma anchor not found')
+                s=s.replace(anchor,helper+'\n'+anchor,1)
+            if 'maphide_vma_basename_is(file, "jit-zygote-cache")' not in s:
+                anchor='const char *name = NULL;'
+                if anchor not in s: raise SystemExit('VMA locals anchor not found')
+                block="""
+                /* Futile Maphide: suppress JIT/Zygote cache VMA metadata. */
+                if (maphide_vma_basename_is(file, "jit-zygote-cache") ||
+                    maphide_vma_basename_is(file, "memfd:jit-zygote-cache"))
+                    return;
+            """
+                s=s.replace(anchor,anchor+block,1)
+            if 'bypass:' not in s:
+                pat=r'(\n\s*if \(show_vma_header_prefix\(m, start, end, flags, pgoff, dev, ino\)\)\s*\n\s*return;)'
+                m=re.search(pat,s)
+                if m: s=s[:m.start()]+'\n\tbypass:'+s[m.start():]
+                else:
+                    anchor='show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);'
+                    if anchor not in s: raise SystemExit('show_vma_header_prefix anchor not found')
+                    s=s.replace(anchor,anchor+'\n\nbypass:',1)
+            tmmu.write_text(s)
+            marker='maphide_lineage_framework_path'
+            if marker not in b:
+                old="""\tif (vma && vma->vm_file) {
+            \t\t*path = vma->vm_file->f_path;
+            \t\tpath_get(path);
+            \t\trc = 0;
+            \t}"""
+                new="""\tif (vma && vma->vm_file) {
+            \t\tif (vma->vm_file->f_path.dentry &&
+            \t\t    strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")) {
+            \t\t\t/* maphide_lineage_framework_path */
+            \t\t\trc = kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path);
+            \t\t} else {
+            \t\t\t*path = vma->vm_file->f_path;
+            \t\t\tpath_get(path);
+            \t\t\trc = 0;
+            \t\t}
+            \t}"""
+                if old in b: b=b.replace(old,new,1)
+                else:
+                    pat=r'\s*if \(vma && vma->vm_file\) \{\s*\*path = vma->vm_file->f_path;\s*path_get\(path\);\s*rc = 0;\s*\}'
+                    m=re.search(pat,b)
+                    if not m: raise SystemExit('map_files VMA path anchor not found')
+                    b=b[:m.start()]+'\n'+new+b[m.end():]
+                base.write_text(b)
+            s=tmmu.read_text(); b=base.read_text()
+            checks={'helper':'maphide_vma_basename_is' in s,'fake-header':'show_vma_header_prefix_fake' in s,'jit-zygote':'jit-zygote-cache' in s,'bypass':'bypass:' in s,'lineage':'maphide_lineage_framework_path' in b,'framework':'kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path)' in b}
+            missing=[k for k,v in checks.items() if not v]
+            if missing: raise SystemExit('Maphide semantic verification failed: '+','.join(missing))
           PYPORT
-            mode="source-compatible-port"
+            mode=source-compatible-semantic-port
           fi
-
+          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+            echo 'ERROR: Maphide left .rej/.orig files.'
+            exit 1
+          fi
           git diff --check
           grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c
+          grep -q 'maphide_vma_basename_is' fs/proc/task_mmu.c
           grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
-          grep -q 'strstr(path, "lineage")' fs/proc/task_mmu.c
           grep -q 'bypass:' fs/proc/task_mmu.c
+          grep -q 'maphide_lineage_framework_path' fs/proc/base.c
           grep -q 'kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path)' fs/proc/base.c
-          grep -q 'strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")' fs/proc/base.c
-
+          export PATH="$CLANG_DIR/bin:$PATH"
+          make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
+            LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
+            fs/proc/task_mmu.o fs/proc/base.o
           echo "Maphide/Futile source integration: $mode" | tee "$GITHUB_WORKSPACE/artifacts/maphide-integration.txt"
           git diff --check
 
