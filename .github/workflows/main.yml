@@ -1,4 +1,4 @@
-name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v19
+name: LG G900 Global - Stable Kernel + DTB + DTBO + SukiSU-Ultra + SUSFS + CIP135 v20
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lg-g900-global-v19-${{ github.ref }}
+  group: lg-g900-global-v20-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -25,6 +25,9 @@ env:
   SUKISU_REF: susfs-main
   SUSFS_MODULE_REPO: https://github.com/sidex15/susfs4ksu-module.git
   SUSFS_MODULE_REF: v1.5.2+_R27
+  SUSFS_EXPECTED_VERSION: v2.2.0
+  SUSFS_UPSTREAM_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+  SUSFS_UPSTREAM_V220_COMMIT: 4003ecf2d01c6d13fa8edf6c4f2607365738dc3d
   ANYKERNEL3_REPO: https://github.com/osm0sis/AnyKernel3.git
   ANYKERNEL3_REF: master
 
@@ -52,7 +55,7 @@ jobs:
           trap 'rc=$?; echo "FAILED step=00 rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           uname -a
           date -u +%FT%TZ
-          echo "workflow=v19"
+          echo "workflow=v20"
 
       - name: 01 - Checkout all LG trees
         shell: bash
@@ -406,6 +409,13 @@ jobs:
             CONFIG_IP_SET_HASH_NET
             CONFIG_IP_SET_HASH_MAC
             CONFIG_IP_SET_LIST_SET
+            CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
+            CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+            CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+            CONFIG_KSU_SUSFS_TRY_UMOUNT
+            CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
+            CONFIG_KSU_SUSFS_SUS_OVERLAYFS
+            CONFIG_KSU_SUSFS_SPOOF_AVC
           )
           for c in "${optional[@]}"; do
             if grep -Eq "^[[:space:]]*(config|menuconfig)[[:space:]]+${c#CONFIG_}([[:space:]]|$)" $(find . -path '*/Kconfig*' -type f -print) 2>/dev/null; then
@@ -413,11 +423,12 @@ jobs:
             fi
           done
 
-          # v19: user explicitly requested every previously-disabled feature to be enabled.
+          # v20: user explicitly requested every previously-disabled feature to be enabled.
           # BBG_BLOCK_BOOT is therefore enabled when present in this tree.
+          grep -RqsE "^[[:space:]]*(config|menuconfig)[[:space:]]+BBG_BLOCK_BOOT([[:space:]]|$)" security Baseband-guard drivers 2>/dev/null || { echo "MISSING Kconfig symbol CONFIG_BBG_BLOCK_BOOT"; exit 1; }
           scripts/config --file "$cfg" --enable CONFIG_BBG_BLOCK_BOOT
 
-          # v19: KPM is explicitly enabled. SukiSU documents CONFIG_KPM=y and
+          # v20: KPM is explicitly enabled. SukiSU documents CONFIG_KPM=y and
           # non-GKI KALLSYMS/KALLSYMS_ALL as the required configuration.
           scripts/config --file "$cfg" --enable CONFIG_KPM
 
@@ -459,25 +470,37 @@ jobs:
             grep -q "^${c}=y$" "$cfg" || { echo "MISSING SUSFS feature $c"; exit 1; }
           done
 
+          {
+            echo '=== SUSFS optional capabilities present in this LG tree ==='
+            for c in CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT CONFIG_KSU_SUSFS_TRY_UMOUNT CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT CONFIG_KSU_SUSFS_SUS_OVERLAYFS CONFIG_KSU_SUSFS_SPOOF_AVC; do
+              grep -q "^${c}=y$" "$cfg" && echo "$c=y" || true
+            done
+          } | tee "$GITHUB_WORKSPACE/artifacts/susfs-optional-features.txt"
+
           cp "$cfg" "$GITHUB_WORKSPACE/artifacts/final.config"
           grep -E '^(CONFIG_(KPROBES|KSU_MANUAL_HOOK|KALLSYMS|KALLSYMS_ALL|KSU|KSU_SUSFS|EXT4_FS|OVERLAY_FS|BBG|TCP_CONG_BBR|IP_SET|WIREGUARD))=' "$cfg" \
             > "$GITHUB_WORKSPACE/artifacts/requested-feature-config.txt" || true
 
-      - name: 09b - Strict SUSFS v2.2.0 source/userspace alignment verification
+      - name: 09b - Strict SUSFS v2.2.0 kernel/userspace alignment verification
         shell: bash
         run: |
           set -Eeuo pipefail
           exec > >(tee -a ci-diagnostics/09b-susfs-alignment.log) 2>&1
           trap 'rc=$?; echo "FAILED step=09b rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
-          cd "$GITHUB_WORKSPACE/src/kernel"
-          susfs_root="KernelSU"
-          test -d "$susfs_root"
-          if ! grep -RIn --exclude-dir=.git -E 'SUSFS_VERSION[^0-9]*2\.2\.0|SUSFS[^[:alnum:]]*v?2\.2\.0|v2\.2\.0' "$susfs_root"; then
-            echo 'ERROR: integrated SukiSU tree is not proven to contain SUSFS v2.2.0.'
-            exit 1
-          fi
-          echo 'kernel_susfs=v2.2.0:PASS' | tee "$GITHUB_WORKSPACE/artifacts/susfs-kernel-version.txt"
-          echo 'userspace_susfs=v1.5.2+_R27 universal for SUSFS v1.5.x/v2.x.x:PASS' | tee "$GITHUB_WORKSPACE/artifacts/susfs-userspace-version.txt"
+          cd "$GITHUB_WORKSPACE"
+          grep -RIn --exclude-dir=.git -E 'SUSFS[^0-9]*2\.2\.0|SUSFS_VERSION[^0-9]*2\.2\.0|v2\.2\.0' src/kernel/KernelSU > artifacts/susfs-kernel-version-evidence.txt
+          test -s artifacts/susfs-kernel-version-evidence.txt
+          rm -rf /tmp/susfs-module
+          git clone --depth=1 --branch "$SUSFS_MODULE_REF" "$SUSFS_MODULE_REPO" /tmp/susfs-module
+          test -s /tmp/susfs-module/module.prop
+          grep -q '^version=v1\.5\.2+_R27$' /tmp/susfs-module/module.prop
+          {
+            echo "kernel_susfs_target=$SUSFS_EXPECTED_VERSION"
+            echo "userspace_module=$SUSFS_MODULE_REF"
+            echo "userspace_repo=$SUSFS_MODULE_REPO"
+            echo "upstream_v220_reference=$SUSFS_UPSTREAM_V220_COMMIT"
+          } | tee artifacts/susfs-alignment.txt
+          echo 'SUSFS v2.2.0 kernel/userspace alignment: PASS'
 
       - name: 10 - Network / IMS / WLAN / traffic-monitor baseline
         shell: bash
@@ -539,7 +562,7 @@ jobs:
           {
             echo '=== LG G900 feature manifest ==='
             echo 'SukiSU-Ultra: enabled'
-            echo 'SUSFS: native v2.2.0 target'
+            echo 'SUSFS: native v2.2.0 target + optional capabilities enabled when supported by LG Kconfig'
             echo 'KPROBES: enabled'
             echo 'KSU_MANUAL_HOOK: enabled (selected non-GKI hook)'
             echo 'KALLSYMS/KALLSYMS_ALL: enabled'
@@ -559,92 +582,98 @@ jobs:
           trap 'rc=$?; echo "FAILED step=10c rc=$rc cmd=${BASH_COMMAND}" >> "$GITHUB_WORKSPACE/ci-diagnostics/error.log"' ERR
           cd src/kernel
           git clone --depth=1 https://github.com/WildKernels/kernel_patches.git /tmp/kernel_patches
-          patchfile="/tmp/kernel_patches/archived/69_hide_stuff.patch"
+          patchfile=/tmp/kernel_patches/archived/69_hide_stuff.patch
           test -s "$patchfile"
           if git apply --check "$patchfile" >/tmp/maphide-upstream-check.log 2>&1; then
             git apply --verbose "$patchfile"
             mode=upstream-clean
           else
-            echo 'Upstream Maphide patch does not cleanly match this LG 4.19 tree; using strict semantic port.'
-            python3 - <<'PYPORT'
-            from pathlib import Path
-            import re
-            root=Path('.')
-            tmmu=root/'fs/proc/task_mmu.c'
-            base=root/'fs/proc/base.c'
-            if not tmmu.is_file() or not base.is_file(): raise SystemExit('Maphide port requires task_mmu.c and base.c')
-            s=tmmu.read_text(); b=base.read_text()
-            helper="""
-            /* Futile Maphide compatibility helper for Android 4.19. */
-            static bool maphide_vma_basename_is(struct file *file, const char *needle)
-            {
-                if (!file || !file->f_path.dentry)
-                    return false;
-                return strstr(file->f_path.dentry->d_name.name, needle) != NULL;
-            }
-            
-            static void show_vma_header_prefix_fake(struct seq_file *m,
-                                                    unsigned long start, unsigned long end,
-                                                    vm_flags_t flags, unsigned long long pgoff,
-                                                    dev_t dev, unsigned long ino)
-            {
-                show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
-            }
-            """
-            if 'maphide_vma_basename_is' not in s:
-                anchors=['static void\nshow_map_vma(struct seq_file *m, struct vm_area_struct *vma)','static void show_map_vma(struct seq_file *m, struct vm_area_struct *vma)']
-                anchor=next((a for a in anchors if a in s),None)
-                if not anchor: raise SystemExit('show_map_vma anchor not found')
-                s=s.replace(anchor,helper+'\n'+anchor,1)
-            if 'maphide_vma_basename_is(file, "jit-zygote-cache")' not in s:
-                anchor='const char *name = NULL;'
-                if anchor not in s: raise SystemExit('VMA locals anchor not found')
-                block="""
-                /* Futile Maphide: suppress JIT/Zygote cache VMA metadata. */
-                if (maphide_vma_basename_is(file, "jit-zygote-cache") ||
-                    maphide_vma_basename_is(file, "memfd:jit-zygote-cache"))
-                    return;
-            """
-                s=s.replace(anchor,anchor+block,1)
-            if 'bypass:' not in s:
-                pat=r'(\n\s*if \(show_vma_header_prefix\(m, start, end, flags, pgoff, dev, ino\)\)\s*\n\s*return;)'
-                m=re.search(pat,s)
-                if m: s=s[:m.start()]+'\n\tbypass:'+s[m.start():]
-                else:
-                    anchor='show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);'
-                    if anchor not in s: raise SystemExit('show_vma_header_prefix anchor not found')
-                    s=s.replace(anchor,anchor+'\n\nbypass:',1)
-            tmmu.write_text(s)
-            marker='maphide_lineage_framework_path'
-            if marker not in b:
-                old="""\tif (vma && vma->vm_file) {
-            \t\t*path = vma->vm_file->f_path;
-            \t\tpath_get(path);
-            \t\trc = 0;
-            \t}"""
-                new="""\tif (vma && vma->vm_file) {
-            \t\tif (vma->vm_file->f_path.dentry &&
-            \t\t    strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")) {
-            \t\t\t/* maphide_lineage_framework_path */
-            \t\t\trc = kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path);
-            \t\t} else {
-            \t\t\t*path = vma->vm_file->f_path;
-            \t\t\tpath_get(path);
-            \t\t\trc = 0;
-            \t\t}
-            \t}"""
-                if old in b: b=b.replace(old,new,1)
-                else:
-                    pat=r'\s*if \(vma && vma->vm_file\) \{\s*\*path = vma->vm_file->f_path;\s*path_get\(path\);\s*rc = 0;\s*\}'
-                    m=re.search(pat,b)
-                    if not m: raise SystemExit('map_files VMA path anchor not found')
-                    b=b[:m.start()]+'\n'+new+b[m.end():]
-                base.write_text(b)
-            s=tmmu.read_text(); b=base.read_text()
-            checks={'helper':'maphide_vma_basename_is' in s,'fake-header':'show_vma_header_prefix_fake' in s,'jit-zygote':'jit-zygote-cache' in s,'bypass':'bypass:' in s,'lineage':'maphide_lineage_framework_path' in b,'framework':'kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path)' in b}
-            missing=[k for k,v in checks.items() if not v]
-            if missing: raise SystemExit('Maphide semantic verification failed: '+','.join(missing))
+            echo 'Upstream Maphide patch does not cleanly match LG 4.19; applying semantic port.'
+            cat > /tmp/maphide_port.py <<'PYPORT'
+          from pathlib import Path
+          import re
+          root=Path('.')
+          tmmu=root/'fs/proc/task_mmu.c'
+          base=root/'fs/proc/base.c'
+          if not tmmu.is_file() or not base.is_file():
+              raise SystemExit('Maphide sources missing')
+          s=tmmu.read_text(); b=base.read_text()
+          helper='''static void show_vma_header_prefix_fake(struct seq_file *m,
+                              unsigned long start, unsigned long end,
+                              vm_flags_t flags, unsigned long long pgoff,
+                              dev_t dev, unsigned long ino)
+          {
+              seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
+              seq_printf(m, "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu ",
+                  start, end, flags & VM_READ ? 'r' : '-', flags & VM_WRITE ? 'w' : '-',
+                  flags & VM_EXEC ? '-' : '-', flags & VM_MAYSHARE ? 's' : 'p',
+                  pgoff, MAJOR(dev), MINOR(dev), ino);
+          }
+          
+          '''
+          if 'show_vma_header_prefix_fake' not in s:
+              m=re.search(r'(?m)^static void\s*\n?show_map_vma\(struct seq_file \*m, struct vm_area_struct \*vma\)\s*\n\{',s)
+              if not m: raise SystemExit('show_map_vma anchor missing')
+              s=s[:m.start()]+helper+s[m.start():]
+          if 'struct dentry *dentry;' not in s:
+              fn=s.find('show_map_vma(struct seq_file *m, struct vm_area_struct *vma)')
+              a=s.find('\tconst char *name = NULL;',fn)
+              if a<0: raise SystemExit('name declaration missing')
+              s=s[:a]+'\tstruct dentry *dentry;\n'+s[a:]
+          if 'maphide_lineage_vma' not in s:
+              marker='pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;'
+              pos=s.find(marker)
+              if pos<0: raise SystemExit('pgoff anchor missing')
+              end=pos+len(marker)
+              branch='''
+          \t\tdentry = file->f_path.dentry;
+          \t\tif (dentry) {
+          \t\t\tconst char *maphide_path = dentry->d_name.name;
+          \t\t\tif (strstr(maphide_path, "lineage")) {
+          \t\t\t\tstart = vma->vm_start;
+          \t\t\t\tend = vma->vm_end;
+          \t\t\t\tshow_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
+          \t\t\t\tname = "/system/framework/framework-res.apk";
+          \t\t\t\tgoto done;
+          \t\t\t}
+          \t\t\tif (strstr(maphide_path, "jit-zygote-cache")) {
+          \t\t\t\tstart = vma->vm_start;
+          \t\t\t\tend = vma->vm_end;
+          \t\t\t\tshow_vma_header_prefix_fake(m, start, end, flags, pgoff, dev, ino);
+          \t\t\t\tgoto bypass;
+          \t\t\t}
+          \t\t}
+          '''
+              s=s[:end]+branch+s[end:]
+          if re.search(r'(?m)^\s*bypass:',s) is None:
+              anchor='\t/*\n\t * Print the dentry name for named mappings, and a'
+              if anchor not in s: raise SystemExit('bypass anchor missing')
+              s=s.replace(anchor,'\tbypass:\n'+anchor,1)
+          if 'maphide_lineage_framework_path' not in b:
+              pat=re.compile(r'(?P<i>\s*)if \(vma && vma->vm_file\) \{\s*\*path = vma->vm_file->f_path;\s*path_get\(path\);\s*rc = 0;\s*\}',re.S)
+              m=pat.search(b)
+              if not m: raise SystemExit('base.c path block missing')
+              i=m.group('i')
+              repl=f'''{i}if (vma && vma->vm_file) {{
+          {i}\tif (vma->vm_file->f_path.dentry &&
+          {i}\t    strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")) {{
+          {i}\t\t/* maphide_lineage_framework_path */
+          {i}\t\trc = kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path);
+          {i}\t}} else {{
+          {i}\t\t*path = vma->vm_file->f_path;
+          {i}\t\tpath_get(path);
+          {i}\t\trc = 0;
+          {i}\t}}
+          {i}}}'''
+              b=b[:m.start()]+repl+b[m.end():]
+          tmmu.write_text(s); base.write_text(b)
+          for x in ['show_vma_header_prefix_fake','maphide_path, "lineage"','maphide_path, "jit-zygote-cache"','bypass:']:
+              if x not in s: raise SystemExit('missing task_mmu semantic marker: '+x)
+          for x in ['maphide_lineage_framework_path','kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path)']:
+              if x not in b: raise SystemExit('missing base.c semantic marker: '+x)
           PYPORT
+            python3 -m py_compile /tmp/maphide_port.py
+            python3 /tmp/maphide_port.py
             mode=source-compatible-semantic-port
           fi
           if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
@@ -653,16 +682,13 @@ jobs:
           fi
           git diff --check
           grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c
-          grep -q 'maphide_vma_basename_is' fs/proc/task_mmu.c
-          grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
+          grep -q 'maphide_path, "lineage"' fs/proc/task_mmu.c
+          grep -q 'maphide_path, "jit-zygote-cache"' fs/proc/task_mmu.c
           grep -q 'bypass:' fs/proc/task_mmu.c
           grep -q 'maphide_lineage_framework_path' fs/proc/base.c
           grep -q 'kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path)' fs/proc/base.c
           export PATH="$CLANG_DIR/bin:$PATH"
-          make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
-            CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
-            LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
-            fs/proc/task_mmu.o fs/proc/base.o
+          make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" fs/proc/task_mmu.o fs/proc/base.o
           echo "Maphide/Futile source integration: $mode" | tee "$GITHUB_WORKSPACE/artifacts/maphide-integration.txt"
           git diff --check
 
@@ -763,6 +789,10 @@ jobs:
             artifacts/bbg-integration.txt
             artifacts/susfs-kernel-ref.txt
             artifacts/sukisu-susfs-commit.txt
+            artifacts/susfs-upstream-v220-commit.txt
+            artifacts/susfs-alignment.txt
+            artifacts/maphide-integration.txt
+            artifacts/susfs-optional-features.txt
             artifacts/cip*
 
       - name: 14 - Upload kernel diagnostics ALWAYS
@@ -1274,12 +1304,12 @@ jobs:
           (
             cd susfs-module
             zip -r9 \
-              "$GITHUB_WORKSPACE/artifacts/SUSFS-v1.5.2-R28-source.zip" \
+              "$GITHUB_WORKSPACE/artifacts/SUSFS-v1.5.2+_R27-source.zip" \
               . \
               -x '*.git*'
           )
 
-          unzip -t artifacts/SUSFS-v1.5.2-R28-source.zip
+          unzip -t artifacts/SUSFS-v1.5.2+_R27-source.zip
 
       - name: 05 - Upload packages
         if: ${{ success() }}
