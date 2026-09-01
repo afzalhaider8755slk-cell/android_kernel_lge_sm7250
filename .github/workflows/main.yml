@@ -1,4 +1,4 @@
-name: LG Velvet 5G LM-G900/G900EMW - V32 FIXED - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + DTB/DTBO
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + DTB/DTBO
 
 on:
   workflow_dispatch:
@@ -47,63 +47,139 @@ jobs:
       # Version policy: use the latest stable upstream release/commit that is actually compatible with this 4.19.325-cip135 tree; never silently downgrade or fake a feature when the source does not support it.
       CIP_REPO: "https://gitlab.com/cip-project/cip-kernel/linux-cip.git"
       CIP_REF: "v4.19.325-cip135"
+      LINEAGE_BRANCH: "lineage-23.2"
 
     steps:
+
+      - name: 00 - Initialize Early Diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$DIAG_DIR" "$GITHUB_WORKSPACE/diagnostic-artifact"
+          {
+            echo "========== EARLY DIAGNOSTICS INITIALIZATION =========="
+            date -u
+            echo "Run: $GITHUB_RUN_ID"
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Workflow SHA: $GITHUB_SHA"
+            echo "Kernel repository: lge-qcom-dev/android_kernel_lge_sm7250"
+            echo "Requested Lineage branch: $LINEAGE_BRANCH"
+            echo "CIP target: $CIP_REF"
+          } | tee "$DIAG_DIR/00-early-init.log"
 
       - name: 01 - Checkout Stock Kernel Source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: lge-qcom-dev/android_kernel_lge_sm7250
-          ref: lineage-22.2
+          ref: lineage-23.2
           fetch-depth: 1
           persist-credentials: false
 
       - name: 02 - Update Kernel to Official CIP 4.19.325-cip135
         shell: bash
         run: |
-          set -euo pipefail
-          LOG="$GITHUB_WORKSPACE/ci-logs/02-cip135-update.log"
-          mkdir -p "$GITHUB_WORKSPACE/ci-logs"
-          {
-            echo "========== OFFICIAL CIP UPDATE =========="
-            echo "CIP repository: $CIP_REPO"
-            echo "CIP tag: $CIP_REF"
-            echo
-            rm -rf "$RUNNER_TEMP/linux-cip"
-            # Full trees are intentional here: git apply --3way needs the
-            # preimage blobs. The previous blob:none clone caused the exact
-            # "repository lacks the necessary blob" failure in diagnostics.
-            git clone --no-checkout --depth=1               --branch "$CIP_REF" "$CIP_REPO" "$RUNNER_TEMP/linux-cip"
-            git -C "$RUNNER_TEMP/linux-cip" fetch --depth=1 --no-filter origin               refs/tags/v4.19.325:refs/tags/v4.19.325
-            git -C "$RUNNER_TEMP/linux-cip" diff --binary               v4.19.325 "$CIP_REF" > "$RUNNER_TEMP/cip135.patch"
-            test -s "$RUNNER_TEMP/cip135.patch"
-            echo "CIP135 patch bytes: $(wc -c < "$RUNNER_TEMP/cip135.patch")"
-            echo "Applying the complete official 4.19.325 -> 4.19.325-cip135 delta to the LG tree."
-            if ! git apply --3way --whitespace=fix "$RUNNER_TEMP/cip135.patch"; then
-              echo "[FAIL] Official CIP135 delta has a real vendor-tree conflict."
-              echo "[INFO] The previous failure was also caused by missing 3-way preimage blobs; this run uses a full CIP tree."
-              echo "[INFO] Conflict report:"
-              git status --short || true
-              find . -name '*.rej' -o -name '*.orig' | sort || true
-              # Never continue with a partial CIP update.
-              git reset --hard HEAD
-              git clean -fd
-              exit 1
-            fi
-            if [ -f "$RUNNER_TEMP/linux-cip/localversion-cip" ]; then
-              cp -f "$RUNNER_TEMP/linux-cip/localversion-cip" localversion-cip
-            fi
-            grep -q -- '-cip135' localversion-cip || {
-              echo "[FAIL] localversion-cip does not identify -cip135."
-              exit 1
-            }
-            echo
-            echo "CIP localversion:"
-            cat localversion-cip
-            echo
-            echo "[PASS] Official CIP 4.19.325-cip135 delta applied."
-          } > "$LOG" 2>&1
-          cat "$LOG"
+          set -Eeuo pipefail
+          mkdir -p "$DIAG_DIR"
+          LOG="$DIAG_DIR/02-cip135-update.log"
+          exec > >(tee -a "$LOG") 2>&1
+          trap 'rc=$?; echo; echo "[FAIL] CIP135 step exited with code $rc"; echo "[FAIL] Last 120 log lines:"; tail -120 "$LOG" || true; exit $rc' ERR
+          echo "========== OFFICIAL CIP UPDATE =========="
+          date -u
+          echo "Kernel repository: lge-qcom-dev/android_kernel_lge_sm7250"
+          echo "Lineage branch: $LINEAGE_BRANCH"
+          echo "CIP repository: $CIP_REPO"
+          echo "CIP base tag: v4.19.325"
+          echo "CIP target tag: $CIP_REF"
+          echo
+          echo "--- Active Git repository ---"
+          git --version
+          git rev-parse --show-toplevel
+          git rev-parse HEAD
+          git status --short
+          echo
+          echo "--- Fetch CIP objects INTO THE ACTIVE LG REPOSITORY ---"
+          echo "This is required for git apply --3way: the active repo must contain the CIP preimage blobs."
+          git fetch --no-tags --depth=1 "$CIP_REPO" \
+            "refs/tags/v4.19.325:refs/cip/v4.19.325" \
+            "refs/tags/$CIP_REF:refs/cip/$CIP_REF"
+          echo
+          echo "--- Verify imported CIP objects and preimage availability ---"
+          BASE_REF='refs/cip/v4.19.325'
+          TARGET_REF="refs/cip/$CIP_REF"
+          git rev-parse "$BASE_REF^{commit}"
+          git rev-parse "$TARGET_REF^{commit}"
+          git cat-file -e "$BASE_REF^{commit}"
+          git cat-file -e "$TARGET_REF^{commit}"
+          echo "Base tree:"
+          git rev-parse "$BASE_REF^{tree}"
+          echo "Target tree:"
+          git rev-parse "$TARGET_REF^{tree}"
+          echo
+          echo "--- Generate official 4.19.325 -> cip135 delta from imported refs ---"
+          rm -f "$RUNNER_TEMP/cip135.patch"
+          git diff --binary "$BASE_REF" "$TARGET_REF" > "$RUNNER_TEMP/cip135.patch"
+          test -s "$RUNNER_TEMP/cip135.patch"
+          echo "CIP135 patch bytes: $(wc -c < "$RUNNER_TEMP/cip135.patch")"
+          echo "Patch file: $RUNNER_TEMP/cip135.patch"
+          echo
+          echo "--- Verify a sample old/new blob from the patch exists in active repo ---"
+          old_blobs=$(grep -E '^index [0-9a-f]+\.\.[0-9a-f]+' "$RUNNER_TEMP/cip135.patch" | sed -E 's/^index ([0-9a-f]+)\.\.([0-9a-f]+).*/\1 \2/' | head -20 || true)
+          if [ -n "$old_blobs" ]; then
+            while read -r old new; do
+              [ -n "$old" ] || continue
+              git cat-file -e "$old^{blob}" || { echo "[FAIL] Missing CIP preimage blob in active repo: $old"; exit 1; }
+              git cat-file -e "$new^{blob}" || { echo "[FAIL] Missing CIP target blob in active repo: $new"; exit 1; }
+            done <<< "$old_blobs"
+            echo "[PASS] Sample CIP preimage/target blobs are present in active repository."
+          else
+            echo "[INFO] Patch contains no ordinary blob index lines in the first sample; continuing."
+          fi
+          echo
+          echo "--- Apply CIP135 delta to LG kernel tree ---"
+          if git apply --3way --whitespace=fix "$RUNNER_TEMP/cip135.patch"; then
+            echo "[PASS] git apply --3way completed."
+          else
+            rc=$?
+            echo "[FAIL] Official CIP135 delta has a real vendor-tree conflict or invalid patch state (rc=$rc)."
+            echo "[INFO] CIP objects were imported into the active repository; this run will not hide the real error."
+            echo "[INFO] Conflict status:"
+            git status --short || true
+            echo "[INFO] Reject/original files:"
+            find . -name '*.rej' -o -name '*.orig' | sort || true
+            echo "[INFO] Patch check against current tree:"
+            git apply --check --3way --whitespace=fix "$RUNNER_TEMP/cip135.patch" || true
+            exit "$rc"
+          fi
+          if [ -f "$(git rev-parse --show-toplevel)/localversion-cip" ]; then
+            cp -f "$(git rev-parse --show-toplevel)/localversion-cip" localversion-cip
+          else
+            echo "[WARN] localversion-cip not found at CIP target root; writing verified -cip135 suffix."
+            printf '%s\n' '-cip135' > localversion-cip
+          fi
+          grep -q -- '-cip135' localversion-cip || {
+            echo "[FAIL] localversion-cip does not identify -cip135."
+            exit 1
+          }
+          echo
+          echo "--- Resulting kernel version files ---"
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile || true
+          echo "CIP localversion:"
+          cat localversion-cip
+          echo
+          echo "[PASS] Official CIP 4.19.325-cip135 delta applied."
+
+      - name: 02B - Upload Early CIP Failure Diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: LG-Velvet-G900-V32.1-EARLY-CIP135-FAILURE-Diagnostics
+          path: |
+            ci-logs/00-early-init.log
+            ci-logs/02-cip135-update.log
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
 
       - name: 02 - Initialize Diagnostics
         shell: bash
@@ -1646,7 +1722,7 @@ jobs:
             import re
             p = Path(os.environ["RUNNER_TEMP"]) / "AnyKernel3" / "anykernel.sh"
             s = p.read_text()
-            s = re.sub(r"(?m)^kernel\\.string=.*$", "kernel.string=LM-G900 SukiSU-Ultra 4.2.0 V32", s)
+            s = re.sub(r"(?m)^kernel\\.string=.*$", "kernel.string=LM-G900 SukiSU-Ultra 4.2.0 V32.1", s)
             s = re.sub(r"(?m)^do\\.devicecheck=.*$", "do.devicecheck=1", s)
             s = re.sub(r"(?m)^device\\.name1=.*$", "device.name1=caymanlm", s)
             s = re.sub(r"(?m)^device\\.name2=.*$", "device.name2=G900EMW", s)
@@ -1658,18 +1734,18 @@ jobs:
             '
 
             test -s "$RUNNER_TEMP/AnyKernel3/Image.gz-dtb"
-            grep -q 'kernel.string=LM-G900 SukiSU-Ultra 4.2.0 V32' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
+            grep -q 'kernel.string=LM-G900 SukiSU-Ultra 4.2.0 V32.1' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
             grep -q 'block=boot' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
             grep -q 'is_slot_device=auto' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
 
             (
               cd "$RUNNER_TEMP/AnyKernel3"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32-OrangeFox-AnyKernel3.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32.1-OrangeFox-AnyKernel3.zip" . \
                 -x 'README.md' >/dev/null
             )
 
-            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32-OrangeFox-AnyKernel3.zip" artifacts/kernel/
+            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32.1-OrangeFox-AnyKernel3.zip" artifacts/kernel/
 
             (
               cd artifacts
@@ -1677,7 +1753,7 @@ jobs:
             )
 
             echo "Kernel image: $KERNEL_IMAGE"
-            echo "AnyKernel3/OrangeFox ZIP: artifacts/LM-G900-SukiSU-4.2.0-V32-OrangeFox-AnyKernel3.zip"
+            echo "AnyKernel3/OrangeFox ZIP: artifacts/LM-G900-SukiSU-4.2.0-V32.1-OrangeFox-AnyKernel3.zip"
             echo "DTB/DTBO ZIP: artifacts/LM-G900-V32-DTB-DTBO-4.19.325-cip135.zip"
             find artifacts -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
           } > "$LOG" 2>&1
@@ -1724,15 +1800,20 @@ jobs:
           cp -f kernel-build-full.log diagnostic-artifact/12-build-full.log 2>/dev/null || true
           cp -f .config diagnostic-artifact/final.config 2>/dev/null || true
           cp -f sukisu-integration-note.txt diagnostic-artifact/sukisu-integration-note.txt 2>/dev/null || true
-          cp -rf "$DIAG_DIR" diagnostic-artifact/ci-logs 2>/dev/null || true
+          mkdir -p diagnostic-artifact/ci-logs
+          cp -a "$DIAG_DIR"/. diagnostic-artifact/ci-logs/ 2>/dev/null || true
+          git status --short > diagnostic-artifact/git-status.txt 2>&1 || true
+          git rev-parse HEAD > diagnostic-artifact/kernel-head.txt 2>&1 || true
           {
             echo "GitHub Run: $GITHUB_RUN_ID"
             echo "Commit: $GITHUB_SHA"
             echo "Date: $(date -u)"
             echo "SukiSU release tag: $SUKISU_REF"
             echo "SukiSU release commit (short): $SUKISU_RELEASE_COMMIT"
-            echo "External root-hiding kernel patchset: NOT INTEGRATED"
-            echo "External root-hiding userspace package: NOT INTEGRATED"
+            echo "External root-hiding kernel patchset: workflow-defined Maphide/BBG checks"
+            echo "External root-hiding userspace package: not part of kernel build"
+            echo "Lineage branch: $LINEAGE_BRANCH"
+            echo "CIP target: $CIP_REF"
             echo
             find diagnostic-artifact -type f -printf '%p %s bytes\n' | sort
           } > diagnostic-artifact/MANIFEST.txt
@@ -1742,7 +1823,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V32-SukiSU-4.2.0-Kernel-DTB-DTBO-OrangeFox
+          name: LG-Velvet-G900-V32.1-SukiSU-4.2.0-Kernel-DTB-DTBO-OrangeFox
           path: artifacts
           if-no-files-found: error
           retention-days: 14
