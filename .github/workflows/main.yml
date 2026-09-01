@@ -513,13 +513,23 @@ jobs:
             echo "SukiSU HEAD: $(git -C KernelSU rev-parse HEAD)"
             echo "SukiSU describe: $(git -C KernelSU describe --tags --always 2>/dev/null || true)"
             echo
-            grep -q '^CONFIG_KPM=y$' .config || { echo "[FAIL] CONFIG_KPM=y missing."; exit 1; }
+            # IMPORTANT: this step runs before the defconfig/configuration stage.
+            # Therefore .config is not expected to exist yet.  Verify the source
+            # integration here; CONFIG_* = y is validated only after olddefconfig
+            # in the configuration stage below.
+            grep -RqsE '^[[:space:]]*(config|menuconfig)[[:space:]]+KPM([[:space:]]|$)' KernelSU/kernel               || { echo "[FAIL] SukiSU v4.2.0 KPM Kconfig symbol is missing from KernelSU/kernel."; exit 1; }
+            test -d KernelSU/kernel/kpm || { echo "[FAIL] SukiSU v4.2.0 KPM source directory is missing."; exit 1; }
+            test -f KernelSU/kernel/Kbuild || { echo "[FAIL] SukiSU v4.2.0 Kernel/Kbuild is missing."; exit 1; }
+
+            # SUSFS is a source-level non-GKI 4.19 integration at this stage.
+            # Its CONFIG_* values are intentionally checked after defconfig.
             grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU fs include 2>/dev/null || {
-              echo "[FAIL] SUSFS integration markers are missing."
+              echo "[FAIL] SUSFS integration markers are missing from the source tree."
               exit 1
             }
             echo "SUSFS: $SUSFS_VERSION @ $SUSFS_COMMIT"
-            echo "[PASS] SukiSU-Ultra 4.2.0 + KPM + SUSFS compatibility integration is present."
+            echo "[PASS] SukiSU-Ultra 4.2.0 source + KPM source + SUSFS 4.19 integration verified."
+            echo "[INFO] CONFIG_KPM=y is deferred to the post-defconfig verification stage."
           } > "$LOG" 2>&1
           cat "$LOG"
 
