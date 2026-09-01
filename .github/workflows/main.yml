@@ -1,4 +1,4 @@
-name: LG Velvet 5G G900 - SukiSU-Ultra + Full Feature Matrix + DTB/DTBO (V25)
+name: LG Velvet 5G LM-G900/G900EMW - SukiSU-Ultra 4.2.0 + Full Feature Matrix + DTB/DTBO
 
 on:
   workflow_dispatch:
@@ -26,14 +26,8 @@ jobs:
       DIAG_DIR: ${{ github.workspace }}/ci-logs
       # Reproducibility / integration pins
       SUKISU_REPO: "SukiSU-Ultra/SukiSU-Ultra"
-      SUKISU_REF: "278d822a4ebd214bcfd774b7910cb11cdc560bb9"
-      SUKISU_VERSION_EXPECTED: "40837"
-      SUSFS_REPO: "simonpunk/susfs4ksu"
-      SUSFS_V220_REF: "4003ecf2d01c6d13fa8edf6c4f2607365738dc3d"
-      SUSFS_4_19_BRANCH: "kernel-4.19"
-      SUSFS_MODULE_REPO: "sidex15/susfs4ksu-module"
-      SUSFS_MODULE_REF: "d30974d"
-      SUSFS_MODULE_VERSION: "v1.5.2-R28"
+      SUKISU_REF: "v4.2.0"
+      SUKISU_RELEASE_COMMIT: "85eb4a9"
       MAPHIDE_PATCH_URL: "https://raw.githubusercontent.com/WildKernels/kernel_patches/main/archived/69_hide_stuff.patch"
 
     steps:
@@ -212,45 +206,88 @@ jobs:
           cat "$LOG"
           exit "$STATUS"
 
-      - name: 08 - Integrate SukiSU-Ultra SUSFS v2.2.0
+      - name: 08 - Integrate SukiSU-Ultra 4.2.0 (Non-GKI Builtin)
         shell: bash
         run: |
           set -euo pipefail
           LOG="$DIAG_DIR/08-sukisu-integration.log"
           : > "$LOG"
           {
+            echo "========== SUKISU-Ultra 4.2.0 =========="
             git ls-files -z | sort -z > "$RUNNER_TEMP/tracked-before"
-            curl -fsSL "https://raw.githubusercontent.com/${SUKISU_REPO}/${SUKISU_REF}/kernel/setup.sh"               -o "$RUNNER_TEMP/sukisu-setup.sh"
-            # The pinned 278d822 setup.sh accepts a commit/tag, not the
-            # historical "susfs-main" selector. Integrate SukiSU at the
-            # pinned commit first, then apply the dedicated SUSFS 4.19 patchset.
-            bash "$RUNNER_TEMP/sukisu-setup.sh" nongki
+
+            curl -fsSL "https://raw.githubusercontent.com/${SUKISU_REPO}/${SUKISU_REF}/kernel/setup.sh" \
+              -o "$RUNNER_TEMP/sukisu-setup.sh"
+            chmod +x "$RUNNER_TEMP/sukisu-setup.sh"
+
+            echo "Using official SukiSU release tag: $SUKISU_REF"
+            echo "Official release commit (short): $SUKISU_RELEASE_COMMIT"
+            echo "Non-GKI integration mode: Manual Hook + built-in driver"
+            # v4.2.0 setup.sh accepts a commit/tag, not the old builtin/nongki selector.
+            bash "$RUNNER_TEMP/sukisu-setup.sh" "$SUKISU_REF"
+
             test -d KernelSU
             test -f KernelSU/kernel/Kconfig
             test -f KernelSU/kernel/Makefile
-            echo "SukiSU pinned commit: $SUKISU_REF"
-            grep -RniE 'SUSFS.*2\.2\.0|2\.2\.0.*SUSFS|SUSFS_VERSION.*2\.2\.0'               KernelSU include fs 2>/dev/null | head -80 || {
-              echo "[FAIL] Integrated SukiSU tree does not expose SUSFS v2.2.0 evidence."
+
+            echo
+            echo "SukiSU repository state:"
+            git -C KernelSU remote -v || true
+            KSU_HEAD="$(git -C KernelSU rev-parse HEAD)"
+            git -C KernelSU describe --tags --always || true
+            case "$KSU_HEAD" in
+              85eb4a9*) echo "[PASS] SukiSU HEAD matches official 4.2.0 release commit." ;;
+              *) echo "[FAIL] SukiSU HEAD $KSU_HEAD does not match expected 4.2.0 commit $SUKISU_RELEASE_COMMIT"; exit 1 ;;
+            esac
+
+            # The requested build is SukiSU + KPM only. Do not apply any
+            # external kernel root-hiding patchset or userspace package.
+            echo
+            echo "Checking that no SUSFS kernel tree was introduced:"
+            if find KernelSU/kernel -type f -print0 2>/dev/null | xargs -0 grep -IlE '(^|/)(susfs|sus_su)(\.c|\.h)?$|CONFIG_KSU_SUSFS' 2>/dev/null | head -20 | grep -q .; then
+              echo "[FAIL] SUSFS kernel integration detected."
               exit 1
-            }
+            fi
+            if find fs include -type f -print0 2>/dev/null | xargs -0 grep -IlE 'susfs\.h|sus_su\.h' 2>/dev/null | head -20 | grep -q .; then
+              echo "[FAIL] SUSFS kernel integration detected in stock tree."
+              exit 1
+            fi
+
             git ls-files -z | sort -z > "$RUNNER_TEMP/tracked-after"
             if ! cmp -s "$RUNNER_TEMP/tracked-before" "$RUNNER_TEMP/tracked-after"; then
               echo "[FAIL] Existing tracked stock files disappeared during SukiSU integration."
-              diff -u <(tr '\0' '\n' < "$RUNNER_TEMP/tracked-before")                       <(tr '\0' '\n' < "$RUNNER_TEMP/tracked-after") || true
+              diff -u <(tr '\0' '\n' < "$RUNNER_TEMP/tracked-before") \
+                      <(tr '\0' '\n' < "$RUNNER_TEMP/tracked-after") || true
               exit 1
             fi
-            echo "[PASS] SukiSU integration did not remove tracked stock files."
+
+            echo "[PASS] SukiSU-Ultra 4.2.0 integrated in non-GKI builtin mode."
+            echo "[PASS] No external root-hiding kernel integration was applied."
+            echo "[PASS] No pre-existing tracked stock files were removed."
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 09 - Confirm SUSFS Removal
+      - name: 09 - Verify SukiSU 4.2.0 / No External Root-Hiding Patchset
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$DIAG_DIR"
-          printf '%s\n' "SUSFS v2.2.0 REMOVED BY USER REQUEST" > "$DIAG_DIR/09-susfs-removed.log"
-          echo "SUSFS v2.2.0: REMOVED"
-          echo "SukiSU-Ultra non-GKI + Manual Hook + KPM remain enabled."
+          LOG="$DIAG_DIR/09-sukisu-verification.log"
+          : > "$LOG"
+          {
+            test -d KernelSU
+            test -f KernelSU/kernel/Kconfig
+            test -f KernelSU/kernel/Makefile
+            echo "SukiSU tag requested: $SUKISU_REF"
+            echo "SukiSU HEAD: $(git -C KernelSU rev-parse HEAD)"
+            echo "SukiSU describe: $(git -C KernelSU describe --tags --always 2>/dev/null || true)"
+            echo
+            echo "Kernel root-hiding patchset: NOT INTEGRATED"
+            echo "Userspace root-hiding package: NOT INTEGRATED"
+            echo "Requested SUSFS v2.2.0: NOT INTEGRATED"
+            echo
+            echo "[PASS] Only SukiSU-Ultra + KPM integration is requested."
+          } > "$LOG" 2>&1
+          cat "$LOG"
 
       - name: 10 - Verify Non-GKI Hook Architecture
         shell: bash
@@ -260,16 +297,17 @@ jobs:
           : > "$LOG"
           {
             echo "Manual Hook is the active SukiSU hook for this non-GKI kernel."
-            echo "KPROBES is retained as capability; Tracepoint Hook is disabled."
+            echo "KPROBES is retained as a kernel capability."
+            echo "Tracepoint Hook is explicitly disabled."
             grep -RniE 'KSU_MANUAL_HOOK|KSU_TRACEPOINT_HOOK' KernelSU 2>/dev/null | head -80 || true
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 10 - Configure Stock Defconfig + KernelSU + SUSFS
+      - name: 10 - Configure Stock Defconfig + SukiSU + Full Features
         shell: bash
         run: |
           set +e
-          LOG="$DIAG_DIR/10-defconfig-and-susfs-config.log"
+          LOG="$DIAG_DIR/10-defconfig-and-features.log"
           : > "$LOG"
           {
             export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
@@ -286,29 +324,15 @@ jobs:
 
             test -s .config
 
-            # SUSFS documentation explicitly recommends disabling SUS_SU when
-            # the kernel uses non-kprobe hooks. We do not enable that optional
-            # SUSFS root-shell feature; SUSFS itself remains enabled.
             if [ -x scripts/config ]; then
               scripts/config --enable CONFIG_KSU
-              scripts/config --enable CONFIG_KSU_SUSFS
-              scripts/config --disable CONFIG_KSU_SUSFS_SUS_SU 2>/dev/null || true
-            else
-              sed -i 's/^# CONFIG_KSU is not set$/CONFIG_KSU=y/' .config || true
-              sed -i 's/^# CONFIG_KSU_SUSFS is not set$/CONFIG_KSU_SUSFS=y/' .config || true
-              sed -i 's/^CONFIG_KSU_SUSFS_SUS_SU=y$/# CONFIG_KSU_SUSFS_SUS_SU is not set/' .config || true
-            fi
+              scripts/config --enable CONFIG_KSU_MANUAL_HOOK
+              scripts/config --enable CONFIG_KPROBES
+              scripts/config --enable CONFIG_KALLSYMS
+              scripts/config --enable CONFIG_KALLSYMS_ALL
+              scripts/config --enable CONFIG_KPM
+              scripts/config --disable CONFIG_KSU_TRACEPOINT_HOOK 2>/dev/null || true
 
-            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-              CROSS_COMPILE="$CROSS_COMPILE" \
-              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              olddefconfig
-
-            # Requested feature set. Existing stock options are preserved.
-            # Every requested option is enabled only if the source tree exposes
-            # that Kconfig symbol. Core KSU/SUSFS/KPM/hardware/network symbols
-            # are hard-required below; optional legacy symbols are audited.
-            if [ -x scripts/config ]; then
               enable_if_present() {
                 sym="$1"
                 if grep -Rqs "^config ${sym#CONFIG_}\b" KernelSU fs include drivers net mm security 2>/dev/null; then
@@ -320,14 +344,7 @@ jobs:
                 fi
               }
 
-              # SukiSU / KPM / symbols required for this non-GKI 4.19 build.
               for sym in \
-                CONFIG_KSU \
-                CONFIG_KSU_MANUAL_HOOK \
-                CONFIG_KPROBES \
-                CONFIG_KALLSYMS \
-                CONFIG_KALLSYMS_ALL \
-                CONFIG_KPM \
                 CONFIG_EXT4_FS \
                 CONFIG_OVERLAY_FS \
                 CONFIG_BPF \
@@ -344,8 +361,10 @@ jobs:
                 CONFIG_CFG80211 \
                 CONFIG_RMNET \
                 CONFIG_RMNET_IPA \
+                CONFIG_RMNET_MAP \
                 CONFIG_QRTR \
                 CONFIG_MSM_QMI_INTERFACE \
+                CONFIG_QCOM_QMI_HELPERS \
                 CONFIG_NETFILTER_XT_MATCH_OWNER \
                 CONFIG_NETFILTER_XT_MATCH_CONNTRACK \
                 CONFIG_NETFILTER_XT_MATCH_STATE \
@@ -366,31 +385,28 @@ jobs:
                 CONFIG_CGROUPS \
                 CONFIG_CGROUP_DEVICE \
                 CONFIG_CGROUP_PIDS \
-                CONFIG_MEMCG \
                 CONFIG_CGROUP_SCHED \
                 CONFIG_FAIR_GROUP_SCHED \
+                CONFIG_MEMCG \
                 CONFIG_USER_NS \
                 CONFIG_DEVTMPFS \
                 CONFIG_SYSVIPC \
                 CONFIG_POSIX_MQUEUE \
                 CONFIG_ANDROID_BINDERFS \
                 CONFIG_ZRAM \
+                CONFIG_ZSMALLOC \
                 CONFIG_LTO_CLANG \
                 CONFIG_LTO_CLANG_THIN \
                 CONFIG_SCHED_WALT \
                 CONFIG_SCHED_TUNE \
                 CONFIG_NET_SCH_CAKE \
                 CONFIG_NET_SCH_FQ_CODEL \
+                CONFIG_NET_SCH_FQ \
                 CONFIG_BBG \
                 CONFIG_BBG_BLOCK_BOOT \
                 CONFIG_BBG_BLOCK_RECOVERY; do
                 enable_if_present "$sym"
               done
-
-
-              # Manual Hook is the active hook on this non-GKI kernel.
-              scripts/config --enable CONFIG_KSU_MANUAL_HOOK
-              scripts/config --disable CONFIG_KSU_TRACEPOINT_HOOK 2>/dev/null || true
             fi
 
             make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
@@ -399,11 +415,11 @@ jobs:
               olddefconfig
 
             echo
-            echo "========== REQUIRED / REQUESTED CONFIG =========="
-            grep -E '^CONFIG_(KSU|KSU_SUSFS|KSU_MANUAL_HOOK|KPROBES|KALLSYMS|KALLSYMS_ALL|KPM|EXT4_FS|OVERLAY_FS|BPF|BPF_SYSCALL|NETFILTER|IP_SET|TCP_CONG_BBR|WIREGUARD|RMNET|RMNET_IPA|MSM_QMI_INTERFACE|ZRAM|LTO_CLANG|SCHED_WALT|SCHED_TUNE|NET_SCH_CAKE|NET_SCH_FQ_CODEL|BBG)=' .config || true
+            echo "========== CORE CONFIG =========="
+            grep -E '^CONFIG_(KSU|KSU_MANUAL_HOOK|KPROBES|KALLSYMS|KALLSYMS_ALL|KPM)=' .config || true
 
             for req in \
-              CONFIG_KSU=y \=y \
+              CONFIG_KSU=y \
               CONFIG_KSU_MANUAL_HOOK=y \
               CONFIG_KPROBES=y \
               CONFIG_KALLSYMS=y \
@@ -419,70 +435,49 @@ jobs:
               grep -qx "$req" .config || { echo "[FAIL] Missing core requirement: $req"; exit 1; }
             done
 
+            if grep -qx 'CONFIG_KSU_TRACEPOINT_HOOK=y' .config; then
+              echo "[FAIL] Tracepoint Hook must not be active for this non-GKI Manual Hook build."
+              exit 1
+            fi
 
-            if grep -qx 'CONFIG_KSU_TRACEPOINT_HOOK=y' .config; then
-              echo "[FAIL] Tracepoint Hook must not be active for this non-GKI Manual Hook build."
-              exit 1
-            fi
-            if grep -qx 'CONFIG_KSU_TRACEPOINT_HOOK=y' .config; then
-              echo "[FAIL] Tracepoint Hook must not be active for this non-GKI Manual Hook build."
-              exit 1
-            fi
-            grep -qx 'CONFIG_BBG=y' .config
-            grep -qx 'CONFIG_BBG_BLOCK_BOOT=y' .config
-            grep -qx 'CONFIG_BBG_BLOCK_RECOVERY=y' .config
             echo
-            echo "[PASS] Stock + SukiSU + SUSFS + core feature configuration verified."
+            echo "========== REQUESTED FEATURE CONFIG =========="
+            grep -E '^CONFIG_(EXT4_FS|OVERLAY_FS|BPF|BPF_SYSCALL|NETFILTER|IP_SET|TCP_CONG_BBR|WIREGUARD|CFG80211|RMNET|RMNET_IPA|RMNET_MAP|QRTR|MSM_QMI_INTERFACE|QCOM_QMI_HELPERS|ZRAM|ZSMALLOC|LTO_CLANG|LTO_CLANG_THIN|SCHED_WALT|SCHED_TUNE|NET_SCH_CAKE|NET_SCH_FQ_CODEL|BBG)=' .config || true
+
+            echo "[PASS] SukiSU + KPM + core Android/network feature configuration verified."
           } > "$LOG" 2>&1
           STATUS=$?
-          tail -160 "$LOG" || true
+          tail -220 "$LOG" || true
           exit "$STATUS"
 
-      - name: 11 - SUSFS Integration Verification
+      - name: 11 - Core Integration Verification
         shell: bash
         run: |
-          set +e
-          LOG="$DIAG_DIR/11-susfs-verification.log"
+          set -euo pipefail
+          LOG="$DIAG_DIR/11-core-integration-verification.log"
           : > "$LOG"
           {
-            echo "========== KSU/SUSFS SOURCE CHECK =========="
+            echo "========== KERNELSU / SUKISU SOURCE CHECK =========="
             test -d KernelSU
             test -f KernelSU/kernel/Kconfig
-            test -f fs/susfs.c
-            test -f fs/sus_su.c
-            test -f include/linux/susfs.h
-            test -f include/linux/sus_su.h
-            test -f 50_add_susfs_in_kernel.patch
-            grep -q '#include <linux/android_kabi.h>' include/linux/sched/user.h
-            grep -q 'ANDROID_KABI_RESERVE(1);' include/linux/sched/user.h
-            grep -q 'ANDROID_KABI_RESERVE(2);' include/linux/sched/user.h
-            echo "KernelSU: present"
-            echo "SUSFS kernel files: present"
+            test -f KernelSU/kernel/Makefile
+            echo "SukiSU HEAD: $(git -C KernelSU rev-parse HEAD)"
+            echo "SukiSU describe: $(git -C KernelSU describe --tags --always 2>/dev/null || true)"
             echo
-            echo "Checking integrated SUSFS v2.2.0 version markers:"
-            version_hits="$(grep -RniE 'SUSFS[^[:alnum:]]*v?2\.2\.0|v?2\.2\.0[^[:alnum:]]*SUSFS|SUSFS_VERSION(_MAJOR|_MINOR|_PATCH)?[[:space:]]*[=:][[:space:]]*2\.2\.0' KernelSU fs include 2>/dev/null | head -80 || true)"
-            split_major="$(grep -RniE 'SUSFS_VERSION_MAJOR[[:space:]]*[=:][[:space:]]*2|SUSFS_MAJOR[[:space:]]*[=:][[:space:]]*2' KernelSU fs include 2>/dev/null | head -1 || true)"
-            split_minor="$(grep -RniE 'SUSFS_VERSION_MINOR[[:space:]]*[=:][[:space:]]*2|SUSFS_MINOR[[:space:]]*[=:][[:space:]]*2' KernelSU fs include 2>/dev/null | head -1 || true)"
-            split_patch="$(grep -RniE 'SUSFS_VERSION_PATCH[[:space:]]*[=:][[:space:]]*0|SUSFS_PATCH[[:space:]]*[=:][[:space:]]*0' KernelSU fs include 2>/dev/null | head -1 || true)"
-            if [ -z "$version_hits" ] && { [ -z "$split_major" ] || [ -z "$split_minor" ] || [ -z "$split_patch" ]; }; then
-              echo "[FAIL] Integrated kernel tree does not expose SUSFS v2.2.0 evidence."
+            echo "========== NO EXTERNAL ROOT-HIDING KERNEL PATCHSET =========="
+            if grep -RniE 'susfs\.h|sus_su\.h' KernelSU/kernel fs include 2>/dev/null | head -50 | grep -q .; then
+              echo "[FAIL] External root-hiding kernel integration detected."
               exit 1
             fi
-            printf '%s\n' "$version_hits"
-            echo "SUSFS 4.19 compatibility branch reference: $SUSFS_4_19_BRANCH"
-            echo "The pinned SukiSU susfs-main integration is the actual in-tree 4.19 port; the v2.2.0 provenance commit above is not applied as a foreign 5.10 patch."
+            echo "[PASS] No external root-hiding kernel patchset detected."
             echo
-            echo "Checking task_mmu SUSFS references:"
-            grep -nE 'susfs|INODE_STATE_SUS' fs/proc/task_mmu.c 2>/dev/null || true
-            echo
-            echo "Git diff summary (feature integration only):"
+            echo "Git diff summary:"
             git diff --stat || true
           } > "$LOG" 2>&1
           STATUS=$?
-          tail -160 "$LOG" || true
+          tail -180 "$LOG" || true
           exit "$STATUS"
 
-      # The build is intentionally isolated and fully logged.
       - name: 10A - KPM Compatibility Preflight
         shell: bash
         run: |
@@ -758,7 +753,7 @@ jobs:
             echo "========== LG Velvet LM-G900 / G900EMW =========="
             echo "Kernel: 4.19.325-cip135"
             echo "Target: Android 16 QPR2 GSI"
-            echo "SUSFS: REMOVED"
+            echo "External root-hiding kernel patchset: NOT INTEGRATED"
             echo
             echo "========== ROOT / KPM / HOOKS =========="
             grep -E '^CONFIG_(KSU|KSU_MANUAL_HOOK|KPROBES|KALLSYMS|KALLSYMS_ALL|KPM)=' .config || true
@@ -1368,7 +1363,7 @@ jobs:
           echo "[PASS] Scoped source compatibility fixes prepared."
 
           echo "=========================================="
-          echo "STARTING STOCK + KERNELSU + SUSFS BUILD"
+          echo "STARTING STOCK + SUKISU + KPM BUILD"
           echo "Full V=1 stdout/stderr -> kernel-build-full.log"
           echo "=========================================="
           echo "clang=$(command -v clang)"
@@ -1378,6 +1373,9 @@ jobs:
 
           START=$(date +%s)
 
+          # Use the stock kernel's default target first. This is safer for
+          # vendor 4.19 trees whose image target may be Image, Image.gz, or
+          # Image.gz-dtb depending on the board Kbuild.
           make \
             ARCH=arm64 \
             LLVM=1 \
@@ -1390,6 +1388,26 @@ jobs:
             >"$FULL_LOG" 2>&1
 
           BUILD_STATUS=$?
+
+          if [ "$BUILD_STATUS" -eq 0 ]; then
+            echo "" >> "$FULL_LOG"
+            echo "===== EXPLICIT DTBS PASS =====" >> "$FULL_LOG"
+            make \
+              ARCH=arm64 \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              -j"$(nproc)" \
+              V=1 \
+              WERROR=0 \
+              dtbs >> "$FULL_LOG" 2>&1
+            DTB_STATUS=$?
+            if [ "$DTB_STATUS" -ne 0 ]; then
+              BUILD_STATUS="$DTB_STATUS"
+            fi
+          fi
+
           END=$(date +%s)
           ELAPSED=$((END-START))
 
@@ -1420,7 +1438,15 @@ jobs:
           tail -40 "$FULL_LOG" || true
 
           if [ "$BUILD_STATUS" -eq 0 ]; then
-            test -s arch/arm64/boot/Image
+            KERNEL_IMAGE=""
+            for candidate in               arch/arm64/boot/Image.gz-dtb               arch/arm64/boot/Image.gz               arch/arm64/boot/Image; do
+              if [ -s "$candidate" ]; then
+                KERNEL_IMAGE="$candidate"
+                break
+              fi
+            done
+            test -n "$KERNEL_IMAGE"
+            echo "KERNEL_IMAGE=$KERNEL_IMAGE"
             echo "KERNEL BUILD SUCCESSFUL"
             find arch/arm64/boot/dts -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print | sort | head -300 || true
           else
@@ -1428,6 +1454,85 @@ jobs:
           fi
 
           exit "$BUILD_STATUS"
+
+      - name: 19A - Package Kernel + DTB/DTBO + AnyKernel3 (OrangeFox Flashable)
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/19A-packaging.log"
+          : > "$LOG"
+          {
+            mkdir -p artifacts/kernel artifacts/dtb artifacts/dtbo
+
+            KERNEL_IMAGE=""
+            for candidate in \
+              arch/arm64/boot/Image.gz-dtb \
+              arch/arm64/boot/Image.gz \
+              arch/arm64/boot/Image; do
+              if [ -s "$candidate" ]; then
+                KERNEL_IMAGE="$candidate"
+                break
+              fi
+            done
+            test -n "$KERNEL_IMAGE"
+
+            cp -f "$KERNEL_IMAGE" artifacts/kernel/
+            sha256sum "$KERNEL_IMAGE" > artifacts/kernel/kernel.sha256
+
+            find arch/arm64/boot/dts -type f -name '*.dtb' -print0 2>/dev/null |
+              while IFS= read -r -d '' f; do cp -f "$f" artifacts/dtb/; done
+            find arch/arm64/boot/dts -type f -name '*.dtbo' -print0 2>/dev/null |
+              while IFS= read -r -d '' f; do cp -f "$f" artifacts/dtbo/; done
+
+            # Build a standard AnyKernel3 package that OrangeFox can flash.
+            rm -rf "$RUNNER_TEMP/AnyKernel3"
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$RUNNER_TEMP/AnyKernel3"
+
+            cp -f "$KERNEL_IMAGE" "$RUNNER_TEMP/AnyKernel3/Image.gz-dtb"
+
+            python3 -c '
+            from pathlib import Path
+            import os
+            import re
+            p = Path(os.environ["RUNNER_TEMP"]) / "AnyKernel3" / "anykernel.sh"
+            s = p.read_text()
+            s = re.sub(r"(?m)^kernel\\.string=.*$", "kernel.string=LM-G900 SukiSU-Ultra 4.2.0", s)
+            s = re.sub(r"(?m)^do\\.devicecheck=.*$", "do.devicecheck=1", s)
+            s = re.sub(r"(?m)^device\\.name1=.*$", "device.name1=caymanlm", s)
+            s = re.sub(r"(?m)^device\\.name2=.*$", "device.name2=G900EMW", s)
+            s = re.sub(r"(?m)^device\\.name3=.*$", "device.name3=LM-G900", s)
+            s = re.sub(r"(?m)^device\\.name4=.*$", "device.name4=", s)
+            s = re.sub(r"(?m)^\\s*(?:block|BLOCK)=.*$", "block=boot;", s)
+            s = re.sub(r"(?m)^\\s*(?:is_slot_device|IS_SLOT_DEVICE)=.*$", "is_slot_device=auto;", s)
+            p.write_text(s)
+            '
+
+            test -s "$RUNNER_TEMP/AnyKernel3/Image.gz-dtb"
+            grep -q 'kernel.string=LM-G900 SukiSU-Ultra 4.2.0' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
+            grep -q 'block=boot' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
+            grep -q 'is_slot_device=auto' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
+
+            (
+              cd "$RUNNER_TEMP/AnyKernel3"
+              rm -rf .git
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-OrangeFox-AnyKernel3.zip" . \
+                -x 'README.md' >/dev/null
+            )
+
+            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-OrangeFox-AnyKernel3.zip" artifacts/kernel/
+
+            (
+              cd artifacts
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-DTB-DTBO-4.19.325-cip135.zip" dtb dtbo >/dev/null
+            )
+
+            echo "Kernel image: $KERNEL_IMAGE"
+            echo "AnyKernel3/OrangeFox ZIP: artifacts/LM-G900-SukiSU-4.2.0-OrangeFox-AnyKernel3.zip"
+            echo "DTB/DTBO ZIP: artifacts/LM-G900-DTB-DTBO-4.19.325-cip135.zip"
+            find artifacts -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+          } > "$LOG" 2>&1
+          cat "$LOG"
 
       - name: 19 - Final Configuration and Artifact Check
         if: always()
@@ -1444,10 +1549,10 @@ jobs:
             grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile || true
             echo
             echo "Required config:"
-            grep -E '^CONFIG_(KSU|KSU_SUSFS|KPROBES|KPROBE_EVENTS|SECURITY|SECURITY_SELINUX)=' .config 2>/dev/null || true
+            grep -E '^CONFIG_(KSU|KPROBES|KPROBE_EVENTS|SECURITY|SECURITY_SELINUX)=' .config 2>/dev/null || true
             echo
-            echo "Kernel image:"
-            ls -lh arch/arm64/boot/Image 2>&1 || true
+            echo "Kernel image candidates:"
+            ls -lh arch/arm64/boot/Image.gz-dtb arch/arm64/boot/Image.gz arch/arm64/boot/Image 2>&1 || true
             echo
             echo "DTB/DTBO outputs:"
             find arch/arm64/boot/dts -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print 2>/dev/null | sort | head -300 || true
@@ -1469,35 +1574,50 @@ jobs:
           mkdir -p diagnostic-artifact
           cp -f kernel-build-full.log diagnostic-artifact/12-build-full.log 2>/dev/null || true
           cp -f .config diagnostic-artifact/final.config 2>/dev/null || true
-          cp -f 50_add_susfs_in_kernel.patch diagnostic-artifact/50_add_susfs_in_kernel.patch 2>/dev/null || true
+          cp -f sukisu-integration-note.txt diagnostic-artifact/sukisu-integration-note.txt 2>/dev/null || true
           cp -rf "$DIAG_DIR" diagnostic-artifact/ci-logs 2>/dev/null || true
           {
             echo "GitHub Run: $GITHUB_RUN_ID"
             echo "Commit: $GITHUB_SHA"
             echo "Date: $(date -u)"
-            echo "SukiSU: $SUKISU_REF (expected KSU_VERSION $SUKISU_VERSION_EXPECTED)"
-            echo "SUSFS kernel target: v2.2.0 via kernel-4.19 compatibility patchset"
-            echo "SUSFS userspace: $SUSFS_MODULE_VERSION ($SUSFS_MODULE_REF)"
+            echo "SukiSU release tag: $SUKISU_REF"
+            echo "SukiSU release commit (short): $SUKISU_RELEASE_COMMIT"
+            echo "External root-hiding kernel patchset: NOT INTEGRATED"
+            echo "External root-hiding userspace package: NOT INTEGRATED"
             echo
             find diagnostic-artifact -type f -printf '%p %s bytes\n' | sort
           } > diagnostic-artifact/MANIFEST.txt
           exit 0
 
+      - name: 19B - Upload Kernel / DTB / DTBO / OrangeFox ZIP
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: LG-Velvet-G900-SukiSU-4.2.0-Kernel-DTB-DTBO-OrangeFox
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
       - name: 19 - Upload Complete Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-SukiSU-SUSFS-v220-Diagnostics
+          name: LG-Velvet-G900-SukiSU-4.2.0-Diagnostics
           path: diagnostic-artifact
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: 19 - Upload Kernel Image
+      - name: 19C - Upload Raw Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-SukiSU-SUSFS-v220-Image
-          path: arch/arm64/boot/Image
+          name: LG-Velvet-G900-SukiSU-4.2.0-Raw-Kernel
+          path: |
+            arch/arm64/boot/Image.gz-dtb
+            arch/arm64/boot/Image.gz
+            arch/arm64/boot/Image
           if-no-files-found: error
           retention-days: 14
+          compression-level: 6
