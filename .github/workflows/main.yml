@@ -137,10 +137,14 @@ jobs:
           echo "Cleanly applicable CIP hunks are retained; conflicting hunks are preserved as the existing LG implementation."
           echo "This prevents unrelated upstream-only files from blocking the device kernel build."
 
-          set +e
-          git apply --3way --whitespace=fix "$RUNNER_TEMP/cip135.patch" 2>&1 | tee "$RUNNER_TEMP/cip135-apply.raw.log"
-          APPLY_RC=${PIPESTATUS[0]}
-          set -e
+          # git apply is expected to return non-zero when the vendor tree has
+          # conflicts or upstream-only paths.  Keep it inside an if-condition so
+          # the ERR trap does not abort the step before PIPESTATUS is captured.
+          if git apply --3way --whitespace=fix "$RUNNER_TEMP/cip135.patch" 2>&1 | tee "$RUNNER_TEMP/cip135-apply.raw.log"; then
+            APPLY_RC=${PIPESTATUS[0]}
+          else
+            APPLY_RC=${PIPESTATUS[0]}
+          fi
           echo "git apply return code: $APPLY_RC"
 
           echo
