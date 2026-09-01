@@ -123,18 +123,20 @@ jobs:
           echo "CIP135 patch bytes: $(wc -c < "$RUNNER_TEMP/cip135.patch")"
           echo "Patch file: $RUNNER_TEMP/cip135.patch"
           echo
-          echo "--- Verify a sample old/new blob from the patch exists in active repo ---"
-          old_blobs=$(grep -E '^index [0-9a-f]+\.\.[0-9a-f]+' "$RUNNER_TEMP/cip135.patch" | sed -E 's/^index ([0-9a-f]+)\.\.([0-9a-f]+).*/\1 \2/' | head -20 || true)
-          if [ -n "$old_blobs" ]; then
-            while read -r old new; do
-              [ -n "$old" ] || continue
-              git cat-file -e "$old^{blob}" || { echo "[FAIL] Missing CIP preimage blob in active repo: $old"; exit 1; }
-              git cat-file -e "$new^{blob}" || { echo "[FAIL] Missing CIP target blob in active repo: $new"; exit 1; }
-            done <<< "$old_blobs"
-            echo "[PASS] Sample CIP preimage/target blobs are present in active repository."
-          else
-            echo "[INFO] Patch contains no ordinary blob index lines in the first sample; continuing."
-          fi
+          echo "--- Verify CIP object database without parsing patch index lines ---"
+          # Do NOT parse `index OLD..NEW` lines here. Git intentionally uses
+          # an all-zero object ID for added/deleted files, and binary patches
+          # may contain abbreviated IDs. A text parser can therefore produce
+          # false "missing blob" failures before git apply is even attempted.
+          # The two fetched refs plus their trees/commits above are the
+          # authoritative object-availability check. Let git apply perform the
+          # real blob-level 3-way validation against the active repository.
+          BASE_TREE="$(git rev-parse "$BASE_REF^{tree}")"
+          TARGET_TREE="$(git rev-parse "$TARGET_REF^{tree}")"
+          git cat-file -e "$BASE_TREE^{tree}"
+          git cat-file -e "$TARGET_TREE^{tree}"
+          echo "[PASS] CIP base/target commit and tree objects are present in the active repository."
+          echo "[INFO] Skipping brittle patch-index blob sampling; git apply --3way below is the real compatibility test."
           echo
           echo "--- Apply CIP135 delta to LG kernel tree ---"
           if git apply --3way --whitespace=fix "$RUNNER_TEMP/cip135.patch"; then
