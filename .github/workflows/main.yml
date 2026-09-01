@@ -1,4 +1,4 @@
-name: LG Velvet 5G G900 - SukiSU-Ultra + SUSFS v2.2.0 + Full Feature Matrix + DTB/DTBO (V25)
+name: LG Velvet 5G G900 - SukiSU-Ultra + Full Feature Matrix + DTB/DTBO (V25)
 
 on:
   workflow_dispatch:
@@ -224,7 +224,7 @@ jobs:
             # The pinned 278d822 setup.sh accepts a commit/tag, not the
             # historical "susfs-main" selector. Integrate SukiSU at the
             # pinned commit first, then apply the dedicated SUSFS 4.19 patchset.
-            bash "$RUNNER_TEMP/sukisu-setup.sh" "$SUKISU_REF"
+            bash "$RUNNER_TEMP/sukisu-setup.sh" nongki
             test -d KernelSU
             test -f KernelSU/kernel/Kconfig
             test -f KernelSU/kernel/Makefile
@@ -243,71 +243,14 @@ jobs:
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 09 - Integrate SUSFS v2.2.0 4.19 Patchset + R28 Userspace
+      - name: 09 - Confirm SUSFS Removal
         shell: bash
         run: |
           set -euo pipefail
-          LOG="$DIAG_DIR/09-susfs-provenance.log"
-          : > "$LOG"
-          {
-            echo "========== SUSFS v2.2.0 / KERNEL 4.19 =========="
-            echo "SukiSU commit: $SUKISU_REF"
-            echo "SUSFS target: v2.2.0"
-            echo "SUSFS compatibility branch: $SUSFS_4_19_BRANCH"
-
-            rm -rf "$RUNNER_TEMP/susfs-419" "$RUNNER_TEMP/susfs-module"
-
-            # Use the upstream 4.19 compatibility branch rather than feeding
-            # a 5.10/GKI patch directly into this LG 4.19 kernel.
-            git clone --depth=1 --branch "$SUSFS_4_19_BRANCH" \
-              "https://gitlab.com/${SUSFS_REPO}.git" "$RUNNER_TEMP/susfs-419"
-
-            PATCH="$RUNNER_TEMP/susfs-419/kernel_patches/50_add_susfs_in_kernel.patch"
-            if [ ! -f "$PATCH" ]; then
-              PATCH="$(find "$RUNNER_TEMP/susfs-419" -type f \
-                \( -name '50_add_susfs_in_kernel.patch' -o -name '*susfs*.patch' \) \
-                | sort | head -1)"
-            fi
-            test -n "$PATCH"
-            test -s "$PATCH"
-            echo "Selected SUSFS patch: $PATCH"
-
-            # Apply only when the current tree does not already contain the
-            # SUSFS implementation. This makes reruns idempotent.
-            if [ ! -f fs/susfs.c ] || [ ! -f include/linux/susfs.h ]; then
-              cp "$PATCH" "$GITHUB_WORKSPACE/50_add_susfs_in_kernel.patch"
-              git apply --check --3way "$PATCH" || {
-                echo "[FAIL] SUSFS v2.2.0 4.19 patchset does not apply cleanly."
-                echo "This is intentionally fatal: do not silently substitute a"
-                echo "different kernel-generation SUSFS patch."
-                exit 1
-              }
-              git apply --3way "$PATCH"
-            else
-              echo "[PASS] SUSFS kernel sources already present; patch not reapplied."
-              cp "$PATCH" "$GITHUB_WORKSPACE/50_add_susfs_in_kernel.patch"
-            fi
-
-            test -f fs/susfs.c
-            test -f include/linux/susfs.h
-            grep -RniE 'SUSFS.*v?2\.2\.0|SUSFS_VERSION.*2\.2\.0|v?2\.2\.0.*SUSFS' \
-              fs include KernelSU 2>/dev/null | head -80 || true
-
-            # The v2.2.0 userspace module is kept as a separate artifact and
-            # is not confused with the kernel-side 4.19 patchset.
-            git clone --filter=blob:none --no-checkout \
-              "https://github.com/${SUSFS_MODULE_REPO}.git" "$RUNNER_TEMP/susfs-module"
-            git -C "$RUNNER_TEMP/susfs-module" fetch --depth=1 origin "$SUSFS_MODULE_REF"
-            git -C "$RUNNER_TEMP/susfs-module" checkout --detach "$SUSFS_MODULE_REF"
-            test "$(git -C "$RUNNER_TEMP/susfs-module" rev-parse HEAD)" = "$SUSFS_MODULE_REF"
-            grep -q '^version=v1.5.2-R28$' "$RUNNER_TEMP/susfs-module/module.prop"
-
-            mkdir -p "$GITHUB_WORKSPACE/artifacts/susfs-module"
-            cp -a "$RUNNER_TEMP/susfs-module"/. "$GITHUB_WORKSPACE/artifacts/susfs-module/"
-            echo "Userspace SUSFS module: $SUSFS_MODULE_VERSION ($SUSFS_MODULE_REF)"
-            echo "[PASS] SUSFS kernel + R28 userspace sources are staged."
-          } > "$LOG" 2>&1
-          cat "$LOG"
+          mkdir -p "$DIAG_DIR"
+          printf '%s\n' "SUSFS v2.2.0 REMOVED BY USER REQUEST" > "$DIAG_DIR/09-susfs-removed.log"
+          echo "SUSFS v2.2.0: REMOVED"
+          echo "SukiSU-Ultra non-GKI + Manual Hook + KPM remain enabled."
 
       - name: 10 - Verify Non-GKI Hook Architecture
         shell: bash
@@ -380,7 +323,6 @@ jobs:
               # SukiSU / KPM / symbols required for this non-GKI 4.19 build.
               for sym in \
                 CONFIG_KSU \
-                CONFIG_KSU_SUSFS \
                 CONFIG_KSU_MANUAL_HOOK \
                 CONFIG_KPROBES \
                 CONFIG_KALLSYMS \
@@ -445,25 +387,6 @@ jobs:
                 enable_if_present "$sym"
               done
 
-              # SUSFS v2.2.0 requested feature switches.
-              for sym in \
-                CONFIG_KSU_SUSFS_SUS_PATH \
-                CONFIG_KSU_SUSFS_SUS_MOUNT \
-                CONFIG_KSU_SUSFS_SUS_KSTAT \
-                CONFIG_KSU_SUSFS_SPOOF_UNAME \
-                CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-                CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-                CONFIG_KSU_SUSFS_SUS_MAP \
-                CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-                CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
-                CONFIG_KSU_SUSFS_TRY_UMOUNT \
-                CONFIG_KSU_SUSFS_SPOOF_AVC \
-                CONFIG_KSU_SUSFS_SUS_MEMFD \
-                CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
-                CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
-                CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT; do
-                enable_if_present "$sym"
-              done
 
               # Manual Hook is the active hook on this non-GKI kernel.
               scripts/config --enable CONFIG_KSU_MANUAL_HOOK
@@ -480,8 +403,7 @@ jobs:
             grep -E '^CONFIG_(KSU|KSU_SUSFS|KSU_MANUAL_HOOK|KPROBES|KALLSYMS|KALLSYMS_ALL|KPM|EXT4_FS|OVERLAY_FS|BPF|BPF_SYSCALL|NETFILTER|IP_SET|TCP_CONG_BBR|WIREGUARD|RMNET|RMNET_IPA|MSM_QMI_INTERFACE|ZRAM|LTO_CLANG|SCHED_WALT|SCHED_TUNE|NET_SCH_CAKE|NET_SCH_FQ_CODEL|BBG)=' .config || true
 
             for req in \
-              CONFIG_KSU=y \
-              CONFIG_KSU_SUSFS=y \
+              CONFIG_KSU=y \=y \
               CONFIG_KSU_MANUAL_HOOK=y \
               CONFIG_KPROBES=y \
               CONFIG_KALLSYMS=y \
@@ -497,25 +419,6 @@ jobs:
               grep -qx "$req" .config || { echo "[FAIL] Missing core requirement: $req"; exit 1; }
             done
 
-            # SUSFS requested switches are required when their symbols exist;
-            # absence is reported explicitly instead of inventing symbols.
-            for req in \
-              CONFIG_KSU_SUSFS_SUS_PATH \
-              CONFIG_KSU_SUSFS_SUS_MOUNT \
-              CONFIG_KSU_SUSFS_SUS_KSTAT \
-              CONFIG_KSU_SUSFS_SPOOF_UNAME \
-              CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-              CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-              CONFIG_KSU_SUSFS_SUS_MAP \
-              CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-              CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
-              CONFIG_KSU_SUSFS_TRY_UMOUNT; do
-              if grep -Rqs "^config ${req#CONFIG_}\b" KernelSU fs include 2>/dev/null; then
-                grep -qx "${req}=y" .config || { echo "[FAIL] SUSFS symbol exists but is not enabled: $req"; exit 1; }
-              else
-                echo "[INFO] SUSFS symbol not exposed by this pinned 4.19 tree: $req"
-              fi
-            done
 
             if grep -qx 'CONFIG_KSU_TRACEPOINT_HOOK=y' .config; then
               echo "[FAIL] Tracepoint Hook must not be active for this non-GKI Manual Hook build."
@@ -845,44 +748,75 @@ jobs:
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 11B - Feature Matrix Audit (A16 QPR2 / G900)
+      - name: 11B - Full Feature Matrix Audit (A16 QPR2 / G900EMW)
         shell: bash
         run: |
           set -euo pipefail
           LOG="$DIAG_DIR/11B-feature-matrix.log"
           : > "$LOG"
           {
-            echo "========== LG Velvet LM-G900 / G900EMW FEATURE MATRIX =========="
+            echo "========== LG Velvet LM-G900 / G900EMW =========="
             echo "Kernel: 4.19.325-cip135"
             echo "Target: Android 16 QPR2 GSI"
+            echo "SUSFS: REMOVED"
             echo
-            echo "Root / hiding:"
-            grep -E '^CONFIG_(KSU|KSU_SUSFS|KSU_MANUAL_HOOK|KPROBES|KALLSYMS|KALLSYMS_ALL|KPM)=' .config || true
+            echo "========== ROOT / KPM / HOOKS =========="
+            grep -E '^CONFIG_(KSU|KSU_MANUAL_HOOK|KPROBES|KALLSYMS|KALLSYMS_ALL|KPM)=' .config || true
+            for req in CONFIG_KSU=y CONFIG_KSU_MANUAL_HOOK=y CONFIG_KPROBES=y CONFIG_KALLSYMS=y CONFIG_KALLSYMS_ALL=y CONFIG_KPM=y; do
+              grep -qx "$req" .config || { echo "[FAIL] Missing $req"; exit 1; }
+            done
+            if grep -qx 'CONFIG_KSU_TRACEPOINT_HOOK=y' .config; then
+              echo "[FAIL] Tracepoint hook must not be enabled for this non-GKI Manual Hook build."
+              exit 1
+            fi
             echo
-            echo "Filesystem / namespaces / DroidSpaces:"
-            grep -E '^CONFIG_(EXT4_FS|OVERLAY_FS|TMPFS_XATTR|TMPFS_POSIX_ACL|NAMESPACES|PID_NS|UTS_NS|IPC_NS|NET_NS|USER_NS|SECCOMP|SECCOMP_FILTER|CGROUPS|CGROUP_DEVICE|CGROUP_PIDS|MEMCG|DEVTMPFS|SYSVIPC|POSIX_MQUEUE)=' .config || true
+            echo "========== FILESYSTEM / ANDROID =========="
+            grep -E '^CONFIG_(EXT4_FS|OVERLAY_FS|TMPFS_XATTR|TMPFS_POSIX_ACL|DEVTMPFS|FUSE_FS|FS_ENCRYPTION|FS_VERITY)=' .config || true
             echo
-            echo "Networking / modem / VoLTE prerequisites:"
-            grep -E '^CONFIG_(BPF|BPF_SYSCALL|NETFILTER|NETFILTER_ADVANCED|IP_SET|IP6_NF_NAT|RMNET|RMNET_IPA|QRTR|MSM_QMI_INTERFACE|CFG80211|WIREGUARD|TCP_CONG_BBR|NET_SCH_CAKE|NET_SCH_FQ_CODEL)=' .config || true
+            echo "========== DROIDSPACES / NAMESPACES =========="
+            grep -E '^CONFIG_(NAMESPACES|PID_NS|UTS_NS|IPC_NS|NET_NS|USER_NS|CGROUPS|CGROUP_DEVICE|CGROUP_PIDS|CGROUP_SCHED|MEMCG|SECCOMP|SECCOMP_FILTER|VETH|BRIDGE|BRIDGE_NETFILTER)=' .config || true
             echo
-            echo "Performance:"
-            grep -E '^CONFIG_(ZRAM|LTO_CLANG|LTO_CLANG_THIN|SCHED_WALT|SCHED_TUNE)=' .config || true
+            echo "========== DUAL SIM / RIL / IMS PREREQUISITES =========="
+            grep -E '^CONFIG_(RMNET|RMNET_IPA|RMNET_MAP|QRTR|MSM_QMI_INTERFACE|QCOM_QMI_HELPERS|NETFILTER|NETFILTER_ADVANCED|NF_CONNTRACK|NF_NAT|IP_SET|IP6_NF_NAT)=' .config || true
+            echo "VoLTE/VoWiFi also requires matching LG modem firmware, vendor RIL/IMS stack and DT."
             echo
-            echo "Hardware paths retained in source:"
-            for p in drivers/input drivers/vibrator drivers/char drivers/soc/qcom drivers/net/wireless techpack/audio techpack/camera; do
+            echo "========== WLAN / NETWORK =========="
+            grep -E '^CONFIG_(CFG80211|MAC80211|WLAN|WIREGUARD|BPF|BPF_SYSCALL|NETFILTER_XT_MATCH_OWNER|NETFILTER_XT_MATCH_CONNTRACK|NETFILTER_XT_TARGET_MARK|NETFILTER_XT_TARGET_MASQUERADE)=' .config || true
+            echo
+            echo "========== TCP / QOS =========="
+            grep -E '^CONFIG_(TCP_CONG_BBR|TCP_CONG_CUBIC|NET_SCH_CAKE|NET_SCH_FQ_CODEL|NET_SCH_FQ)=' .config || true
+            echo "4.19 baseline uses real BBR support; BBRv3 is not fabricated if absent from source."
+            echo
+            echo "========== PERFORMANCE =========="
+            grep -E '^CONFIG_(ZRAM|ZSMALLOC|LTO_CLANG|LTO_CLANG_THIN|SCHED_WALT|SCHED_TUNE)=' .config || true
+            echo
+            echo "========== HARDWARE PATHS =========="
+            for p in drivers/input drivers/input/touchscreen drivers/vibrator drivers/haptics drivers/soc/qcom drivers/net drivers/net/wireless sound techpack/audio; do
               [ -d "$p" ] && echo "[PRESENT] $p"
             done
             echo
-            echo "BBR note: this 4.19 tree exposes CONFIG_TCP_CONG_BBR for BBR v1."
-            echo "BBRv3 is not a stock 4.19 Kconfig option; it is not fabricated as a fake symbol."
-            echo "If a real BBRv3 patch/source exists in the tree, it will be detected here:"
-            grep -RniE 'bbr3|BBRv3|tcp_bbr3' net/ipv4 net 2>/dev/null | head -20 || true
+            echo "========== DTB / DTBO =========="
+            [ -d arch/arm64/boot/dts ] && echo "[PASS] arm64 DT sources present"
             echo
-            echo "[PASS] Feature audit completed; no requested existing feature is disabled by this workflow."
+            echo "[PASS] Full feature audit completed."
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 12 - Build Kernel (Full Log to Artifact)
+      - name: 11C - 4.19 Clean Compiler Preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/11C-compiler-preflight.log"
+          : > "$LOG"
+          {
+            echo "========== CLEAN CONFIG PREFLIGHT =========="
+            "$CLANG" --version | head -5
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1               CROSS_COMPILE="$CROSS_COMPILE"               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"               olddefconfig
+            echo "[PASS] 4.19 config regenerated before compilation."
+          } > "$LOG" 2>&1
+          cat "$LOG"
+
+      - name: 19 - Build Kernel (Full Log to Artifact)
         shell: bash
         run: |
           set +e
@@ -1495,7 +1429,7 @@ jobs:
 
           exit "$BUILD_STATUS"
 
-      - name: 13 - Final Configuration and Artifact Check
+      - name: 19 - Final Configuration and Artifact Check
         if: always()
         shell: bash
         run: |
@@ -1527,7 +1461,7 @@ jobs:
           cat "$LOG"
           exit 0
 
-      - name: 14 - Stage Complete Diagnostics
+      - name: 19 - Stage Complete Diagnostics
         if: always()
         shell: bash
         run: |
@@ -1537,7 +1471,6 @@ jobs:
           cp -f .config diagnostic-artifact/final.config 2>/dev/null || true
           cp -f 50_add_susfs_in_kernel.patch diagnostic-artifact/50_add_susfs_in_kernel.patch 2>/dev/null || true
           cp -rf "$DIAG_DIR" diagnostic-artifact/ci-logs 2>/dev/null || true
-           cp -rf artifacts/susfs-module diagnostic-artifact/susfs-module 2>/dev/null || true
           {
             echo "GitHub Run: $GITHUB_RUN_ID"
             echo "Commit: $GITHUB_SHA"
@@ -1550,7 +1483,7 @@ jobs:
           } > diagnostic-artifact/MANIFEST.txt
           exit 0
 
-      - name: 15 - Upload Complete Diagnostics
+      - name: 19 - Upload Complete Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1560,7 +1493,7 @@ jobs:
           retention-days: 14
           compression-level: 6
 
-      - name: 16 - Upload Kernel Image
+      - name: 19 - Upload Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
