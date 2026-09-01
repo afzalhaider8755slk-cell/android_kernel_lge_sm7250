@@ -1,4 +1,4 @@
-name: LG Velvet 5G LM-G900/G900EMW - SukiSU-Ultra 4.2.0 + Full Feature Matrix + LZ4K/VFS/BBR3 Audit + DTB/DTBO
+name: LG Velvet 5G LM-G900/G900EMW - SukiSU-Ultra 4.2.0 + CIP135 + Stable Feature Matrix + DTB/DTBO
 
 on:
   workflow_dispatch:
@@ -28,7 +28,8 @@ jobs:
       SUKISU_REPO: "SukiSU-Ultra/SukiSU-Ultra"
       SUKISU_REF: "v4.2.0"
       SUKISU_RELEASE_COMMIT: "85eb4a9"
-      MAPHIDE_PATCH_URL: "https://raw.githubusercontent.com/WildKernels/kernel_patches/main/archived/69_hide_stuff.patch"
+      CIP_REPO: "https://gitlab.com/cip-project/cip-kernel/linux-cip.git"
+      CIP_REF: "v4.19.325-cip135"
 
     steps:
 
@@ -40,13 +41,51 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: 02 - Update Kernel to Official CIP 4.19.325-cip135
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$GITHUB_WORKSPACE/ci-logs/02-cip135-update.log"
+          mkdir -p "$GITHUB_WORKSPACE/ci-logs"
+          {
+            echo "========== OFFICIAL CIP UPDATE =========="
+            echo "CIP repository: $CIP_REPO"
+            echo "CIP tag: $CIP_REF"
+            echo
+            rm -rf "$RUNNER_TEMP/linux-cip"
+            git clone --filter=blob:none --no-checkout --depth=1               --branch "$CIP_REF" "$CIP_REPO" "$RUNNER_TEMP/linux-cip"
+            git -C "$RUNNER_TEMP/linux-cip" fetch --depth=1 origin               refs/tags/v4.19.325:refs/tags/v4.19.325
+            git -C "$RUNNER_TEMP/linux-cip" diff --binary               v4.19.325 "$CIP_REF" > "$RUNNER_TEMP/cip135.patch"
+            test -s "$RUNNER_TEMP/cip135.patch"
+            echo "CIP135 patch bytes: $(wc -c < "$RUNNER_TEMP/cip135.patch")"
+            echo "Applying the complete official 4.19.325 -> 4.19.325-cip135 delta to the LG tree."
+            if ! git apply --3way --whitespace=fix "$RUNNER_TEMP/cip135.patch"; then
+              echo "[FAIL] Official CIP135 delta did not apply cleanly to the LG 4.19.325 tree."
+              echo "The workflow stops here rather than falsely claiming CIP135."
+              exit 1
+            fi
+            if [ -f "$RUNNER_TEMP/linux-cip/localversion-cip" ]; then
+              cp -f "$RUNNER_TEMP/linux-cip/localversion-cip" localversion-cip
+            fi
+            grep -q -- '-cip135' localversion-cip || {
+              echo "[FAIL] localversion-cip does not identify -cip135."
+              exit 1
+            }
+            echo
+            echo "CIP localversion:"
+            cat localversion-cip
+            echo
+            echo "[PASS] Official CIP 4.19.325-cip135 delta applied."
+          } > "$LOG" 2>&1
+          cat "$LOG"
+
       - name: 02 - Initialize Diagnostics
         shell: bash
         run: |
           set +e
           mkdir -p "$DIAG_DIR"
           {
-            echo "========== STOCK KERNEL BASELINE =========="
+            echo "========== CIP135 KERNEL BASELINE =========="
             echo "DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             echo "RUN_ID=$GITHUB_RUN_ID"
             echo "SHA=$GITHUB_SHA"
@@ -222,8 +261,8 @@ jobs:
 
             echo "Using official SukiSU release tag: $SUKISU_REF"
             echo "Official release commit (short): $SUKISU_RELEASE_COMMIT"
-            echo "Non-GKI integration mode: Manual Hook + built-in driver"
-            # v4.2.0 setup.sh accepts a commit/tag, not the old builtin/nongki selector.
+            echo "Non-GKI integration mode: source-integrated SukiSU + KPROBES"
+            # v4.2.0 setup.sh accepts a commit/tag and integrates KernelSU into drivers/.
             bash "$RUNNER_TEMP/sukisu-setup.sh" "$SUKISU_REF"
 
             test -d KernelSU
@@ -261,7 +300,7 @@ jobs:
               exit 1
             fi
 
-            echo "[PASS] SukiSU-Ultra 4.2.0 integrated in non-GKI builtin mode."
+            echo "[PASS] SukiSU-Ultra 4.2.0 integrated as source code for the non-GKI kernel."
             echo "[PASS] No external root-hiding kernel integration was applied."
             echo "[PASS] No pre-existing tracked stock files were removed."
           } > "$LOG" 2>&1
@@ -303,7 +342,7 @@ jobs:
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 10 - Configure Stock Defconfig + SukiSU + Full Feature Matrix (No SUSFS 2.2.0)
+      - name: 10 - Configure Stock Defconfig + SukiSU + Stable Feature Matrix (No SUSFS 2.2.0)
         shell: bash
         run: |
           set +e
@@ -393,16 +432,18 @@ jobs:
               enable_if_present "$sym"
             done
 
+            # Keep exactly one LTO mode. This 4.19 tree exposes full Clang LTO,
+            # not ThinLTO; do not force a nonexistent/alternate choice.
+            if kconfig_has CONFIG_LTO_CLANG_THIN; then
+              scripts/config --disable CONFIG_LTO_CLANG_THIN 2>/dev/null || true
+              echo "[SAFE] CONFIG_LTO_CLANG_THIN disabled; using CONFIG_LTO_CLANG only."
+            fi
+
             # DroidSpaces-OSS legacy 4.19 requirements
             for sym in \
               CONFIG_CGROUPS CONFIG_CGROUP_DEVICE CONFIG_CGROUP_PIDS CONFIG_CGROUP_SCHED \
               CONFIG_FAIR_GROUP_SCHED CONFIG_MEMCG CONFIG_SECCOMP CONFIG_SECCOMP_FILTER \
               CONFIG_VETH CONFIG_BRIDGE CONFIG_BRIDGE_NETFILTER; do
-              enable_if_present "$sym"
-            done
-
-            # BaseBandGuard only if the integrated source exposes its Kconfig.
-            for sym in CONFIG_BBG CONFIG_BBG_BLOCK_BOOT CONFIG_BBG_BLOCK_RECOVERY; do
               enable_if_present "$sym"
             done
 
@@ -435,15 +476,15 @@ jobs:
 
             echo
             echo "========== FEATURE CAPABILITY SNAPSHOT =========="
-            grep -E '^CONFIG_(BPF|BPF_SYSCALL|NETFILTER|IP_SET|RMNET|RMNET_IPA|RMNET_MAP|QRTR|MSM_QMI_INTERFACE|QCOM_QMI_HELPERS|CFG80211|MAC80211|WLAN|WIREGUARD|TCP_CONG_BBR|NET_SCH_CAKE|NET_SCH_FQ_CODEL|NET_SCH_FQ|ZRAM|ZSMALLOC|CRYPTO_LZ4|CRYPTO_LZ4HC|CRYPTO_LZ4K|CRYPTO_LZ4KD|LTO_CLANG|LTO_CLANG_THIN|SCHED_WALT|SCHED_TUNE|BBG|NAMESPACES|CGROUPS|SECCOMP|SECCOMP_FILTER)=' .config || true
+            grep -E '^CONFIG_(BPF|BPF_SYSCALL|NETFILTER|IP_SET|RMNET|RMNET_IPA|RMNET_MAP|QRTR|MSM_QMI_INTERFACE|QCOM_QMI_HELPERS|CFG80211|MAC80211|WLAN|WIREGUARD|TCP_CONG_BBR|NET_SCH_CAKE|NET_SCH_FQ_CODEL|NET_SCH_FQ|ZRAM|ZSMALLOC|CRYPTO_LZ4|CRYPTO_LZ4HC|CRYPTO_LZ4K|CRYPTO_LZ4KD|LTO_CLANG|LTO_CLANG_THIN|SCHED_WALT|SCHED_TUNE|NAMESPACES|CGROUPS|SECCOMP|SECCOMP_FILTER)=' .config || true
 
             echo
             echo "========== REQUESTED FEATURE STATUS =========="
             echo "VFS + KPM: KPM=y + VFS/OverlayFS source capability"
             echo "SukiSU-Ultra: official v4.2.0"
             echo "SUSFS 2.2.0: REMOVED / NOT INTEGRATED"
-            echo "Maphide JIT/Zygote: dedicated source-aware step"
-            echo "BaseBandGuard: dedicated integration step"
+            echo "Maphide JIT/Zygote: REMOVED (high-risk procfs/runtime modification)"
+            echo "BaseBandGuard: REMOVED (high-risk LSM/SELinux/partition-write modification)"
             echo "BBRv1: real CONFIG_TCP_CONG_BBR where source supports it"
             echo "BBRv3: real source/backport only; no fake symbol"
             echo "LZ4K/LZ4KD: enabled only when actual source Kconfig exists"
@@ -483,157 +524,29 @@ jobs:
           tail -180 "$LOG" || true
           exit "$STATUS"
 
-      - name: 10A - KPM Compatibility Preflight
+      - name: 10A - KPM Compatibility Preflight (v4.2.0 Kbuild)
         shell: bash
         run: |
           set -euo pipefail
           LOG="$DIAG_DIR/10A-kpm-preflight.log"
           : > "$LOG"
           {
-            test -d KernelSU/kernel/kpm || test -d drivers/kernelsu/kpm
-            export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
-            export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
-            export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
-            if [ -d drivers/kernelsu/kpm ]; then
-              make ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" M=drivers/kernelsu/kpm V=1
-            else
-              make ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" M=KernelSU/kernel/kpm V=1
-            fi
-            echo "[PASS] KPM subtree preflight compiled."
-          } > "$LOG" 2>&1
-          cat "$LOG"
+            echo "========== SUKISU v4.2.0 KPM PREFLIGHT =========="
+            test -d KernelSU/kernel/kpm
+            test -f KernelSU/kernel/Kbuild
+            echo "[PASS] KPM source tree present."
+            echo "[INFO] v4.2.0 KPM has no standalone kpm/Makefile; its objects are declared by kernel/Kbuild."
+            grep -nE '^obj-\$\(CONFIG_KPM\).*kpm/(compact|kpm|super_access)\.o' KernelSU/kernel/Kbuild
 
-      - name: 10B - Maphide Upstream Apply or Strict LG 4.19 Semantic Port
-        shell: bash
-        run: |
-          set -euo pipefail
-          LOG="$DIAG_DIR/10B-maphide.log"
-          : > "$LOG"
-          {
-            curl -fsSL "$MAPHIDE_PATCH_URL" -o "$RUNNER_TEMP/69_hide_stuff.patch"
-            test -s "$RUNNER_TEMP/69_hide_stuff.patch"
-            mode=""
-            if git apply --check --whitespace=nowarn "$RUNNER_TEMP/69_hide_stuff.patch"; then
-              git apply --whitespace=nowarn "$RUNNER_TEMP/69_hide_stuff.patch"
-              mode="upstream-clean"
-            elif git apply --check --3way "$RUNNER_TEMP/69_hide_stuff.patch"; then
-              git apply --3way "$RUNNER_TEMP/69_hide_stuff.patch"
-              mode="upstream-3way"
-            else
-              echo "[INFO] Upstream Maphide does not apply directly; using strict source-aware LG 4.19 semantic port."
-              cat > "$RUNNER_TEMP/maphide_port.py" <<'PYMAP'
-          from pathlib import Path
-          
-          tmmu = Path("fs/proc/task_mmu.c")
-          base = Path("fs/proc/base.c")
-          for p in (tmmu, base):
-              if not p.is_file():
-                  raise SystemExit(f"Missing required Maphide source: {p}")
-          
-          a = tmmu.read_text()
-          b = base.read_text()
-          
-          helper = r"""
-          static void show_vma_header_prefix_fake(struct seq_file *m,
-          					unsigned long start, unsigned long end,
-          					vm_flags_t flags, unsigned long long pgoff,
-          					dev_t dev, unsigned long ino)
-          {
-          	seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
-          	seq_printf(m, "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu ",
-          		start, end,
-          		flags & VM_READ ? 'r' : '-',
-          		flags & VM_WRITE ? 'w' : '-',
-          		flags & VM_EXEC ? '-' : '-',
-          		flags & VM_MAYSHARE ? 's' : 'p',
-          		pgoff, MAJOR(dev), MINOR(dev), ino);
-          }
-          """
-          
-          if "show_vma_header_prefix_fake" not in a:
-              anchor = "static void\nshow_map_vma(struct seq_file *m, struct vm_area_struct *vma)"
-              if anchor not in a:
-                  raise SystemExit("Maphide: show_map_vma anchor not found")
-              a = a.replace(anchor, helper + "\n" + anchor, 1)
-          
-          if "struct dentry *dentry;" not in a:
-              anchor = "\tconst char *name = NULL;\n"
-              if anchor not in a:
-                  raise SystemExit("Maphide: declaration anchor not found")
-              a = a.replace(anchor, anchor + "\tstruct dentry *dentry;\n", 1)
-          
-          block = r"""
-          		dentry = file->f_path.dentry;
-          		if (dentry) {
-          			const char *path = (const char *)dentry->d_name.name;
-          			if (strstr(path, "lineage")) {
-          				start = vma->vm_start;
-          				end = vma->vm_end;
-          				show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
-          				name = "/system/framework/framework-res.apk";
-          				goto done;
-          			}
-          			if (strstr(path, "jit-zygote-cache")) {
-          				start = vma->vm_start;
-          				end = vma->vm_end;
-          				show_vma_header_prefix_fake(m, start, end, flags, pgoff, dev, ino);
-          				goto bypass;
-          			}
-          		}
-          """
-          if "dentry = file->f_path.dentry;" not in a:
-              anchor = "\t\tpgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;"
-              if anchor not in a:
-                  raise SystemExit("Maphide: pgoff anchor not found")
-              a = a.replace(anchor, anchor + block, 1)
-          
-          if "\tbypass:\n" not in a:
-              anchor = "\t/*\n\t * Print the dentry name for named mappings, and a"
-              if anchor not in a:
-                  raise SystemExit("Maphide: bypass anchor not found")
-              a = a.replace(anchor, "\tbypass:\n" + anchor, 1)
-          
-          base_old = r"""	if (vma && vma->vm_file) {
-          		*path = vma->vm_file->f_path;
-          		path_get(path);
-          		rc = 0;
-          	}"""
-          base_new = r"""	if (vma) {
-          		if (vma->vm_file) {
-          			if (strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")) {
-          				rc = kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path);
-          			} else {
-          				*path = vma->vm_file->f_path;
-          				path_get(path);
-          				rc = 0;
-          			}
-          		}
-          	}"""
-          if base_old not in b:
-              raise SystemExit("Maphide: base.c semantic block not found")
-          b = b.replace(base_old, base_new, 1)
-          
-          tmmu.write_text(a)
-          base.write_text(b)
-          print("[PASS] LG 4.19 semantic Maphide port generated from source anchors")
-          PYMAP
-              python3 "$RUNNER_TEMP/maphide_port.py"
-              mode="lg-4.19-semantic-port"
-            fi
-            test -n "$mode"
-            if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-              echo "[FAIL] Maphide generated reject/original files."
-              exit 1
-            fi
-            for marker in show_vma_header_prefix_fake lineage jit-zygote-cache framework-res.apk bypass; do
-              grep -Rqs "$marker" fs/proc/task_mmu.c fs/proc/base.c || { echo "[FAIL] Missing Maphide marker: $marker"; exit 1; }
-            done
             export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
             export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
             export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
-            make ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" V=1 fs/proc/task_mmu.o fs/proc/base.o
-            echo "MAPHIDE_MODE=$mode"
-            echo "[PASS] Maphide compiled in both procfs translation units."
+
+            # Compile the actual integrated drivers/kernelsu subtree. This is the
+            # correct v4.2.0 Kbuild path and includes the KPM objects.
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1               CROSS_COMPILE="$CROSS_COMPILE"               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"               M=drivers/kernelsu V=1
+
+            echo "[PASS] SukiSU v4.2.0 + KPM subtree preflight compiled."
           } > "$LOG" 2>&1
           cat "$LOG"
 
@@ -659,33 +572,25 @@ jobs:
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 10D - Integrate Baseband Guard v1.1
+      - name: 10C-A - High-Risk Feature Removal Guard
         shell: bash
         run: |
           set -euo pipefail
-          LOG="$DIAG_DIR/10D-bbg.log"
+          LOG="$DIAG_DIR/10C-A-high-risk-removal.log"
           : > "$LOG"
           {
-            git ls-files -z | sort -z > "$RUNNER_TEMP/tracked-pre-bbg"
-            curl -fsSL "https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/v1.1/setup.sh"               -o "$RUNNER_TEMP/bbg-setup.sh"
-            bash "$RUNNER_TEMP/bbg-setup.sh" d4f7302
-            test -d Baseband-guard
-            test -f Baseband-guard/Kconfig
-            test -f Baseband-guard/Makefile
-            test -f security/baseband-guard
-            grep -q 'baseband-guard' security/Makefile
-            grep -q 'security/baseband-guard/Kconfig' security/Kconfig
-            git ls-files -z | sort -z > "$RUNNER_TEMP/tracked-post-bbg"
-            if ! cmp -s "$RUNNER_TEMP/tracked-pre-bbg" "$RUNNER_TEMP/tracked-post-bbg"; then
-              echo "[FAIL] BBG integration removed a pre-existing tracked stock file."
-              diff -u <(tr '\0' '\n' < "$RUNNER_TEMP/tracked-pre-bbg")                       <(tr '\0' '\n' < "$RUNNER_TEMP/tracked-post-bbg") || true
+            echo "========== HIGH-RISK FEATURE GUARD =========="
+            if grep -RqsE 'MAPHIDE|maphide|69_hide_stuff|Baseband-guard|baseband-guard|CONFIG_BBG'               drivers fs include security --exclude='*.log' --exclude='*.yml' 2>/dev/null; then
+              echo "[FAIL] High-risk Maphide/BBG integration marker detected."
               exit 1
             fi
-            echo "[PASS] BBG v1.1 integrated without deleting stock tracked files."
+            echo "[PASS] Maphide removed."
+            echo "[PASS] BaseBandGuard removed."
+            echo "[PASS] No high-risk procfs hiding or LSM/partition-write patch is present."
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 10E - Verify DTB DTBO Source Inventory
+      - name: 10D - Verify DTB DTBO Source Inventory
         shell: bash
         run: |
           set -euo pipefail
@@ -748,7 +653,7 @@ jobs:
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 11B - Full Feature Matrix Audit (Android 16/17 QPR2 + G900EMW)
+      - name: 11B - Stable Feature Matrix Audit (Android 16/17 QPR2 + G900EMW + CIP135)
         shell: bash
         run: |
           set -euo pipefail
@@ -756,7 +661,7 @@ jobs:
           : > "$LOG"
           {
             echo "========== LM-G900 / G900EMW FULL FEATURE MATRIX =========="
-            echo "Kernel: 4.19.325-cip135"
+            echo "Kernel: 4.19.325-cip135 (official CIP135 delta applied)"
             echo "Target: Android 16/17 QPR2/GSI"
 
             echo
@@ -1538,7 +1443,7 @@ jobs:
             import re
             p = Path(os.environ["RUNNER_TEMP"]) / "AnyKernel3" / "anykernel.sh"
             s = p.read_text()
-            s = re.sub(r"(?m)^kernel\\.string=.*$", "kernel.string=LM-G900 SukiSU-Ultra 4.2.0 V28", s)
+            s = re.sub(r"(?m)^kernel\\.string=.*$", "kernel.string=LM-G900 SukiSU-Ultra 4.2.0 V29", s)
             s = re.sub(r"(?m)^do\\.devicecheck=.*$", "do.devicecheck=1", s)
             s = re.sub(r"(?m)^device\\.name1=.*$", "device.name1=caymanlm", s)
             s = re.sub(r"(?m)^device\\.name2=.*$", "device.name2=G900EMW", s)
@@ -1550,27 +1455,27 @@ jobs:
             '
 
             test -s "$RUNNER_TEMP/AnyKernel3/Image.gz-dtb"
-            grep -q 'kernel.string=LM-G900 SukiSU-Ultra 4.2.0 V28' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
+            grep -q 'kernel.string=LM-G900 SukiSU-Ultra 4.2.0 V29' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
             grep -q 'block=boot' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
             grep -q 'is_slot_device=auto' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
 
             (
               cd "$RUNNER_TEMP/AnyKernel3"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V28-OrangeFox-AnyKernel3.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V29-OrangeFox-AnyKernel3.zip" . \
                 -x 'README.md' >/dev/null
             )
 
-            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V28-OrangeFox-AnyKernel3.zip" artifacts/kernel/
+            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V29-OrangeFox-AnyKernel3.zip" artifacts/kernel/
 
             (
               cd artifacts
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V28-DTB-DTBO-4.19.325-cip135.zip" dtb dtbo >/dev/null
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V29-DTB-DTBO-4.19.325-cip135.zip" dtb dtbo >/dev/null
             )
 
             echo "Kernel image: $KERNEL_IMAGE"
-            echo "AnyKernel3/OrangeFox ZIP: artifacts/LM-G900-SukiSU-4.2.0-V28-OrangeFox-AnyKernel3.zip"
-            echo "DTB/DTBO ZIP: artifacts/LM-G900-V28-DTB-DTBO-4.19.325-cip135.zip"
+            echo "AnyKernel3/OrangeFox ZIP: artifacts/LM-G900-SukiSU-4.2.0-V29-OrangeFox-AnyKernel3.zip"
+            echo "DTB/DTBO ZIP: artifacts/LM-G900-V29-DTB-DTBO-4.19.325-cip135.zip"
             find artifacts -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
           } > "$LOG" 2>&1
           cat "$LOG"
@@ -1634,7 +1539,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V28-SukiSU-4.2.0-Kernel-DTB-DTBO-OrangeFox
+          name: LG-Velvet-G900-V29-SukiSU-4.2.0-Kernel-DTB-DTBO-OrangeFox
           path: artifacts
           if-no-files-found: error
           retention-days: 14
