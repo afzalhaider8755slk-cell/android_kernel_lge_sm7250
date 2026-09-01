@@ -146,13 +146,40 @@ jobs:
           echo
           echo "--- Resolve only genuine unmerged paths in favor of the existing LG tree ---"
           mapfile -t UNMERGED_PATHS < <(git diff --name-only --diff-filter=U)
+          RESOLVE_RC=0
           if [ "${#UNMERGED_PATHS[@]}" -gt 0 ]; then
             echo "[WARN] ${#UNMERGED_PATHS[@]} paths have upstream/LG conflicts."
             printf '%s\n' "${UNMERGED_PATHS[@]}" | tee "$RUNNER_TEMP/cip135-conflicts.txt"
-            git checkout --ours -- "${UNMERGED_PATHS[@]}"
-            git add -- "${UNMERGED_PATHS[@]}"
+            : > "$RUNNER_TEMP/cip135-conflict-resolution.log"
+            for CONFLICT_PATH in "${UNMERGED_PATHS[@]}"; do
+              echo "--- $CONFLICT_PATH ---" | tee -a "$RUNNER_TEMP/cip135-conflict-resolution.log"
+              # Preserve the exact LG-side version when an 'ours' index stage exists.
+              # For delete/modify conflicts where LG deleted the path, resolve as an LG-side deletion.
+              if git ls-files -u -s -- "$CONFLICT_PATH" | awk '$3 == 2 { found=1 } END { exit(found ? 0 : 1) }'; then
+                if git checkout --ours -- "$CONFLICT_PATH" >> "$RUNNER_TEMP/cip135-conflict-resolution.log" 2>&1                    && git add -- "$CONFLICT_PATH" >> "$RUNNER_TEMP/cip135-conflict-resolution.log" 2>&1; then
+                  echo "[RESOLVED] preserved LG version" | tee -a "$RUNNER_TEMP/cip135-conflict-resolution.log"
+                else
+                  echo "[FAIL] could not preserve LG version for $CONFLICT_PATH" | tee -a "$RUNNER_TEMP/cip135-conflict-resolution.log"
+                  RESOLVE_RC=1
+                fi
+              else
+                if git rm -f -- "$CONFLICT_PATH" >> "$RUNNER_TEMP/cip135-conflict-resolution.log" 2>&1; then
+                  echo "[RESOLVED] preserved LG deletion" | tee -a "$RUNNER_TEMP/cip135-conflict-resolution.log"
+                else
+                  echo "[FAIL] could not resolve LG-side deletion for $CONFLICT_PATH" | tee -a "$RUNNER_TEMP/cip135-conflict-resolution.log"
+                  RESOLVE_RC=1
+                fi
+              fi
+            done
           else
             echo "[PASS] No unmerged conflict paths remain."
+            : > "$RUNNER_TEMP/cip135-conflict-resolution.log"
+          fi
+          cp -f "$RUNNER_TEMP/cip135-conflict-resolution.log" "$GITHUB_WORKSPACE/ci-logs/02-cip135-conflict-resolution.log" || true
+          if [ "$RESOLVE_RC" -ne 0 ]; then
+            echo "[FAIL] One or more CIP/LG conflicts could not be resolved safely."
+            cat "$RUNNER_TEMP/cip135-conflict-resolution.log" || true
+            exit 1
           fi
 
           echo
@@ -200,6 +227,7 @@ jobs:
           echo "Official CIP target commit: $TARGET_COMMIT"
           echo "git apply original return code: $APPLY_RC"
           echo "Conflicting LG-preserved paths: ${#UNMERGED_PATHS[@]}"
+          echo "Conflict-resolution return code: $RESOLVE_RC"
           echo "Upstream-only paths skipped: $MISSING_COUNT"
           echo "CIP marker:"
           cat localversion-cip
