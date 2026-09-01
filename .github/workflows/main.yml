@@ -199,15 +199,22 @@ jobs:
 
           echo
           echo "--- Final CIP apply integrity checks ---"
+          echo "[INFO] Conflict-marker check is limited to real Git markers; ordinary ======= documentation separators are valid."
           if git diff --name-only --diff-filter=U | grep -q .; then
             echo "[FAIL] Unmerged Git index entries remain after conflict resolution."
             git status --short
             exit 1
           fi
-          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)( |$)' --exclude-dir=.git .; then
-            echo "[FAIL] Unresolved conflict markers remain in the kernel tree."
+          # Do NOT scan for a bare ======= line: Linux Documentation contains
+          # many legitimate reStructuredText/table separators with that text.
+          # Git merge conflict markers are the unambiguous <<<<<<< / >>>>>>> lines.
+          if git grep -n -E '^(<<<<<<< |>>>>>>> )' -- . ':!ci-logs' 2>/dev/null; then
+            echo "[FAIL] Unresolved Git conflict markers remain in tracked kernel files."
             exit 1
           fi
+          # A valid merge conflict also has a ======= separator between the
+          # unambiguous markers; the check above is therefore sufficient to
+          # reject actual unresolved conflicts without rejecting documentation.
           find . -name '*.rej' -o -name '*.orig' | sort > "$RUNNER_TEMP/cip135-reject-files.txt"
           if [ -s "$RUNNER_TEMP/cip135-reject-files.txt" ]; then
             echo "[FAIL] Patch reject/original files remain:"
