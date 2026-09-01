@@ -1,4 +1,4 @@
-name: LG Velvet 5G LM-G900/G900EMW - SukiSU-Ultra 4.2.0 + CIP135 + Stable Feature Matrix + DTB/DTBO
+name: LG Velvet 5G LM-G900/G900EMW - SukiSU-Ultra 4.2.0 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Stable Feature Matrix + DTB/DTBO
 
 on:
   workflow_dispatch:
@@ -28,6 +28,12 @@ jobs:
       SUKISU_REPO: "SukiSU-Ultra/SukiSU-Ultra"
       SUKISU_REF: "v4.2.0"
       SUKISU_RELEASE_COMMIT: "85eb4a9"
+      BASEBAND_GUARD_TAG: "v1.1"
+      BASEBAND_GUARD_COMMIT: "d4f7302"
+      FEATURE_PRESERVATION: "MANDATORY"
+      REMOVED_BY_FINAL_DECISION: "SUSFS-2.2.0, Maphide/JIT-Zygote hiding"
+      NEVER_REMOVE_EXISTING_FEATURES: "true"
+      # Version policy: use the latest stable upstream release/commit that is actually compatible with this 4.19.325-cip135 tree; never silently downgrade or fake a feature when the source does not support it.
       CIP_REPO: "https://gitlab.com/cip-project/cip-kernel/linux-cip.git"
       CIP_REF: "v4.19.325-cip135"
 
@@ -367,6 +373,39 @@ jobs:
             # Official SukiSU v4.2.0 Kconfig requires KPROBES + EXT4 for KSU.
             # Do not fabricate CONFIG_KSU_MANUAL_HOOK: official v4.2.0
             # kernel/Kconfig does not define that symbol.
+
+            echo
+            echo "========== CIP135 INTEGRITY CHECK =========="
+            test -f Makefile || { echo "[FAIL] Kernel Makefile missing after CIP135 step."; exit 1; }
+            grep -q '^SUBLEVEL = 325$' Makefile || { echo "[FAIL] Kernel is not 4.19.325 after CIP135 step."; exit 1; }
+            if git status --short | grep -E '^(UU|AA|DD|AU|UD|UA|DU|DA) '; then
+              echo "[FAIL] Unresolved merge conflicts remain after CIP135 integration."
+              exit 1
+            fi
+            echo "[PASS] No unresolved conflicts remain after CIP135 integration."
+
+            echo
+            echo "========== BASEBAND-GUARD v1.1 =========="
+            BBG_REPO="https://github.com/vc-teahouse/Baseband-guard.git"
+            BBG_TAG="${BASEBAND_GUARD_TAG:-v1.1}"
+            BBG_COMMIT="${BASEBAND_GUARD_COMMIT:-d4f7302}"
+            rm -rf Baseband-guard
+            git clone --depth=1 --branch "$BBG_TAG" "$BBG_REPO" Baseband-guard
+            cd Baseband-guard
+            test "$(git rev-parse HEAD)" = "$BBG_COMMIT" || {
+              echo "[FAIL] Baseband-guard tag does not resolve to pinned commit $BBG_COMMIT"
+              git rev-parse HEAD || true
+              exit 1
+            }
+            cd ..
+            chmod +x Baseband-guard/setup.sh
+            ./Baseband-guard/setup.sh "$BBG_TAG"
+            if ! grep -RqsE 'baseband.?guard|CONFIG_BBG' security Baseband-guard 2>/dev/null; then
+              echo "[FAIL] Baseband-guard v1.1 integration markers not found."
+              exit 1
+            fi
+            echo "[PASS] Baseband-guard v1.1 integrated at $BBG_COMMIT."
+
             scripts/config --enable CONFIG_KSU
             scripts/config --enable CONFIG_KPROBES
             scripts/config --enable CONFIG_HAVE_KPROBES
@@ -423,21 +462,27 @@ jobs:
               enable_if_present "$sym"
             done
 
-            # ZRAM / LZ4K / LZ4KD / LTO / WALT / SchedTune
+            # ZRAM / LZ4K / LZ4KD / WALT / SchedTune
             for sym in \
               CONFIG_ZRAM CONFIG_ZSMALLOC CONFIG_CRYPTO_LZ4 CONFIG_CRYPTO_LZ4HC \
               CONFIG_CRYPTO_LZ4K CONFIG_CRYPTO_LZ4KD CONFIG_CRYPTO_LZ4K_OPLUS \
-              CONFIG_ZRAM_WRITEBACK CONFIG_LTO_CLANG CONFIG_LTO_CLANG_THIN \
-              CONFIG_SCHED_WALT CONFIG_SCHED_TUNE; do
+              CONFIG_ZRAM_WRITEBACK CONFIG_SCHED_WALT CONFIG_SCHED_TUNE; do
               enable_if_present "$sym"
             done
 
-            # Keep exactly one LTO mode. This 4.19 tree exposes full Clang LTO,
-            # not ThinLTO; do not force a nonexistent/alternate choice.
-            if kconfig_has CONFIG_LTO_CLANG_THIN; then
-              scripts/config --disable CONFIG_LTO_CLANG_THIN 2>/dev/null || true
-              echo "[SAFE] CONFIG_LTO_CLANG_THIN disabled; using CONFIG_LTO_CLANG only."
+            # FULL LTO is mandatory for this project. Linux Kconfig uses
+            # CONFIG_LTO_CLANG_FULL as the actual full-LTO choice; it selects
+            # CONFIG_LTO_CLANG. ThinLTO/none must be disabled.
+            if ! kconfig_has CONFIG_LTO_CLANG_FULL; then
+              echo "[FAIL] CONFIG_LTO_CLANG_FULL is not defined by this source tree."
+              exit 1
             fi
+            scripts/config --enable CONFIG_LTO_CLANG_FULL
+            scripts/config --enable CONFIG_LTO_CLANG
+            scripts/config --disable CONFIG_LTO_CLANG_THIN 2>/dev/null || true
+            scripts/config --disable CONFIG_LTO_NONE 2>/dev/null || true
+            scripts/config --disable CONFIG_THINLTO 2>/dev/null || true
+            echo "[REQUIRED] Full Clang LTO enabled: CONFIG_LTO_CLANG_FULL=y"
 
             # DroidSpaces-OSS legacy 4.19 requirements
             for sym in \
@@ -672,16 +717,29 @@ jobs:
             done
 
             echo
+            echo "========== FULL CLANG LTO =========="
+            for req in CONFIG_LTO=y CONFIG_LTO_CLANG=y CONFIG_LTO_CLANG_FULL=y; do
+              grep -qx "$req" .config || { echo "[FAIL] Missing $req"; exit 1; }
+            done
+            if grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
+              echo "[FAIL] ThinLTO/LTO_NONE is still enabled; Full LTO must be exclusive."
+              exit 1
+            fi
+            echo "[PASS] Full Clang LTO is selected exclusively."
+
+            echo
             echo "========== LZ4K / LZ4KD =========="
             grep -E '^CONFIG_(CRYPTO_LZ4|CRYPTO_LZ4HC|CRYPTO_LZ4K|CRYPTO_LZ4KD|CRYPTO_LZ4K_OPLUS|ZRAM|ZSMALLOC)=' .config || true
             echo "Only source-defined LZ4K/LZ4KD symbols are enabled."
 
             echo
-            echo "========== MAPHIDE JIT/ZYGOTE =========="
-            for marker in show_vma_header_prefix_fake lineage jit-zygote-cache framework-res.apk bypass; do
-              grep -Rqs "$marker" fs/proc/task_mmu.c fs/proc/base.c || { echo "[FAIL] Missing Maphide marker: $marker"; exit 1; }
-            done
-            echo "[PASS] Maphide source markers present."
+            echo "========== HIGH-RISK FEATURES =========="
+            if grep -RqsE 'MAPHIDE|maphide|69_hide_stuff|Baseband-guard|baseband-guard|CONFIG_BBG' \
+              drivers fs include security --exclude='*.log' --exclude='*.yml' 2>/dev/null; then
+              echo "[FAIL] High-risk Maphide/BBG marker detected."
+              exit 1
+            fi
+            echo "[PASS] Maphide/JIT-Zygote hiding is removed."
 
             echo
             echo "========== BASEBAND GUARD =========="
@@ -731,8 +789,17 @@ jobs:
 
             echo
             echo "========== SUSFS =========="
+            echo "Feature policy: every versioned component is pinned to the latest stable release/commit verified compatible with 4.19.325-cip135."
+            echo "SukiSU-Ultra: v4.2.0 (latest verified release)"
+            echo "CIP: v4.19.325-cip135 (official CIP tag)"
+            echo "LTO: Full Clang LTO only"
+            echo
+            echo "Baseband-guard v1.1: REQUIRED (pinned d4f7302)"
+            echo "Feature preservation policy: previously accepted features are never removed; errors are fixed in-place only."
+            echo "Version policy: latest stable release/commit actually compatible with 4.19.325-cip135."
             echo "SUSFS 2.2.0: REMOVED"
-            if grep -RqsE 'SUSFS[ _-]?2\.2\.0|susfs.*2\.2\.0' . --exclude-dir=.git --exclude='*.log' 2>/dev/null; then
+            if grep -RqsE 'SUSFS[ _-]?2\.2\.0|susfs.*2\.2\.0' . \
+              --exclude-dir=.git --exclude-dir=.github --exclude='*.log' --exclude='*.yml' --exclude='*.yaml' 2>/dev/null; then
               echo "[FAIL] SUSFS 2.2.0 marker detected."
               exit 1
             fi
