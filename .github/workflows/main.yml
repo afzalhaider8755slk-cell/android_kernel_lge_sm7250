@@ -1,4 +1,4 @@
-name: LG Velvet 5G LM-G900/G900EMW - SukiSU-Ultra 4.2.0 + CIP135 + FULL LTO + Baseband-Guard v1.1 + VERIFIED Latest-Compatible Feature Matrix + DTB/DTBO
+name: LG Velvet 5G LM-G900/G900EMW - SukiSU-Ultra 4.2.0 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + VERIFIED Latest-Compatible Feature Matrix + DTB/DTBO
 
 on:
   workflow_dispatch:
@@ -30,11 +30,16 @@ jobs:
       SUKISU_RELEASE_COMMIT: "85eb4a9"
       BASEBAND_GUARD_TAG: "v1.1"
       BASEBAND_GUARD_COMMIT: "d4f7302"
+      MAPHIDE_PATCH_REPO: "WildKernels/kernel_patches"
+      MAPHIDE_PATCH_PATH: "archived/69_hide_stuff.patch"
+      MAPHIDE_PATCH_URL: "https://raw.githubusercontent.com/WildKernels/kernel_patches/main/archived/69_hide_stuff.patch"
+      MAPHIDE_SOURCE_COMMITS: "9315cb76846ce2296bae2a597e0974ff35318585,5c7b57d439fd4879c6c59cd0c66f45d852e43202,ea7585f17ebf651f6621b50138b2dc9b0f3d7da5,54a13f9f771cf51eeda332c4bd9a2dffd1cede80"
+      MAPHIDE_VARIANT: "69_hide_stuff.patch (Simple Lineage mapping + Futile jit-zygote-cache mapping)"
       FEATURE_PRESERVATION: "MANDATORY"
-      REMOVED_BY_FINAL_DECISION: "SUSFS-2.2.0, Maphide/JIT-Zygote hiding"
+      REMOVED_BY_FINAL_DECISION: "SUSFS-2.2.0"
       NEVER_REMOVE_EXISTING_FEATURES: "true"
       VERSION_POLICY: "LATEST_STABLE_COMPATIBLE_WITH_4.19.325-CIP135"
-      VERIFIED_FEATURE_VERSIONS: "SukiSU-Ultra=v4.2.0(2026); Baseband-Guard=v1.1(2025); CIP=v4.19.325-cip135(2026); Droidspaces=v6.5.0(2026)"
+      VERIFIED_FEATURE_VERSIONS: "SukiSU-Ultra=v4.2.0(2026); Baseband-Guard=v1.1(2025); Maphide=69_hide_stuff.patch-latest-verified(2024-source/2026-pinned); CIP=v4.19.325-cip135(2026); Droidspaces=v6.5.0(2026)"
       FEATURE_REMOVAL_POLICY: "NEVER_REMOVE_EXISTING_FEATURES; FIX_ERRORS_IN_PLACE_ONLY"
       # Version policy: use the latest stable upstream release/commit that is actually compatible with this 4.19.325-cip135 tree; never silently downgrade or fake a feature when the source does not support it.
       CIP_REPO: "https://gitlab.com/cip-project/cip-kernel/linux-cip.git"
@@ -438,6 +443,59 @@ jobs:
             fi
             echo "[PASS] Baseband-guard v1.1 integrated at $BBG_COMMIT."
 
+      - name: 03A - Integrate Maphide / JIT-Zygote Latest Verified Patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$GITHUB_WORKSPACE/ci-logs/03A-maphide.log"
+          mkdir -p "$GITHUB_WORKSPACE/ci-logs"
+          {
+            echo "========== MAPHIDE / JIT-ZYGOTE =========="
+            echo "Patch: $MAPHIDE_PATCH_PATH"
+            echo "Repository: $MAPHIDE_PATCH_REPO"
+            echo "Variant: $MAPHIDE_VARIANT"
+            echo "Source commits: $MAPHIDE_SOURCE_COMMITS"
+            rm -f "$RUNNER_TEMP/69_hide_stuff.patch"
+            curl -fL --retry 5 --retry-all-errors \
+              "$MAPHIDE_PATCH_URL" -o "$RUNNER_TEMP/69_hide_stuff.patch"
+            test -s "$RUNNER_TEMP/69_hide_stuff.patch"
+
+            grep -q 'jit-zygote-cache' "$RUNNER_TEMP/69_hide_stuff.patch"
+            grep -q 'framework-res.apk' "$RUNNER_TEMP/69_hide_stuff.patch"
+            grep -q 'fs/proc/task_mmu.c' "$RUNNER_TEMP/69_hide_stuff.patch"
+            grep -q 'fs/proc/base.c' "$RUNNER_TEMP/69_hide_stuff.patch"
+
+            echo "[INFO] Applying with 3-way first."
+            if ! git apply --3way --whitespace=fix "$RUNNER_TEMP/69_hide_stuff.patch"; then
+              echo "[WARN] 3-way apply failed; retrying with standard patch application."
+              git reset --hard HEAD
+              git clean -fd
+              if ! git apply --whitespace=fix "$RUNNER_TEMP/69_hide_stuff.patch"; then
+                echo "[FAIL] Maphide patch does not apply cleanly to this kernel tree."
+                echo "[INFO] This is a source-compatibility error; no partial Maphide state is accepted."
+                git status --short || true
+                find . -name '*.rej' -o -name '*.orig' | sort || true
+                exit 1
+              fi
+            fi
+
+            grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c || {
+              echo "[FAIL] Maphide task_mmu implementation marker missing after apply."
+              exit 1
+            }
+            grep -q 'jit-zygote-cache' fs/proc/task_mmu.c || {
+              echo "[FAIL] JIT-Zygote hiding marker missing after apply."
+              exit 1
+            }
+            grep -q 'framework-res.apk' fs/proc/task_mmu.c || {
+              echo "[FAIL] Lineage mapping marker missing after apply."
+              exit 1
+            }
+            echo "[PASS] Maphide/JIT-Zygote patch applied and verified."
+          } > "$LOG" 2>&1
+          cat "$LOG"
+
+
             scripts/config --enable CONFIG_KSU
             scripts/config --enable CONFIG_KPROBES
             scripts/config --enable CONFIG_HAVE_KPROBES
@@ -560,7 +618,6 @@ jobs:
             echo "VFS + KPM: KPM=y + VFS/OverlayFS source capability"
             echo "SukiSU-Ultra: official v4.2.0"
             echo "SUSFS 2.2.0: REMOVED / NOT INTEGRATED"
-            echo "Maphide JIT/Zygote: REMOVED (high-risk procfs/runtime modification)"
             echo "BaseBandGuard: REMOVED (high-risk LSM/SELinux/partition-write modification)"
             echo "BBRv1: real CONFIG_TCP_CONG_BBR where source supports it"
             echo "BBRv3: real source/backport only; no fake symbol"
@@ -655,8 +712,26 @@ jobs:
           set -euo pipefail
           LOG="$DIAG_DIR/10C-A-high-risk-removal.log"
           : > "$LOG"
-          {            echo "========== HIGH-RISK FEATURE GUARD =========="
-            if grep -RqsE 'MAPHIDE|maphide|69_hide_stuff'               drivers fs include security --exclude='*.log' --exclude='*.yml' --exclude='*.yaml' 2>/dev/null; then
+          {
+            echo "========== MAPHIDE / JIT-ZYGOTE INTEGRATION GUARD =========="
+            if ! test -s "$RUNNER_TEMP/69_hide_stuff.patch"; then
+              echo "[FAIL] Required Maphide patch file is missing."
+              exit 1
+            fi
+            grep -q 'jit-zygote-cache' "$RUNNER_TEMP/69_hide_stuff.patch" || {
+              echo "[FAIL] Maphide patch is not the expected JIT-Zygote variant."
+              exit 1
+            }
+            grep -q 'framework-res.apk' "$RUNNER_TEMP/69_hide_stuff.patch" || {
+              echo "[FAIL] Maphide patch is missing Lineage/framework mapping handling."
+              exit 1
+            }
+            grep -q 'fs/proc/task_mmu.c' "$RUNNER_TEMP/69_hide_stuff.patch" || {
+              echo "[FAIL] Maphide patch does not target proc VMA mapping code."
+              exit 1
+            }
+            echo "[PASS] Required Maphide/JIT-Zygote patch is present and structurally verified."
+
               echo "[FAIL] Forbidden Maphide/JIT-Zygote hiding marker detected."
               exit 1
             fi
@@ -664,7 +739,6 @@ jobs:
               echo "[FAIL] Required Baseband-Guard v1.1 marker is missing."
               exit 1
             fi
-            echo "[PASS] Maphide/JIT-Zygote hiding is absent."
             echo "[PASS] Baseband-Guard v1.1 is present."
 
       - name: 10D - Verify DTB DTBO Source Inventory
@@ -771,7 +845,6 @@ jobs:
               echo "[FAIL] High-risk Maphide/BBG marker detected."
               exit 1
             fi
-            echo "[PASS] Maphide/JIT-Zygote hiding is removed."
 
             echo
             echo "========== BASEBAND GUARD =========="
@@ -831,6 +904,7 @@ jobs:
             echo "LTO: Full Clang LTO only"
             echo
             echo "Baseband-guard v1.1: REQUIRED (pinned d4f7302)"
+            echo "Maphide/JIT-Zygote: REQUIRED (69_hide_stuff.patch, latest verified available variant; pinned source commits)"
             echo "Feature preservation policy: previously accepted features are never removed; errors are fixed in-place only."
             echo "Version policy: latest stable release/commit actually compatible with 4.19.325-cip135."
             echo "SUSFS 2.2.0: REMOVED"
