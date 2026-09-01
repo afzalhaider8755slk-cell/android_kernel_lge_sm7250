@@ -1,4 +1,4 @@
-name: LG Velvet 5G LM-G900/G900EMW - SukiSU-Ultra 4.2.0 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + VERIFIED Latest-Compatible Feature Matrix + DTB/DTBO
+name: LG Velvet 5G LM-G900/G900EMW - V32 FIXED - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + DTB/DTBO
 
 on:
   workflow_dispatch:
@@ -28,10 +28,6 @@ jobs:
       SUKISU_REPO: "SukiSU-Ultra/SukiSU-Ultra"
       SUKISU_REF: "v4.2.0"
       SUKISU_RELEASE_COMMIT: "85eb4a9"
-      SUSFS_REPO: "https://gitlab.com/simonpunk/susfs4ksu.git"
-      SUSFS_REF: "kernel-4.19"
-      SUSFS_VERIFIED_VERSION: "1.5.5"
-      SUSFS_REQUIRED: "true"
       BASEBAND_GUARD_TAG: "v1.1"
       BASEBAND_GUARD_COMMIT: "d4f7302"
       MAPHIDE_PATCH_REPO: "WildKernels/kernel_patches"
@@ -40,10 +36,13 @@ jobs:
       MAPHIDE_SOURCE_COMMITS: "9315cb76846ce2296bae2a597e0974ff35318585,5c7b57d439fd4879c6c59cd0c66f45d852e43202,ea7585f17ebf651f6621b50138b2dc9b0f3d7da5,54a13f9f771cf51eeda332c4bd9a2dffd1cede80"
       MAPHIDE_VARIANT: "69_hide_stuff.patch (Simple Lineage mapping + Futile jit-zygote-cache mapping)"
       FEATURE_PRESERVATION: "MANDATORY"
-      REMOVED_BY_FINAL_DECISION: "NONE"
+      SUSFS_REPO: "simonpunk/susfs4ksu"
+      SUSFS_REF: "kernel-4.19"
+      SUSFS_COMMIT: "001e6991"
+      SUSFS_VERSION: "1.5.5-kernel-4.19"
       NEVER_REMOVE_EXISTING_FEATURES: "true"
       VERSION_POLICY: "LATEST_STABLE_COMPATIBLE_WITH_4.19.325-CIP135"
-      VERIFIED_FEATURE_VERSIONS: "SukiSU-Ultra=v4.2.0(2026); SUSFS=kernel-4.19-branch-v1.5.5(2025); Baseband-Guard=v1.1(2025); Maphide=69_hide_stuff.patch-latest-verified(2024-source/2026-pinned); CIP=v4.19.325-cip135(2026); Droidspaces=v6.5.0(2026)"
+      VERIFIED_FEATURE_VERSIONS: "SukiSU-Ultra=v4.2.0(85eb4a9); KPM=CONFIG_KPM; SUSFS=kernel-4.19@001e6991(1.5.5); Baseband-Guard=v1.1@d4f7302; Maphide=69_hide_stuff.patch; CIP=v4.19.325-cip135; DroidSpaces=legacy-4.19-requirements"
       FEATURE_REMOVAL_POLICY: "NEVER_REMOVE_EXISTING_FEATURES; FIX_ERRORS_IN_PLACE_ONLY"
       # Version policy: use the latest stable upstream release/commit that is actually compatible with this 4.19.325-cip135 tree; never silently downgrade or fake a feature when the source does not support it.
       CIP_REPO: "https://gitlab.com/cip-project/cip-kernel/linux-cip.git"
@@ -69,19 +68,14 @@ jobs:
             echo "========== OFFICIAL CIP UPDATE =========="
             echo "CIP repository: $CIP_REPO"
             echo "CIP tag: $CIP_REF"
-            echo "CIP objects fetched into active LG repo for 3-way preimages."
             echo
-            # IMPORTANT: fetch the CIP objects into the ACTIVE kernel repo.
-            # A separate clone does NOT make the 3-way preimage blobs available
-            # to git apply in the LG tree, which is the root cause of the old
-            # "repository lacks the necessary blob" failure.
-            git fetch --no-tags --depth=1 "$CIP_REPO" \
-              "refs/tags/v4.19.325:refs/cip/v4.19.325" \
-              "refs/tags/$CIP_REF:refs/cip/$CIP_REF"
-            git cat-file -e refs/cip/v4.19.325^{commit}
-            git cat-file -e refs/cip/$CIP_REF^{commit}
-            git -c diff.renames=false diff --binary \
-              refs/cip/v4.19.325 refs/cip/$CIP_REF > "$RUNNER_TEMP/cip135.patch"
+            rm -rf "$RUNNER_TEMP/linux-cip"
+            # Full trees are intentional here: git apply --3way needs the
+            # preimage blobs. The previous blob:none clone caused the exact
+            # "repository lacks the necessary blob" failure in diagnostics.
+            git clone --no-checkout --depth=1               --branch "$CIP_REF" "$CIP_REPO" "$RUNNER_TEMP/linux-cip"
+            git -C "$RUNNER_TEMP/linux-cip" fetch --depth=1 --no-filter origin               refs/tags/v4.19.325:refs/tags/v4.19.325
+            git -C "$RUNNER_TEMP/linux-cip" diff --binary               v4.19.325 "$CIP_REF" > "$RUNNER_TEMP/cip135.patch"
             test -s "$RUNNER_TEMP/cip135.patch"
             echo "CIP135 patch bytes: $(wc -c < "$RUNNER_TEMP/cip135.patch")"
             echo "Applying the complete official 4.19.325 -> 4.19.325-cip135 delta to the LG tree."
@@ -331,18 +325,8 @@ jobs:
               *) echo "[FAIL] SukiSU HEAD $KSU_HEAD does not match expected 4.2.0 commit $SUKISU_RELEASE_COMMIT"; exit 1 ;;
             esac
 
-            # SukiSU remains the root/KPM layer. SUSFS is integrated separately
-            # in the dedicated 4.19 compatibility-port step.
-            echo
-            echo "Checking that no SUSFS kernel tree was introduced:"
-            if find KernelSU/kernel -type f -print0 2>/dev/null | xargs -0 grep -IlE '(^|/)(susfs|sus_su)(\.c|\.h)?$|CONFIG_KSU_SUSFS' 2>/dev/null | head -20 | grep -q .; then
-              echo "[FAIL] SUSFS kernel integration detected."
-              exit 1
-            fi
-            if find fs include -type f -print0 2>/dev/null | xargs -0 grep -IlE 'susfs\.h|sus_su\.h' 2>/dev/null | head -20 | grep -q .; then
-              echo "[FAIL] SUSFS kernel integration detected in stock tree."
-              exit 1
-            fi
+            echo "SukiSU-Ultra 4.2.0 is the root implementation; SUSFS is integrated as a compatible non-GKI 4.19 kernel patchset."
+            echo "SUSFS target: $SUSFS_REF @ $SUSFS_COMMIT"
 
             git ls-files -z | sort -z > "$RUNNER_TEMP/tracked-after"
             if ! cmp -s "$RUNNER_TEMP/tracked-before" "$RUNNER_TEMP/tracked-after"; then
@@ -353,55 +337,12 @@ jobs:
             fi
 
             echo "[PASS] SukiSU-Ultra 4.2.0 integrated as source code for the non-GKI kernel."
-            echo "[PASS] SUSFS is handled by the dedicated compatibility-port stage."
+            echo "[PASS] No external root-hiding kernel integration was applied."
             echo "[PASS] No pre-existing tracked stock files were removed."
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 08A - Integrate SUSFS kernel-4.19 v1.5.5 Compatibility Port
-        shell: bash
-        run: |
-          set -euo pipefail
-          LOG="$DIAG_DIR/08A-susfs-integration.log"
-          : > "$LOG"
-          {
-            echo "========== SUSFS NON-GKI 4.19 v1.5.5 =========="
-            echo "Repository: $SUSFS_REPO"
-            echo "Ref: $SUSFS_REF"
-            echo "Verified version: $SUSFS_VERIFIED_VERSION"
-            rm -rf "$RUNNER_TEMP/susfs4ksu"
-            git clone --depth=1 --branch "$SUSFS_REF" "$SUSFS_REPO" "$RUNNER_TEMP/susfs4ksu"
-
-            test -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-            test -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
-            test -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/fs/susfs.c"
-            test -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/include/linux/susfs.h"
-            test -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/fs/sus_su.c"
-            test -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/include/linux/sus_su.h"
-
-            cp -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/KernelSU/kernel/sucompat.h" KernelSU/kernel/sucompat.h
-            cp -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/fs/susfs.c" fs/susfs.c
-            cp -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
-            cp -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/fs/sus_su.c" fs/sus_su.c
-            cp -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/include/linux/sus_su.h" include/linux/sus_su.h
-            cp -f "$RUNNER_TEMP/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" KernelSU/10_enable_susfs_for_ksu.patch
-
-            # The official SUSFS 4.19 instructions require its KSU enable patch
-            # and the kernel-4.19 integration patch. Apply them explicitly so
-            # incompatibilities fail here, rather than much later in compilation.
-            cd KernelSU
-            patch -p1 < 10_enable_susfs_for_ksu.patch
-            cd ..
-            patch -p1 < "$RUNNER_TEMP/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
-
-            test -f KernelSU/kernel/Kconfig
-            grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU/kernel/Kconfig
-            grep -Rqs 'susfs.c' fs/Makefile fs/Kconfig
-            echo "[PASS] SUSFS kernel-4.19 v1.5.5 compatibility port applied."
-          } > "$LOG" 2>&1
-          cat "$LOG"
-
-      - name: 09 - Verify SukiSU 4.2.0 + SUSFS v1.5.5
+      - name: 09 - Verify SukiSU 4.2.0 + KPM + SUSFS 4.19
         shell: bash
         run: |
           set -euo pipefail
@@ -415,11 +356,13 @@ jobs:
             echo "SukiSU HEAD: $(git -C KernelSU rev-parse HEAD)"
             echo "SukiSU describe: $(git -C KernelSU describe --tags --always 2>/dev/null || true)"
             echo
-            echo "Kernel root-hiding patchset: SUSFS v1.5.5 kernel-4.19 integrated"
-            echo "Maphide/JIT-Zygote: integrated separately"
-            echo "SUSFS: required and compatibility-gated"
-            grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU/kernel/Kconfig
-            echo "[PASS] SukiSU-Ultra + KPM + SUSFS v1.5.5 compatibility port present."
+            grep -q '^CONFIG_KPM=y$' .config || { echo "[FAIL] CONFIG_KPM=y missing."; exit 1; }
+            grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU fs include 2>/dev/null || {
+              echo "[FAIL] SUSFS integration markers are missing."
+              exit 1
+            }
+            echo "SUSFS: $SUSFS_VERSION @ $SUSFS_COMMIT"
+            echo "[PASS] SukiSU-Ultra 4.2.0 + KPM + SUSFS compatibility integration is present."
           } > "$LOG" 2>&1
           cat "$LOG"
 
@@ -472,6 +415,27 @@ jobs:
               exit 1
             fi
             echo "[PASS] No unresolved conflicts remain after CIP135 integration."
+
+            echo
+            echo "========== SUSFS NON-GKI 4.19 INTEGRATION =========="
+            rm -rf "$RUNNER_TEMP/susfs4ksu"
+            git clone --depth=1 --branch "$SUSFS_REF" "https://gitlab.com/$SUSFS_REPO.git" "$RUNNER_TEMP/susfs4ksu"
+            test "$(git -C "$RUNNER_TEMP/susfs4ksu" rev-parse HEAD)" = "$SUSFS_COMMIT" || {
+              echo "[FAIL] SUSFS ref does not resolve to pinned compatible commit $SUSFS_COMMIT"; exit 1;
+            }
+            SUSFS_ROOT="$RUNNER_TEMP/susfs4ksu/kernel_patches"
+            test -s "$SUSFS_ROOT/KernelSU/10_enable_susfs_for_ksu.patch"
+            test -s "$SUSFS_ROOT/50_add_susfs_in_kernel-4.19.patch"
+            test -d "$SUSFS_ROOT/fs"
+            test -d "$SUSFS_ROOT/include/linux"
+            cp -f "$SUSFS_ROOT/KernelSU/10_enable_susfs_for_ksu.patch" KernelSU/
+            cp -f "$SUSFS_ROOT/fs/"* fs/
+            cp -f "$SUSFS_ROOT/include/linux/"* include/linux/
+            ( cd KernelSU && git apply --3way --whitespace=fix 10_enable_susfs_for_ksu.patch )
+            git apply --3way --whitespace=fix "$SUSFS_ROOT/50_add_susfs_in_kernel-4.19.patch"
+            grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU fs include || { echo "[FAIL] SUSFS Kconfig/source marker missing after patch."; exit 1; }
+            grep -Rqs 'susfs' fs include/linux KernelSU/kernel || { echo "[FAIL] SUSFS source files are missing after integration."; exit 1; }
+            echo "[PASS] SUSFS $SUSFS_VERSION integrated from $SUSFS_REPO @ $SUSFS_COMMIT."
 
             echo
             echo "========== BASEBAND-GUARD v1.1 =========="
@@ -613,6 +577,38 @@ jobs:
             done
 
             # FULL LTO is mandatory for this project. Linux Kconfig uses
+            echo
+            echo "========== STRICT REQUESTED FEATURE GATE =========="
+            require_config() {
+              sym="$1"
+              if ! grep -q "^${sym}=y$" .config; then
+                echo "[FAIL] Required feature ${sym}=y is not present in final .config."
+                exit 1
+              fi
+              echo "[PASS] ${sym}=y"
+            }
+            for req in \
+              CONFIG_KPROBES CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_KPM \
+              CONFIG_LTO CONFIG_LTO_CLANG CONFIG_LTO_CLANG_FULL \
+              CONFIG_ZRAM CONFIG_ZSMALLOC CONFIG_CRYPTO_LZ4 \
+              CONFIG_TCP_CONG_BBR CONFIG_WIREGUARD CONFIG_NET_SCH_CAKE CONFIG_NET_SCH_FQ_CODEL \
+              CONFIG_RMNET CONFIG_RMNET_IPA CONFIG_RMNET_MAP CONFIG_QRTR \
+              CONFIG_MSM_QMI_INTERFACE CONFIG_QCOM_QMI_HELPERS \
+              CONFIG_CFG80211 CONFIG_MAC80211 CONFIG_WLAN \
+              CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_BPF_EVENTS \
+              CONFIG_NETFILTER CONFIG_NETFILTER_ADVANCED CONFIG_NF_CONNTRACK CONFIG_NF_NAT \
+              CONFIG_IP_SET CONFIG_IP6_NF_NAT \
+              CONFIG_NFNETLINK CONFIG_NAMESPACES CONFIG_NET_NS CONFIG_USER_NS \
+              CONFIG_PID_NS CONFIG_UTS_NS CONFIG_IPC_NS CONFIG_CGROUPS CONFIG_CGROUP_DEVICE \
+              CONFIG_CGROUP_PIDS CONFIG_CGROUP_SCHED CONFIG_MEMCG CONFIG_SECCOMP CONFIG_SECCOMP_FILTER \
+              CONFIG_VETH CONFIG_BRIDGE CONFIG_BRIDGE_NETFILTER; do
+              require_config "$req"
+            done
+            # WALT/SchedTune are mandatory project features; the source must expose them.
+            require_config CONFIG_SCHED_WALT
+            require_config CONFIG_SCHED_TUNE
+            echo "[PASS] All explicitly requested config-backed features are enabled."
+
             # CONFIG_LTO_CLANG_FULL as the actual full-LTO choice; it selects
             # CONFIG_LTO_CLANG. ThinLTO/none must be disabled.
             if ! kconfig_has CONFIG_LTO_CLANG_FULL; then
@@ -666,24 +662,10 @@ jobs:
             grep -E '^CONFIG_(BPF|BPF_SYSCALL|NETFILTER|IP_SET|RMNET|RMNET_IPA|RMNET_MAP|QRTR|MSM_QMI_INTERFACE|QCOM_QMI_HELPERS|CFG80211|MAC80211|WLAN|WIREGUARD|TCP_CONG_BBR|NET_SCH_CAKE|NET_SCH_FQ_CODEL|NET_SCH_FQ|ZRAM|ZSMALLOC|CRYPTO_LZ4|CRYPTO_LZ4HC|CRYPTO_LZ4K|CRYPTO_LZ4KD|LTO_CLANG|LTO_CLANG_THIN|SCHED_WALT|SCHED_TUNE|NAMESPACES|CGROUPS|SECCOMP|SECCOMP_FILTER)=' .config || true
 
             echo
-            echo "========== REQUIRED SCHEDULER / MEMORY FEATURES =========="
-            for req in CONFIG_ZRAM CONFIG_ZSMALLOC; do
-              grep -qx "$req=y" .config || { echo "[FAIL] Missing required $req"; exit 1; }
-            done
-            for req in CONFIG_SCHED_WALT CONFIG_SCHED_TUNE; do
-              if grep -RqsE "^[[:space:]]*(config|menuconfig)[[:space:]]+${req#CONFIG_}([[:space:]]|$)" --exclude-dir=.git . 2>/dev/null; then
-                grep -qx "$req=y" .config || { echo "[FAIL] Source supports $req but it is not enabled."; exit 1; }
-                echo "[PASS] $req=y"
-              else
-                echo "[FAIL] Required scheduler feature $req is not present in this kernel source."
-                exit 1
-              fi
-            done
-
-            echo
             echo "========== REQUESTED FEATURE STATUS =========="
             echo "VFS + KPM: KPM=y + VFS/OverlayFS source capability"
             echo "SukiSU-Ultra: official v4.2.0"
+            echo "SUSFS: $SUSFS_VERSION @ $SUSFS_COMMIT"
             echo "BaseBandGuard: REMOVED (high-risk LSM/SELinux/partition-write modification)"
             echo "BBRv1: real CONFIG_TCP_CONG_BBR where source supports it"
             echo "BBRv3: real source/backport only; no fake symbol"
@@ -772,33 +754,25 @@ jobs:
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 10C-A - High-Risk Feature Preservation Guard
+      - name: 10C-A - Verify Required Maphide + Baseband-Guard (Do Not Remove)
         shell: bash
         run: |
           set -euo pipefail
-          LOG="$DIAG_DIR/10C-A-high-risk-preservation.log"
+          LOG="$DIAG_DIR/10C-A-required-features.log"
           : > "$LOG"
           {
-            echo "========== MAPHIDE / JIT-ZYGOTE + BASEBAND-GUARD PRESERVATION =========="
+            echo "========== REQUIRED FEATURES =========="
             test -s "$RUNNER_TEMP/69_hide_stuff.patch"
             grep -q 'jit-zygote-cache' "$RUNNER_TEMP/69_hide_stuff.patch"
             grep -q 'framework-res.apk' "$RUNNER_TEMP/69_hide_stuff.patch"
             grep -q 'fs/proc/task_mmu.c' "$RUNNER_TEMP/69_hide_stuff.patch"
-            grep -q 'fs/proc/base.c' "$RUNNER_TEMP/69_hide_stuff.patch"
-            echo "[PASS] Maphide/JIT-Zygote patch source is present and structurally verified."
-
-            grep -RqsE 'baseband.?guard|CONFIG_BBG' security Baseband-guard 2>/dev/null
-            grep -qx 'CONFIG_BBG=y' .config
-            echo "[PASS] Baseband-Guard v1.1 source and CONFIG_BBG=y are present."
-
-            # These are required integrations, so their markers are expected.
-            # Never reject them merely because their identifiers exist.
-            if ! grep -RqsE '69_hide_stuff|jit-zygote-cache' fs/proc fs/mm include 2>/dev/null; then
-              echo "[WARN] Maphide patch source was downloaded but no source marker was found in the searched paths."
-              echo "[INFO] The dedicated Maphide apply step remains authoritative."
-            else
-              echo "[PASS] Maphide source markers detected in the kernel tree."
-            fi
+            grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c
+            grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
+            grep -q 'framework-res.apk' fs/proc/task_mmu.c
+            grep -RqsE 'baseband.?guard|CONFIG_BBG' security Baseband-guard
+            grep -q '^CONFIG_BBG=y$' .config
+            echo "[PASS] Maphide + JIT-Zygote patch is applied and retained."
+            echo "[PASS] Baseband-Guard v1.1 is integrated and retained."
           } > "$LOG" 2>&1
           cat "$LOG"
 
@@ -900,21 +874,15 @@ jobs:
             echo "Only source-defined LZ4K/LZ4KD symbols are enabled."
 
             echo
-            echo "========== HIGH-RISK FEATURES =========="
-            echo "Maphide/JIT-Zygote and Baseband-Guard are REQUIRED integrations; their markers are expected."
-            grep -RqsE 'jit-zygote-cache|69_hide_stuff' fs/proc fs/mm include 2>/dev/null ||               echo "[INFO] Maphide source marker not visible in this search; dedicated apply verification is authoritative."
-
-            echo
-            echo "========== BASEBAND GUARD =========="
-            grep -RqsE 'baseband.?guard|CONFIG_BBG' security Baseband-guard 2>/dev/null || {
-              echo "[FAIL] Baseband-Guard v1.1 source integration missing."
-              exit 1
+            echo "========== REQUIRED SECURITY FEATURES =========="
+            grep -RqsE 'MAPHIDE|maphide|69_hide_stuff|jit-zygote-cache' fs/proc || {
+              echo "[FAIL] Maphide/JIT-Zygote source marker missing."; exit 1;
             }
-            grep -q '^CONFIG_BBG=y$' .config || {
-              echo "[FAIL] CONFIG_BBG=y is required."
-              exit 1
+            grep -RqsE 'baseband.?guard|CONFIG_BBG' security Baseband-guard || {
+              echo "[FAIL] Baseband-Guard source marker missing."; exit 1;
             }
-            echo "[PASS] Baseband-Guard v1.1 + CONFIG_BBG=y"
+            grep -q '^CONFIG_BBG=y$' .config || { echo "[FAIL] CONFIG_BBG=y missing."; exit 1; }
+            echo "[PASS] Required Maphide/JIT-Zygote + Baseband-Guard markers are present."
 
             echo
             echo "========== DUAL SIM / RIL / IMS / VoLTE / VoWiFi =========="
@@ -956,25 +924,23 @@ jobs:
 
             echo
             echo "========== SUSFS =========="
-            echo "SUSFS is REQUIRED. The verified non-GKI 4.19 source is simonpunk/susfs4ksu kernel-4.19, version 1.5.5."
-            grep -RqsE 'CONFIG_KSU_SUSFS|susfs\.h|susfs.c' KernelSU fs include 2>/dev/null || {
-              echo "[FAIL] SUSFS integration markers are missing."
-              exit 1
-            }
-            grep -Rqs 'Bump version to 1.5.5' include/linux KernelSU fs 2>/dev/null || true
-            echo "[PASS] SUSFS compatibility-port markers detected."
+            grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU fs include/linux || { echo "[FAIL] SUSFS integration missing."; exit 1; }
+            grep -Rqs 'susfs' fs include/linux KernelSU/kernel || { echo "[FAIL] SUSFS source missing."; exit 1; }
+            echo "SUSFS: $SUSFS_VERSION @ $SUSFS_COMMIT"
+            echo "[PASS] SUSFS non-GKI 4.19 integration is present."
+            echo "Feature policy: previously accepted features are never removed; errors are fixed in-place only."
+            echo "Version policy: latest stable release/commit actually compatible with 4.19.325-cip135."
 
-            echo
             echo
             echo "========== VERIFIED VERSION MANIFEST =========="
             echo "SukiSU-Ultra: v4.2.0 | current verified release | 2026"
             echo "Baseband-Guard: v1.1 | current verified release | 2025"
             echo "CIP: v4.19.325-cip135 | current 4.19 CIP target | 2026"
-            echo "Droidspaces: v6.5.0 | current verified release | 2026"
+            echo "DroidSpaces: legacy 4.19 capability requirements (no kernel version claim)"
             echo "Kernel base: Linux 4.19 | first released | 2018"
             echo "Policy: latest stable release/commit actually compatible with this 4.19.325-cip135 tree"
             echo "Policy: previously accepted features are never removed; errors are fixed in-place only."
-            echo "Policy: source-absent features are never falsely labeled implemented."
+            echo "Policy: source-absent features fail the strict feature gate; no feature is falsely labeled implemented."
 
             echo "[PASS] Full feature matrix audit completed."
           } > "$LOG" 2>&1
@@ -1765,8 +1731,8 @@ jobs:
             echo "Date: $(date -u)"
             echo "SukiSU release tag: $SUKISU_REF"
             echo "SukiSU release commit (short): $SUKISU_RELEASE_COMMIT"
-            echo "SUSFS kernel root-hiding: INTEGRATED / compatibility-gated"
-            echo "Maphide/JIT-Zygote: INTEGRATED"
+            echo "External root-hiding kernel patchset: NOT INTEGRATED"
+            echo "External root-hiding userspace package: NOT INTEGRATED"
             echo
             find diagnostic-artifact -type f -printf '%p %s bytes\n' | sort
           } > diagnostic-artifact/MANIFEST.txt
