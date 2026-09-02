@@ -1138,11 +1138,12 @@ jobs:
             #
             # This audit only rejects legacy external KernelSU/root-hiding files
             # that are not part of the pinned SukiSU-Ultra + SUSFS integration.
+            # include/linux/sus_su.h is intentionally allowed: it is an official
+            # SUSFS kernel header required by the pinned non-GKI 4.19 integration.
             external_hits=()
             for f in \
               kernel/sucompat.c kernel/sucompat.h \
-              kernel/throne_tracker.c kernel/throne_tracker.h \
-              include/linux/sus_su.h; do
+              kernel/throne_tracker.c kernel/throne_tracker.h; do
               if [ -e "$f" ]; then
                 external_hits+=("$f")
               fi
