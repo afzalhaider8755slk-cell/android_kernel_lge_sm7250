@@ -1458,6 +1458,46 @@ jobs:
             fi
             grep -nE 'LG KSU 4\.19 file_wrapper VFS compatibility|KSU_FILE_WRAPPER_LEGACY_VFS|clone_file_range|dedupe_file_range|remap_file_range|iopoll' "$KSU_FILE_WRAPPER_C"
 
+            # SukiSU-Ultra v4.2.0 su_mount_ns.c uses the UAPI include spelling
+            # <uapi/linux/mount.h>. The LG 4.19 tree used for this vendor kernel
+            # does not expose that header at the include path used by an integrated
+            # M=drivers/kernelsu build, although the required legacy mount flags
+            # are part of the 4.19 UAPI. Keep the SukiSU source logic unchanged and
+            # make only this include/flag boundary compatible with the target 4.19
+            # tree. No mount namespace behavior is changed.
+            KSU_MOUNT_NS_C="drivers/kernelsu/infra/su_mount_ns.c"
+            test -f "$KSU_MOUNT_NS_C"
+            if ! grep -q 'LG KSU 4.19 mount UAPI compatibility' "$KSU_MOUNT_NS_C"; then
+              python3 - "$KSU_MOUNT_NS_C" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          marker = "/* LG KSU 4.19 mount UAPI compatibility */"
+          if marker in s:
+              raise SystemExit(0)
+          needle = "#include <uapi/linux/mount.h>\n"
+          if s.count(needle) != 1:
+              raise SystemExit("[FAIL] Expected exactly one SukiSU uapi/linux/mount.h include in su_mount_ns.c.")
+          block = """#include <linux/mount.h>
+
+          /* LG KSU 4.19 mount UAPI compatibility */
+          #ifndef MS_REC
+          #define MS_REC 16384
+          #endif
+          #ifndef MS_PRIVATE
+          #define MS_PRIVATE (1 << 18)
+          #endif
+          """
+          p.write_text(s.replace(needle, block, 1))
+          PY
+              echo "[PASS] Applied only the Linux 4.19 mount UAPI compatibility to SukiSU su_mount_ns.c."
+            else
+              echo "[PASS] SukiSU 4.19 mount UAPI compatibility already present."
+            fi
+            grep -nE 'LG KSU 4\.19 mount UAPI compatibility|MS_(REC|PRIVATE)|linux/mount.h' "$KSU_MOUNT_NS_C"
+
             # The integrated KernelSU sources include security/selinux/include/objsec.h,
             # which includes the generated SELinux flask.h header. In this LG 4.19 tree
             # there is no top-level make rule exposing security/selinux/flask.h, so the
