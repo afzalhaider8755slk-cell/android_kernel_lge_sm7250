@@ -1236,6 +1236,39 @@ jobs:
 
             grep -nE 'LG KPM 4\.19 access_ok compatibility|KPM_ACCESS_OK_(READ|WRITE)' "$KPM_C"
 
+            # SukiSU-Ultra v4.2.0 also carries MODULE_IMPORT_NS() metadata for
+            # newer kernels. Linux 4.19 predates the MODULE_IMPORT_NS macro, so
+            # the call itself must be conditionally compiled out on this target.
+            # Use macro-presence detection instead of a guessed kernel-version
+            # threshold: newer kernels retain the original namespace import,
+            # while this 4.19 tree simply skips metadata that does not exist.
+            KSU_INIT_C="drivers/kernelsu/core/init.c"
+            test -f "$KSU_INIT_C"
+            if ! grep -q 'LG KSU 4.19 MODULE_IMPORT_NS compatibility' "$KSU_INIT_C"; then
+              python3 - "$KSU_INIT_C" <<'PY'
+          from pathlib import Path
+          import sys
+          
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          needle = "MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);"
+          marker = "/* LG KSU 4.19 MODULE_IMPORT_NS compatibility */"
+          if marker in s:
+              raise SystemExit(0)
+          if s.count(needle) != 1:
+              raise SystemExit("[FAIL] Expected exactly one SukiSU MODULE_IMPORT_NS call in core/init.c.")
+          replacement = """/* LG KSU 4.19 MODULE_IMPORT_NS compatibility */
+          #if defined(MODULE_IMPORT_NS)
+          MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
+          #endif"""
+          p.write_text(s.replace(needle, replacement, 1))
+          PY
+              echo "[PASS] Applied only the 4.19 MODULE_IMPORT_NS compatibility guard to SukiSU core/init.c."
+            else
+              echo "[PASS] SukiSU 4.19 MODULE_IMPORT_NS compatibility guard already present."
+            fi
+            grep -nE 'LG KSU 4\.19 MODULE_IMPORT_NS compatibility|MODULE_IMPORT_NS\(' "$KSU_INIT_C"
+
             # Compile the actual integrated drivers/kernelsu subtree. This is the
             # correct v4.2.0 Kbuild path and includes the KPM objects.
             make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
