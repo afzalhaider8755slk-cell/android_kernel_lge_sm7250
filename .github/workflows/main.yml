@@ -1131,12 +1131,28 @@ jobs:
             echo "SukiSU HEAD: $(git -C KernelSU rev-parse HEAD)"
             echo "SukiSU describe: $(git -C KernelSU describe --tags --always 2>/dev/null || true)"
             echo
-            echo "========== NO EXTERNAL ROOT-HIDING KERNEL PATCHSET =========="
-            if grep -RniE 'susfs\.h|sus_su\.h' KernelSU/kernel fs include 2>/dev/null | head -50 | grep -q .; then
-              echo "[FAIL] External root-hiding kernel integration detected."
+            echo "========== NO UNAUTHORIZED EXTERNAL ROOT-HIDING KERNEL PATCHSET =========="
+            # SUSFS is an explicitly required, official kernel component in this
+            # workflow. Its own susfs.h references are therefore NOT evidence of
+            # an external/duplicate root-hiding patchset.
+            #
+            # This audit only rejects legacy external KernelSU/root-hiding files
+            # that are not part of the pinned SukiSU-Ultra + SUSFS integration.
+            external_hits=()
+            for f in \
+              kernel/sucompat.c kernel/sucompat.h \
+              kernel/throne_tracker.c kernel/throne_tracker.h \
+              include/linux/sus_su.h; do
+              if [ -e "$f" ]; then
+                external_hits+=("$f")
+              fi
+            done
+            if [ "${#external_hits[@]}" -gt 0 ]; then
+              printf '%s\n' "${external_hits[@]}"
+              echo "[FAIL] Unauthorized legacy external root-hiding files detected."
               exit 1
             fi
-            echo "[PASS] No external root-hiding kernel patchset detected."
+            echo "[PASS] No unauthorized legacy external root-hiding kernel patchset detected."
             echo
             echo "Git diff summary:"
             git diff --stat || true
