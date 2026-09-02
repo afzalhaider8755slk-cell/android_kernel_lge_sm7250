@@ -1498,6 +1498,64 @@ jobs:
             fi
             grep -nE 'LG KSU 4\.19 mount UAPI compatibility|MS_(REC|PRIVATE)|linux/mount.h' "$KSU_MOUNT_NS_C"
 
+            # SukiSU-Ultra v4.2.0 pkg_observer.c uses fsnotify_ops.handle_inode_event,
+            # which was introduced in Linux 5.9. LG 4.19 exposes only handle_event
+            # with the legacy callback signature. Port only this callback boundary for
+            # kernels older than 5.9; keep the SukiSU package-observer behavior and
+            # all newer-kernel code unchanged.
+            KSU_PKG_OBSERVER_C="drivers/kernelsu/manager/pkg_observer.c"
+            test -f "$KSU_PKG_OBSERVER_C"
+            if ! grep -q 'LG KSU 4.19 pkg_observer fsnotify compatibility' "$KSU_PKG_OBSERVER_C"; then
+              python3 - "$KSU_PKG_OBSERVER_C" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          marker = "/* LG KSU 4.19 pkg_observer fsnotify compatibility */"
+          if marker in s:
+              raise SystemExit(0)
+
+          old = """static const struct fsnotify_ops ksu_ops = {
+              .handle_inode_event = ksu_handle_inode_event,
+          };
+          """
+          new = """#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
+          /* LG KSU 4.19 pkg_observer fsnotify compatibility */
+          static int ksu_handle_event(struct fsnotify_group *group, struct inode *inode,
+                                      u32 mask, const void *data, int data_type,
+                                      const unsigned char *file_name, u32 cookie,
+                                      struct fsnotify_iter_info *iter_info)
+          {
+              if (!file_name)
+                  return 0;
+              if (mask & FS_ISDIR)
+                  return 0;
+              if (memcmp(file_name, "packages.list", 13) || file_name[13] != '\\0')
+                  return 0;
+              pr_info("packages.list detected: %d\n", mask);
+              track_throne(false);
+              return 0;
+          }
+          static const struct fsnotify_ops ksu_ops = {
+              .handle_event = ksu_handle_event,
+          };
+          #else
+          static const struct fsnotify_ops ksu_ops = {
+              .handle_inode_event = ksu_handle_inode_event,
+          };
+          #endif
+          """
+          if s.count(old) != 1:
+              raise SystemExit("[FAIL] Expected exactly one SukiSU v4.2.0 pkg_observer fsnotify ops block.")
+          p.write_text(s.replace(old, new, 1))
+          PY
+              echo "[PASS] Applied only the Linux 4.19 fsnotify callback compatibility to SukiSU pkg_observer.c."
+            else
+              echo "[PASS] SukiSU 4.19 pkg_observer fsnotify compatibility already present."
+            fi
+            grep -nE 'LG KSU 4\.19 pkg_observer fsnotify compatibility|handle_event|handle_inode_event' "$KSU_PKG_OBSERVER_C"
+
             # The integrated KernelSU sources include security/selinux/include/objsec.h,
             # which includes the generated SELinux flask.h header. In this LG 4.19 tree
             # there is no top-level make rule exposing security/selinux/flask.h, so the
