@@ -1647,7 +1647,74 @@ jobs:
                           raise SystemExit(0)
               raise SystemExit("[FAIL] Missing UAPI header did not satisfy exact safe mapping")
 
-          # 3) Previously verified SukiSU 4.19 API families. If the error recurs,
+          # 3) ONLINE RESEARCH / EVIDENCE GATE
+          # Before an automatic compatibility decision is made, consult pinned
+          # authoritative source files. The search API is used only to discover
+          # corroborating source locations; it is NEVER treated as permission to
+          # invent a replacement value. Automatic edits still require an exact
+          # compatibility mapping and a matching source marker/anchor below.
+          RESEARCH_DIR=Path(action).parent
+          RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
+          import json, urllib.parse, urllib.request
+
+          def fetch(url, out):
+              req=urllib.request.Request(url, headers={"User-Agent":"LG-Velvet-G900-Kernel-AutoFix/1.0"})
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  data=r.read()
+              Path(out).write_bytes(data)
+              return data.decode("utf-8", errors="replace")
+
+          # Pinned authoritative references: SukiSU v4.2.0 and Linux v4.19.
+          # These are source evidence, not arbitrary patch downloads.
+          evidence_urls={
+            "sukisu_kpm":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/kpm/kpm.c",
+            "sukisu_file_wrapper":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/infra/file_wrapper.c",
+            "sukisu_pkg_observer":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/manager/pkg_observer.c",
+            "linux419_uaccess":"https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/uaccess.h",
+            "linux419_fs":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fs.h",
+            "linux419_fsnotify":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fsnotify_backend.h",
+            "linux419_seccomp":"https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/seccomp.h",
+            "linux419_module":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/module.h",
+          }
+          evidence_ok=True
+          evidence_dir=RESEARCH_DIR/"authoritative-evidence"
+          evidence_dir.mkdir(parents=True, exist_ok=True)
+          for name,url in evidence_urls.items():
+              try:
+                  text=fetch(url, evidence_dir/name)
+                  print(f"[RESEARCH PASS] {name}: {len(text)} bytes from pinned source")
+              except Exception as ex:
+                  evidence_ok=False
+                  print(f"[RESEARCH WARN] {name}: {ex}")
+
+          # Search-engine corroboration. grep.app indexes public source code and
+          # helps locate matching API history. Results are saved for diagnostics
+          # but never directly applied as patches.
+          symbols=[]
+          for x in re.findall(r"(?:undefined identifier|no member named|field designator) ['\"]([^'\"]+)['\"]", err):
+              symbols.append(x)
+          for x in re.findall(r"fatal error: ['\"]([^'\"]+\.h)['\"] file not found", err):
+              symbols.append(x)
+          symbols=list(dict.fromkeys(symbols))[:4]
+          search_results=[]
+          for sym in symbols:
+              try:
+                  q=urllib.parse.quote(sym)
+                  url=f"https://grep.app/api/search?q={q}&regexp=false"
+                  req=urllib.request.Request(url, headers={"User-Agent":"LG-Velvet-G900-Kernel-AutoFix/1.0"})
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      obj=json.loads(r.read().decode("utf-8", errors="replace"))
+                  search_results.append({"symbol":sym,"hits":obj.get("hits",{}).get("total",0),"path_preview":[h.get("path") for h in obj.get("hits",{}).get("hits",[])[:8]]})
+              except Exception as ex:
+                  search_results.append({"symbol":sym,"error":str(ex)})
+          (RESEARCH_DIR/"search-engine-results.json").write_text(json.dumps(search_results, indent=2))
+          (RESEARCH_DIR/"research-status.txt").write_text(
+              "PINNED_SUKISU_REF=85eb4a9\nPINNED_LINUX_REF=v4.19\n"
+              f"AUTHORITATIVE_EVIDENCE_COMPLETE={str(evidence_ok).lower()}\n"
+              "SEARCH_ENGINE=grep.app (corroboration only; never a patch source)\n"
+          )
+
+          # 4) Previously verified SukiSU 4.19 API families. If the error recurs,
           # require the corresponding marker; do not blindly rewrite anything.
           mappings=[
             (r"too few arguments.*access_ok|access_ok\([^,]+,[^)]+\\)","drivers/kernelsu/kpm/kpm.c","LG KPM 4.19 access_ok compatibility"),
@@ -1658,6 +1725,9 @@ jobs:
           ]
           for pat,path,marker in mappings:
               if re.search(pat,err,re.S):
+                  if not evidence_ok:
+                      action.write_text("[AUTO-FIX] RESEARCH_UNAVAILABLE\nAuthoritative pinned source evidence could not be downloaded; refusing an unverified automatic edit.\n")
+                      raise SystemExit(30)
                   p=Path(path)
                   if marker in p.read_text(errors='replace'):
                       act("verified-mapping-already-present",f"{path}: {marker}\nNo second speculative edit was made.")
@@ -1666,7 +1736,7 @@ jobs:
 
           # 4) Never auto-edit arbitrary undefined identifiers, struct members,
           # linker failures, ABI errors, or compiler diagnostics not in the DB.
-          action.write_text("[AUTO-FIX] UNKNOWN_OR_UNSAFE\nNo verified Linux-4.19 compatibility mapping matched this diagnostic.\n")
+          action.write_text("[AUTO-FIX] UNKNOWN_OR_UNSAFE\nOnline source search was performed for extracted symbols, but no verified Linux-4.19 compatibility mapping matched this diagnostic. No speculative edit was made.\n")
           raise SystemExit(10)
           PY
               local rc=$?
