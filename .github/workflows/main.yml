@@ -1583,180 +1583,281 @@ jobs:
             echo "[PASS] Official SELinux genheaders generated flask.h and av_permissions.h."
 
             # -----------------------------------------------------------------
-            # SAFE KERNEL COMPATIBILITY AUTO-FIX ENGINE
+            # FULL RESEARCH KERNEL COMPATIBILITY AUTO-FIX ENGINE
             # -----------------------------------------------------------------
-            # This engine is intentionally fail-closed. It may only apply a
-            # compatibility transform when the diagnostic matches a pinned,
-            # verified Linux-4.19 mapping AND the expected source marker/anchor
-            # is present. It never invents a replacement value from a compiler
-            # suggestion, never downloads arbitrary patches, and never removes
-            # a required project feature.
+            # Goal: resolve VERIFIED old-kernel API mismatches automatically,
+            # without guessing. Every edit gets a machine-readable audit record:
+            # error -> symbol/value -> evidence -> old value -> replacement ->
+            # reason -> diff -> compile verification.
             #
-            # Unknown errors are still captured with their complete iteration
-            # log so the next fix can be made against the real compiler error.
-            # Maximum six compile/fix iterations prevents loops.
+            # Research hierarchy:
+            #   1. local LG 4.19 source/header truth
+            #   2. pinned upstream Linux v4.19 source
+            #   3. pinned SukiSU v4.2.0 source
+            #   4. upstream history / stable backports
+            #   5. search-engine corroboration
+            #
+            # A search result alone NEVER authorizes a patch. A replacement is
+            # accepted only when the target-tree API and authoritative evidence
+            # agree. Unknown ABI/linker/semantic errors remain fail-closed.
             # -----------------------------------------------------------------
             AUTOFIX_DIR="$DIAG_DIR/autofix"
             mkdir -p "$AUTOFIX_DIR"
-            MAX_AUTOFIX=6
+            MAX_AUTOFIX=8
             build_rc=1
 
             auto_fix_error() {
               local errlog="$1"
               local iteration="$2"
               local action_log="$AUTOFIX_DIR/iteration-${iteration}-action.log"
+              local research_log="$AUTOFIX_DIR/iteration-${iteration}-research.log"
+              local decision_log="$AUTOFIX_DIR/iteration-${iteration}-decision.json"
+              local diff_log="$AUTOFIX_DIR/iteration-${iteration}-patch.diff"
               : > "$action_log"
+              : > "$research_log"
+              : > "$decision_log"
+              : > "$diff_log"
 
-              python3 - "$errlog" "$action_log" <<'PY'
+              python3 - "$errlog" "$action_log" "$research_log" "$decision_log" "$diff_log" "$iteration" <<'PY'
           from pathlib import Path
-          import re, sys
-          err=Path(sys.argv[1]).read_text(errors='replace')
-          action=Path(sys.argv[2])
+          import re, sys, json, subprocess, urllib.request, urllib.parse, datetime, hashlib
 
-          def act(name, detail):
-              action.write_text(f"[AUTO-FIX] {name}\n{detail}\n")
+          errp, actionp, researchp, decisionp, diffp = map(Path, sys.argv[1:6])
+          iteration = sys.argv[6]
+          err = errp.read_text(errors="replace")
+          started = datetime.datetime.utcnow().isoformat() + "Z"
 
-          # 1) Missing generated SELinux headers: safe regeneration only.
-          if re.search(r"fatal error: ['\"]flask\.h['\"] file not found|No rule to make target ['\"]security/selinux/flask\.h", err):
-              gen=Path("scripts/selinux/genheaders/genheaders")
-              if not gen.exists():
-                  raise SystemExit("[FAIL] SELinux generator missing; refusing speculative fix")
-              gen.parent.mkdir(parents=True,exist_ok=True)
-              # The generator's two outputs are deterministic for this source tree.
-              import subprocess
-              r=subprocess.run([str(gen),"security/selinux/flask.h","security/selinux/av_permissions.h"])
-              if r.returncode:
-                  raise SystemExit("[FAIL] SELinux generator failed")
-              act("selinux-generated-headers",str(gen))
-              raise SystemExit(0)
+          def write_action(msg):
+              actionp.write_text(msg + "\n")
+          def research(msg):
+              with researchp.open("a") as f:
+                  f.write(msg + "\n")
+          def fail(msg, code=10):
+              write_action("[AUTO-FIX] " + msg)
+              raise SystemExit(code)
 
-          # 2) Missing <uapi/linux/X.h>: only remap when the exact kernel header
-          # exists and the failure is inside the integrated SukiSU subtree.
-          m=re.search(r"drivers/kernelsu/[^:]+:\\d+:\\d+: fatal error: ['\"]uapi/linux/([^'\"]+\\.h)['\"] file not found",err)
-          if m:
-              header=m.group(1)
-              candidate=Path("include/linux")/header
-              if candidate.is_file():
-                  files=set(re.findall(r"(drivers/kernelsu/[^:]+\.c):\\d+:\\d+: fatal error",err))
-                  if len(files)==1:
-                      p=Path(next(iter(files))); s=p.read_text()
-                      needle=f"#include <uapi/linux/{header}>"
-                      if s.count(needle)==1:
-                          p.write_text(s.replace(needle,f"#include <linux/{header}",1))
-                          act("uapi-include-to-legacy-linux-header",f"{p}: <uapi/linux/{header}> -> <linux/{header}")
-                          raise SystemExit(0)
-              raise SystemExit("[FAIL] Missing UAPI header did not satisfy exact safe mapping")
+          def fetch(url, timeout=20):
+              req=urllib.request.Request(url, headers={"User-Agent":"LG-Velvet-G900-FullResearch-AutoFix/2.0"})
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return r.read().decode("utf-8", errors="replace")
 
-          # 3) ONLINE RESEARCH / EVIDENCE GATE
-          # Before an automatic compatibility decision is made, consult pinned
-          # authoritative source files. The search API is used only to discover
-          # corroborating source locations; it is NEVER treated as permission to
-          # invent a replacement value. Automatic edits still require an exact
-          # compatibility mapping and a matching source marker/anchor below.
-          RESEARCH_DIR=Path(action).parent
-          RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
-          import json, urllib.parse, urllib.request
+          def save_evidence(name, url, text):
+              d=Path(actionp).parent/"evidence"
+              d.mkdir(parents=True, exist_ok=True)
+              (d/name).write_text(text)
+              return hashlib.sha256(text.encode()).hexdigest()
 
-          def fetch(url, out):
-              req=urllib.request.Request(url, headers={"User-Agent":"LG-Velvet-G900-Kernel-AutoFix/1.0"})
-              with urllib.request.urlopen(req, timeout=20) as r:
-                  data=r.read()
-              Path(out).write_bytes(data)
-              return data.decode("utf-8", errors="replace")
+          # ---- diagnostic fingerprint ----
+          files = re.findall(r"((?:drivers/kernelsu|arch/arm64|include|fs|security)/[^:\s]+):(\d+):(\d+)", err)
+          identifiers = []
+          for pat in [
+              r"use of undeclared identifier ['\"]([^'\"]+)['\"]",
+              r"implicit declaration of function ['\"]([^'\"]+)['\"]",
+              r"no member named ['\"]([^'\"]+)['\"]",
+              r"field designator ['\"]([^'\"]+)['\"] does not refer",
+              r"fatal error: ['\"]([^'\"]+)['\"] file not found",
+              r"too few arguments.*?['\"]?([A-Za-z_][A-Za-z0-9_]*)",
+          ]:
+              identifiers += re.findall(pat, err, re.S)
+          identifiers=list(dict.fromkeys(identifiers))
+          research(f"UTC={started}")
+          research("ITERATION="+str(iteration))
+          research("ERROR_SHA256="+hashlib.sha256(err.encode()).hexdigest())
+          research("FILES="+json.dumps(files[:20]))
+          research("IDENTIFIERS="+json.dumps(identifiers[:20]))
 
-          # Pinned authoritative references: SukiSU v4.2.0 and Linux v4.19.
-          # These are source evidence, not arbitrary patch downloads.
-          evidence_urls={
-            "sukisu_kpm":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/kpm/kpm.c",
-            "sukisu_file_wrapper":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/infra/file_wrapper.c",
-            "sukisu_pkg_observer":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/manager/pkg_observer.c",
-            "linux419_uaccess":"https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/uaccess.h",
-            "linux419_fs":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fs.h",
-            "linux419_fsnotify":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fsnotify_backend.h",
-            "linux419_seccomp":"https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/seccomp.h",
-            "linux419_module":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/module.h",
+          # ---- authoritative source set ----
+          refs = {
+            "sukisu_allowlist": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/policy/allowlist.c",
+            "sukisu_kpm": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/kpm/kpm.c",
+            "sukisu_file_wrapper": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/infra/file_wrapper.c",
+            "sukisu_pkg_observer": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/manager/pkg_observer.c",
+            "linux419_task_work": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/task_work.h",
+            "linux419_sched_task": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/sched/task.h",
+            "linux419_uaccess": "https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/uaccess.h",
+            "linux419_fs": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fs.h",
+            "linux419_fsnotify": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fsnotify_backend.h",
+            "linux419_seccomp": "https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/seccomp.h",
+            "linux419_module": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/module.h",
           }
-          evidence_ok=True
-          evidence_dir=RESEARCH_DIR/"authoritative-evidence"
-          evidence_dir.mkdir(parents=True, exist_ok=True)
-          for name,url in evidence_urls.items():
+          evdir=Path(actionp).parent/"authoritative-evidence"
+          evdir.mkdir(parents=True, exist_ok=True)
+          evidence={}
+          for name,url in refs.items():
               try:
-                  text=fetch(url, evidence_dir/name)
-                  print(f"[RESEARCH PASS] {name}: {len(text)} bytes from pinned source")
+                  text=fetch(url)
+                  evidence[name]=text
+                  save_evidence(name, url, text)
+                  research(f"[AUTHORITATIVE] {name} sha256={hashlib.sha256(text.encode()).hexdigest()} bytes={len(text)} url={url}")
               except Exception as ex:
-                  evidence_ok=False
-                  print(f"[RESEARCH WARN] {name}: {ex}")
+                  research(f"[AUTHORITATIVE-FAIL] {name}: {ex}")
 
-          # Search-engine corroboration. grep.app indexes public source code and
-          # helps locate matching API history. Results are saved for diagnostics
-          # but never directly applied as patches.
-          symbols=[]
-          for x in re.findall(r"(?:undefined identifier|no member named|field designator) ['\"]([^'\"]+)['\"]", err):
-              symbols.append(x)
-          for x in re.findall(r"fatal error: ['\"]([^'\"]+\.h)['\"] file not found", err):
-              symbols.append(x)
-          symbols=list(dict.fromkeys(symbols))[:4]
-          search_results=[]
-          for sym in symbols:
+          # ---- local target-tree truth ----
+          def local(path):
+              p=Path(path)
+              return p.read_text(errors="replace") if p.exists() else ""
+          local_task=local("include/linux/task_work.h")
+          local_sched=local("include/linux/sched/task.h")
+          local_allow=local("drivers/kernelsu/policy/allowlist.c")
+
+          # Search local tree for exact definitions/usages before considering any
+          # online candidate. This prevents a web result from overriding LG truth.
+          local_twa = re.search(r"task_work_add\s*\([^;]*\b(bool|int)\s*(?:notify|mode)", local_task, re.S)
+          local_put = "put_task_struct" in local_sched
+          research("[LOCAL] task_work.h signature="+(local_twa.group(1) if local_twa else "unknown"))
+          research("[LOCAL] sched/task.h put_task_struct="+str(local_put))
+
+          # ---- search-engine corroboration ----
+          search_items=[]
+          for sym in identifiers[:8]:
               try:
                   q=urllib.parse.quote(sym)
-                  url=f"https://grep.app/api/search?q={q}&regexp=false"
-                  req=urllib.request.Request(url, headers={"User-Agent":"LG-Velvet-G900-Kernel-AutoFix/1.0"})
-                  with urllib.request.urlopen(req, timeout=15) as r:
-                      obj=json.loads(r.read().decode("utf-8", errors="replace"))
-                  search_results.append({"symbol":sym,"hits":obj.get("hits",{}).get("total",0),"path_preview":[h.get("path") for h in obj.get("hits",{}).get("hits",[])[:8]]})
+                  u=f"https://grep.app/api/search?q={q}&regexp=false"
+                  obj=json.loads(fetch(u,15))
+                  hits=obj.get("hits",{}).get("hits",[])
+                  search_items.append({
+                    "symbol":sym,
+                    "total":obj.get("hits",{}).get("total",0),
+                    "paths":[h.get("path") for h in hits[:12]]
+                  })
+                  research(f"[SEARCH] {sym}: total={obj.get('hits',{}).get('total',0)} paths={[h.get('path') for h in hits[:12]]}")
               except Exception as ex:
-                  search_results.append({"symbol":sym,"error":str(ex)})
-          (RESEARCH_DIR/"search-engine-results.json").write_text(json.dumps(search_results, indent=2))
-          (RESEARCH_DIR/"research-status.txt").write_text(
-              "PINNED_SUKISU_REF=85eb4a9\nPINNED_LINUX_REF=v4.19\n"
-              f"AUTHORITATIVE_EVIDENCE_COMPLETE={str(evidence_ok).lower()}\n"
-              "SEARCH_ENGINE=grep.app (corroboration only; never a patch source)\n"
-          )
+                  search_items.append({"symbol":sym,"error":str(ex)})
+                  research(f"[SEARCH-FAIL] {sym}: {ex}")
+          (Path(actionp).parent/"search-engine-results.json").write_text(json.dumps(search_items,indent=2))
 
-          # 4) Previously verified SukiSU 4.19 API families. If the error recurs,
-          # require the corresponding marker; do not blindly rewrite anything.
+          # ---- known exact compatibility: Linux 4.19 task_work bool API ----
+          # Evidence:
+          #   Linux 4.19 task_work_add(..., bool)
+          #   SukiSU calls ... TWA_RESUME
+          #   Linux introduced TWA_RESUME with the notify-mode API later.
+          # Therefore on this 4.19 tree the semantically equivalent value is true.
+          if "TWA_RESUME" in err and "drivers/kernelsu/policy/allowlist.c" in err:
+              if not local_allow:
+                  fail("allowlist.c is missing; refusing patch")
+              if not local_twa or local_twa.group(1) != "bool":
+                  fail("Target task_work.h does not expose the verified 4.19 bool API; refusing TWA_RESUME->true mapping")
+              suk= evidence.get("sukisu_allowlist","")
+              old419=evidence.get("linux419_task_work","")
+              if "TWA_RESUME" not in suk or "task_work_add" not in suk:
+                  fail("Pinned SukiSU evidence does not contain the reported TWA_RESUME call")
+              if "task_work_add(struct task_struct *task, struct callback_head *twork, bool)" not in old419:
+                  fail("Pinned Linux v4.19 evidence does not confirm bool task_work_add API")
+              p=Path("drivers/kernelsu/policy/allowlist.c")
+              old=p.read_text()
+              # Only replace the exact call argument in this file.
+              matches=list(re.finditer(r"task_work_add\s*\(\s*tsk\s*,\s*cb\s*,\s*TWA_RESUME\s*\)", old))
+              if len(matches)!=1:
+                  fail(f"Expected exactly one task_work_add(tsk, cb, TWA_RESUME), found {len(matches)}")
+              new=re.sub(r"task_work_add\s*\(\s*tsk\s*,\s*cb\s*,\s*TWA_RESUME\s*\)",
+                         "task_work_add(tsk, cb, true)", old, count=1)
+              # put_task_struct is a separate include-visibility issue. Add only
+              # the authoritative 4.19 header that defines it, if absent.
+              include_added=False
+              if "put_task_struct(" in new and "#include <linux/sched/task.h>" not in new:
+                  if re.search(r"^#include <linux/sched/task_stack\.h>\s*$", new, re.M):
+                      new=re.sub(r"(^#include <linux/sched/task_stack\.h>\s*$)",
+                                 r"\1\n#include <linux/sched/task.h>", new, count=1, flags=re.M)
+                      include_added=True
+                  else:
+                      # safest location: after the first linux include
+                      m=re.search(r"^#include <linux/[^>]+>\s*$", new, re.M)
+                      if m:
+                          new=new[:m.end()]+"\n#include <linux/sched/task.h>"+new[m.end():]
+                          include_added=True
+              if "put_task_struct(" in new and "#include <linux/sched/task.h>" not in new:
+                  fail("Could not add the authoritative 4.19 sched/task.h include safely")
+              p.write_text(new)
+              patch=subprocess.run(["git","diff","--",str(p)],capture_output=True,text=True).stdout
+              diffp.write_text(patch)
+              decision={
+                "status":"APPLIED",
+                "category":"linux-4.19-task_work-api",
+                "error":"TWA_RESUME undefined + put_task_struct implicit declaration",
+                "file":str(p),
+                "old_value":"TWA_RESUME",
+                "new_value":"true",
+                "secondary_fix":"#include <linux/sched/task.h>" if include_added else "already visible",
+                "why":"Target Linux 4.19 task_work_add uses bool notify; pinned SukiSU uses newer TWA_RESUME enum API. Linux 4.19 sched/task.h defines put_task_struct.",
+                "evidence":[
+                  refs["linux419_task_work"],
+                  refs["linux419_sched_task"],
+                  refs["sukisu_allowlist"]
+                ],
+                "search_engine":"grep.app (corroboration only)",
+                "iteration":int(iteration)
+              }
+              decisionp.write_text(json.dumps(decision,indent=2))
+              write_action("[AUTO-FIX] VERIFIED LINUX 4.19 TASK_WORK COMPATIBILITY APPLIED\n"
+                           f"Error: TWA_RESUME undefined / put_task_struct implicit\n"
+                           f"File: {p}\n"
+                           f"Old value: TWA_RESUME\nNew value: true\n"
+                           f"Secondary: {'added <linux/sched/task.h>' if include_added else 'header already visible'}\n"
+                           "Evidence: pinned Linux v4.19 + pinned SukiSU v4.2.0\n"
+                           "Search engine: corroboration only\n"
+                           "A git diff was saved to iteration-%s-patch.diff" % iteration)
+              research("[DECISION] APPLIED exact TWA_RESUME->true mapping with sched/task.h visibility check")
+              raise SystemExit(0)
+
+          # ---- previously verified mappings ----
           mappings=[
-            (r"too few arguments.*access_ok|access_ok\([^,]+,[^)]+\\)","drivers/kernelsu/kpm/kpm.c","LG KPM 4.19 access_ok compatibility"),
-            (r"MODULE_IMPORT_NS", "drivers/kernelsu/core/init.c","LG KSU 4.19 MODULE_IMPORT_NS compatibility"),
-            (r"field designator ['\"]handle_inode_event['\"] does not refer", "drivers/kernelsu/manager/pkg_observer.c","LG KSU 4.19 pkg_observer fsnotify compatibility"),
-            (r"no member named ['\"]remap_file_range['\"]|no member named ['\"]iopoll['\"]", "drivers/kernelsu/infra/file_wrapper.c","LG KSU 4.19 file_wrapper VFS compatibility"),
-            (r"use of undeclared identifier ['\"]SECCOMP_ARCH_NATIVE_NR['\"]", "arch/arm64/include/asm/seccomp.h","LG ARM64 4.19 seccomp NR compatibility"),
+            (r"too few arguments.*access_ok|access_ok\([^,]+,[^)]+\)", "drivers/kernelsu/kpm/kpm.c", "LG KPM 4.19 access_ok compatibility"),
+            (r"MODULE_IMPORT_NS", "drivers/kernelsu/core/init.c", "LG KSU 4.19 MODULE_IMPORT_NS compatibility"),
+            (r"field designator ['\"]handle_inode_event['\"] does not refer", "drivers/kernelsu/manager/pkg_observer.c", "LG KSU 4.19 pkg_observer fsnotify compatibility"),
+            (r"no member named ['\"]remap_file_range['\"]|no member named ['\"]iopoll['\"]", "drivers/kernelsu/infra/file_wrapper.c", "LG KSU 4.19 file_wrapper VFS compatibility"),
+            (r"use of undeclared identifier ['\"]SECCOMP_ARCH_NATIVE_NR['\"]", "arch/arm64/include/asm/seccomp.h", "LG ARM64 4.19 seccomp NR compatibility"),
           ]
           for pat,path,marker in mappings:
               if re.search(pat,err,re.S):
-                  if not evidence_ok:
-                      action.write_text("[AUTO-FIX] RESEARCH_UNAVAILABLE\nAuthoritative pinned source evidence could not be downloaded; refusing an unverified automatic edit.\n")
-                      raise SystemExit(30)
                   p=Path(path)
-                  if marker in p.read_text(errors='replace'):
-                      act("verified-mapping-already-present",f"{path}: {marker}\nNo second speculative edit was made.")
-                      raise SystemExit(20)
-                  raise SystemExit(f"[FAIL] Verified mapping matched but expected marker is absent: {marker}")
+                  present=p.exists() and marker in p.read_text(errors="replace")
+                  decision={"status":"RECURRING_OR_ALREADY_FIXED","category":marker,"file":path,"marker_present":present}
+                  decisionp.write_text(json.dumps(decision,indent=2))
+                  if present:
+                      fail("Verified compatibility error recurred after its exact compatibility marker was already present; no second speculative edit.",20)
+                  fail("Verified mapping matched but marker is absent; manual review required.",10)
 
-          # 4) Never auto-edit arbitrary undefined identifiers, struct members,
-          # linker failures, ABI errors, or compiler diagnostics not in the DB.
-          action.write_text("[AUTO-FIX] UNKNOWN_OR_UNSAFE\nOnline source search was performed for extracted symbols, but no verified Linux-4.19 compatibility mapping matched this diagnostic. No speculative edit was made.\n")
+          # ---- generic researched candidate discovery, never speculative ----
+          # We intentionally do not transform arbitrary identifiers. Instead,
+          # record where the symbol exists in pinned sources and local headers so
+          # the next iteration has a complete evidence trail.
+          candidates=[]
+          for sym in identifiers[:8]:
+              for name,text in evidence.items():
+                  if re.search(r"\b"+re.escape(sym)+r"\b", text):
+                      lines=[i+1 for i,l in enumerate(text.splitlines()) if re.search(r"\b"+re.escape(sym)+r"\b",l)]
+                      candidates.append({"symbol":sym,"source":name,"lines":lines[:12]})
+          (Path(actionp).parent/"researched-candidates.json").write_text(json.dumps(candidates,indent=2))
+          write_action("[AUTO-FIX] RESEARCH COMPLETE BUT NO VERIFIED SAFE PATCH\n"
+                       "The engine searched local LG 4.19 headers, pinned SukiSU/Linux sources, and grep.app.\n"
+                       "No evidence-backed replacement was accepted, so no speculative edit was made.")
+          decisionp.write_text(json.dumps({
+            "status":"UNKNOWN_OR_UNSAFE",
+            "identifiers":identifiers,
+            "candidates":candidates,
+            "rule":"No arbitrary undefined identifier/API/ABI replacement is permitted."
+          },indent=2))
           raise SystemExit(10)
           PY
               local rc=$?
               if [ "$rc" -eq 0 ]; then
-                echo "[PASS] Safe Auto-Fix applied: $(cat "$action_log")"
+                echo "[PASS] Verified Auto-Fix applied on iteration $iteration."
+                cat "$action_log"
                 return 0
               fi
               if [ "$rc" -eq 20 ]; then
-                echo "[FAIL] Known compatibility error recurred after its verified fix was already present." 
+                echo "[FAIL] Verified compatibility error recurred after its exact fix."
                 cat "$action_log"
                 return 20
               fi
-              echo "[FAIL] Auto-Fix did not find a safe mapping (rc=$rc)."
+              echo "[FAIL] Auto-Fix stopped safely (rc=$rc)."
               cat "$action_log"
               return "$rc"
             }
 
             for iteration in $(seq 1 "$MAX_AUTOFIX"); do
               echo
-              echo "========== AUTO-FIX BUILD ITERATION $iteration/$MAX_AUTOFIX =========="
+              echo "========== FULL-RESEARCH AUTO-FIX BUILD ITERATION $iteration/$MAX_AUTOFIX =========="
               ITER_LOG="$AUTOFIX_DIR/iteration-${iteration}-build.log"
               : > "$ITER_LOG"
               set +e
@@ -1773,8 +1874,8 @@ jobs:
                 break
               fi
 
-              echo "[WARN] KPM subtree compile failed on iteration $iteration (rc=$build_rc)."
-              tail -140 "$ITER_LOG" || true
+              echo "[WARN] Build failed on iteration $iteration (rc=$build_rc)."
+              tail -160 "$ITER_LOG" || true
               set +e
               auto_fix_error "$ITER_LOG" "$iteration"
               fix_rc=$?
@@ -1782,15 +1883,10 @@ jobs:
               if [ "$fix_rc" -eq 0 ]; then
                 continue
               fi
-              if [ "$fix_rc" -eq 20 ]; then
-                echo "[FAIL] A known compatibility error is still present after its exact fix; stopping instead of mutating working code."
-              else
-                echo "[FAIL] AUTO-FIX UNKNOWN/UNSAFE: build stopped fail-closed."
-              fi
+              echo "[FAIL] AUTO-FIX stopped: no evidence-backed patch was safe for this diagnostic."
               break
             done
 
-            echo
             echo "========== AUTO-FIX SUMMARY =========="
             echo "MAX_ITERATIONS=$MAX_AUTOFIX"
             echo "FINAL_BUILD_RC=$build_rc"
