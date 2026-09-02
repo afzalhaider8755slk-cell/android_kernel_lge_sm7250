@@ -646,8 +646,20 @@ jobs:
               echo "[FAIL] security/Kconfig does not source Baseband-guard Kconfig."
               exit 1
             }
-            grep -q 'baseband-guard/baseband_guard.o' security/Makefile || {
-              echo "[FAIL] security/Makefile does not build Baseband-guard."
+            # Official Baseband-guard v1.1 uses a two-level Makefile:
+            # security/Makefile -> baseband-guard/ directory, then
+            # Baseband-guard/Makefile -> bbg.o (bbg-objs includes baseband_guard.o).
+            # Do not require baseband_guard.o directly in security/Makefile.
+            grep -qE '^obj-\$\(CONFIG_BBG\)[[:space:]]+\+=[[:space:]]+baseband-guard/' security/Makefile || {
+              echo "[FAIL] security/Makefile is missing the official Baseband-guard directory build entry."
+              exit 1
+            }
+            grep -qE '^obj-\$\(CONFIG_BBG\)[[:space:]]+\+=[[:space:]]+bbg\.o[[:space:]]*$' Baseband-guard/Makefile || {
+              echo "[FAIL] Baseband-guard Makefile does not build bbg.o."
+              exit 1
+            }
+            grep -qE '^bbg-objs[[:space:]]+\+=[[:space:]]+baseband_guard\.o[[:space:]]*$' Baseband-guard/Makefile || {
+              echo "[FAIL] Baseband-guard Makefile does not include baseband_guard.o in bbg-objs."
               exit 1
             }
             scripts/config --enable CONFIG_SECURITY
