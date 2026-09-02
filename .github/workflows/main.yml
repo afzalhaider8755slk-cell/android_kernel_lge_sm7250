@@ -1582,16 +1582,174 @@ jobs:
             test -s security/selinux/av_permissions.h
             echo "[PASS] Official SELinux genheaders generated flask.h and av_permissions.h."
 
-            # Compile the actual integrated drivers/kernelsu subtree. This is the
-            # correct v4.2.0 Kbuild path and includes the KPM objects.
-            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-              CROSS_COMPILE="$CROSS_COMPILE" \
-              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              M=drivers/kernelsu V=1
+            # -----------------------------------------------------------------
+            # SAFE KERNEL COMPATIBILITY AUTO-FIX ENGINE
+            # -----------------------------------------------------------------
+            # This engine is intentionally fail-closed. It may only apply a
+            # compatibility transform when the diagnostic matches a pinned,
+            # verified Linux-4.19 mapping AND the expected source marker/anchor
+            # is present. It never invents a replacement value from a compiler
+            # suggestion, never downloads arbitrary patches, and never removes
+            # a required project feature.
+            #
+            # Unknown errors are still captured with their complete iteration
+            # log so the next fix can be made against the real compiler error.
+            # Maximum six compile/fix iterations prevents loops.
+            # -----------------------------------------------------------------
+            AUTOFIX_DIR="$DIAG_DIR/autofix"
+            mkdir -p "$AUTOFIX_DIR"
+            MAX_AUTOFIX=6
+            build_rc=1
+
+            auto_fix_error() {
+              local errlog="$1"
+              local iteration="$2"
+              local action_log="$AUTOFIX_DIR/iteration-${iteration}-action.log"
+              : > "$action_log"
+
+              python3 - "$errlog" "$action_log" <<'PY'
+          from pathlib import Path
+          import re, sys
+          err=Path(sys.argv[1]).read_text(errors='replace')
+          action=Path(sys.argv[2])
+
+          def act(name, detail):
+              action.write_text(f"[AUTO-FIX] {name}\n{detail}\n")
+
+          # 1) Missing generated SELinux headers: safe regeneration only.
+          if re.search(r"fatal error: ['\"]flask\.h['\"] file not found|No rule to make target ['\"]security/selinux/flask\.h", err):
+              gen=Path("scripts/selinux/genheaders/genheaders")
+              if not gen.exists():
+                  raise SystemExit("[FAIL] SELinux generator missing; refusing speculative fix")
+              gen.parent.mkdir(parents=True,exist_ok=True)
+              # The generator's two outputs are deterministic for this source tree.
+              import subprocess
+              r=subprocess.run([str(gen),"security/selinux/flask.h","security/selinux/av_permissions.h"])
+              if r.returncode:
+                  raise SystemExit("[FAIL] SELinux generator failed")
+              act("selinux-generated-headers",str(gen))
+              raise SystemExit(0)
+
+          # 2) Missing <uapi/linux/X.h>: only remap when the exact kernel header
+          # exists and the failure is inside the integrated SukiSU subtree.
+          m=re.search(r"drivers/kernelsu/[^:]+:\\d+:\\d+: fatal error: ['\"]uapi/linux/([^'\"]+\\.h)['\"] file not found",err)
+          if m:
+              header=m.group(1)
+              candidate=Path("include/linux")/header
+              if candidate.is_file():
+                  files=set(re.findall(r"(drivers/kernelsu/[^:]+\.c):\\d+:\\d+: fatal error",err))
+                  if len(files)==1:
+                      p=Path(next(iter(files))); s=p.read_text()
+                      needle=f"#include <uapi/linux/{header}>"
+                      if s.count(needle)==1:
+                          p.write_text(s.replace(needle,f"#include <linux/{header}",1))
+                          act("uapi-include-to-legacy-linux-header",f"{p}: <uapi/linux/{header}> -> <linux/{header}")
+                          raise SystemExit(0)
+              raise SystemExit("[FAIL] Missing UAPI header did not satisfy exact safe mapping")
+
+          # 3) Previously verified SukiSU 4.19 API families. If the error recurs,
+          # require the corresponding marker; do not blindly rewrite anything.
+          mappings=[
+            (r"too few arguments.*access_ok|access_ok\([^,]+,[^)]+\\)","drivers/kernelsu/kpm/kpm.c","LG KPM 4.19 access_ok compatibility"),
+            (r"MODULE_IMPORT_NS", "drivers/kernelsu/core/init.c","LG KSU 4.19 MODULE_IMPORT_NS compatibility"),
+            (r"field designator ['\"]handle_inode_event['\"] does not refer", "drivers/kernelsu/manager/pkg_observer.c","LG KSU 4.19 pkg_observer fsnotify compatibility"),
+            (r"no member named ['\"]remap_file_range['\"]|no member named ['\"]iopoll['\"]", "drivers/kernelsu/infra/file_wrapper.c","LG KSU 4.19 file_wrapper VFS compatibility"),
+            (r"use of undeclared identifier ['\"]SECCOMP_ARCH_NATIVE_NR['\"]", "arch/arm64/include/asm/seccomp.h","LG ARM64 4.19 seccomp NR compatibility"),
+          ]
+          for pat,path,marker in mappings:
+              if re.search(pat,err,re.S):
+                  p=Path(path)
+                  if marker in p.read_text(errors='replace'):
+                      act("verified-mapping-already-present",f"{path}: {marker}\nNo second speculative edit was made.")
+                      raise SystemExit(20)
+                  raise SystemExit(f"[FAIL] Verified mapping matched but expected marker is absent: {marker}")
+
+          # 4) Never auto-edit arbitrary undefined identifiers, struct members,
+          # linker failures, ABI errors, or compiler diagnostics not in the DB.
+          action.write_text("[AUTO-FIX] UNKNOWN_OR_UNSAFE\nNo verified Linux-4.19 compatibility mapping matched this diagnostic.\n")
+          raise SystemExit(10)
+          PY
+              local rc=$?
+              if [ "$rc" -eq 0 ]; then
+                echo "[PASS] Safe Auto-Fix applied: $(cat "$action_log")"
+                return 0
+              fi
+              if [ "$rc" -eq 20 ]; then
+                echo "[FAIL] Known compatibility error recurred after its verified fix was already present." 
+                cat "$action_log"
+                return 20
+              fi
+              echo "[FAIL] Auto-Fix did not find a safe mapping (rc=$rc)."
+              cat "$action_log"
+              return "$rc"
+            }
+
+            for iteration in $(seq 1 "$MAX_AUTOFIX"); do
+              echo
+              echo "========== AUTO-FIX BUILD ITERATION $iteration/$MAX_AUTOFIX =========="
+              ITER_LOG="$AUTOFIX_DIR/iteration-${iteration}-build.log"
+              : > "$ITER_LOG"
+              set +e
+              make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+                CROSS_COMPILE="$CROSS_COMPILE" \
+                CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+                M=drivers/kernelsu V=1 > >(tee "$ITER_LOG") 2>&1
+              build_rc=${PIPESTATUS[0]}
+              set -e
+
+              if [ "$build_rc" -eq 0 ]; then
+                echo "[PASS] SukiSU v4.2.0 + KPM subtree preflight compiled on iteration $iteration."
+                printf '%s\n' "$iteration" > "$AUTOFIX_DIR/successful-iteration.txt"
+                break
+              fi
+
+              echo "[WARN] KPM subtree compile failed on iteration $iteration (rc=$build_rc)."
+              tail -140 "$ITER_LOG" || true
+              set +e
+              auto_fix_error "$ITER_LOG" "$iteration"
+              fix_rc=$?
+              set -e
+              if [ "$fix_rc" -eq 0 ]; then
+                continue
+              fi
+              if [ "$fix_rc" -eq 20 ]; then
+                echo "[FAIL] A known compatibility error is still present after its exact fix; stopping instead of mutating working code."
+              else
+                echo "[FAIL] AUTO-FIX UNKNOWN/UNSAFE: build stopped fail-closed."
+              fi
+              break
+            done
+
+            echo
+            echo "========== AUTO-FIX SUMMARY =========="
+            echo "MAX_ITERATIONS=$MAX_AUTOFIX"
+            echo "FINAL_BUILD_RC=$build_rc"
+            if [ "$build_rc" -eq 0 ]; then
+              echo "STATUS=SUCCESS"
+            else
+              echo "STATUS=FAILED_OR_UNSAFE"
+              echo "Unknown/high-risk errors were not guessed or patched."
+            fi
+            find "$AUTOFIX_DIR" -maxdepth 1 -type f -printf '%f\n' | sort || true
+            if [ "$build_rc" -ne 0 ]; then
+              exit "$build_rc"
+            fi
 
             echo "[PASS] SukiSU v4.2.0 + KPM subtree preflight compiled."
           } > "$LOG" 2>&1
           cat "$LOG"
+
+      - name: 10A-A - Upload Safe Auto-Fix Diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: LG-Velvet-G900-V32.1-KPM-Safe-AutoFix-Diagnostics
+          path: |
+            ci-logs/10A-kpm-preflight.log
+            ci-logs/autofix/
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
 
       - name: 10C - Final Source Integrity Audit
         shell: bash
