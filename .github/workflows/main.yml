@@ -1198,6 +1198,44 @@ jobs:
             grep -qx 'CONFIG_KPM=y' include/config/auto.conf
             echo "[PASS] Generated auto.conf retains CONFIG_KPM=y."
 
+            # SukiSU-Ultra v4.2.0 KPM uses the post-5.0 access_ok(addr, size)
+            # API, while LG's 4.19 arm64 kernel intentionally exposes the
+            # legacy access_ok(type, addr, size) API. This is the exact compiler
+            # failure from the previous run.
+            #
+            # Apply a narrow compatibility shim to official v4.2.0 kpm.c only.
+            # No KPM logic or feature is changed. 4.19 receives the required
+            # VERIFY_READ/VERIFY_WRITE argument; >=5.0 keeps the native form.
+            KPM_C="drivers/kernelsu/kpm/kpm.c"
+            test -f "$KPM_C"
+            if ! grep -q 'LG KPM 4.19 access_ok compatibility' "$KPM_C"; then
+              sed -i '/^#include "compact.h"$/a\
+          /* LG KPM 4.19 access_ok compatibility */\
+          #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)\
+          #define KPM_ACCESS_OK_READ(addr, size) access_ok(VERIFY_READ, (void __user *)(addr), (size))\
+          #define KPM_ACCESS_OK_WRITE(addr, size) access_ok(VERIFY_WRITE, (void __user *)(addr), (size))\
+          #else\
+          #define KPM_ACCESS_OK_READ(addr, size) access_ok((addr), (size))\
+          #define KPM_ACCESS_OK_WRITE(addr, size) access_ok((addr), (size))\
+          #endif' "$KPM_C"
+              sed -i \
+                -e 's/access_ok(arg1, 255)/KPM_ACCESS_OK_READ(arg1, 255)/g' \
+                -e 's/access_ok(arg2, 255)/KPM_ACCESS_OK_READ(arg2, 255)/g' \
+                -e 's/access_ok(arg1, sizeof(kernel_name_buffer))/KPM_ACCESS_OK_READ(arg1, sizeof(kernel_name_buffer))/g' \
+                -e 's/access_ok(arg2, size)/KPM_ACCESS_OK_WRITE(arg2, size)/g' \
+                -e 's/access_ok(arg2, len)/KPM_ACCESS_OK_READ(arg2, len)/g' \
+                -e 's/access_ok(arg1, sizeof(kpm_name))/KPM_ACCESS_OK_READ(arg1, sizeof(kpm_name))/g' \
+                -e 's/access_ok(arg2, sizeof(kpm_args))/KPM_ACCESS_OK_READ(arg2, sizeof(kpm_args))/g' \
+                -e 's/access_ok(cmd.control_code, sizeof(int))/KPM_ACCESS_OK_READ(cmd.control_code, sizeof(int))/g' \
+                -e 's/access_ok(cmd.result_code, sizeof(int))/KPM_ACCESS_OK_WRITE(cmd.result_code, sizeof(int))/g' \
+                "$KPM_C"
+              echo "[PASS] Applied only the 4.19 access_ok API compatibility shim to official SukiSU v4.2.0 KPM."
+            else
+              echo "[PASS] SukiSU v4.2.0 KPM 4.19 access_ok compatibility shim already present."
+            fi
+
+            grep -nE 'LG KPM 4\.19 access_ok compatibility|KPM_ACCESS_OK_(READ|WRITE)' "$KPM_C"
+
             # Compile the actual integrated drivers/kernelsu subtree. This is the
             # correct v4.2.0 Kbuild path and includes the KPM objects.
             make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
