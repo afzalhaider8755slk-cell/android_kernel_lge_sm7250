@@ -957,7 +957,7 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/ci-logs"
           {
             echo "========== MAPHIDE / JIT-ZYGOTE =========="
-            echo "Patch: $MAPHIDE_PATCH_PATH"
+            echo "Patch reference: $MAPHIDE_PATCH_PATH"
             echo "Repository: $MAPHIDE_PATCH_REPO"
             echo "Variant: $MAPHIDE_VARIANT"
             echo "Source commits: $MAPHIDE_SOURCE_COMMITS"
@@ -966,41 +966,156 @@ jobs:
               "$MAPHIDE_PATCH_URL" -o "$RUNNER_TEMP/69_hide_stuff.patch"
             test -s "$RUNNER_TEMP/69_hide_stuff.patch"
 
+            # Locked feature: archived 69_hide_stuff.patch.
+            # Its historical fs/proc context no longer matches the LG
+            # lineage-23.2 + CIP135 + SUSFS tree, so port the exact same
+            # functional changes by source structure instead of forcing a
+            # stale unified diff. No new feature is introduced or removed.
+            grep -q 'show_vma_header_prefix_fake' "$RUNNER_TEMP/69_hide_stuff.patch"
             grep -q 'jit-zygote-cache' "$RUNNER_TEMP/69_hide_stuff.patch"
             grep -q 'framework-res.apk' "$RUNNER_TEMP/69_hide_stuff.patch"
             grep -q 'fs/proc/task_mmu.c' "$RUNNER_TEMP/69_hide_stuff.patch"
             grep -q 'fs/proc/base.c' "$RUNNER_TEMP/69_hide_stuff.patch"
 
-            echo "[INFO] Applying with 3-way first."
-            if ! git apply --3way --whitespace=fix "$RUNNER_TEMP/69_hide_stuff.patch"; then
-              echo "[WARN] 3-way apply failed; retrying with standard patch application."
-              git reset --hard HEAD
-              git clean -fd
-              if ! git apply --whitespace=fix "$RUNNER_TEMP/69_hide_stuff.patch"; then
-                echo "[FAIL] Maphide patch does not apply cleanly to this kernel tree."
-                echo "[INFO] This is a source-compatibility error; no partial Maphide state is accepted."
-                git status --short || true
-                find . -name '*.rej' -o -name '*.orig' | sort || true
-                exit 1
-              fi
-            fi
+            python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-            grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c || {
-              echo "[FAIL] Maphide task_mmu implementation marker missing after apply."
-              exit 1
-            }
-            grep -q 'jit-zygote-cache' fs/proc/task_mmu.c || {
-              echo "[FAIL] JIT-Zygote hiding marker missing after apply."
-              exit 1
-            }
-            grep -q 'framework-res.apk' fs/proc/task_mmu.c || {
-              echo "[FAIL] Lineage mapping marker missing after apply."
-              exit 1
-            }
-            echo "[PASS] Maphide/JIT-Zygote patch applied and verified."
+          task = Path("fs/proc/task_mmu.c")
+          base = Path("fs/proc/base.c")
+          t = task.read_text()
+          b = base.read_text()
+
+          TASK_MARKER = "/* LG Maphide 69_hide_stuff: exact feature port */"
+          BASE_MARKER = "/* LG Maphide 69_hide_stuff: map_files lineage alias */"
+
+          if TASK_MARKER not in t:
+              helper = """/* LG Maphide 69_hide_stuff: exact feature port */
+          static void show_vma_header_prefix_fake(struct seq_file *m,
+          					unsigned long start, unsigned long end,
+          					vm_flags_t flags, unsigned long long pgoff,
+          					dev_t dev, unsigned long ino)
+          {
+          	seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
+          	seq_printf(m, "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu ",
+          			start,
+          			end,
+          			flags & VM_READ ? 'r' : '-',
+          			flags & VM_WRITE ? 'w' : '-',
+          			flags & VM_EXEC ? '-' : '-',
+          			flags & VM_MAYSHARE ? 's' : 'p',
+          			pgoff,
+          			MAJOR(dev), MINOR(dev), ino);
+          }
+
+          """
+              m = re.search(r'(?m)^static void\nshow_map_vma\s*\(', t)
+              if not m:
+                  m = re.search(r'(?m)^static void\s+show_map_vma\s*\(', t)
+              if not m:
+                  raise SystemExit("[FAIL] Could not locate show_map_vma()")
+              t = t[:m.start()] + helper + t[m.start():]
+
+              fn = re.search(r'(?ms)^static void\s+show_map_vma\s*\(.*?\n\}\n(?=\s*static int\s+show_map\s*\()', t)
+              if not fn:
+                  raise SystemExit("[FAIL] Could not locate complete show_map_vma() body")
+              body = fn.group(0)
+
+              if "struct dentry *dentry;" not in body:
+                  anchor = "\tconst char *name = NULL;\n"
+                  if anchor not in body:
+                      raise SystemExit("[FAIL] show_map_vma declaration anchor changed")
+                  body = body.replace(anchor, anchor + "\tstruct dentry *dentry;\n", 1)
+
+              if "LG Maphide 69_hide_stuff: dentry routing" not in body:
+                  routing = """		/* LG Maphide 69_hide_stuff: dentry routing */
+          		dentry = file->f_path.dentry;
+          		if (dentry) {
+          			const char *path = (const char *)dentry->d_name.name;
+          			if (strstr(path, "lineage")) {
+          				start = vma->vm_start;
+          				end = vma->vm_end;
+          				show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
+          				name = "/system/framework/framework-res.apk";
+          				goto done;
+          			}
+          			if (strstr(path, "jit-zygote-cache")) {
+          				start = vma->vm_start;
+          				end = vma->vm_end;
+          				show_vma_header_prefix_fake(m, start, end, flags, pgoff, dev, ino);
+          				goto bypass;
+          			}
+          		}
+          """
+                  anchor = "\t\tpgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;\n"
+                  if anchor in body:
+                      body = body.replace(anchor, anchor + routing, 1)
+                  else:
+                      mm = re.search(r'(?m)^\s*pgoff\s*=\s*\(\(loff_t\)vma->vm_pgoff\)\s*<<\s*PAGE_SHIFT;\s*$', body)
+                      if not mm:
+                          raise SystemExit("[FAIL] Could not locate pgoff assignment")
+                      body = body[:mm.end()] + "\n" + routing + body[mm.end():]
+
+              if "LG Maphide 69_hide_stuff: bypass label" not in body:
+                  label = "\t/* LG Maphide 69_hide_stuff: bypass label */\n\tbypass:\n"
+                  cm = re.search(r'(?m)^\t/\*\n\t \* Print the dentry name for named mappings, and a\n', body)
+                  if not cm:
+                      raise SystemExit("[FAIL] Could not locate named-mapping comment")
+                  body = body[:cm.start()] + label + body[cm.start():]
+
+              t = t[:fn.start()] + body + t[fn.end():]
+
+          if BASE_MARKER not in b:
+              fn = re.search(r'(?ms)^static int map_files_get_link\s*\(struct dentry \*dentry, struct path \*path\)\n\{.*?\n\}\n', b)
+              if not fn:
+                  raise SystemExit("[FAIL] Could not locate map_files_get_link()")
+              body = fn.group(0)
+              if 'strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")' not in body:
+                  old = """\tif (vma && vma->vm_file) {
+          \t\t*path = vma->vm_file->f_path;
+          \t\tpath_get(path);
+          \t\trc = 0;
+          \t}
+          """
+                  new = """\t/* LG Maphide 69_hide_stuff: map_files lineage alias */
+          \tif (vma) {
+          \t\tif (vma->vm_file) {
+          \t\t\tif (strstr(vma->vm_file->f_path.dentry->d_name.name, "lineage")) {
+          \t\t\t\trc = kern_path("/system/framework/framework-res.apk", LOOKUP_FOLLOW, path);
+          \t\t\t} else {
+          \t\t\t\t*path = vma->vm_file->f_path;
+          \t\t\t\tpath_get(path);
+          \t\t\t\trc = 0;
+          \t\t\t}
+          \t\t}
+          \t}
+          """
+                  if old in body:
+                      body = body.replace(old, new, 1)
+                  else:
+                      mm = re.search(r'(?ms)\tif \(vma && vma->vm_file\) \{\s*\*path = vma->vm_file->f_path;\s*path_get\(path\);\s*rc = 0;\s*\}', body)
+                      if not mm:
+                          raise SystemExit("[FAIL] map_files_get_link() body changed")
+                      body = body[:mm.start()] + new.rstrip() + "\n" + body[mm.end():]
+              b = b[:fn.start()] + body + b[fn.end():]
+
+          task.write_text(t)
+          base.write_text(b)
+          print("[PASS] Exact Maphide/JIT-Zygote feature port completed.")
+          PY
+
+            grep -q 'LG Maphide 69_hide_stuff: exact feature port' fs/proc/task_mmu.c
+            grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c
+            grep -q 'LG Maphide 69_hide_stuff: dentry routing' fs/proc/task_mmu.c
+            grep -q 'strstr(path, "lineage")' fs/proc/task_mmu.c
+            grep -q 'strstr(path, "jit-zygote-cache")' fs/proc/task_mmu.c
+            grep -q 'framework-res.apk' fs/proc/task_mmu.c
+            grep -q 'LG Maphide 69_hide_stuff: map_files lineage alias' fs/proc/base.c
+            grep -q 'kern_path("/system/framework/framework-res.apk"' fs/proc/base.c
+
+            echo "[PASS] Maphide/JIT-Zygote exact feature port applied to LG 4.19 source structure."
           } > "$LOG" 2>&1
           cat "$LOG"
-
 
       - name: 11 - Core Integration Verification
         shell: bash
