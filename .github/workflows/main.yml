@@ -1198,6 +1198,57 @@ jobs:
             grep -qx 'CONFIG_KPM=y' include/config/auto.conf
             echo "[PASS] Generated auto.conf retains CONFIG_KPM=y."
 
+            # SukiSU v4.2.0 seccomp_cache.c consumes the generic seccomp
+            # architecture-count macros SECCOMP_ARCH_NATIVE_NR and, when
+            # CONFIG_COMPAT is enabled, SECCOMP_ARCH_COMPAT_NR. The upstream
+            # Linux 4.19 arm64 header has the seccomp include and compat syscall
+            # aliases, but does not yet define these architecture-count macros.
+            # Later arm64 kernels define them as NR_syscalls and
+            # __NR_compat_syscalls respectively. Backport only these guarded
+            # definitions into the target arm64 header so the API exposed to
+            # SukiSU matches the native 4.19 syscall tables without changing
+            # syscall numbers or seccomp behavior.
+            ARM64_SECCOMP_H="arch/arm64/include/asm/seccomp.h"
+            test -f "$ARM64_SECCOMP_H"
+            if ! grep -q 'LG ARM64 4.19 seccomp NR compatibility' "$ARM64_SECCOMP_H"; then
+              python3 - "$ARM64_SECCOMP_H" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          marker = "/* LG ARM64 4.19 seccomp NR compatibility */"
+          if marker in s:
+              raise SystemExit(0)
+          needle = "#include <asm-generic/seccomp.h>\n"
+          if s.count(needle) != 1:
+              raise SystemExit("[FAIL] Expected exactly one asm-generic/seccomp.h include in arm64 seccomp.h.")
+          block = """#include <asm-generic/seccomp.h>
+
+          /* LG ARM64 4.19 seccomp NR compatibility */
+          #ifndef SECCOMP_ARCH_NATIVE_NR
+          #define SECCOMP_ARCH_NATIVE_NR NR_syscalls
+          #endif
+          #ifdef CONFIG_COMPAT
+          #ifndef SECCOMP_ARCH_COMPAT
+          #define SECCOMP_ARCH_COMPAT AUDIT_ARCH_ARM
+          #endif
+          #ifndef SECCOMP_ARCH_COMPAT_NR
+          #define SECCOMP_ARCH_COMPAT_NR __NR_compat_syscalls
+          #endif
+          #ifndef SECCOMP_ARCH_COMPAT_NAME
+          #define SECCOMP_ARCH_COMPAT_NAME "arm"
+          #endif
+          #endif
+          """
+          p.write_text(s.replace(needle, block, 1))
+          PY
+              echo "[PASS] Added only the guarded 4.19 ARM64 seccomp NR compatibility definitions."
+            else
+              echo "[PASS] ARM64 4.19 seccomp NR compatibility definitions already present."
+            fi
+            grep -nE 'LG ARM64 4\.19 seccomp NR compatibility|SECCOMP_ARCH_(NATIVE_NR|COMPAT_NR)' "$ARM64_SECCOMP_H"
+
             # SukiSU-Ultra v4.2.0 KPM uses the post-5.0 access_ok(addr, size)
             # API, while LG's 4.19 arm64 kernel intentionally exposes the
             # legacy access_ok(type, addr, size) API. This is the exact compiler
