@@ -46,7 +46,19 @@ jobs:
     - name: 00 - Initialize Early Diagnostics
       if: always()
       shell: bash
-      run: "set +e\nmkdir -p \"$DIAG_DIR\" \"$GITHUB_WORKSPACE/diagnostic-artifact\"\n{\n  echo \"========== EARLY DIAGNOSTICS INITIALIZATION ==========\"\n  date -u\n  echo \"Run: $GITHUB_RUN_ID\"\n  echo \"Repository: $GITHUB_REPOSITORY\"\n  echo \"Workflow SHA: $GITHUB_SHA\"\n  echo \"Kernel repository: lge-qcom-dev/android_kernel_lge_sm7250\"\n  echo \"Requested Lineage branch: $LINEAGE_BRANCH\"\n  echo \"CIP target: $CIP_REF\"\n} | tee \"$DIAG_DIR/00-early-init.log\"\n"
+      run: |
+        set +e
+        mkdir -p "$DIAG_DIR" "$GITHUB_WORKSPACE/diagnostic-artifact"
+        {
+          echo "========== EARLY DIAGNOSTICS INITIALIZATION =========="
+          date -u
+          echo "Run: $GITHUB_RUN_ID"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Workflow SHA: $GITHUB_SHA"
+          echo "Kernel repository: lge-qcom-dev/android_kernel_lge_sm7250"
+          echo "Requested Lineage branch: $LINEAGE_BRANCH"
+          echo "CIP target: $CIP_REF"
+        } | tee "$DIAG_DIR/00-early-init.log"
     - name: 01 - Checkout Stock Kernel Source
       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
@@ -75,35 +87,233 @@ jobs:
         compression-level: 6
     - name: 02 - Initialize Diagnostics
       shell: bash
-      run: "set +e\nmkdir -p \"$DIAG_DIR\"\n{\n  echo \"========== CIP135 KERNEL BASELINE ==========\"\n  echo \"DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')\"\n  echo \"RUN_ID=$GITHUB_RUN_ID\"\n  echo \"SHA=$GITHUB_SHA\"\n  echo \"BRANCH=$GITHUB_REF_NAME\"\n  echo\n  git rev-parse HEAD\n  git status --short\n  echo\n  grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile\n  echo\n  echo \"Defconfig input: ${{ github.event.inputs.defconfig }}\"\n  echo\n  df -h\n  echo\n  free -h\n} > \"$DIAG_DIR/02-initialize.log\" 2>&1\n"
+      run: |
+        set +e
+        mkdir -p "$DIAG_DIR"
+        {
+          echo "========== CIP135 KERNEL BASELINE =========="
+          echo "DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "RUN_ID=$GITHUB_RUN_ID"
+          echo "SHA=$GITHUB_SHA"
+          echo "BRANCH=$GITHUB_REF_NAME"
+          echo
+          git rev-parse HEAD
+          git status --short
+          echo
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile
+          echo
+          echo "Defconfig input: ${{ github.event.inputs.defconfig }}"
+          echo
+          df -h
+          echo
+          free -h
+        } > "$DIAG_DIR/02-initialize.log" 2>&1
     - name: 02A - LATEST-COMPATIBILITY SANITY CHECK
       shell: bash
-      run: "set -euo pipefail\nmkdir -p \"$DIAG_DIR\"\nLOG=\"$DIAG_DIR/02A-latest-compatibility.log\"\n{\n  echo \"========== LATEST-COMPATIBILITY SANITY CHECK ==========\"\n  echo \"Pinned SukiSU-Ultra: $SUKISU_REF @ $SUKISU_RELEASE_COMMIT\"\n  echo \"Pinned Baseband-Guard: $BASEBAND_GUARD_TAG @ $BASEBAND_GUARD_COMMIT\"\n  echo \"Pinned CIP: $CIP_REF\"\n  echo\n  echo \"A newer upstream release is NOT auto-selected unless it is verified compatible with 4.19.325-cip135.\"\n  echo \"This prevents accidental future breakage while enforcing the latest-compatible policy.\"\n  git ls-remote --tags --refs \"https://github.com/$SUKISU_REPO.git\" | tail -n 5 || true\n  git ls-remote --tags --refs \"https://github.com/vc-teahouse/Baseband-guard.git\" | tail -n 5 || true\n  echo \"[PASS] Version pins and compatibility policy recorded.\"\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\n"
+      run: |
+        set -euo pipefail
+        mkdir -p "$DIAG_DIR"
+        LOG="$DIAG_DIR/02A-latest-compatibility.log"
+        {
+          echo "========== LATEST-COMPATIBILITY SANITY CHECK =========="
+          echo "Pinned SukiSU-Ultra: $SUKISU_REF @ $SUKISU_RELEASE_COMMIT"
+          echo "Pinned Baseband-Guard: $BASEBAND_GUARD_TAG @ $BASEBAND_GUARD_COMMIT"
+          echo "Pinned CIP: $CIP_REF"
+          echo
+          echo "A newer upstream release is NOT auto-selected unless it is verified compatible with 4.19.325-cip135."
+          echo "This prevents accidental future breakage while enforcing the latest-compatible policy."
+          git ls-remote --tags --refs "https://github.com/$SUKISU_REPO.git" | tail -n 5 || true
+          git ls-remote --tags --refs "https://github.com/vc-teahouse/Baseband-guard.git" | tail -n 5 || true
+          echo "[PASS] Version pins and compatibility policy recorded."
+        } > "$LOG" 2>&1
+        cat "$LOG"
     - name: 03 - Install Build Dependencies
       shell: bash
-      run: "set +e\nLOG=\"$DIAG_DIR/03-install-dependencies.log\"\n: > \"$LOG\"\n{\n  sudo apt-get update\n  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \\\n    git curl wget make gcc g++ bison flex bc cpio \\\n    python3 python-is-python3 gawk zip unzip rsync patch perl \\\n    libssl-dev libelf-dev device-tree-compiler file\n  echo\n  echo \"gcc:\"\n  gcc --version | sed -n '1p'\n  echo \"make:\"\n  make --version | sed -n '1p'\n  echo \"python:\"\n  python3 --version\n} > \"$LOG\" 2>&1\nSTATUS=$?\ntail -100 \"$LOG\" || true\nexit \"$STATUS\"\n"
+      run: |
+        set +e
+        LOG="$DIAG_DIR/03-install-dependencies.log"
+        : > "$LOG"
+        {
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git curl wget make gcc g++ bison flex bc cpio \
+            python3 python-is-python3 gawk zip unzip rsync patch perl \
+            libssl-dev libelf-dev device-tree-compiler file
+          echo
+          echo "gcc:"
+          gcc --version | sed -n '1p'
+          echo "make:"
+          make --version | sed -n '1p'
+          echo "python:"
+          python3 --version
+        } > "$LOG" 2>&1
+        STATUS=$?
+        tail -100 "$LOG" || true
+        exit "$STATUS"
     - name: 04 - Download Android Clang r547379
       shell: bash
-      run: "set +e\nLOG=\"$DIAG_DIR/04-download-clang.log\"\n: > \"$LOG\"\n{\n  rm -rf clang-prebuilt toolchain\n  git clone --depth=1 --filter=blob:none --sparse \\\n    --branch android16-qpr2-release \\\n    https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86.git \\\n    clang-prebuilt\n  cd clang-prebuilt\n  git sparse-checkout set clang-r547379\n  cd ..\n  test -x \"$CLANG_DIR/bin/clang\"\n  test -x \"$CLANG_DIR/bin/ld.lld\"\n  ln -s \"$CLANG_DIR\" toolchain\n  \"$CLANG_DIR/bin/clang\" --version\n  \"$CLANG_DIR/bin/ld.lld\" --version\n} > \"$LOG\" 2>&1\nSTATUS=$?\ntail -100 \"$LOG\" || true\nexit \"$STATUS\"\n"
+      run: |
+        set +e
+        LOG="$DIAG_DIR/04-download-clang.log"
+        : > "$LOG"
+        {
+          rm -rf clang-prebuilt toolchain
+          git clone --depth=1 --filter=blob:none --sparse \
+            --branch android16-qpr2-release \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86.git \
+            clang-prebuilt
+          cd clang-prebuilt
+          git sparse-checkout set clang-r547379
+          cd ..
+          test -x "$CLANG_DIR/bin/clang"
+          test -x "$CLANG_DIR/bin/ld.lld"
+          ln -s "$CLANG_DIR" toolchain
+          "$CLANG_DIR/bin/clang" --version
+          "$CLANG_DIR/bin/ld.lld" --version
+        } > "$LOG" 2>&1
+        STATUS=$?
+        tail -100 "$LOG" || true
+        exit "$STATUS"
     - name: 05 - Download AArch64 GCC 4.9
       shell: bash
-      run: "set +e\nLOG=\"$DIAG_DIR/05-download-gcc64.log\"\n: > \"$LOG\"\n{\n  rm -rf gcc64\n  git clone --depth=1 \\\n    https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \\\n    gcc64\n  test -x gcc64/bin/aarch64-linux-android-gcc\n  gcc64/bin/aarch64-linux-android-gcc --version\n} > \"$LOG\" 2>&1\nSTATUS=$?\ntail -80 \"$LOG\" || true\nexit \"$STATUS\"\n"
+      run: |
+        set +e
+        LOG="$DIAG_DIR/05-download-gcc64.log"
+        : > "$LOG"
+        {
+          rm -rf gcc64
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+            gcc64
+          test -x gcc64/bin/aarch64-linux-android-gcc
+          gcc64/bin/aarch64-linux-android-gcc --version
+        } > "$LOG" 2>&1
+        STATUS=$?
+        tail -80 "$LOG" || true
+        exit "$STATUS"
     - name: 06 - Download ARM32 GCC 4.9
       shell: bash
-      run: "set +e\nLOG=\"$DIAG_DIR/06-download-gcc32.log\"\n: > \"$LOG\"\n{\n  rm -rf gcc32\n  git clone --depth=1 \\\n    https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \\\n    gcc32\n  test -x gcc32/bin/arm-linux-androideabi-gcc\n  gcc32/bin/arm-linux-androideabi-gcc --version\n} > \"$LOG\" 2>&1\nSTATUS=$?\ntail -80 \"$LOG\" || true\nexit \"$STATUS\"\n"
+      run: |
+        set +e
+        LOG="$DIAG_DIR/06-download-gcc32.log"
+        : > "$LOG"
+        {
+          rm -rf gcc32
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
+            gcc32
+          test -x gcc32/bin/arm-linux-androideabi-gcc
+          gcc32/bin/arm-linux-androideabi-gcc --version
+        } > "$LOG" 2>&1
+        STATUS=$?
+        tail -80 "$LOG" || true
+        exit "$STATUS"
     - name: 07 - Prepare Toolchain Environment
       shell: bash
-      run: "set +e\nLOG=\"$DIAG_DIR/07-toolchain-check.log\"\n: > \"$LOG\"\n{\n  echo \"==================================\"\n  echo \"TOOLCHAIN ENVIRONMENT\"\n  echo \"==================================\"\n\n  # IMPORTANT: GITHUB_PATH affects later steps, not the current step.\n  # Export PATH here as well so ld.lld is available immediately.\n  export PATH=\"$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH\"\n\n  echo \"$CLANG_DIR/bin\" >> \"$GITHUB_PATH\"\n  echo \"$GCC64_DIR/bin\" >> \"$GITHUB_PATH\"\n  echo \"$GCC32_DIR/bin\" >> \"$GITHUB_PATH\"\n\n  echo \"CROSS_COMPILE=$GCC64_DIR/bin/aarch64-linux-android-\" >> \"$GITHUB_ENV\"\n  echo \"CROSS_COMPILE_ARM32=$GCC32_DIR/bin/arm-linux-androideabi-\" >> \"$GITHUB_ENV\"\n\n  echo\n  echo \"PATH:\"\n  echo \"$PATH\"\n\n  echo\n  echo \"CLANG:\"\n  command -v clang\n  clang --version | sed -n '1,2p'\n\n  echo\n  echo \"LLD:\"\n  command -v ld.lld\n  ld.lld --version | sed -n '1,2p'\n\n  echo\n  echo \"AARCH64 GCC:\"\n  command -v aarch64-linux-android-gcc\n  aarch64-linux-android-gcc --version | sed -n '1p'\n\n  echo\n  echo \"ARM32 GCC:\"\n  command -v arm-linux-androideabi-gcc\n  arm-linux-androideabi-gcc --version | sed -n '1p'\n\n  echo\n  echo \"Exact tool files:\"\n  ls -lh \"$CLANG_DIR/bin/clang\" \"$CLANG_DIR/bin/ld.lld\"\n\n  echo\n  echo \"[PASS] Toolchain Ready\"\n} > \"$LOG\" 2>&1\nSTATUS=$?\ncat \"$LOG\"\nexit \"$STATUS\"\n"
+      run: |
+        set +e
+        LOG="$DIAG_DIR/07-toolchain-check.log"
+        : > "$LOG"
+        {
+          echo "=================================="
+          echo "TOOLCHAIN ENVIRONMENT"
+          echo "=================================="
+        
+          # IMPORTANT: GITHUB_PATH affects later steps, not the current step.
+          # Export PATH here as well so ld.lld is available immediately.
+          export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
+        
+          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+          echo "$GCC64_DIR/bin" >> "$GITHUB_PATH"
+          echo "$GCC32_DIR/bin" >> "$GITHUB_PATH"
+        
+          echo "CROSS_COMPILE=$GCC64_DIR/bin/aarch64-linux-android-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_ARM32=$GCC32_DIR/bin/arm-linux-androideabi-" >> "$GITHUB_ENV"
+        
+          echo
+          echo "PATH:"
+          echo "$PATH"
+        
+          echo
+          echo "CLANG:"
+          command -v clang
+          clang --version | sed -n '1,2p'
+        
+          echo
+          echo "LLD:"
+          command -v ld.lld
+          ld.lld --version | sed -n '1,2p'
+        
+          echo
+          echo "AARCH64 GCC:"
+          command -v aarch64-linux-android-gcc
+          aarch64-linux-android-gcc --version | sed -n '1p'
+        
+          echo
+          echo "ARM32 GCC:"
+          command -v arm-linux-androideabi-gcc
+          arm-linux-androideabi-gcc --version | sed -n '1p'
+        
+          echo
+          echo "Exact tool files:"
+          ls -lh "$CLANG_DIR/bin/clang" "$CLANG_DIR/bin/ld.lld"
+        
+          echo
+          echo "[PASS] Toolchain Ready"
+        } > "$LOG" 2>&1
+        STATUS=$?
+        cat "$LOG"
+        exit "$STATUS"
     - name: 08 - Integrate SukiSU-Ultra 4.2.0 (Non-GKI Builtin)
       shell: bash
       run: "set -euo pipefail\nLOG=\"$DIAG_DIR/08-sukisu-integration.log\"\n: > \"$LOG\"\n{\n  echo \"========== SUKISU-Ultra 4.2.0 ==========\"\n  git ls-files -z | sort -z > \"$RUNNER_TEMP/tracked-before\"\n\n  curl -fsSL \"https://raw.githubusercontent.com/${SUKISU_REPO}/${SUKISU_REF}/kernel/setup.sh\" \\\n    -o \"$RUNNER_TEMP/sukisu-setup.sh\"\n  chmod +x \"$RUNNER_TEMP/sukisu-setup.sh\"\n\n  echo \"Using official SukiSU release tag: $SUKISU_REF\"\n  echo \"Official release commit (short): $SUKISU_RELEASE_COMMIT\"\n  echo \"Non-GKI integration mode: source-integrated SukiSU + KPROBES\"\n  # v4.2.0 setup.sh accepts a commit/tag and integrates KernelSU into drivers/.\n  bash \"$RUNNER_TEMP/sukisu-setup.sh\" \"$SUKISU_REF\"\n\n  test -d KernelSU\n  test -f KernelSU/kernel/Kconfig\n  test -f KernelSU/kernel/Makefile\n\n  echo\n  echo \"SukiSU repository state:\"\n  git -C KernelSU remote -v || true\n  KSU_HEAD=\"$(git -C KernelSU rev-parse HEAD)\"\n  git -C KernelSU describe --tags --always || true\n  case \"$KSU_HEAD\" in\n    85eb4a9*) echo \"[PASS] SukiSU HEAD matches official 4.2.0 release commit.\" ;;\n    *) echo \"[FAIL] SukiSU HEAD $KSU_HEAD does not match expected 4.2.0 commit $SUKISU_RELEASE_COMMIT\"; exit 1 ;;\n  esac\n\n  echo \"SukiSU-Ultra 4.2.0 is the root implementation; SUSFS is integrated as a compatible non-GKI 4.19 kernel patchset.\"\n  echo \"SUSFS target: $SUSFS_REF @ $SUSFS_COMMIT\"\n\n  git ls-files -z | sort -z > \"$RUNNER_TEMP/tracked-after\"\n  if ! cmp -s \"$RUNNER_TEMP/tracked-before\" \"$RUNNER_TEMP/tracked-after\"; then\n    echo \"[FAIL] Existing tracked stock files disappeared during SukiSU integration.\"\n    diff -u <(tr '\\0' '\\n' < \"$RUNNER_TEMP/tracked-before\") \\\n            <(tr '\\0' '\\n' < \"$RUNNER_TEMP/tracked-after\") || true\n    exit 1\n  fi\n\n  echo \"[PASS] SukiSU-Ultra 4.2.0 integrated as source code for the non-GKI kernel.\"\n  echo \"[PASS] No external root-hiding kernel integration was applied.\"\n  echo \"[PASS]\
         \ No pre-existing tracked stock files were removed.\"\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\n"
     - name: 09 - Verify SukiSU 4.2.0 + KPM + SUSFS 4.19
       shell: bash
-      run: "set -euo pipefail\nLOG=\"$DIAG_DIR/09-sukisu-verification.log\"\n: > \"$LOG\"\n{\n  test -d KernelSU\n  test -f KernelSU/kernel/Kconfig\n  test -f KernelSU/kernel/Makefile\n  echo \"SukiSU tag requested: $SUKISU_REF\"\n  echo \"SukiSU HEAD: $(git -C KernelSU rev-parse HEAD)\"\n  echo \"SukiSU describe: $(git -C KernelSU describe --tags --always 2>/dev/null || true)\"\n  echo\n  # IMPORTANT: this step runs before the defconfig/configuration stage.\n  # Therefore .config is not expected to exist yet.  Verify the source\n  # integration here; CONFIG_* = y is validated only after olddefconfig\n  # in the configuration stage below.\n  grep -RqsE '^[[:space:]]*(config|menuconfig)[[:space:]]+KPM([[:space:]]|$)' KernelSU/kernel               || { echo \"[FAIL] SukiSU v4.2.0 KPM Kconfig symbol is missing from KernelSU/kernel.\"; exit 1; }\n  test -d KernelSU/kernel/kpm || { echo \"[FAIL] SukiSU v4.2.0 KPM source directory is missing.\"; exit 1; }\n  test -f KernelSU/kernel/Kbuild || { echo \"[FAIL] SukiSU v4.2.0 Kernel/Kbuild is missing.\"; exit 1; }\n\n  # SUSFS is a source-level non-GKI 4.19 integration at this stage.\n  # Its CONFIG_* values are intentionally checked after defconfig.\n  grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU fs include 2>/dev/null || {\n    echo \"[FAIL] SUSFS integration markers are missing from the source tree.\"\n    exit 1\n  }\n  echo \"SUSFS: $SUSFS_VERSION @ $SUSFS_COMMIT\"\n  echo \"[PASS] SukiSU-Ultra 4.2.0 source + KPM source + SUSFS 4.19 integration verified.\"\n  echo \"[INFO] CONFIG_KPM=y is deferred to the post-defconfig verification stage.\"\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\n"
+      run: |
+        set -euo pipefail
+        LOG="$DIAG_DIR/09-sukisu-verification.log"
+        : > "$LOG"
+        {
+          test -d KernelSU
+          test -f KernelSU/kernel/Kconfig
+          test -f KernelSU/kernel/Makefile
+          echo "SukiSU tag requested: $SUKISU_REF"
+          echo "SukiSU HEAD: $(git -C KernelSU rev-parse HEAD)"
+          echo "SukiSU describe: $(git -C KernelSU describe --tags --always 2>/dev/null || true)"
+          echo
+          # IMPORTANT: this step runs before the defconfig/configuration stage.
+          # Therefore .config is not expected to exist yet.  Verify the source
+          # integration here; CONFIG_* = y is validated only after olddefconfig
+          # in the configuration stage below.
+          grep -RqsE '^[[:space:]]*(config|menuconfig)[[:space:]]+KPM([[:space:]]|$)' KernelSU/kernel               || { echo "[FAIL] SukiSU v4.2.0 KPM Kconfig symbol is missing from KernelSU/kernel."; exit 1; }
+          test -d KernelSU/kernel/kpm || { echo "[FAIL] SukiSU v4.2.0 KPM source directory is missing."; exit 1; }
+          test -f KernelSU/kernel/Kbuild || { echo "[FAIL] SukiSU v4.2.0 Kernel/Kbuild is missing."; exit 1; }
+        
+          # SUSFS is a source-level non-GKI 4.19 integration at this stage.
+          # Its CONFIG_* values are intentionally checked after defconfig.
+          grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU fs include 2>/dev/null || {
+            echo "[FAIL] SUSFS integration markers are missing from the source tree."
+            exit 1
+          }
+          echo "SUSFS: $SUSFS_VERSION @ $SUSFS_COMMIT"
+          echo "[PASS] SukiSU-Ultra 4.2.0 source + KPM source + SUSFS 4.19 integration verified."
+          echo "[INFO] CONFIG_KPM=y is deferred to the post-defconfig verification stage."
+        } > "$LOG" 2>&1
+        cat "$LOG"
     - name: 10 - Verify Non-GKI Hook Architecture
       shell: bash
-      run: "set -euo pipefail\nLOG=\"$DIAG_DIR/10-hook-architecture.log\"\n: > \"$LOG\"\n{\n  echo \"Official SukiSU-Ultra v4.2.0 hook model: KPROBES.\"\n  echo \"The v4.2.0 Kconfig does NOT define KSU_MANUAL_HOOK; the old workflow requirement was invalid.\"\n  echo \"KPROBES + KPROBE_EVENTS are retained; tracepoint hook is not selected.\"\n  grep -RniE 'KSU_MANUAL_HOOK|KSU_TRACEPOINT_HOOK|KSU_KPROBE_HOOKS' KernelSU 2>/dev/null | head -100 || true\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\n"
+      run: |
+        set -euo pipefail
+        LOG="$DIAG_DIR/10-hook-architecture.log"
+        : > "$LOG"
+        {
+          echo "Official SukiSU-Ultra v4.2.0 hook model: KPROBES."
+          echo "The v4.2.0 Kconfig does NOT define KSU_MANUAL_HOOK; the old workflow requirement was invalid."
+          echo "KPROBES + KPROBE_EVENTS are retained; tracepoint hook is not selected."
+          grep -RniE 'KSU_MANUAL_HOOK|KSU_TRACEPOINT_HOOK|KSU_KPROBE_HOOKS' KernelSU 2>/dev/null | head -100 || true
+        } > "$LOG" 2>&1
+        cat "$LOG"
     - name: 10 - Configure Stock Defconfig + SukiSU + SUSFS + Stable Feature Matrix + Full LTO
       shell: bash
       run: "set +e\nLOG=\"$DIAG_DIR/10-defconfig-and-features.log\"\n: > \"$LOG\"\n{\n  set -u\n  export PATH=\"$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH\"\n  export CROSS_COMPILE=\"$GCC64_DIR/bin/aarch64-linux-android-\"\n  export CROSS_COMPILE_ARM32=\"$GCC32_DIR/bin/arm-linux-androideabi-\"\n\n  DEFCONFIG=\"${{ github.event.inputs.defconfig }}\"\n  test -f \"arch/arm64/configs/${DEFCONFIG}\" || { echo \"[FAIL] Missing defconfig\"; exit 1; }\n\n  make ARCH=arm64 LLVM=1 LLVM_IAS=1 \\\n    CROSS_COMPILE=\"$CROSS_COMPILE\" \\\n    CROSS_COMPILE_ARM32=\"$CROSS_COMPILE_ARM32\" \\\n    \"$DEFCONFIG\" || exit $?\n\n  test -s .config || { echo \"[FAIL] .config was not generated\"; exit 1; }\n\n  # Official SukiSU v4.2.0 Kconfig requires KPROBES + EXT4 for KSU.\n  # Do not fabricate CONFIG_KSU_MANUAL_HOOK: official v4.2.0\n  # kernel/Kconfig does not define that symbol.\n\n  echo\n  echo \"========== CIP135 INTEGRITY CHECK ==========\"\n  test -f Makefile || { echo \"[FAIL] Kernel Makefile missing after CIP135 step.\"; exit 1; }\n  grep -q '^SUBLEVEL = 325$' Makefile || { echo \"[FAIL] Kernel is not 4.19.325 after CIP135 step.\"; exit 1; }\n  if git status --short | grep -E '^(UU|AA|DD|AU|UD|UA|DU|DA) '; then\n    echo \"[FAIL] Unresolved merge conflicts remain after CIP135 integration.\"\n    exit 1\n  fi\n  echo \"[PASS] No unresolved conflicts remain after CIP135 integration.\"\n\n  echo\n  echo \"========== SUSFS NON-GKI 4.19 INTEGRATION ==========\"\n  rm -rf \"$RUNNER_TEMP/susfs4ksu\"\n  git clone --depth=1 --branch \"$SUSFS_REF\" \"https://gitlab.com/$SUSFS_REPO.git\" \"$RUNNER_TEMP/susfs4ksu\"\n  SUSFS_HEAD=\"$(git -C \"$RUNNER_TEMP/susfs4ksu\" rev-parse HEAD)\"\n  SUSFS_EXPECTED=\"$(git -C \"$RUNNER_TEMP/susfs4ksu\" rev-parse \"${SUSFS_COMMIT}^{commit}\" 2>/dev/null || true)\"\n  test -n \"$SUSFS_EXPECTED\" && test \"$SUSFS_HEAD\" = \"$SUSFS_EXPECTED\" || {\n    echo \"[FAIL] SUSFS ref does not resolve to pinned compatible commit $SUSFS_COMMIT\"\n    echo \"\
@@ -123,19 +333,116 @@ jobs:
         \ \"$LOG\"\n"
     - name: 11 - Core Integration Verification
       shell: bash
-      run: "set -euo pipefail\nLOG=\"$DIAG_DIR/11-core-integration-verification.log\"\n: > \"$LOG\"\n{\n  echo \"========== KERNELSU / SUKISU SOURCE CHECK ==========\"\n  test -d KernelSU\n  test -f KernelSU/kernel/Kconfig\n  test -f KernelSU/kernel/Makefile\n  echo \"SukiSU HEAD: $(git -C KernelSU rev-parse HEAD)\"\n  echo \"SukiSU describe: $(git -C KernelSU describe --tags --always 2>/dev/null || true)\"\n  echo\n  echo \"========== NO EXTERNAL ROOT-HIDING KERNEL PATCHSET ==========\"\n  if grep -RniE 'susfs\\.h|sus_su\\.h' KernelSU/kernel fs include 2>/dev/null | head -50 | grep -q .; then\n    echo \"[FAIL] External root-hiding kernel integration detected.\"\n    exit 1\n  fi\n  echo \"[PASS] No external root-hiding kernel patchset detected.\"\n  echo\n  echo \"Git diff summary:\"\n  git diff --stat || true\n} > \"$LOG\" 2>&1\nSTATUS=$?\ntail -180 \"$LOG\" || true\nexit \"$STATUS\"\n"
+      run: |
+        set -euo pipefail
+        LOG="$DIAG_DIR/11-core-integration-verification.log"
+        : > "$LOG"
+        {
+          echo "========== KERNELSU / SUKISU SOURCE CHECK =========="
+          test -d KernelSU
+          test -f KernelSU/kernel/Kconfig
+          test -f KernelSU/kernel/Makefile
+          echo "SukiSU HEAD: $(git -C KernelSU rev-parse HEAD)"
+          echo "SukiSU describe: $(git -C KernelSU describe --tags --always 2>/dev/null || true)"
+          echo
+          echo "========== NO EXTERNAL ROOT-HIDING KERNEL PATCHSET =========="
+          if grep -RniE 'susfs\.h|sus_su\.h' KernelSU/kernel fs include 2>/dev/null | head -50 | grep -q .; then
+            echo "[FAIL] External root-hiding kernel integration detected."
+            exit 1
+          fi
+          echo "[PASS] No external root-hiding kernel patchset detected."
+          echo
+          echo "Git diff summary:"
+          git diff --stat || true
+        } > "$LOG" 2>&1
+        STATUS=$?
+        tail -180 "$LOG" || true
+        exit "$STATUS"
     - name: 10A - KPM Compatibility Preflight (v4.2.0 Kbuild)
       shell: bash
-      run: "set -euo pipefail\nLOG=\"$DIAG_DIR/10A-kpm-preflight.log\"\n: > \"$LOG\"\n{\n  echo \"========== SUKISU v4.2.0 KPM PREFLIGHT ==========\"\n  test -d KernelSU/kernel/kpm\n  test -f KernelSU/kernel/Kbuild\n  echo \"[PASS] KPM source tree present.\"\n  echo \"[INFO] v4.2.0 KPM has no standalone kpm/Makefile; its objects are declared by kernel/Kbuild.\"\n  grep -nE '^obj-\\$\\(CONFIG_KPM\\).*kpm/(compact|kpm|super_access)\\.o' KernelSU/kernel/Kbuild\n\n  export PATH=\"$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH\"\n  export CROSS_COMPILE=\"$GCC64_DIR/bin/aarch64-linux-android-\"\n  export CROSS_COMPILE_ARM32=\"$GCC32_DIR/bin/arm-linux-androideabi-\"\n\n  # Compile the actual integrated drivers/kernelsu subtree. This is the\n  # correct v4.2.0 Kbuild path and includes the KPM objects.\n  make ARCH=arm64 LLVM=1 LLVM_IAS=1               CROSS_COMPILE=\"$CROSS_COMPILE\"               CROSS_COMPILE_ARM32=\"$CROSS_COMPILE_ARM32\"               M=drivers/kernelsu V=1\n\n  echo \"[PASS] SukiSU v4.2.0 + KPM subtree preflight compiled.\"\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\n"
+      run: |
+        set -euo pipefail
+        LOG="$DIAG_DIR/10A-kpm-preflight.log"
+        : > "$LOG"
+        {
+          echo "========== SUKISU v4.2.0 KPM PREFLIGHT =========="
+          test -d KernelSU/kernel/kpm
+          test -f KernelSU/kernel/Kbuild
+          echo "[PASS] KPM source tree present."
+          echo "[INFO] v4.2.0 KPM has no standalone kpm/Makefile; its objects are declared by kernel/Kbuild."
+          grep -nE '^obj-\$\(CONFIG_KPM\).*kpm/(compact|kpm|super_access)\.o' KernelSU/kernel/Kbuild
+        
+          export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
+          export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
+        
+          # Compile the actual integrated drivers/kernelsu subtree. This is the
+          # correct v4.2.0 Kbuild path and includes the KPM objects.
+          make ARCH=arm64 LLVM=1 LLVM_IAS=1               CROSS_COMPILE="$CROSS_COMPILE"               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"               M=drivers/kernelsu V=1
+        
+          echo "[PASS] SukiSU v4.2.0 + KPM subtree preflight compiled."
+        } > "$LOG" 2>&1
+        cat "$LOG"
     - name: 10C - Final Source Integrity Audit
       shell: bash
-      run: "set -euo pipefail\nLOG=\"$DIAG_DIR/10C-source-integrity.log\"\n: > \"$LOG\"\n{\n  git ls-files -z | sort -z > \"$RUNNER_TEMP/tracked-final\"\n  if ! cmp -s \"$RUNNER_TEMP/tracked-before\" \"$RUNNER_TEMP/tracked-final\"; then\n    echo \"[FAIL] Existing tracked stock files were removed.\"\n    diff -u <(tr '\\0' '\\n' < \"$RUNNER_TEMP/tracked-before\") <(tr '\\0' '\\n' < \"$RUNNER_TEMP/tracked-final\") || true\n    exit 1\n  fi\n  if find . -type f \\( -name '*.rej' -o -name '*.orig' \\) -print -quit | grep -q .; then\n    echo \"[FAIL] Reject/original files remain.\"\n    exit 1\n  fi\n  git diff --check\n  echo \"[PASS] No pre-existing tracked stock source was removed.\"\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\n"
+      run: |
+        set -euo pipefail
+        LOG="$DIAG_DIR/10C-source-integrity.log"
+        : > "$LOG"
+        {
+          git ls-files -z | sort -z > "$RUNNER_TEMP/tracked-final"
+          if ! cmp -s "$RUNNER_TEMP/tracked-before" "$RUNNER_TEMP/tracked-final"; then
+            echo "[FAIL] Existing tracked stock files were removed."
+            diff -u <(tr '\0' '\n' < "$RUNNER_TEMP/tracked-before") <(tr '\0' '\n' < "$RUNNER_TEMP/tracked-final") || true
+            exit 1
+          fi
+          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+            echo "[FAIL] Reject/original files remain."
+            exit 1
+          fi
+          git diff --check
+          echo "[PASS] No pre-existing tracked stock source was removed."
+        } > "$LOG" 2>&1
+        cat "$LOG"
     - name: 10C-A - Verify Required Maphide + Baseband-Guard (Do Not Remove)
       shell: bash
-      run: "set -euo pipefail\nLOG=\"$DIAG_DIR/10C-A-required-features.log\"\n: > \"$LOG\"\n{\n  echo \"========== REQUIRED FEATURES ==========\"\n  test -s \"$RUNNER_TEMP/69_hide_stuff.patch\"\n  grep -q 'jit-zygote-cache' \"$RUNNER_TEMP/69_hide_stuff.patch\"\n  grep -q 'framework-res.apk' \"$RUNNER_TEMP/69_hide_stuff.patch\"\n  grep -q 'fs/proc/task_mmu.c' \"$RUNNER_TEMP/69_hide_stuff.patch\"\n  grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c\n  grep -q 'jit-zygote-cache' fs/proc/task_mmu.c\n  grep -q 'framework-res.apk' fs/proc/task_mmu.c\n  grep -RqsE 'baseband.?guard|CONFIG_BBG' security Baseband-guard\n  grep -q '^CONFIG_BBG=y$' .config\n  echo \"[PASS] Maphide + JIT-Zygote patch is applied and retained.\"\n  echo \"[PASS] Baseband-Guard v1.1 is integrated and retained.\"\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\n"
+      run: |
+        set -euo pipefail
+        LOG="$DIAG_DIR/10C-A-required-features.log"
+        : > "$LOG"
+        {
+          echo "========== REQUIRED FEATURES =========="
+          test -s "$RUNNER_TEMP/69_hide_stuff.patch"
+          grep -q 'jit-zygote-cache' "$RUNNER_TEMP/69_hide_stuff.patch"
+          grep -q 'framework-res.apk' "$RUNNER_TEMP/69_hide_stuff.patch"
+          grep -q 'fs/proc/task_mmu.c' "$RUNNER_TEMP/69_hide_stuff.patch"
+          grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c
+          grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
+          grep -q 'framework-res.apk' fs/proc/task_mmu.c
+          grep -RqsE 'baseband.?guard|CONFIG_BBG' security Baseband-guard
+          grep -q '^CONFIG_BBG=y$' .config
+          echo "[PASS] Maphide + JIT-Zygote patch is applied and retained."
+          echo "[PASS] Baseband-Guard v1.1 is integrated and retained."
+        } > "$LOG" 2>&1
+        cat "$LOG"
     - name: 10D - Verify DTB DTBO Source Inventory
       shell: bash
-      run: "set -euo pipefail\nLOG=\"$DIAG_DIR/10E-dtb-dtbo-inventory.log\"\n: > \"$LOG\"\n{\n  test -d arch/arm64/boot/dts\n  echo \"All existing DT sources:\"\n  find arch/arm64/boot/dts -type f \\( -name '*.dts' -o -name '*.dtsi' \\) -print | sort > \"$RUNNER_TEMP/all-dts.txt\"\n  wc -l \"$RUNNER_TEMP/all-dts.txt\"\n  echo \"Global/Lao candidates:\"\n  grep -Ei 'lao|global|overlay|dtbo' \"$RUNNER_TEMP/all-dts.txt\" | tee \"$RUNNER_TEMP/lao-dt-candidates.txt\" || true\n  echo \"Stock DTB targets from Makefiles:\"\n  grep -RniE 'dtb-|dtbo-|dtbs' arch/arm64/boot/dts/vendor 2>/dev/null | head -200 || true\n  echo \"[PASS] DT source inventory captured; no stock DTS feature is removed or replaced.\"\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\n"
+      run: |
+        set -euo pipefail
+        LOG="$DIAG_DIR/10E-dtb-dtbo-inventory.log"
+        : > "$LOG"
+        {
+          test -d arch/arm64/boot/dts
+          echo "All existing DT sources:"
+          find arch/arm64/boot/dts -type f \( -name '*.dts' -o -name '*.dtsi' \) -print | sort > "$RUNNER_TEMP/all-dts.txt"
+          wc -l "$RUNNER_TEMP/all-dts.txt"
+          echo "Global/Lao candidates:"
+          grep -Ei 'lao|global|overlay|dtbo' "$RUNNER_TEMP/all-dts.txt" | tee "$RUNNER_TEMP/lao-dt-candidates.txt" || true
+          echo "Stock DTB targets from Makefiles:"
+          grep -RniE 'dtb-|dtbo-|dtbs' arch/arm64/boot/dts/vendor 2>/dev/null | head -200 || true
+          echo "[PASS] DT source inventory captured; no stock DTS feature is removed or replaced."
+        } > "$LOG" 2>&1
+        cat "$LOG"
     - name: 11A - Build and Verify All Existing Global/Lao DTBO Overlays
       shell: bash
       run: "set -euo pipefail\nLOG=\"$DIAG_DIR/11A-dtbo-build.log\"\n: > \"$LOG\"\n{\n  test -d arch/arm64/boot/dts/vendor/lge\n  src_dir=\"arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com\"\n  test -d \"$src_dir\"\n  mapfile -t dts_files < <(find \"$src_dir\" -maxdepth 1 -type f -name '*.dts' -printf '%f\\n' | sort)\n  test \"${#dts_files[@]}\" -gt 0\n  mkdir -p \"$GITHUB_WORKSPACE/artifacts/dtbo\"\n  : > \"$GITHUB_WORKSPACE/artifacts/dtbo/build-list.txt\"\n  lge_make=\"arch/arm64/boot/dts/vendor/lge/Makefile\"\n  if grep -q '\\$(wildcard echo \\$(srctree)/\\$(src)' \"$lge_make\"; then\n    cp \"$lge_make\" \"$GITHUB_WORKSPACE/artifacts/lge-Makefile.before\"\n    sed -i 's/\\$(wildcard echo \\$(srctree)\\/\\$(src)/\\$(wildcard \\$(srctree)\\/\\$(src)/' \"$lge_make\"\n    cp \"$lge_make\" \"$GITHUB_WORKSPACE/artifacts/lge-Makefile.after\"\n  fi\n  export PATH=\"$CLANG_DIR/bin:$PATH\"\n  for dts in \"${dts_files[@]}\"; do\n    base=\"${dts%.dts}\"\n    target=\"vendor/lge/${base}.dtbo\"\n    echo \"$target\" | tee -a \"$GITHUB_WORKSPACE/artifacts/dtbo/build-list.txt\"\n    make -Oline O=\"$GITHUB_WORKSPACE/out\" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \\\n      CC=\"$CLANG_DIR/bin/clang\" HOSTCC=\"$CLANG_DIR/bin/clang\" \\\n      LD=\"$CLANG_DIR/bin/ld.lld\" HOSTLD=\"$CLANG_DIR/bin/ld.lld\" \\\n      AR=\"$CLANG_DIR/bin/llvm-ar\" NM=\"$CLANG_DIR/bin/llvm-nm\" \"$target\"\n    produced=\"$GITHUB_WORKSPACE/out/arch/arm64/boot/dts/vendor/lge/${base}.dtbo\"\n    test -s \"$produced\"\n    cp \"$produced\" \"$GITHUB_WORKSPACE/artifacts/dtbo/${base}.dtbo\"\n    sha256sum \"$produced\" > \"$GITHUB_WORKSPACE/artifacts/dtbo/${base}.dtbo.sha256\"\n  done\n  rev=\"lito-caymanlm_lao_com-rev-1.0_overlay.dtbo\"\n  test -s \"$GITHUB_WORKSPACE/artifacts/dtbo/$rev\"\n  \"$GITHUB_WORKSPACE/out/scripts/dtc/dtc\" -I dtb -O dts -o \"$GITHUB_WORKSPACE/artifacts/dtbo/overlay.dts\" \"$GITHUB_WORKSPACE/artifacts/dtbo/$rev\"\n  grep -q 'LG Electronics, Caymanlm, HW Rev 1.0'\
@@ -147,7 +454,17 @@ jobs:
         \ sources present\"\n\n  echo\n  echo \"========== SUSFS ==========\"\n  grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU fs include/linux || { echo \"[FAIL] SUSFS integration missing.\"; exit 1; }\n  grep -Rqs 'susfs' fs include/linux KernelSU/kernel || { echo \"[FAIL] SUSFS source missing.\"; exit 1; }\n  echo \"SUSFS: $SUSFS_VERSION @ $SUSFS_COMMIT\"\n  echo \"[PASS] SUSFS non-GKI 4.19 integration is present.\"\n  echo \"Feature policy: previously accepted features are never removed; errors are fixed in-place only.\"\n  echo \"Version policy: latest stable release/commit actually compatible with 4.19.325-cip135.\"\n\n  echo\n  echo \"========== VERIFIED VERSION MANIFEST ==========\"\n  echo \"SukiSU-Ultra: v4.2.0 | current verified release | 2026\"\n  echo \"Baseband-Guard: v1.1 | current verified release | 2025\"\n  echo \"CIP: v4.19.325-cip135 | current 4.19 CIP target | 2026\"\n  echo \"DroidSpaces: legacy 4.19 capability requirements (no kernel version claim)\"\n  echo \"Kernel base: Linux 4.19 | first released | 2018\"\n  echo \"Policy: latest stable release/commit actually compatible with this 4.19.325-cip135 tree\"\n  echo \"Policy: previously accepted features are never removed; errors are fixed in-place only.\"\n  echo \"Policy: source-absent features fail the strict feature gate; no feature is falsely labeled implemented.\"\n\n  echo \"[PASS] Full feature matrix audit completed.\"\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\n"
     - name: 11C - 4.19 Clean Compiler Preflight
       shell: bash
-      run: "set -euo pipefail\nLOG=\"$DIAG_DIR/11C-compiler-preflight.log\"\n: > \"$LOG\"\n{\n  echo \"========== CLEAN CONFIG PREFLIGHT ==========\"\n  \"$CLANG\" --version | head -5\n  make ARCH=arm64 LLVM=1 LLVM_IAS=1               CROSS_COMPILE=\"$CROSS_COMPILE\"               CROSS_COMPILE_ARM32=\"$CROSS_COMPILE_ARM32\"               olddefconfig\n  echo \"[PASS] 4.19 config regenerated before compilation.\"\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\n"
+      run: |
+        set -euo pipefail
+        LOG="$DIAG_DIR/11C-compiler-preflight.log"
+        : > "$LOG"
+        {
+          echo "========== CLEAN CONFIG PREFLIGHT =========="
+          "$CLANG" --version | head -5
+          make ARCH=arm64 LLVM=1 LLVM_IAS=1               CROSS_COMPILE="$CROSS_COMPILE"               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"               olddefconfig
+          echo "[PASS] 4.19 config regenerated before compilation."
+        } > "$LOG" 2>&1
+        cat "$LOG"
     - name: 19 - Build Kernel (Full Log to Artifact)
       shell: bash
       run: "set +e\nFULL_LOG=\"$GITHUB_WORKSPACE/kernel-build-full.log\"\nERROR_LOG=\"$DIAG_DIR/12-build-errors.log\"\nTAIL_LOG=\"$DIAG_DIR/12-build-tail.log\"\nSUMMARY_LOG=\"$DIAG_DIR/12-build-summary.log\"\n\n: > \"$FULL_LOG\"\n: > \"$ERROR_LOG\"\n: > \"$TAIL_LOG\"\n: > \"$SUMMARY_LOG\"\n\nexport PATH=\"$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH\"\nexport CROSS_COMPILE=\"$GCC64_DIR/bin/aarch64-linux-android-\"\nexport CROSS_COMPILE_ARM32=\"$GCC32_DIR/bin/arm-linux-androideabi-\"\n\n# Build-only compatibility fixes are scoped to the exact stock\n# source directories/files that failed with this Clang 20 build.\n# No global KCFLAGS and no unrelated kernel features are added.\n#\n# Qualcomm clock trace.h uses TRACE_INCLUDE_PATH \".\"; the include\n# path is scoped to drivers/clk/qcom via Kbuild ccflags-y.\n# Camera cam_trace.h needs the cam_req_mgr local header path.\n# fault-inject.c and lgenfc.c receive source-level compatibility\n# corrections for this kernel/compiler combination.\n# ------------------------------------------------------------\n# 1) Qualcomm clock trace include path\n# ------------------------------------------------------------\nQCOM_MAKE=\"drivers/clk/qcom/Makefile\"\ntest -f \"$QCOM_MAKE\"\n\nif ! grep -qF 'ccflags-y += -I$(src)' \"$QCOM_MAKE\"; then\n  {\n    echo\n    echo \"# Build compatibility: local TRACE_INCLUDE_PATH for qcom trace.h\"\n    echo 'ccflags-y += -I$(src)'\n  } >> \"$QCOM_MAKE\"\nfi\n\necho \"[PASS] Qualcomm trace include path scoped to drivers/clk/qcom.\"\ngrep -nF 'ccflags-y += -I$(src)' \"$QCOM_MAKE\"\n\n# ------------------------------------------------------------\n# 2) Camera cam_req_mgr local include path\n#    cam_trace.h includes cam_req_mgr_core.h by name.\n#    The header is part of the stock source tree; only the\n#    local Kbuild include path is missing for this Clang build.\n# ------------------------------------------------------------\nCAM_MAKE=\"techpack/camera/drivers/cam_req_mgr/Makefile\"\ntest -f \"\
@@ -170,11 +487,61 @@ jobs:
     - name: 19 - Final Configuration and Artifact Check
       if: always()
       shell: bash
-      run: "set +e\nLOG=\"$DIAG_DIR/13-final-check.log\"\n: > \"$LOG\"\n{\n  echo \"========== FINAL CHECK ==========\"\n  date -u\n  echo\n  echo \"Kernel version:\"\n  grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile || true\n  echo\n  echo \"Required config:\"\n  grep -E '^CONFIG_(KSU|KPROBES|HAVE_KPROBES|KPROBE_EVENTS|KALLSYMS|KALLSYMS_ALL|KPM|SECURITY|SECURITY_SELINUX)=' .config 2>/dev/null || true\n  echo\n  echo \"Kernel image candidates:\"\n  ls -lh arch/arm64/boot/Image.gz-dtb arch/arm64/boot/Image.gz arch/arm64/boot/Image 2>&1 || true\n  echo\n  echo \"DTB/DTBO outputs:\"\n  find arch/arm64/boot/dts -type f \\( -name '*.dtb' -o -name '*.dtbo' \\) -print 2>/dev/null | sort | head -300 || true\n  echo\n  echo \"Build errors (last 40):\"\n  tail -40 \"$DIAG_DIR/12-build-errors.log\" 2>/dev/null || true\n  echo\n  echo \"Build tail (last 40):\"\n  tail -40 \"$DIAG_DIR/12-build-tail.log\" 2>/dev/null || true\n} > \"$LOG\" 2>&1\ncat \"$LOG\"\nexit 0\n"
+      run: |
+        set +e
+        LOG="$DIAG_DIR/13-final-check.log"
+        : > "$LOG"
+        {
+          echo "========== FINAL CHECK =========="
+          date -u
+          echo
+          echo "Kernel version:"
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile || true
+          echo
+          echo "Required config:"
+          grep -E '^CONFIG_(KSU|KPROBES|HAVE_KPROBES|KPROBE_EVENTS|KALLSYMS|KALLSYMS_ALL|KPM|SECURITY|SECURITY_SELINUX)=' .config 2>/dev/null || true
+          echo
+          echo "Kernel image candidates:"
+          ls -lh arch/arm64/boot/Image.gz-dtb arch/arm64/boot/Image.gz arch/arm64/boot/Image 2>&1 || true
+          echo
+          echo "DTB/DTBO outputs:"
+          find arch/arm64/boot/dts -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print 2>/dev/null | sort | head -300 || true
+          echo
+          echo "Build errors (last 40):"
+          tail -40 "$DIAG_DIR/12-build-errors.log" 2>/dev/null || true
+          echo
+          echo "Build tail (last 40):"
+          tail -40 "$DIAG_DIR/12-build-tail.log" 2>/dev/null || true
+        } > "$LOG" 2>&1
+        cat "$LOG"
+        exit 0
     - name: 19 - Stage Complete Diagnostics
       if: always()
       shell: bash
-      run: "set +e\nmkdir -p diagnostic-artifact\ncp -f kernel-build-full.log diagnostic-artifact/12-build-full.log 2>/dev/null || true\ncp -f .config diagnostic-artifact/final.config 2>/dev/null || true\ncp -f sukisu-integration-note.txt diagnostic-artifact/sukisu-integration-note.txt 2>/dev/null || true\nmkdir -p diagnostic-artifact/ci-logs\ncp -a \"$DIAG_DIR\"/. diagnostic-artifact/ci-logs/ 2>/dev/null || true\ngit status --short > diagnostic-artifact/git-status.txt 2>&1 || true\ngit rev-parse HEAD > diagnostic-artifact/kernel-head.txt 2>&1 || true\n{\n  echo \"GitHub Run: $GITHUB_RUN_ID\"\n  echo \"Commit: $GITHUB_SHA\"\n  echo \"Date: $(date -u)\"\n  echo \"SukiSU release tag: $SUKISU_REF\"\n  echo \"SukiSU release commit (short): $SUKISU_RELEASE_COMMIT\"\n  echo \"External root-hiding kernel patchset: workflow-defined Maphide/BBG checks\"\n  echo \"External root-hiding userspace package: not part of kernel build\"\n  echo \"Lineage branch: $LINEAGE_BRANCH\"\n  echo \"CIP target: $CIP_REF\"\n  echo\n  find diagnostic-artifact -type f -printf '%p %s bytes\\n' | sort\n} > diagnostic-artifact/MANIFEST.txt\nexit 0\n"
+      run: |
+        set +e
+        mkdir -p diagnostic-artifact
+        cp -f kernel-build-full.log diagnostic-artifact/12-build-full.log 2>/dev/null || true
+        cp -f .config diagnostic-artifact/final.config 2>/dev/null || true
+        cp -f sukisu-integration-note.txt diagnostic-artifact/sukisu-integration-note.txt 2>/dev/null || true
+        mkdir -p diagnostic-artifact/ci-logs
+        cp -a "$DIAG_DIR"/. diagnostic-artifact/ci-logs/ 2>/dev/null || true
+        git status --short > diagnostic-artifact/git-status.txt 2>&1 || true
+        git rev-parse HEAD > diagnostic-artifact/kernel-head.txt 2>&1 || true
+        {
+          echo "GitHub Run: $GITHUB_RUN_ID"
+          echo "Commit: $GITHUB_SHA"
+          echo "Date: $(date -u)"
+          echo "SukiSU release tag: $SUKISU_REF"
+          echo "SukiSU release commit (short): $SUKISU_RELEASE_COMMIT"
+          echo "External root-hiding kernel patchset: workflow-defined Maphide/BBG checks"
+          echo "External root-hiding userspace package: not part of kernel build"
+          echo "Lineage branch: $LINEAGE_BRANCH"
+          echo "CIP target: $CIP_REF"
+          echo
+          find diagnostic-artifact -type f -printf '%p %s bytes\n' | sort
+        } > diagnostic-artifact/MANIFEST.txt
+        exit 0
     - name: 19B - Upload Kernel / DTB / DTBO / OrangeFox ZIP
       if: success()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
