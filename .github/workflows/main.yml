@@ -618,11 +618,15 @@ jobs:
             rm -rf Baseband-guard
             git clone --depth=1 --branch "$BBG_TAG" "$BBG_REPO" Baseband-guard
             cd Baseband-guard
-            test "$(git rev-parse HEAD)" = "$BBG_COMMIT" || {
-              echo "[FAIL] Baseband-guard tag does not resolve to pinned commit $BBG_COMMIT"
-              git rev-parse HEAD || true
+            BBG_HEAD="$(git rev-parse HEAD)"
+            BBG_EXPECTED="$(git rev-parse "${BBG_COMMIT}^{commit}" 2>/dev/null || true)"
+            test -n "$BBG_EXPECTED" && test "$BBG_HEAD" = "$BBG_EXPECTED" || {
+              echo "[FAIL] Baseband-guard ref does not resolve to pinned commit $BBG_COMMIT"
+              echo "[INFO] Baseband-guard HEAD: $BBG_HEAD"
+              echo "[INFO] Baseband-guard expected: ${BBG_EXPECTED:-unresolved}"
               exit 1
             }
+            echo "[PASS] Baseband-guard ref resolves to pinned commit $BBG_HEAD (short: $BBG_COMMIT)."
             cd ..
             chmod +x Baseband-guard/setup.sh
             ./Baseband-guard/setup.sh "$BBG_TAG"
