@@ -1533,7 +1533,7 @@ jobs:
                   return 0;
               if (memcmp(file_name, "packages.list", 13) || file_name[13] != '\\0')
                   return 0;
-              pr_info("packages.list detected: %d\n", mask);
+              pr_info("packages.list detected: %d\\n", mask);
               track_throne(false);
               return 0;
           }
