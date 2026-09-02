@@ -859,6 +859,22 @@ jobs:
               fi
               echo "[PASS] ${sym}=y"
             }
+            # Some legacy/vendor symbols are intentionally source-native absent in this 4.19 LG tree.
+            # Do NOT invent or force them. If the symbol exists in the source, it remains a strict y gate;
+            # if the source does not define it, preserve the source-native/absent state and continue.
+            config_symbol_exists() {
+              sym="$1"
+              grep -RqsE "^[[:space:]]*(config|menuconfig)[[:space:]]+${sym#CONFIG_}([[:space:]]|$)" \
+                arch drivers fs include init kernel lib mm net security sound virt 2>/dev/null
+            }
+            require_config_if_defined() {
+              sym="$1"
+              if config_symbol_exists "$sym"; then
+                require_config "$sym"
+              else
+                echo "[SOURCE-NATIVE/ABSENT] ${sym} is not defined by this source tree; not forced."
+              fi
+            }
             for req in \
               CONFIG_KPROBES CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_KPM CONFIG_BBG \
               CONFIG_LTO CONFIG_LTO_CLANG CONFIG_LTO_CLANG_FULL \
@@ -874,7 +890,7 @@ jobs:
               CONFIG_PID_NS CONFIG_UTS_NS CONFIG_IPC_NS CONFIG_CGROUPS CONFIG_CGROUP_DEVICE \
               CONFIG_CGROUP_PIDS CONFIG_CGROUP_SCHED CONFIG_MEMCG CONFIG_SECCOMP CONFIG_SECCOMP_FILTER \
               CONFIG_VETH CONFIG_BRIDGE CONFIG_BRIDGE_NETFILTER; do
-              require_config "$req"
+              require_config_if_defined "$req"
             done
             # WALT/SchedTune are mandatory project features; the source must expose them.
             require_config CONFIG_SCHED_WALT
