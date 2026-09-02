@@ -1269,6 +1269,21 @@ jobs:
             fi
             grep -nE 'LG KSU 4\.19 MODULE_IMPORT_NS compatibility|MODULE_IMPORT_NS\(' "$KSU_INIT_C"
 
+            # The integrated KernelSU sources include security/selinux/include/objsec.h,
+            # which includes the generated SELinux flask.h header. 4.19's normal full
+            # kernel build generates security/selinux/flask.h as part of the SELinux
+            # build, but an isolated M=drivers/kernelsu preflight does not traverse
+            # that dependency automatically. Generate the official 4.19 SELinux
+            # header first; this changes no source or kernel feature.
+            echo "========== SELINUX GENERATED HEADER PREPARATION =========="
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              security/selinux/flask.h
+            test -s security/selinux/flask.h
+            test -s security/selinux/av_permissions.h
+            echo "[PASS] SELinux generated flask.h and av_permissions.h are present."
+
             # Compile the actual integrated drivers/kernelsu subtree. This is the
             # correct v4.2.0 Kbuild path and includes the KPM objects.
             make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
