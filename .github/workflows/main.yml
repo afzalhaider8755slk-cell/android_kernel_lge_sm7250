@@ -664,9 +664,19 @@ jobs:
             }
             scripts/config --enable CONFIG_SECURITY
             scripts/config --enable CONFIG_BBG
-            LSM_VALUE="$(scripts/config --get-str CONFIG_LSM 2>/dev/null || true)"
+
+            # Linux 4.19 scripts/config has no --get-str command.
+            # Read string-valued symbols directly from .config instead.
+            config_string() {
+              sym="${1#CONFIG_}"
+              grep -m1 "^CONFIG_${sym}=" .config | cut -d '"' -f 2
+            }
+
+            LSM_VALUE="$(config_string CONFIG_LSM)"
             if [ -z "$LSM_VALUE" ]; then
-              echo "[FAIL] CONFIG_LSM is unavailable after Baseband-guard setup."
+              echo "[FAIL] CONFIG_LSM is missing/empty in .config after Baseband-guard setup."
+              echo "[INFO] CONFIG_SECURITY state: $(scripts/config --state CONFIG_SECURITY 2>/dev/null || true)"
+              echo "[INFO] CONFIG_LSM raw entry: $(grep '^CONFIG_LSM=' .config 2>/dev/null || true)"
               exit 1
             fi
             case ",$LSM_VALUE," in
@@ -677,7 +687,7 @@ jobs:
                 ;;
             esac
             echo "CONFIG_BBG requested: y"
-            echo "CONFIG_LSM requested: $(scripts/config --get-str CONFIG_LSM 2>/dev/null || true)"
+            echo "CONFIG_LSM requested: $(config_string CONFIG_LSM)"
 
             scripts/config --enable CONFIG_KSU
             scripts/config --enable CONFIG_KPROBES
@@ -822,7 +832,7 @@ jobs:
             echo
             echo "========== BASEBAND-GUARD FINAL CONFIG =========="
             grep -qx 'CONFIG_BBG=y' .config || { echo "[FAIL] CONFIG_BBG=y missing after olddefconfig."; exit 1; }
-            LSM_FINAL="$(scripts/config --get-str CONFIG_LSM 2>/dev/null || true)"
+            LSM_FINAL="$(config_string CONFIG_LSM)"
             case ",$LSM_FINAL," in
               *,baseband_guard,*) echo "[PASS] CONFIG_LSM contains baseband_guard." ;;
               *) echo "[FAIL] CONFIG_LSM does not contain baseband_guard."; exit 1 ;;
