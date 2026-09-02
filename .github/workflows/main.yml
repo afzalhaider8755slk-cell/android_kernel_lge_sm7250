@@ -1180,9 +1180,30 @@ jobs:
             export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
             export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
 
+            # Prepare the 4.19 ARM64 generated headers before compiling the
+            # integrated SukiSU/KPM subtree. The failing build was missing the
+            # generated UAPI wrapper arch/arm64/include/generated/uapi/asm/types.h.
+            # This is a build-tree preparation step only; it does not change
+            # kernel features or source integration.
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              olddefconfig
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              -B modules_prepare
+            test -f arch/arm64/include/generated/uapi/asm/types.h
+            echo "[PASS] ARM64 generated UAPI headers prepared (asm/types.h present)."
+            grep -qx 'CONFIG_KPM=y' include/config/auto.conf
+            echo "[PASS] Generated auto.conf retains CONFIG_KPM=y."
+
             # Compile the actual integrated drivers/kernelsu subtree. This is the
             # correct v4.2.0 Kbuild path and includes the KPM objects.
-            make ARCH=arm64 LLVM=1 LLVM_IAS=1               CROSS_COMPILE="$CROSS_COMPILE"               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"               M=drivers/kernelsu V=1
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              M=drivers/kernelsu V=1
 
             echo "[PASS] SukiSU v4.2.0 + KPM subtree preflight compiled."
           } > "$LOG" 2>&1
