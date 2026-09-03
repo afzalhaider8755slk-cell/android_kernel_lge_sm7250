@@ -1583,7 +1583,7 @@ jobs:
             echo "[PASS] Official SELinux genheaders generated flask.h and av_permissions.h."
 
             # -----------------------------------------------------------------
-            # ADAPTIVE FULL-RESEARCH KERNEL COMPATIBILITY AUTO-FIX ENGINE v41
+            # ADAPTIVE FULL-RESEARCH KERNEL COMPATIBILITY AUTO-FIX ENGINE v42
             # -----------------------------------------------------------------
             # One build job, many repair cycles.  The engine researches the
             # actual LG tree first, then pinned Linux 4.19 + pinned SukiSU,
@@ -1623,14 +1623,14 @@ jobs:
               python3 - "$errlog" "$action_log" "$research_log" "$decision_log" "$diff_log" "$iteration" "$AUTOFIX_DIR" <<'PY'
           from pathlib import Path
           import re, sys, json, subprocess, urllib.request, urllib.parse, datetime, hashlib, os, difflib
-
+          
           errp, actionp, researchp, decisionp, diffp = map(Path, sys.argv[1:6])
           iteration = int(sys.argv[6])
           root = Path.cwd()
           af = Path(sys.argv[7])
           err = errp.read_text(errors="replace")
           started = datetime.datetime.utcnow().isoformat() + "Z"
-
+          
           def write_action(msg):
               actionp.write_text(msg.rstrip() + "\n")
           def research(msg):
@@ -1643,7 +1643,7 @@ jobs:
               return hashlib.sha256(s.encode()).hexdigest()
           def fetch(url, timeout=20, accept="*/*"):
               req=urllib.request.Request(url, headers={
-                  "User-Agent":"LG-Velvet-G900-Adaptive-AutoFix/3.0",
+                  "User-Agent":"LG-Velvet-G900-Adaptive-AutoFix/4.0",
                   "Accept":accept})
               with urllib.request.urlopen(req, timeout=timeout) as r:
                   return r.read().decode("utf-8", errors="replace")
@@ -1665,14 +1665,14 @@ jobs:
                   if re.search(r"error:|fatal error:|undefined reference|ld\.lld:|collect2:|assembler",line,re.I):
                       lines.append(re.sub(r"\b\d+\b","#",line.strip()))
               return sha("\n".join(lines[-12:]))
-
+          
           current_fp=error_fingerprint(err)
           statep=af/"state.json"
           state={}
           if statep.exists():
               try: state=json.loads(statep.read_text())
               except Exception: state={}
-
+          
           # If our previous candidate did not change the diagnostic, reject and
           # revert only that candidate.  Pre-existing project changes are never
           # reset, and git reset --hard is deliberately forbidden.
@@ -1697,12 +1697,12 @@ jobs:
               research("[TRANSACTION] Previous candidate changed the compiler fingerprint; keeping it and researching the new diagnostic.")
               state["pending"]=None
               statep.write_text(json.dumps(state,indent=2))
-
+          
           research(f"UTC={started}")
           research(f"ITERATION={iteration}")
           research(f"ERROR_SHA256={sha(err)}")
           research(f"ERROR_FINGERPRINT={current_fp}")
-
+          
           # ------------------------------------------------------------------
           # Parse the compiler diagnostic and extract the actual source context.
           # ------------------------------------------------------------------
@@ -1724,7 +1724,7 @@ jobs:
           identifiers=list(dict.fromkeys(identifiers))[:16]
           research("LOCATIONS="+json.dumps(locs))
           research("IDENTIFIERS="+json.dumps(identifiers))
-
+          
           context_by_file={}
           for f,ln,col in locs:
               text=local(f)
@@ -1733,7 +1733,7 @@ jobs:
                   lo=max(0,ln-16); hi=min(len(ls),ln+15)
                   context_by_file[f]="\n".join(f"{i+1}: {ls[i]}" for i in range(lo,hi))
                   research(f"[LOCAL-CONTEXT] {f}:{ln}:{col}\n{context_by_file[f]}")
-
+          
           # ------------------------------------------------------------------
           # Pinned authoritative sources.
           # ------------------------------------------------------------------
@@ -1761,7 +1761,7 @@ jobs:
                   research(f"[AUTHORITATIVE] {name} sha256={sha(text)} bytes={len(text)} url={url}")
               except Exception as ex:
                   research(f"[AUTHORITATIVE-FAIL] {name}: {ex}")
-
+          
           # ------------------------------------------------------------------
           # Local API inventory: definitions/declarations are stronger than web
           # search.  Keep results bounded so a noisy tree cannot explode logs.
@@ -1776,7 +1776,7 @@ jobs:
               except Exception as ex:
                   local_hits[sym]=[]
                   research(f"[LOCAL-GREP-FAIL] {sym}: {ex}")
-
+          
           # ------------------------------------------------------------------
           # Online history research.  GitHub commit search is evidence only.
           # We prefer commits that mention the exact symbol/error and that touch
@@ -1822,7 +1822,7 @@ jobs:
           commits=sorted(commits,key=lambda x:(0 if re.search(r"4\.19|compat|backport|fix|build",x["message"],re.I) else 1,x["repo"]))[:30]
           (af/"upstream-commit-candidates.json").write_text(json.dumps(commits,indent=2))
           research(f"[HISTORY] candidate commits={len(commits)}")
-
+          
           # ------------------------------------------------------------------
           # Candidate patch helpers.
           # ------------------------------------------------------------------
@@ -1849,10 +1849,10 @@ jobs:
               return git(args).stdout
           def was_rejected(candidate):
               return any(x.get("candidate") == candidate for x in state.get("rejected",[]))
-
+          
           def one_file_patch(path,before,after):
               return "".join(difflib.unified_diff(before.splitlines(True),after.splitlines(True),fromfile="a/"+path,tofile="b/"+path))
-
+          
           # Apply an exact unified diff only when git says it applies cleanly.
           def apply_patch_text(patch_text):
               pp=af/"candidate.patch"
@@ -1866,7 +1866,7 @@ jobs:
                   research("[PATCH-APPLY-FAIL] "+r.stderr.strip())
                   return False
               return True
-
+          
           # ------------------------------------------------------------------
           # VERIFIED mappings already established for this exact tree.
           # ------------------------------------------------------------------
@@ -1887,7 +1887,7 @@ jobs:
               record_decision({"status":"APPLIED","category":"linux-4.19-task_work-api","file":path,"old_value":"TWA_RESUME","new_value":"true","evidence":[refs["linux419_task_work"],refs["linux419_sched_task"]],"iteration":iteration},diff)
               write_action(f"[AUTO-FIX] VERIFIED TWA_RESUME -> true applied.\nFile: {path}\nOld value: TWA_RESUME\nNew value: true\nDiff saved: {diffp}")
               raise SystemExit(0)
-
+          
           if "filter_count" in err and "no member named" in err and not was_rejected("verified:seccomp.filter_count"):
               sec_path="include/linux/seccomp.h"; sec=file_before(sec_path); app=evidence.get("sukisu_app_profile",""); linux=evidence.get("linux419_seccomp_h","")
               if not sec or not app or not linux: fail("Required seccomp evidence was unavailable")
@@ -1905,7 +1905,7 @@ jobs:
               record_decision({"status":"APPLIED","category":"linux-4.19-seccomp-filter_count","file":sec_path,"old_value":"no filter_count member","new_value":"atomic_t filter_count; after int mode;","why":"SukiSU v4.2.0 requires seccomp.filter_count; Linux 4.19 lacks it; this is a documented KernelSU compatibility backport.","evidence":[refs["linux419_seccomp_h"],refs["sukisu_app_profile"]],"iteration":iteration},diff)
               write_action(f"[AUTO-FIX] VERIFIED seccomp.filter_count compatibility applied.\nFile: {sec_path}\nOld value: no filter_count member\nNew value: atomic_t filter_count; after int mode;\nDiff saved: {diffp}")
               raise SystemExit(0)
-
+          
           # ------------------------------------------------------------------
           # Previously verified project mappings remain authoritative.  These
           # are not removed or generalized; a recurrence means the earlier
@@ -1924,7 +1924,7 @@ jobs:
                   if p.exists() and marker in p.read_text(errors="replace"):
                       fail(f"Verified compatibility diagnostic recurred after marker already exists: {marker}",20)
                   fail(f"Previously verified mapping matched but marker is absent: {marker}")
-
+          
           # ------------------------------------------------------------------
           # Deterministic generic fix A: missing include / implicit declaration.
           # If exactly one local header provides the declaration and the failing
@@ -1965,13 +1965,13 @@ jobs:
                       Path(target_path).write_text(after)
                       diff=git_diff([target_path])
                       candidate_key=f"deterministic:add-header:{hp}"
-                      if was_rejected(candidate_key):
-                          continue
-                      save_transaction(candidate_key,[(target_path,before)],current_fp)
-                      record_decision({"status":"APPLIED","category":"deterministic-local-header","file":target_path,"symbol":sym,"header":hp,"old_value":"missing declaration visibility","new_value":f"#include <{hp}>","evidence":["local git grep declaration/prototype"],"iteration":iteration},diff)
-                      write_action(f"[AUTO-FIX] DETERMINISTIC header visibility fix applied.\nSymbol: {sym}\nHeader: {hp}\nFile: {target_path}\nDiff saved: {diffp}")
-                      raise SystemExit(0)
-
+                      if not was_rejected(candidate_key):
+                          save_transaction(candidate_key,[(target_path,before)],current_fp)
+                          record_decision({"status":"APPLIED","category":"deterministic-local-header","file":target_path,"symbol":sym,"header":hp,"old_value":"missing declaration visibility","new_value":f"#include <{hp}>","evidence":["local git grep declaration/prototype"],"iteration":iteration},diff)
+                          write_action(f"[AUTO-FIX] DETERMINISTIC header visibility fix applied.\nSymbol: {sym}\nHeader: {hp}\nFile: {target_path}\nDiff saved: {diffp}")
+                          raise SystemExit(0)
+                      Path(target_path).write_text(before)
+          
           # ------------------------------------------------------------------
           # Deterministic generic fix B: missing member.  If another in-tree
           # implementation of the SAME structure contains the member, copy only
@@ -2011,13 +2011,13 @@ jobs:
                           after=target[:sm.start("body")]+nb+target[sm.end("body"):]
                           Path(target_path).write_text(after); diff=git_diff([target_path])
                           candidate_key=f"deterministic:add-member:{struct}.{member}"
-                          if was_rejected(candidate_key):
-                              continue
-                          save_transaction(candidate_key,[(target_path,target)],current_fp)
-                          record_decision({"status":"APPLIED","category":"deterministic-struct-member","file":target_path,"struct":struct,"member":member,"declaration":decl,"evidence":[auth[0][0],hp],"iteration":iteration},diff)
-                          write_action(f"[AUTO-FIX] DETERMINISTIC struct member compatibility applied.\nStruct: {struct}\nMember: {member}\nDeclaration: {decl}\nFile: {target_path}\nDiff saved: {diffp}")
-                          raise SystemExit(0)
-
+                          if not was_rejected(candidate_key):
+                              save_transaction(candidate_key,[(target_path,target)],current_fp)
+                              record_decision({"status":"APPLIED","category":"deterministic-struct-member","file":target_path,"struct":struct,"member":member,"declaration":decl,"evidence":[auth[0][0],hp],"iteration":iteration},diff)
+                              write_action(f"[AUTO-FIX] DETERMINISTIC struct member compatibility applied.\nStruct: {struct}\nMember: {member}\nDeclaration: {decl}\nFile: {target_path}\nDiff saved: {diffp}")
+                              raise SystemExit(0)
+                          Path(target_path).write_text(target)
+          
           # ------------------------------------------------------------------
           # Exact upstream compatibility backport discovery.  For the failing
           # SukiSU file, inspect recent SukiSU/KernelSU-Next commits and download
@@ -2052,7 +2052,7 @@ jobs:
               if not re.search(r"^[-+].*(?:"+"|".join(map(re.escape,identifiers))+r")",pt,re.M|re.I): continue
               candidates.append((c,pt))
               if len(candidates)>=6: break
-
+          
           for c,pt in candidates:
               # Only one clean, previously-unmodified file may be backported.
               # Capture the exact preimage BEFORE applying the patch so the
@@ -2089,7 +2089,7 @@ jobs:
                   record_decision({"status":"APPLIED","category":"upstream-compatibility-backport","repository":c["repo"],"commit":c["sha"],"message":c["message"],"file":p,"evidence":f"https://github.com/{c['repo']}/commit/{c['sha']}","iteration":iteration},diff)
                   write_action(f"[AUTO-FIX] EXACT UPSTREAM COMPATIBILITY PATCH APPLIED.\nRepository: {c['repo']}\nCommit: {c['sha']}\nMessage: {c['message'].splitlines()[0]}\nFile: {p}\nPatch was accepted only after git apply --check.\nDiff saved: {diffp}")
                   raise SystemExit(0)
-
+          
           # ------------------------------------------------------------------
           # Search-engine corroboration is recorded but never converted into an
           # arbitrary patch.  This is the fail-closed boundary for truly unknown
@@ -2105,7 +2105,7 @@ jobs:
               except Exception as ex:
                   search_items.append({"symbol":sym,"source":"grep.app","error":str(ex)})
           (af/"search-engine-results.json").write_text(json.dumps(search_items,indent=2))
-
+          
           candidates=[]
           for sym in identifiers:
               for name,text in evidence.items():
