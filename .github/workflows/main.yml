@@ -1692,6 +1692,21 @@ jobs:
           echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
           echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
           echo "[PASS] Manual compatibility patch set complete."
+      - name: 10B - Setup 19 SELinux 4.19 Compatibility Bridge (10A LOCKED)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG="$DIAG_DIR/10B-setup19-selinux-419-bridge.log"
+          : > "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
+          echo "========== SETUP 19 SELINUX 4.19 COMPATIBILITY BRIDGE =========="
+          echo "[LOCKED] Setup 10A is not modified by this step."
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCnNlaD1QYXRoKCJkcml2ZXJzL2tlcm5lbHN1L3NlbGludXgvc2Vwb2xpY3kuaCIpCnM9c2VoLnJlYWRfdGV4dCgpCmlmICdzdHJ1Y3Qgc2VsaW51eF9wb2xpY3kgeycgbm90IGluIHM6CiAgICBtYXJrZXI9JyNpbmNsdWRlICJzcy9wb2xpY3lkYi5oIicKICAgIGlucz1tYXJrZXIrJ1xuI2luY2x1ZGUgInNzL3NlcnZpY2VzLmgiXG5zdHJ1Y3Qgc2VsaW51eF9wb2xpY3kge1xuICAgIHN0cnVjdCBzaWR0YWIgKnNpZHRhYjtcbiAgICBzdHJ1Y3QgcG9saWN5ZGIgcG9saWN5ZGI7XG59OycKICAgIGlmIG1hcmtlciBub3QgaW4gczogcmFpc2UgU3lzdGVtRXhpdCgncG9saWN5ZGIgaW5jbHVkZSBtYXJrZXIgbWlzc2luZycpCiAgICBzPXMucmVwbGFjZShtYXJrZXIsaW5zLDEpCmVsaWYgJ3N0cnVjdCBzaWR0YWIgKnNpZHRhYjsnIG5vdCBpbiBzOgogICAgcz1zLnJlcGxhY2UoJ3N0cnVjdCBzZWxpbnV4X3BvbGljeSB7XG4gICAgc3RydWN0IHBvbGljeWRiIHBvbGljeWRiO1xufTsnLCdzdHJ1Y3Qgc2VsaW51eF9wb2xpY3kge1xuICAgIHN0cnVjdCBzaWR0YWIgKnNpZHRhYjtcbiAgICBzdHJ1Y3QgcG9saWN5ZGIgcG9saWN5ZGI7XG59OycsMSkKc2VoLndyaXRlX3RleHQocykKYz1QYXRoKCJkcml2ZXJzL2tlcm5lbHN1L2ZlYXR1cmUvc2VsaW51eF9oaWRlLmMiKQpzPWMucmVhZF90ZXh0KCkKaWYgJ3N0YXRpYyBzdHJ1Y3Qgc2VsaW51eF9zcyBmYWtlX3NzOycgbm90IGluIHM6CiAgICBzPXMucmVwbGFjZSgnc3RhdGljIHN0cnVjdCBzZWxpbnV4X3N0YXRlIGZha2Vfc3RhdGU7Jywnc3RhdGljIHN0cnVjdCBzZWxpbnV4X3N0YXRlIGZha2Vfc3RhdGU7XG5zdGF0aWMgc3RydWN0IHNlbGludXhfc3MgZmFrZV9zczsnLDEpCnM9cy5yZXBsYWNlKCdzZWxpbnV4X3N0YXRlLnN0YXR1c19sb2NrJywnc2VsaW51eF9zdGF0ZS5zcy0+c3RhdHVzX2xvY2snKQpzPXMucmVwbGFjZSgnc2VsaW51eF9zdGF0ZS5zdGF0dXNfcGFnZScsJ3NlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlJykKb2xkPSIjZWxzZVxuICAgIGZha2Vfc3RhdGUuaW5pdGlhbGl6ZWQgPSB0cnVlO1xuICAgIGZha2Vfc3RhdGUucG9saWN5ID0gYmFja3VwX3NlcG9saWN5O1xuI2VuZGlmIgpuZXc9IiNlbHNlXG4gICAgLyogTGludXggNC4xOTogU0VMaW51eCBkYXRhYmFzZS9zdGF0dXMgYXJlIG93bmVkIGJ5IHNlbGludXhfc3RhdGUuc3MuICovXG4gICAgbWVtc2V0KCZmYWtlX3N0YXRlLCAwLCBzaXplb2YoZmFrZV9zdGF0ZSkpO1xuICAgIG1lbXNldCgmZmFrZV9zcywgMCwgc2l6ZW9mKGZha2Vfc3MpKTtcbiAgICByd2xvY2tfaW5pdCgmZmFrZV9zcy5wb2xpY3lfcndsb2NrKTtcbiAgICBmYWtlX3NzLnBvbGljeWRiID0gYmFja3VwX3NlcG9saWN5LT5wb2xpY3lkYjtcbiAgICBpZiAoIWJhY2t1cF9zZXBvbGljeS0+c2lkdGFiKSB7XG4gICAgICAgIHByX2VycihcInNlbGludXhfaGlkZTogYmFja3VwIHNlcG9saWN5IGhhcyBubyBzaWR0YWJcXG5cIik7XG4gICAgICAgIHJldHVybiAtRUlOVkFMO1xuICAgIH1cbiAgICBpZiAoc2lkdGFiX2luaXQoJmZha2Vfc3Muc2lkdGFiKSkge1xuICAgICAgICBwcl9lcnIoXCJzZWxpbnV4X2hpZGU6IGZhaWxlZCB0byBpbml0aWFsaXplIDQuMTkgZmFrZSBzaWR0YWJcXG5cIik7XG4gICAgICAgIHJldHVybiAtRU5PTUVNO1xuICAgIH1cbiAgICBzaWR0YWJfc2V0KCZmYWtlX3NzLnNpZHRhYiwgYmFja3VwX3NlcG9saWN5LT5zaWR0YWIpO1xuICAgIGZha2Vfc3RhdGUuaW5pdGlhbGl6ZWQgPSB0cnVlO1xuICAgIGZha2Vfc3RhdGUuc3MgPSAmZmFrZV9zcztcbiNlbmRpZiIKaWYgb2xkIG5vdCBpbiBzOiByYWlzZSBTeXN0ZW1FeGl0KCdmYWtlX3N0YXRlIHRhcmdldCBtaXNzaW5nJykKcz1zLnJlcGxhY2Uob2xkLG5ldywxKQpzPXMucmVwbGFjZSgiICAgICAgICBzaWR0YWJfZGVzdHJveShiYWNrdXBfc2Vwb2xpY3ktPnNpZHRhYik7XG4gICAgICAgIGtmcmVlKGJhY2t1cF9zZXBvbGljeS0+c2lkdGFiKTtcbiAgICAgICAga3N1X2Rlc3Ryb3lfc2Vwb2xpY3koYmFja3VwX3NlcG9saWN5KTsiLCIgICAgICAgIHNpZHRhYl9kZXN0cm95KGJhY2t1cF9zZXBvbGljeS0+c2lkdGFiKTtcbiAgICAgICAga2ZyZWUoYmFja3VwX3NlcG9saWN5LT5zaWR0YWIpO1xuICAgICAgICBiYWNrdXBfc2Vwb2xpY3ktPnNpZHRhYiA9IE5VTEw7XG4gICAgICAgIGtzdV9kZXN0cm95X3NlcG9saWN5KGJhY2t1cF9zZXBvbGljeSk7IiwxKQpjLndyaXRlX3RleHQocykKYXNzZXJ0ICdzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfbG9jaycgaW4gcwphc3NlcnQgJ3NlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlJyBpbiBzCmFzc2VydCAnZmFrZV9zdGF0ZS5zcyA9ICZmYWtlX3NzOycgaW4gcwphc3NlcnQgJ2Zha2Vfc3RhdGUucG9saWN5ID0gYmFja3VwX3NlcG9saWN5Oycgbm90IGluIHMKYXNzZXJ0ICdzdHJ1Y3Qgc2lkdGFiICpzaWR0YWI7JyBpbiBzZWgucmVhZF90ZXh0KCkKcHJpbnQoJ1tQQVNTXSBTZXR1cCAxOSBTRUxpbnV4IDQuMTkgYnJpZGdlIHNvdXJjZSBhdWRpdCcpCg==' | base64 -d > "$RUNNER_TEMP/setup19_selinux_419_bridge.py"
+          chmod 700 "$RUNNER_TEMP/setup19_selinux_419_bridge.py"
+          python3 -m py_compile "$RUNNER_TEMP/setup19_selinux_419_bridge.py"
+          python3 "$RUNNER_TEMP/setup19_selinux_419_bridge.py"
+          echo "[PASS] Bridge audit complete."
+          echo "=============================================================="
       - name: 10C - Final Source Integrity Audit
         shell: bash
         run: |
@@ -2305,10 +2320,8 @@ jobs:
           echo "[INFO] DTB/DTBO build disabled for V47 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
-          # Live build output + persistent artifact log.
-          # Use process substitution so the real make exit code is preserved;
-          # PIPESTATUS is not needed and no compiler output is hidden from the
-          # GitHub Actions console.
+          # Full V=1 compiler stdout/stderr is ARTIFACT-ONLY. Live Activity receives only concise source-file progress plus a heartbeat.
+          : > "$FULL_LOG"
           stdbuf -oL -eL make \
             ARCH=arm64 \
             LLVM=1 \
@@ -2319,23 +2332,32 @@ jobs:
             V=1 \
             WERROR=0 \
             Image.gz \
-            > >(stdbuf -oL tee "$FULL_LOG") 2>&1 &
+            > "$FULL_LOG" 2>&1 &
           BUILD_PID=$!
 
-          # Keep a low-rate progress/health heartbeat visible while Kbuild is
-          # busy (especially during long LTO/link phases that may emit no text).
-          # The heartbeat is diagnostic only; it never changes compiler flags,
-          # source files, targets, or job parallelism.
+          ( tail -n 0 -F "$FULL_LOG" 2>/dev/null | while IFS= read -r line; do
+              if [[ "$line" =~ -c[[:space:]]+-o[[:space:]]+[^[:space:]]+[[:space:]]+([^[:space:]]+\.(c|S|s))$ ]]; then
+                printf '[BUILD] compiling %s\n' "${BASH_REMATCH[1]}"
+              elif [[ "$line" =~ (^|[[:space:]])(LD|AR|OBJCOPY|OBJDUMP|LZ4|GZIP|BZIP2)[[:space:]]+([^[:space:]]+) ]]; then
+                printf '[BUILD] %s %s\n' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+              fi
+            done ) &
+          MONITOR_PID=$!
+
           while kill -0 "$BUILD_PID" 2>/dev/null; do
             sleep 30
             if kill -0 "$BUILD_PID" 2>/dev/null; then
               echo "[BUILD-HEARTBEAT] $(date -u '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
-              ps -eo pid,ppid,pcpu,pmem,rss,stat,comm --sort=-rss | head -n 16 || true
+              echo "[BUILD-HEARTBEAT] full V=1 output is artifact-only: $(wc -c < "$FULL_LOG") bytes / $(wc -l < "$FULL_LOG") lines"
             fi
           done
 
+          set +e
           wait "$BUILD_PID"
           BUILD_STATUS=$?
+          set -e
+          kill "$MONITOR_PID" 2>/dev/null || true
+          wait "$MONITOR_PID" 2>/dev/null || true
 
           END=$(date +%s)
           ELAPSED=$((END-START))
