@@ -1700,34 +1700,177 @@ jobs:
           PY
             echo "[PASS] sulog min_t include compatibility"
 
-            # 4) Previously verified SukiSU v4.2.0 SELinux include form.
-            # Official v4.2.0 rules.c already uses the local klog.h include and
-            # the 4.19 branch for avc_ss_reset()/selinux_status_update_policyload().
-            # Verify the known-safe include form only; do not invent a compatibility
-            # macro or rewrite SELinux internals without a current compiler error.
-            for f in drivers/kernelsu/selinux/rules.c drivers/kernelsu/selinux/sepolicy.c; do
-              test -f "$f"
-              if grep -qF '#include "klog.h"' "$f"; then
-                echo "[PASS] $f: local klog.h include present"
-              elif grep -qF '#include "../klog.h"' "$f"; then
-                echo "[INFO] $f: legacy relative klog.h include present; no speculative rewrite applied"
-              else
-                echo "[FAIL] $f: klog.h include not found"
-                exit 1
-              fi
-            done
-
-            # 5) Authoritative source sanity check: the pinned official SukiSU-Ultra
-            # v4.2.0 rules.c already contains the 4.19 two-argument AVC/status APIs
-            # and the corrected handle_sepolicy(void __user *, u64) signature.
-            # This workflow deliberately performs NO SELinux backend mutation here.
+            # 4) EXACT CURRENT ERROR FIX: SukiSU rules.c is using the modern
+            #    selinux_state.policy/policy_mutex representation, but this LG
+            #    lineage-23.2 kernel is Linux 4.19 and exposes policy through
+            #    selinux_state.ss->policydb guarded by ss->policy_rwlock.
+            #    Exact build diagnostics: rules.c:47+ reports missing policy,
+            #    missing policy_mutex, and incomplete struct selinux_policy.
+            #    Authoritative LG 4.19 headers confirm the ss-based layout.
             RULES="drivers/kernelsu/selinux/rules.c"
             test -f "$RULES"
-            grep -qF 'avc_ss_reset(avc, 0);' "$RULES" || grep -qF 'avc_ss_reset(selinux_state.avc, 0);' "$RULES"
-            grep -qF 'selinux_status_update_policyload(&selinux_state, 0);' "$RULES"
-            grep -qF 'int handle_sepolicy(void __user *user_data, u64 data_len)' "$RULES"
-            echo "[PASS] SELinux rules.c matches the verified SukiSU-Ultra v4.2.0 4.19-compatible API forms; no mutation applied."
-
+            python3 - "$RULES" <<'PY'
+            from pathlib import Path
+            import sys
+            p=Path(sys.argv[1]); s=p.read_text()
+            anchor='struct selinux_policy *backup_sepolicy;\n'
+            if 'struct selinux_policy {\n    struct policydb policydb;\n};' not in s:
+                if anchor not in s: raise SystemExit('rules.c policy anchor missing')
+                s=s.replace(anchor, anchor+'struct selinux_policy {\n    struct policydb policydb;\n};\n',1)
+            s=s.replace('#define SELINUX_POLICY_INSTEAD_SELINUX_SS\n\n','',1)
+            def end_func(text,pos):
+                b=text.index('{',pos); d=0
+                for i in range(b,len(text)):
+                    if text[i]=='{': d+=1
+                    elif text[i]=='}':
+                        d-=1
+                        if d==0: return i+1
+                raise SystemExit('function brace mismatch')
+            a=s.index('void apply_kernelsu_rules()'); ae=end_func(s,a)
+            h=s.index('int handle_sepolicy(void __user *user_data, u64 data_len)'); he=end_func(s,h)
+            apply=r'''void apply_kernelsu_rules()
+            {
+            struct selinux_ss *ss = selinux_state.ss;
+            struct selinux_policy live = { 0 };
+            struct selinux_policy *pol;
+            if (!ss) {
+            pr_err("SELinux ss is unavailable, cannot apply KernelSU rules!\n");
+            return;
+            }
+            if (!getenforce())
+            pr_info("SELinux permissive or disabled, apply rules!\n");
+            write_lock(&ss->policy_rwlock);
+            live.policydb = ss->policydb;
+            backup_sepolicy = ksu_dup_sepolicy(&live);
+            if (IS_ERR(backup_sepolicy)) {
+            pr_err("failed to create backup sepolicy: %ld\n", PTR_ERR(backup_sepolicy));
+            backup_sepolicy = NULL;
+            }
+            pol = ksu_dup_sepolicy(&live);
+            if (IS_ERR(pol)) {
+            pr_err("failed to dup selinux policy: %ld\n", PTR_ERR(pol));
+            write_unlock(&ss->policy_rwlock);
+            return;
+            }
+            ksu_type(&pol->policydb, KERNEL_SU_DOMAIN, "domain");
+            ksu_permissive(&pol->policydb, KERNEL_SU_DOMAIN);
+            ksu_typeattribute(&pol->policydb, KERNEL_SU_DOMAIN, "mlstrustedsubject");
+            ksu_typeattribute(&pol->policydb, KERNEL_SU_DOMAIN, "netdomain");
+            ksu_typeattribute(&pol->policydb, KERNEL_SU_DOMAIN, "bluetoothdomain");
+            ksu_type(&pol->policydb, KERNEL_SU_FILE, "file_type");
+            ksu_typeattribute(&pol->policydb, KERNEL_SU_FILE, "mlstrustedobject");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_FILE, ALL, ALL);
+            ksu_allow(&pol->policydb, KERNEL_SU_DOMAIN, ALL, ALL, ALL);
+            if (pol->policydb.policyvers >= POLICYDB_VERSION_XPERMS_IOCTL) {
+            ksu_allowxperm(&pol->policydb, KERNEL_SU_DOMAIN, ALL, "blk_file", ALL);
+            ksu_allowxperm(&pol->policydb, KERNEL_SU_DOMAIN, ALL, "fifo_file", ALL);
+            ksu_allowxperm(&pol->policydb, KERNEL_SU_DOMAIN, ALL, "chr_file", ALL);
+            ksu_allowxperm(&pol->policydb, KERNEL_SU_DOMAIN, ALL, "file", ALL);
+            }
+            ksu_allow(&pol->policydb, "init", KERNEL_SU_DOMAIN, ALL, ALL);
+            ksu_allow(&pol->policydb, "servicemanager", KERNEL_SU_DOMAIN, "dir", "search");
+            ksu_allow(&pol->policydb, "servicemanager", KERNEL_SU_DOMAIN, "dir", "read");
+            ksu_allow(&pol->policydb, "servicemanager", KERNEL_SU_DOMAIN, "file", "open");
+            ksu_allow(&pol->policydb, "servicemanager", KERNEL_SU_DOMAIN, "file", "read");
+            ksu_allow(&pol->policydb, "servicemanager", KERNEL_SU_DOMAIN, "process", "getattr");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "process", "sigchld");
+            ksu_allow(&pol->policydb, "logd", KERNEL_SU_DOMAIN, "dir", "search");
+            ksu_allow(&pol->policydb, "logd", KERNEL_SU_DOMAIN, "file", "read");
+            ksu_allow(&pol->policydb, "logd", KERNEL_SU_DOMAIN, "file", "open");
+            ksu_allow(&pol->policydb, "logd", KERNEL_SU_DOMAIN, "file", "getattr");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "fd", "use");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "fifo_file", "write");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "fifo_file", "read");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "fifo_file", "open");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "fifo_file", "getattr");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "read");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "write");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "connectto");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "getopt");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "getattr");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "memfd_file", "execute");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "memfd_file", "getattr");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "memfd_file", "map");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "memfd_file", "read");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "memfd_file", "write");
+            ksu_allow(&pol->policydb, "hwservicemanager", KERNEL_SU_DOMAIN, "dir", "search");
+            ksu_allow(&pol->policydb, "hwservicemanager", KERNEL_SU_DOMAIN, "file", "read");
+            ksu_allow(&pol->policydb, "hwservicemanager", KERNEL_SU_DOMAIN, "file", "open");
+            ksu_allow(&pol->policydb, "hwservicemanager", KERNEL_SU_DOMAIN, "process", "getattr");
+            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "binder", ALL);
+            ksu_allow(&pol->policydb, "system_server", KERNEL_SU_DOMAIN, "process", "getpgid");
+            ksu_allow(&pol->policydb, "system_server", KERNEL_SU_DOMAIN, "process", "sigkill");
+            policydb_destroy(&ss->policydb);
+            ss->policydb = pol->policydb;
+            memset(&pol->policydb, 0, sizeof(pol->policydb));
+            kfree(pol);
+            write_unlock(&ss->policy_rwlock);
+            reset_avc_cache();
+            }'''
+            handle=r'''int handle_sepolicy(void __user *user_data, u64 data_len)
+            {
+            struct selinux_ss *ss = selinux_state.ss;
+            struct selinux_policy live = { 0 };
+            struct selinux_policy *pol;
+            struct sepol_batch_cursor cursor;
+            u8 *payload;
+            int ret;
+            int success_cmd_count;
+            u32 cmd_index;
+            if (!ss || !user_data || !data_len) return -EINVAL;
+            if (data_len > KSU_SEPOLICY_MAX_BATCH_SIZE) return -E2BIG;
+            payload = kvmalloc((size_t)data_len, GFP_KERNEL);
+            if (!payload) return -ENOMEM;
+            if (copy_from_user(payload, user_data, (size_t)data_len)) { kvfree(payload); return -EFAULT; }
+            write_lock(&ss->policy_rwlock);
+            live.policydb = ss->policydb;
+            pol = ksu_dup_sepolicy(&live);
+            if (IS_ERR(pol)) { ret = PTR_ERR(pol); write_unlock(&ss->policy_rwlock); kvfree(payload); return ret; }
+            cursor.cur = payload; cursor.end = payload + (size_t)data_len;
+            ret = 0; success_cmd_count = 0; cmd_index = 0;
+            while (cursor.cur < cursor.end) {
+            struct sepol_data header;
+            const char *args[KSU_SEPOLICY_MAX_ARGS] = { 0 };
+            int expected_argc; u32 arg_index;
+            ret = sepol_read_cmd_header(&cursor, &header);
+            if (ret < 0) goto out_drop_new_policy;
+            expected_argc = sepol_expected_argc(header.cmd);
+            if (expected_argc < 0 || expected_argc > KSU_SEPOLICY_MAX_ARGS) { ret = -EINVAL; goto out_drop_new_policy; }
+            for (arg_index = 0; arg_index < (u32)expected_argc; arg_index++) {
+              ret = sepol_read_string(&cursor, &args[arg_index]);
+              if (ret < 0) goto out_drop_new_policy;
+            }
+            ret = apply_one_sepolicy_cmd(&pol->policydb, &header, args);
+            if (ret < 0) pr_err("sepol: cmd #%u failed, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
+            else success_cmd_count++;
+            cmd_index++;
+            }
+            policydb_destroy(&ss->policydb);
+            ss->policydb = pol->policydb;
+            memset(&pol->policydb, 0, sizeof(pol->policydb));
+            kfree(pol);
+            write_unlock(&ss->policy_rwlock);
+            reset_avc_cache();
+            kvfree(payload);
+            return success_cmd_count;
+            out_drop_new_policy:
+            ksu_destroy_sepolicy(pol);
+            write_unlock(&ss->policy_rwlock);
+            kvfree(payload);
+            return ret;
+            }'''
+            s=s[:a]+apply+s[ae:]
+            h=s.index('int handle_sepolicy(void __user *user_data, u64 data_len)'); he=end_func(s,h)
+            s=s[:h]+handle+s[he:]
+            p.write_text(s)
+            PY
+            if grep -qF 'selinux_state.policy' "$RULES" || grep -qF 'selinux_state.policy_mutex' "$RULES"; then
+              echo "[FAIL] modern selinux_state.policy/policy_mutex references remain in rules.c"; exit 1
+            fi
+            grep -qF 'struct selinux_ss *ss = selinux_state.ss;' "$RULES"
+            grep -qF 'write_lock(&ss->policy_rwlock);' "$RULES"
+            grep -qF 'policydb_destroy(&ss->policydb);' "$RULES"
+            echo "[PASS] Exact rules.c 4.19 SELinux compatibility fix applied and audited."
             echo
             echo "========== FIX SCOPE =========="
             echo "[UNCHANGED] SukiSU-Ultra 4.2.0 / KPM / SUSFS / Baseband-Guard / Maphide / Full LTO"
