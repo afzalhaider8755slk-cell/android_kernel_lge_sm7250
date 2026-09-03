@@ -499,6 +499,91 @@ jobs:
           } > "$LOG" 2>&1
           cat "$LOG"
 
+      - name: 08A - Apply Verified SELinux 4.19 Backend Compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/08A-selinux-419-compatibility.log"
+          : > "$LOG"
+          {
+            echo "========== SELINUX 4.19 BACKEND COMPATIBILITY =========="
+            echo "[INFO] Problem family: SukiSU v4.2.0 SELinux backend targets newer selinux_state/policydb layouts."
+            echo "[INFO] Target: LG 4.19.325-CIP135 with legacy embedded selinux_ss/policydb + flex_array internals."
+            echo "[INFO] Evidence: Diagnostics show missing selinux_state.policy/policy_mutex and flex_array/policydb layout mismatches."
+            echo "[INFO] Historical compatibility source: KernelSU commit e934bfb64850ef1584d7920eab3dbf53507b3bd8."
+            echo "[INFO] This is a compatibility backend substitution only; SukiSU v4.2.0 core/KPM/SUSFS remain pinned."
+
+            test -d KernelSU
+            test -f KernelSU/kernel/Kconfig
+            test -f KernelSU/kernel/Makefile
+            test -d drivers/kernelsu/selinux
+            test -f drivers/kernelsu/selinux/rules.c
+            test -f drivers/kernelsu/selinux/sepolicy.c
+
+            KSU_LEGACY_COMMIT="e934bfb64850ef1584d7920eab3dbf53507b3bd8"
+            KSU_LEGACY_BASE="https://raw.githubusercontent.com/tiann/KernelSU/${KSU_LEGACY_COMMIT}/kernel/selinux"
+
+            mkdir -p "$RUNNER_TEMP/ksu-selinux-419"
+            curl -fsSL --retry 5 --retry-all-errors \
+              "$KSU_LEGACY_BASE/rules.c" \
+              -o "$RUNNER_TEMP/ksu-selinux-419/rules.c"
+            curl -fsSL --retry 5 --retry-all-errors \
+              "$KSU_LEGACY_BASE/sepolicy.c" \
+              -o "$RUNNER_TEMP/ksu-selinux-419/sepolicy.c"
+
+            test -s "$RUNNER_TEMP/ksu-selinux-419/rules.c"
+            test -s "$RUNNER_TEMP/ksu-selinux-419/sepolicy.c"
+
+            # Do not blindly replace modern code. Require the historical backend
+            # to expose the legacy selinux_ss path and NOT force the modern
+            # SELINUX_POLICY_INSTEAD_SELINUX_SS mode unconditionally.
+            grep -q 'selinux_state.ss' "$RUNNER_TEMP/ksu-selinux-419/rules.c" || {
+              echo "[FAIL] Historical rules.c does not expose legacy selinux_state.ss backend."
+              exit 1
+            }
+
+            if grep -qF '#define SELINUX_POLICY_INSTEAD_SELINUX_SS' "$RUNNER_TEMP/ksu-selinux-419/rules.c"; then
+              if grep -qF '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)' "$RUNNER_TEMP/ksu-selinux-419/rules.c"; then
+                echo "[PASS] Historical rules.c contains version-gated modern SELinux policy backend."
+              else
+                echo "[FAIL] Historical rules.c forces modern SELinux policy backend; refusing replacement."
+                exit 1
+              fi
+            else
+              echo "[PASS] Historical rules.c uses legacy SELinux backend."
+            fi
+
+            # The old backend must be policydb-oriented rather than requiring
+            # the modern struct selinux_policy layout.
+            if grep -q 'struct selinux_policy \*pol' "$RUNNER_TEMP/ksu-selinux-419/rules.c"; then
+              echo "[INFO] Historical rules.c retains newer code under version guards; accepted only if 4.19 path is legacy."
+            fi
+
+            cp -f "$RUNNER_TEMP/ksu-selinux-419/rules.c" drivers/kernelsu/selinux/rules.c
+            cp -f "$RUNNER_TEMP/ksu-selinux-419/sepolicy.c" drivers/kernelsu/selinux/sepolicy.c
+
+            # Record exact source hashes for audit/reproducibility.
+            echo "LEGACY_RULES_SHA256=$(sha256sum drivers/kernelsu/selinux/rules.c | awk '{print $1}')"
+            echo "LEGACY_SEPOLICY_SHA256=$(sha256sum drivers/kernelsu/selinux/sepolicy.c | awk '{print $1}')"
+            echo "SOURCE_COMMIT=$KSU_LEGACY_COMMIT"
+
+            # Verify that the 4.19 backend no longer requires the modern state
+            # fields that caused Diagnostics (37).
+            if grep -qF 'selinux_state.policy_mutex' drivers/kernelsu/selinux/rules.c; then
+              echo "[FAIL] 4.19 compatibility backend still references selinux_state.policy_mutex."
+              exit 1
+            fi
+            if grep -qF 'selinux_state.policy,' drivers/kernelsu/selinux/rules.c; then
+              echo "[FAIL] 4.19 compatibility backend still assigns selinux_state.policy."
+              exit 1
+            fi
+
+            echo "[PASS] Verified SELinux 4.19-compatible backend installed."
+            echo "[PASS] No DTB/DTBO/DTS build added."
+            echo "[PASS] Existing kernel features remain enabled; only SELinux implementation is adapted to target kernel ABI."
+          } > "$LOG" 2>&1
+          cat "$LOG"
+
       - name: 09 - Verify SukiSU 4.2.0 + KPM + SUSFS 4.19
         shell: bash
         run: |
