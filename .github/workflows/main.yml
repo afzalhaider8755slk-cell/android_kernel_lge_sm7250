@@ -1,4 +1,4 @@
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + DTB/DTBO
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY
 
 on:
   workflow_dispatch:
@@ -2256,7 +2256,7 @@ jobs:
                 add('SULOG_MINMAX=DETECTED')
             add('RULE=Never replace an ABI/struct layout merely to silence a compiler error.')
             out.write_text('\n'.join(lines)+'\n')
-            PY_CENSUS
+          PY_CENSUS
 
             for iteration in $(seq 1 "$MAX_AUTOFIX"); do
               echo
@@ -2374,87 +2374,6 @@ jobs:
             grep -q '^CONFIG_BBG=y$' .config
             echo "[PASS] Maphide + JIT-Zygote patch is applied and retained."
             echo "[PASS] Baseband-Guard v1.1 is integrated and retained."
-          } > "$LOG" 2>&1
-          cat "$LOG"
-
-      - name: 10D - Verify DTB DTBO Source Inventory
-        shell: bash
-        run: |
-          set -euo pipefail
-          LOG="$DIAG_DIR/10E-dtb-dtbo-inventory.log"
-          : > "$LOG"
-          {
-            test -d arch/arm64/boot/dts
-            echo "All existing DT sources:"
-            find arch/arm64/boot/dts -type f \( -name '*.dts' -o -name '*.dtsi' \) -print | sort > "$RUNNER_TEMP/all-dts.txt"
-            wc -l "$RUNNER_TEMP/all-dts.txt"
-            echo "Global/Lao candidates:"
-            grep -Ei 'lao|global|overlay|dtbo' "$RUNNER_TEMP/all-dts.txt" | tee "$RUNNER_TEMP/lao-dt-candidates.txt" || true
-            echo "Stock DTB targets from Makefiles:"
-            grep -RniE 'dtb-|dtbo-|dtbs' arch/arm64/boot/dts/vendor 2>/dev/null | head -200 || true
-            echo "[PASS] DT source inventory captured; no stock DTS feature is removed or replaced."
-          } > "$LOG" 2>&1
-          cat "$LOG"
-
-      - name: 11A - Build and Verify All Existing Global/Lao DTBO Overlays (V45 config-tree fix)
-        shell: bash
-        run: |
-          set -euo pipefail
-          LOG="$DIAG_DIR/11A-dtbo-build.log"
-          : > "$LOG"
-          {
-            test -d arch/arm64/boot/dts/vendor/lge
-            src_dir="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com"
-            test -d "$src_dir"
-            mapfile -t dts_files < <(find "$src_dir" -maxdepth 1 -type f -name '*.dts' -printf '%f\n' | sort)
-            test "${#dts_files[@]}" -gt 0
-            mkdir -p "$GITHUB_WORKSPACE/artifacts/dtbo"
-            : > "$GITHUB_WORKSPACE/artifacts/dtbo/build-list.txt"
-
-            # DTBO is built with O=out. The kernel build system requires the
-            # generated out/.config for every O=out target; V44 reached 11A
-            # correctly but invoked the DTBO target with an empty out tree,
-            # causing syncconfig to fail with ".config not found".
-            # Preserve the exact validated source .config and materialize it
-            # into the output tree before any DTBO target is requested.
-            test -s .config
-            mkdir -p "$GITHUB_WORKSPACE/out"
-            cp -f .config "$GITHUB_WORKSPACE/out/.config"
-            make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
-              CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
-              LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
-              AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" olddefconfig
-            test -s "$GITHUB_WORKSPACE/out/.config"
-            test -s "$GITHUB_WORKSPACE/out/include/config/auto.conf"
-            echo "[PASS] DTBO output tree has the validated kernel .config and generated config headers."
-
-            lge_make="arch/arm64/boot/dts/vendor/lge/Makefile"
-            if grep -q '\$(wildcard echo \$(srctree)/\$(src)' "$lge_make"; then
-              cp "$lge_make" "$GITHUB_WORKSPACE/artifacts/lge-Makefile.before"
-              sed -i 's/\$(wildcard echo \$(srctree)\/\$(src)/\$(wildcard \$(srctree)\/\$(src)/' "$lge_make"
-              cp "$lge_make" "$GITHUB_WORKSPACE/artifacts/lge-Makefile.after"
-            fi
-            export PATH="$CLANG_DIR/bin:$PATH"
-            for dts in "${dts_files[@]}"; do
-              base="${dts%.dts}"
-              target="vendor/lge/${base}.dtbo"
-              echo "$target" | tee -a "$GITHUB_WORKSPACE/artifacts/dtbo/build-list.txt"
-              make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
-                CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
-                LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
-                AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" "$target"
-              produced="$GITHUB_WORKSPACE/out/arch/arm64/boot/dts/vendor/lge/${base}.dtbo"
-              test -s "$produced"
-              cp "$produced" "$GITHUB_WORKSPACE/artifacts/dtbo/${base}.dtbo"
-              sha256sum "$produced" > "$GITHUB_WORKSPACE/artifacts/dtbo/${base}.dtbo.sha256"
-            done
-            rev="lito-caymanlm_lao_com-rev-1.0_overlay.dtbo"
-            test -s "$GITHUB_WORKSPACE/artifacts/dtbo/$rev"
-            "$GITHUB_WORKSPACE/out/scripts/dtc/dtc" -I dtb -O dts -o "$GITHUB_WORKSPACE/artifacts/dtbo/overlay.dts" "$GITHUB_WORKSPACE/artifacts/dtbo/$rev"
-            grep -q 'LG Electronics, Caymanlm, HW Rev 1.0' "$GITHUB_WORKSPACE/artifacts/dtbo/overlay.dts"
-            grep -q 'qcom,board-id' "$GITHUB_WORKSPACE/artifacts/dtbo/overlay.dts"
-            ! grep -q '0x010C0008' "$GITHUB_WORKSPACE/artifacts/dtbo/overlay.dts"
-            echo "[PASS] All existing Global/Lao DTBO sources compiled; Rev 1.0 identity verified."
           } > "$LOG" 2>&1
           cat "$LOG"
 
@@ -2802,275 +2721,6 @@ jobs:
           grep -nF 'subdir-ccflags-y += -I$(src)' "$PLL_MAKE"
 
           # ------------------------------------------------------------
-          # 6) Stock DTS consistency fix: litomagnus MTP WSA references
-          #
-          # Current build log reaches the stock DTB compiler and fails only
-          # because litomagnus-mtp.dtsi references four labels:
-          #   wsa881x_0211 .. wsa881x_0214
-          #
-          # In this stock tree those WSA node definitions are intentionally
-          # commented out in lito-audio-overlay.dtsi (WSA speaker amp
-          # disabled), so the labels do not exist. The litomagnus overlay
-          # still contains four status="disabled" references to those absent
-          # labels. dtc treats an unresolved phandle label as a hard error.
-          #
-          # Do NOT download or add another WSA node definition: doing so would
-          # change the stock audio/device-tree behavior. Instead, remove only
-          # the four dead references from this overlay. They already request
-          # status="disabled" and therefore cannot represent an enabled stock
-          # feature. All other stock DTS content remains untouched.
-          # ------------------------------------------------------------
-          # The build log from the previous run proves the failing DTB is
-          # litomagnus-cdp.dtb, not litomagnus-mtp.dtb:
-          #   litomagnus-cdp.dtsi:44  Label or path wsa881x_0211 not found
-          #   ... through wsa881x_0214
-          #
-          # The earlier fix handled only the MTP file. Keep that fix, but
-          # apply the same narrowly-scoped cleanup to BOTH stock Magnus
-          # variants because this kernel builds both DTBs. No new WSA node,
-          # header, driver, or feature is added.
-          LITOMAGNUS_MTP_DTSI="arch/arm64/boot/dts/vendor/qcom/litomagnus-mtp.dtsi"
-          LITOMAGNUS_CDP_DTSI="arch/arm64/boot/dts/vendor/qcom/litomagnus-cdp.dtsi"
-          test -f "$LITOMAGNUS_MTP_DTSI"
-          test -f "$LITOMAGNUS_CDP_DTSI"
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          files = [
-              Path("arch/arm64/boot/dts/vendor/qcom/litomagnus-mtp.dtsi"),
-              Path("arch/arm64/boot/dts/vendor/qcom/litomagnus-cdp.dtsi"),
-          ]
-
-          labels = [
-              "wsa881x_0211",
-              "wsa881x_0212",
-              "wsa881x_0213",
-              "wsa881x_0214",
-          ]
-
-          for p in files:
-              s = p.read_text()
-              changed = []
-
-              # Remove the COMPLETE disabled override blocks, not just the
-              # unresolved label line. Leaving "status = disabled;" and "};"
-              # behind creates invalid DTS syntax.
-              for label in labels:
-                  pattern = (
-                      r'(?m)^&' + re.escape(label) +
-                      r'\s*\{\n'
-                      r'\s*status\s*=\s*"disabled";\n'
-                      r'\s*\};\n?'
-                  )
-                  s2, count = re.subn(pattern, "", s, count=1)
-                  if count:
-                      changed.append(label)
-                      s = s2
-
-              p.write_text(s)
-
-              if changed:
-                  print(f"[FIXED] {p}: removed complete unresolved disabled WSA override blocks:")
-                  for label in changed:
-                      print("  &" + label)
-              else:
-                  print(f"[PASS] {p}: no unresolved disabled WSA override blocks needed removal.")
-          PY
-
-          echo "[PASS] Verify no dead WSA phandle references remain in either Magnus DTSI:"
-          for f in "$LITOMAGNUS_MTP_DTSI" "$LITOMAGNUS_CDP_DTSI"; do
-            if grep -nE '^[[:space:]]*&wsa881x_021[1-4][[:space:]]*$' "$f"; then
-              echo "[FAIL] Unresolved WSA references still present in $f"
-              exit 1
-            fi
-          done
-
-          echo "[PASS] Both litomagnus MTP/CDP DTSI files are free of the four dead WSA references."
-
-          # ------------------------------------------------------------
-          # 7) Stock Lito/Magnus WSA speaker dependency fix
-          #
-          # Diagnostics (17) shows the previous v5 fix moved too much into
-          # common lito-pinctrl.dtsi. That made the unrelated stock
-          # lito-rumi.dtb inherit wsa_spkr_en1/en2 and fail because its
-          # audio tree does not provide the speaker-enable dependency.
-          #
-          # Upstream Lito keeps the speaker GPIO states in lito-pinctrl.dtsi,
-          # while the wsa_spkr_en1/en2 consumer nodes live in the Lito audio
-          # overlay. The Magnus CDP/MTP trees are the targets that reference
-          # these existing WSA883x controls.
-          #
-          # Therefore:
-          #   1. Keep ONLY the stock speaker GPIO states in common pinctrl.
-          #   2. Restore wsa_spkr_en1/en2 ONLY in the two Magnus target DTSIs.
-          #   3. Do not modify lito-rumi, camera, display, or any other DTB.
-          #
-          # This is a dependency restoration, not a new kernel feature.
-          # ------------------------------------------------------------
-          LITO_PINCTRL="arch/arm64/boot/dts/vendor/qcom/lito-pinctrl.dtsi"
-          LITOMAGNUS_MTP_DTSI="arch/arm64/boot/dts/vendor/qcom/litomagnus-mtp.dtsi"
-          LITOMAGNUS_CDP_DTSI="arch/arm64/boot/dts/vendor/qcom/litomagnus-cdp.dtsi"
-
-          test -f "$LITO_PINCTRL"
-          test -f "$LITOMAGNUS_MTP_DTSI"
-          test -f "$LITOMAGNUS_CDP_DTSI"
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          pinctrl = Path("arch/arm64/boot/dts/vendor/qcom/lito-pinctrl.dtsi")
-          mtp = Path("arch/arm64/boot/dts/vendor/qcom/litomagnus-mtp.dtsi")
-          cdp = Path("arch/arm64/boot/dts/vendor/qcom/litomagnus-cdp.dtsi")
-
-          # These are the stock Lito WSA speaker reset GPIO states.
-          # They belong in the common TLMM pinctrl definition because the
-          # speaker-enable nodes consume these labels.
-          pinctrl_block = r"""
-          &tlmm {
-              /* Stock Lito WSA speaker reset pins */
-              spkr_1_sd_n {
-                  spkr_1_sd_n_sleep: spkr_1_sd_n_sleep {
-                      mux {
-                          pins = "gpio58";
-                          function = "gpio";
-                      };
-
-                      config {
-                          pins = "gpio58";
-                          drive-strength = <2>;
-                          bias-pull-down;
-                          input-enable;
-                      };
-                  };
-
-                  spkr_1_sd_n_active: spkr_1_sd_n_active {
-                      mux {
-                          pins = "gpio58";
-                          function = "gpio";
-                      };
-
-                      config {
-                          pins = "gpio58";
-                          drive-strength = <16>;
-                          bias-disable;
-                          output-high;
-                      };
-                  };
-              };
-
-              spkr_2_sd_n {
-                  spkr_2_sd_n_sleep: spkr_2_sd_n_sleep {
-                      mux {
-                          pins = "gpio65";
-                          function = "gpio";
-                      };
-
-                      config {
-                          pins = "gpio65";
-                          drive-strength = <2>;
-                          bias-pull-down;
-                          input-enable;
-                      };
-                  };
-
-                  spkr_2_sd_n_active: spkr_2_sd_n_active {
-                      mux {
-                          pins = "gpio65";
-                          function = "gpio";
-                      };
-
-                      config {
-                          pins = "gpio65";
-                          drive-strength = <16>;
-                          bias-disable;
-                          output-high;
-                      };
-                  };
-              };
-          };
-          """
-
-          ps = pinctrl.read_text()
-          if "spkr_1_sd_n_active:" not in ps:
-              ps = ps.rstrip() + "\n\n" + pinctrl_block.strip() + "\n"
-              pinctrl.write_text(ps)
-              print("[FIXED] Restored stock WSA speaker GPIO states in lito-pinctrl.dtsi")
-          else:
-              print("[PASS] WSA speaker GPIO states already exist in lito-pinctrl.dtsi")
-
-          # These two nodes are intentionally scoped to the Magnus target
-          # DTSIs. Keeping them out of common lito-pinctrl prevents unrelated
-          # targets such as lito-rumi.dtb from acquiring a dangling reference.
-          wsa_block = r"""
-          &soc {
-              /* Stock Lito/Magnus WSA speaker controls */
-              wsa_spkr_en1: wsa_spkr_en1_pinctrl {
-                  compatible = "qcom,msm-cdc-pinctrl";
-                  pinctrl-names = "aud_active", "aud_sleep";
-                  pinctrl-0 = <&spkr_1_sd_n_active>;
-                  pinctrl-1 = <&spkr_1_sd_n_sleep>;
-              };
-
-              wsa_spkr_en2: wsa_spkr_en2_pinctrl {
-                  compatible = "qcom,msm-cdc-pinctrl";
-                  pinctrl-names = "aud_active", "aud_sleep";
-                  pinctrl-0 = <&spkr_2_sd_n_active>;
-                  pinctrl-1 = <&spkr_2_sd_n_sleep>;
-              };
-          };
-          """
-
-          for p in (mtp, cdp):
-              text = p.read_text()
-              if "wsa_spkr_en1:" not in text:
-                  text = text.rstrip() + "\n\n" + wsa_block.strip() + "\n"
-                  p.write_text(text)
-                  print(f"[FIXED] Restored wsa_spkr_en1/en2 in {p.name}")
-              else:
-                  print(f"[PASS] {p.name} already contains wsa_spkr_en1/en2")
-
-          # Hard guard: the common pinctrl must NOT contain the consumer nodes.
-          final_pinctrl = pinctrl.read_text()
-          if "wsa_spkr_en1:" in final_pinctrl or "wsa_spkr_en2:" in final_pinctrl:
-              raise SystemExit("wsa_spkr_en1/en2 must not be placed in common lito-pinctrl.dtsi")
-
-          for p in (mtp, cdp):
-              text = p.read_text()
-              for label in (
-                  "wsa_spkr_en1:",
-                  "wsa_spkr_en2:",
-                  "spkr_1_sd_n_active",
-                  "spkr_1_sd_n_sleep",
-                  "spkr_2_sd_n_active",
-                  "spkr_2_sd_n_sleep",
-              ):
-                  if label not in text and label.startswith("wsa_"):
-                      raise SystemExit(f"{p}: missing {label}")
-
-          print("[PASS] WSA definitions are now scoped only to Magnus MTP/CDP targets.")
-          PY
-
-          echo "[PASS] Verify common pinctrl contains only WSA GPIO states:"
-          grep -nE 'spkr_1_sd_n_(active|sleep):|spkr_2_sd_n_(active|sleep):' "$LITO_PINCTRL"
-          if grep -qE 'wsa_spkr_en[12]:' "$LITO_PINCTRL"; then
-            echo "[FAIL] Common lito-pinctrl still contains Magnus-only WSA consumers"
-            exit 1
-          fi
-
-          echo "[PASS] Verify Magnus target WSA consumers:"
-          grep -nE 'wsa_spkr_en[12]:' "$LITOMAGNUS_MTP_DTSI" "$LITOMAGNUS_CDP_DTSI"
-
-          # Never force dtc output. The following check is deliberately scoped
-          # to the targets that actually consume these labels.
-          grep -q 'wsa_spkr_en1:' "$LITOMAGNUS_MTP_DTSI"
-          grep -q 'wsa_spkr_en2:' "$LITOMAGNUS_MTP_DTSI"
-          grep -q 'wsa_spkr_en1:' "$LITOMAGNUS_CDP_DTSI"
-          grep -q 'wsa_spkr_en2:' "$LITOMAGNUS_CDP_DTSI"
-
-          echo "[PASS] Existing Magnus WSA883x phandle dependencies now have scoped stock definitions."
-          # ------------------------------------------------------------
           # 6) Linux 4.19 fault-inject WRITE_ONCE compatibility
           #    Stock 4.19 compiler headers define WRITE_ONCE() as a
           #    statement-style macro. This source used it as an expression:
@@ -3141,9 +2791,19 @@ jobs:
 
           START=$(date +%s)
 
-          # Use the stock kernel's default target first. This is safer for
-          # vendor 4.19 trees whose image target may be Image, Image.gz, or
-          # Image.gz-dtb depending on the board Kbuild.
+          # KERNEL-ONLY MODE (V46): build the pure compressed arm64 kernel.
+          # Do NOT invoke the top-level default target and do NOT invoke dtbs.
+          # This deliberately avoids DTB/DTBO compilation for this run.
+          # All previously fixed kernel/SukiSU/SUSFS/BBG/Maphide compatibility
+          # work remains untouched; only the build target is narrowed to Image.gz.
+          test -f arch/arm64/boot/Makefile
+          if ! grep -qE '(^|[[:space:]])Image\.gz([[:space:]$:])' arch/arm64/boot/Makefile; then
+            echo "[FAIL] arch/arm64/boot/Makefile does not expose the pure Image.gz target."
+            exit 2
+          fi
+          echo "[INFO] DTB/DTBO build disabled for V46 kernel-only run."
+          echo "[INFO] Building target: Image.gz"
+
           make \
             ARCH=arm64 \
             LLVM=1 \
@@ -3153,28 +2813,10 @@ jobs:
             -j"$(nproc)" \
             V=1 \
             WERROR=0 \
+            Image.gz \
             >"$FULL_LOG" 2>&1
 
           BUILD_STATUS=$?
-
-          if [ "$BUILD_STATUS" -eq 0 ]; then
-            echo "" >> "$FULL_LOG"
-            echo "===== EXPLICIT DTBS PASS =====" >> "$FULL_LOG"
-            make \
-              ARCH=arm64 \
-              LLVM=1 \
-              LLVM_IAS=1 \
-              CROSS_COMPILE="$CROSS_COMPILE" \
-              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              -j"$(nproc)" \
-              V=1 \
-              WERROR=0 \
-              dtbs >> "$FULL_LOG" 2>&1
-            DTB_STATUS=$?
-            if [ "$DTB_STATUS" -ne 0 ]; then
-              BUILD_STATUS="$DTB_STATUS"
-            fi
-          fi
 
           END=$(date +%s)
           ELAPSED=$((END-START))
@@ -3207,7 +2849,7 @@ jobs:
 
           if [ "$BUILD_STATUS" -eq 0 ]; then
             KERNEL_IMAGE=""
-            for candidate in               arch/arm64/boot/Image.gz-dtb               arch/arm64/boot/Image.gz               arch/arm64/boot/Image; do
+            for candidate in               arch/arm64/boot/Image.gz; do
               if [ -s "$candidate" ]; then
                 KERNEL_IMAGE="$candidate"
                 break
@@ -3223,7 +2865,7 @@ jobs:
 
           exit "$BUILD_STATUS"
 
-      - name: 19A - Package Kernel + DTB/DTBO + AnyKernel3 (OrangeFox Flashable)
+      - name: 19A - Package Kernel Only (No DTB/DTBO)
         if: success()
         shell: bash
         run: |
@@ -3231,73 +2873,23 @@ jobs:
           LOG="$DIAG_DIR/19A-packaging.log"
           : > "$LOG"
           {
-            mkdir -p artifacts/kernel artifacts/dtb artifacts/dtbo
-
-            KERNEL_IMAGE=""
-            for candidate in \
-              arch/arm64/boot/Image.gz-dtb \
-              arch/arm64/boot/Image.gz \
-              arch/arm64/boot/Image; do
-              if [ -s "$candidate" ]; then
-                KERNEL_IMAGE="$candidate"
-                break
-              fi
-            done
-            test -n "$KERNEL_IMAGE"
-
-            cp -f "$KERNEL_IMAGE" artifacts/kernel/
+            mkdir -p artifacts/kernel
+            KERNEL_IMAGE="arch/arm64/boot/Image.gz"
+            test -s "$KERNEL_IMAGE"
+            cp -f "$KERNEL_IMAGE" artifacts/kernel/Image.gz
             sha256sum "$KERNEL_IMAGE" > artifacts/kernel/kernel.sha256
 
-            find arch/arm64/boot/dts -type f -name '*.dtb' -print0 2>/dev/null |
-              while IFS= read -r -d '' f; do cp -f "$f" artifacts/dtb/; done
-            find arch/arm64/boot/dts -type f -name '*.dtbo' -print0 2>/dev/null |
-              while IFS= read -r -d '' f; do cp -f "$f" artifacts/dtbo/; done
-
-            # Build a standard AnyKernel3 package that OrangeFox can flash.
-            rm -rf "$RUNNER_TEMP/AnyKernel3"
-            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$RUNNER_TEMP/AnyKernel3"
-
-            cp -f "$KERNEL_IMAGE" "$RUNNER_TEMP/AnyKernel3/Image.gz-dtb"
-
-            python3 -c '
-            from pathlib import Path
-            import os
-            import re
-            p = Path(os.environ["RUNNER_TEMP"]) / "AnyKernel3" / "anykernel.sh"
-            s = p.read_text()
-            s = re.sub(r"(?m)^kernel\\.string=.*$", "kernel.string=LM-G900 SukiSU-Ultra 4.2.0 V32.1", s)
-            s = re.sub(r"(?m)^do\\.devicecheck=.*$", "do.devicecheck=1", s)
-            s = re.sub(r"(?m)^device\\.name1=.*$", "device.name1=caymanlm", s)
-            s = re.sub(r"(?m)^device\\.name2=.*$", "device.name2=G900EMW", s)
-            s = re.sub(r"(?m)^device\\.name3=.*$", "device.name3=LM-G900", s)
-            s = re.sub(r"(?m)^device\\.name4=.*$", "device.name4=", s)
-            s = re.sub(r"(?m)^\\s*(?:block|BLOCK)=.*$", "block=boot;", s)
-            s = re.sub(r"(?m)^\\s*(?:is_slot_device|IS_SLOT_DEVICE)=.*$", "is_slot_device=auto;", s)
-            p.write_text(s)
-            '
-
-            test -s "$RUNNER_TEMP/AnyKernel3/Image.gz-dtb"
-            grep -q 'kernel.string=LM-G900 SukiSU-Ultra 4.2.0 V32.1' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
-            grep -q 'block=boot' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
-            grep -q 'is_slot_device=auto' "$RUNNER_TEMP/AnyKernel3/anykernel.sh"
-
+            # Kernel-only ZIP. This is intentionally NOT a flashable DTB/DTBO
+            # package. Flashable/OrangeFox packaging will be added later when
+            # the exact boot-image/DT layout is intentionally brought back.
             (
-              cd "$RUNNER_TEMP/AnyKernel3"
-              rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32.1-OrangeFox-AnyKernel3.zip" . \
-                -x 'README.md' >/dev/null
+              cd artifacts/kernel
+              zip -9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V32.1-Kernel-Only-4.19.325-cip135.zip" Image.gz kernel.sha256 >/dev/null
             )
 
-            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32.1-OrangeFox-AnyKernel3.zip" artifacts/kernel/
-
-            (
-              cd artifacts
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V32-DTB-DTBO-4.19.325-cip135.zip" dtb dtbo >/dev/null
-            )
-
-            echo "Kernel image: $KERNEL_IMAGE"
-            echo "AnyKernel3/OrangeFox ZIP: artifacts/LM-G900-SukiSU-4.2.0-V32.1-OrangeFox-AnyKernel3.zip"
-            echo "DTB/DTBO ZIP: artifacts/LM-G900-V32-DTB-DTBO-4.19.325-cip135.zip"
+            echo "Kernel image: artifacts/kernel/Image.gz"
+            echo "Kernel-only ZIP: artifacts/LM-G900-V32.1-Kernel-Only-4.19.325-cip135.zip"
+            echo "[PASS] No DTB or DTBO files were built or packaged in V46."
             find artifacts -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
           } > "$LOG" 2>&1
           cat "$LOG"
@@ -3322,8 +2914,7 @@ jobs:
             echo "Kernel image candidates:"
             ls -lh arch/arm64/boot/Image.gz-dtb arch/arm64/boot/Image.gz arch/arm64/boot/Image 2>&1 || true
             echo
-            echo "DTB/DTBO outputs:"
-            find arch/arm64/boot/dts -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print 2>/dev/null | sort | head -300 || true
+            echo "DTB/DTBO build mode: DISABLED (kernel-only run)"
             echo
             echo "Build errors (last 40):"
             tail -40 "$DIAG_DIR/12-build-errors.log" 2>/dev/null || true
@@ -3362,11 +2953,11 @@ jobs:
           } > diagnostic-artifact/MANIFEST.txt
           exit 0
 
-      - name: 19B - Upload Kernel / DTB / DTBO / OrangeFox ZIP
+      - name: 19B - Upload Kernel-Only Artifact
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V32.1-SukiSU-4.2.0-Kernel-DTB-DTBO-OrangeFox
+          name: LG-Velvet-G900-V32.1-SukiSU-4.2.0-Kernel-Only
           path: artifacts
           if-no-files-found: error
           retention-days: 14
@@ -3387,10 +2978,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: LG-Velvet-G900-SukiSU-4.2.0-Raw-Kernel
-          path: |
-            arch/arm64/boot/Image.gz-dtb
-            arch/arm64/boot/Image.gz
-            arch/arm64/boot/Image
+          path: arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
