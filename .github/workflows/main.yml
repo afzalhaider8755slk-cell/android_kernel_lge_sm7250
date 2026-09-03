@@ -1604,16 +1604,40 @@ jobs:
           echo "PREFLIGHT_POLICY=diagnostic-only; authoritative full build must run" >> "$LOG"
           cat "$LOG"
 
-      - name: 10A-MANUAL - Apply Reviewed 4.19 Compatibility Fixes Only
+      - name: 10A-00 - HARD NO-AUTOFIX AUDIT
         shell: bash
         run: |
           set -euo pipefail
+          LOG="$DIAG_DIR/10A-00-no-autofix-audit.log"
+          : > "$LOG"
+          {
+            echo "========== HARD NO-AUTOFIX AUDIT =========="
+            echo "Mode: MANUAL RESEARCH + MANUAL VERIFIED FIX ONLY"
+            echo "Automatic source mutation/research loop: DISABLED"
+            echo "Speculative compiler workarounds: DISABLED"
+            echo "DTB/DTBO/DTS build or modification: DISABLED"
+            echo "Only explicit reviewed compatibility edits may run below."
+            if grep -RniE --exclude-dir=.git --exclude='*.log' --exclude='*.yml' --exclude='*.yaml' \
+              'auto_fix_error|AUTOFIX_DIR|Adaptive Auto-Fix|AUTO-FIX.*APPLIED|candidate.patch|research mutation loop' . 2>/dev/null; then
+              echo "[FAIL] Residual Auto-Fix engine code/markers detected in kernel source."
+              exit 1
+            fi
+            echo "[PASS] No Auto-Fix engine is present in the kernel source tree."
+          } > "$LOG" 2>&1
+          cat "$LOG"
+
+      - name: 10A-MANUAL - Apply Reviewed 4.19 Compatibility Fixes Only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           LOG="$DIAG_DIR/10A-manual-compatibility-fixes.log"
           : > "$LOG"
+          trap 'rc=$?; echo "[FAIL] 10A manual compatibility step failed: rc=$rc line=$LINENO cmd=$BASH_COMMAND" >> "$LOG"; exit $rc' ERR
           {
             echo "========== MANUAL 4.19 COMPATIBILITY FIXES =========="
             echo "Auto-Fix: DISABLED"
-            echo "Scope: only previously verified fixes + Diagnostics 38 current SELinux errors"
+            echo "Scope: previously verified compatibility fixes only"
+            echo "SELinux current-error mutation: DISABLED pending exact compiler diagnostic"
 
             # 1) Previously verified: SukiSU task_work API on Linux 4.19 uses bool notify.
             FILE="drivers/kernelsu/policy/allowlist.c"
@@ -1676,73 +1700,33 @@ jobs:
           PY
             echo "[PASS] sulog min_t include compatibility"
 
-            # 4) Diagnostics 38 current error: both SukiSU SELinux files point to
-            # ../klog.h, but the integrated build exposes klog.h directly.
+            # 4) Previously verified SukiSU v4.2.0 SELinux include form.
+            # Official v4.2.0 rules.c already uses the local klog.h include and
+            # the 4.19 branch for avc_ss_reset()/selinux_status_update_policyload().
+            # Verify the known-safe include form only; do not invent a compatibility
+            # macro or rewrite SELinux internals without a current compiler error.
             for f in drivers/kernelsu/selinux/rules.c drivers/kernelsu/selinux/sepolicy.c; do
               test -f "$f"
-              grep -qF '#include "../klog.h"' "$f" || true
-              python3 - "$f" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1]); s=p.read_text()
-          old='#include "../klog.h"'
-          new='#include "klog.h"'
-          if old in s:
-              if s.count(old) != 1: raise SystemExit(f'multiple ../klog.h includes in {p}')
-              s=s.replace(old,new,1); p.write_text(s); print(f'[FIXED] {p}: ../klog.h -> klog.h')
-          elif new in s:
-              print(f'[PASS] {p}: klog.h include already fixed')
-          else:
-              raise SystemExit(f'klog include not found in {p}')
-          PY
+              if grep -qF '#include "klog.h"' "$f"; then
+                echo "[PASS] $f: local klog.h include present"
+              elif grep -qF '#include "../klog.h"' "$f"; then
+                echo "[INFO] $f: legacy relative klog.h include present; no speculative rewrite applied"
+              else
+                echo "[FAIL] $f: klog.h include not found"
+                exit 1
+              fi
             done
 
-            # 5) Diagnostics 38 current SELinux backend errors.  The local LG
-            # 4.19 SELinux state contains selinux_state.ss->policydb, and its
-            # AVC/status APIs use the legacy 4.19 two-argument forms.  The
-            # historical compatibility backend already contains the correct
-            # version-gated paths; enable that path instead of inventing a new
-            # policydb object or changing SELinux internals.
+            # 5) Authoritative source sanity check: the pinned official SukiSU-Ultra
+            # v4.2.0 rules.c already contains the 4.19 two-argument AVC/status APIs
+            # and the corrected handle_sepolicy(void __user *, u64) signature.
+            # This workflow deliberately performs NO SELinux backend mutation here.
             RULES="drivers/kernelsu/selinux/rules.c"
             test -f "$RULES"
-            python3 - "$RULES" <<'PY'
-          from pathlib import Path
-          import sys,re
-          p=Path(sys.argv[1]); s=p.read_text()
-          # Use the existing compatibility branch already present in this rules.c.
-          if '#define KSU_COMPAT_USE_SELINUX_STATE' not in s:
-              anchor='#define ALL NULL\n'
-              if anchor not in s: raise SystemExit('rules.c compatibility anchor missing')
-              s=s.replace(anchor,anchor+'#define KSU_COMPAT_USE_SELINUX_STATE\n',1)
-          # The 4.19 branch of this file must resolve policy through selinux_state.ss.
-          if re.search(r'(?m)^\s*db\s*=\s*&policydb;\s*$',s):
-              s=re.sub(r'(?m)^\s*db\s*=\s*&policydb;\s*$', '\\tdb = &ss->policydb;', s, count=1)
-              # Ensure the local ss declaration exists in the legacy branch.
-              if 'struct selinux_ss *ss = rcu_dereference(selinux_state.ss);' not in s:
-                  raise SystemExit('legacy selinux_ss declaration missing; refusing partial policydb edit')
-          # Diagnostics 38 showed the legacy 4.19 reset APIs are required.
-          s=s.replace('    avc_ss_reset(0);','    avc_ss_reset(selinux_state.avc, 0);')
-          s=s.replace('    selinux_status_update_policyload(0);','    selinux_status_update_policyload(&selinux_state, 0);')
-          # Match the declaration in selinux.h: pointer first, length second.
-          old='int handle_sepolicy(unsigned long arg3, void __user *arg4)'
-          new='int handle_sepolicy(void __user *user_data, u64 data_len)'
-          if old in s:
-              s=s.replace(old,new,1)
-              # These parameter names are local to this legacy handler. Rename
-              # them globally only after proving the old signature exists.
-              s=re.sub(r'\barg4\b','user_data',s)
-              s=re.sub(r'\barg3\b','data_len',s)
-          elif new not in s:
-              raise SystemExit('handle_sepolicy signature is neither old nor fixed form')
-          p.write_text(s)
-          PY
-            grep -qF '#define KSU_COMPAT_USE_SELINUX_STATE' "$RULES"
-            grep -qF 'struct selinux_ss *ss = rcu_dereference(selinux_state.ss);' "$RULES"
-            grep -qF 'db = &ss->policydb;' "$RULES"
-            grep -qF 'avc_ss_reset(selinux_state.avc, 0);' "$RULES"
+            grep -qF 'avc_ss_reset(avc, 0);' "$RULES" || grep -qF 'avc_ss_reset(selinux_state.avc, 0);' "$RULES"
             grep -qF 'selinux_status_update_policyload(&selinux_state, 0);' "$RULES"
             grep -qF 'int handle_sepolicy(void __user *user_data, u64 data_len)' "$RULES"
-            echo "[PASS] Diagnostics 38 SELinux rules.c errors fixed with the existing 4.19 compatibility backend."
+            echo "[PASS] SELinux rules.c matches the verified SukiSU-Ultra v4.2.0 4.19-compatible API forms; no mutation applied."
 
             echo
             echo "========== FIX SCOPE =========="
@@ -1750,6 +1734,7 @@ jobs:
             echo "[UNCHANGED] Fingerprint / vibration / Dual-SIM-RIL / audio / IMS / VoWiFi requirements"
             echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
             echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
+            echo "[DISABLED] Speculative SELinux backend edits"
             echo "[PASS] Manual compatibility patch set complete."
           } > "$LOG" 2>&1
           cat "$LOG"
@@ -2278,6 +2263,10 @@ jobs:
           echo
           echo "[PASS] Scoped source compatibility fixes prepared."
 
+          echo "=========================================="
+          echo "CURRENT ERROR POLICY: NO SPECULATIVE XFRM FIX"
+          echo "The latest reported failure is in net/xfrm, but no exact compiler diagnostic is embedded here."
+          echo "Therefore this workflow does NOT modify net/xfrm. The next failure must be diagnosed from the full build log."
           echo "=========================================="
           echo "STARTING STOCK + SUKISU + KPM BUILD"
           echo "Full V=1 stdout/stderr -> kernel-build-full.log"
