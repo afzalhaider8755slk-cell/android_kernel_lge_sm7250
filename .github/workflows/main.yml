@@ -1702,9 +1702,17 @@ jobs:
 
           # Search local tree for exact definitions/usages before considering any
           # online candidate. This prevents a web result from overriding LG truth.
-          local_twa = re.search(r"task_work_add\s*\([^;]*\b(bool|int)\s*(?:notify|mode)", local_task, re.S)
-          local_put = "put_task_struct" in local_sched
-          research("[LOCAL] task_work.h signature="+(local_twa.group(1) if local_twa else "unknown"))
+          # Linux 4.19 has both named and anonymous bool task_work APIs in the
+          # wild. Match the actual prototype structurally instead of requiring a
+          # parameter name, otherwise the research engine can falsely reject a
+          # verified 4.19 mapping (the exact failure seen in Diagnostics 23).
+          local_twa = re.search(
+              r"task_work_add\s*\(\s*struct\s+task_struct\s*\*[^,]+,\s*"
+              r"struct\s+callback_head\s*\*[^,]+,\s*bool(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\)",
+              local_task, re.S)
+          local_twa_shape = "bool" if local_twa else "unknown"
+          local_put = bool(re.search(r"(?:^|\n)\s*(?:static\s+inline\s+)?(?:void|extern\s+void)\s+put_task_struct\s*\(", local_sched))
+          research("[LOCAL] task_work.h signature="+local_twa_shape)
           research("[LOCAL] sched/task.h put_task_struct="+str(local_put))
 
           # ---- search-engine corroboration ----
@@ -1713,7 +1721,22 @@ jobs:
               try:
                   q=urllib.parse.quote(sym)
                   u=f"https://grep.app/api/search?q={q}&regexp=false"
-                  obj=json.loads(fetch(u,15))
+                  last_ex=None
+                  obj=None
+                  for attempt in range(1,4):
+                      try:
+                          obj=json.loads(fetch(u,15))
+                          break
+                      except Exception as ex:
+                          last_ex=ex
+                          # grep.app can rate-limit CI. Retry with increasing
+                          # delays; authoritative GitHub raw evidence remains the
+                          # actual patch authority.
+                          import time
+                          if attempt < 3:
+                              time.sleep(attempt * 2)
+                  if obj is None:
+                      raise last_ex
                   hits=obj.get("hits",{}).get("hits",[])
                   search_items.append({
                     "symbol":sym,
@@ -1741,7 +1764,13 @@ jobs:
               old419=evidence.get("linux419_task_work","")
               if "TWA_RESUME" not in suk or "task_work_add" not in suk:
                   fail("Pinned SukiSU evidence does not contain the reported TWA_RESUME call")
-              if "task_work_add(struct task_struct *task, struct callback_head *twork, bool)" not in old419:
+              # Accept both upstream 4.19 spellings: anonymous bool and a named
+              # bool parameter. The type/signature, not the parameter name, is
+              # the compatibility fact that authorizes TWA_RESUME -> true.
+              if not re.search(
+                  r"task_work_add\s*\(\s*struct\s+task_struct\s*\*[^,]+,\s*"
+                  r"struct\s+callback_head\s*\*[^,]+,\s*bool(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\)",
+                  old419, re.S):
                   fail("Pinned Linux v4.19 evidence does not confirm bool task_work_add API")
               p=Path("drivers/kernelsu/policy/allowlist.c")
               old=p.read_text()
