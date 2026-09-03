@@ -1711,6 +1711,8 @@ jobs:
               r"struct\s+callback_head\s*\*[^,]+,\s*bool(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\)",
               local_task, re.S)
           local_twa_shape = "bool" if local_twa else "unknown"
+          if local_twa:
+              research("[LOCAL] task_work_add prototype matched="+local_twa.group(0).strip())
           local_put = bool(re.search(r"(?:^|\n)\s*(?:static\s+inline\s+)?(?:void|extern\s+void)\s+put_task_struct\s*\(", local_sched))
           research("[LOCAL] task_work.h signature="+local_twa_shape)
           research("[LOCAL] sched/task.h put_task_struct="+str(local_put))
@@ -1758,7 +1760,7 @@ jobs:
           if "TWA_RESUME" in err and "drivers/kernelsu/policy/allowlist.c" in err:
               if not local_allow:
                   fail("allowlist.c is missing; refusing patch")
-              if not local_twa or local_twa.group(1) != "bool":
+              if not local_twa:
                   fail("Target task_work.h does not expose the verified 4.19 bool API; refusing TWA_RESUME->true mapping")
               suk= evidence.get("sukisu_allowlist","")
               old419=evidence.get("linux419_task_work","")
@@ -1880,6 +1882,32 @@ jobs:
                 return 20
               fi
               echo "[FAIL] Auto-Fix stopped safely (rc=$rc)."
+              if [ ! -s "$action_log" ]; then
+                {
+                  echo "[AUTO-FIX] ENGINE ERROR / SAFE STOP"
+                  echo "Python return code: $rc"
+                  echo "The research/patch engine raised an unexpected exception before producing a decision."
+                  echo "Research log: $research_log"
+                  echo "Decision log: $decision_log"
+                  echo "Patch log: $diff_log"
+                  echo "The current compiler diagnostic remains unchanged; no speculative source edit was accepted."
+                } > "$action_log"
+              fi
+              if [ ! -s "$decision_log" ]; then
+                python3 - "$decision_log" "$research_log" "$rc" <<'PYERR'
+          from pathlib import Path
+          import json, sys
+          out = Path(sys.argv[1])
+          research_log = Path(sys.argv[2])
+          rc = int(sys.argv[3])
+          out.write_text(json.dumps({
+          "status": "ENGINE_ERROR_SAFE_STOP",
+          "python_return_code": rc,
+          "research_log": str(research_log),
+          "note": "No source patch was accepted because the Auto-Fix engine itself failed."
+          }, indent=2))
+          PYERR
+              fi
               cat "$action_log"
               return "$rc"
             }
