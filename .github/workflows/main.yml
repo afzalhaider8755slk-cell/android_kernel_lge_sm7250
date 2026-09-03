@@ -2757,6 +2757,38 @@ jobs:
           PY
 
           # ------------------------------------------------------------
+          # 8) Linux 4.19 maccess declaration for kernel/power/qos.c
+          #
+          # Build log evidence:
+          #   kernel/power/qos.c:191:3: error:
+          #   implicit declaration of function 'probe_kernel_read'
+          #
+          # Linux 4.19 declares probe_kernel_read() in linux/uaccess.h.
+          # The stock qos.c path reaches this call without that declaration
+          # visible under the current Clang 20 include graph. Add ONLY the
+          # authoritative stock header include; do not replace the API and
+          # do not change the qos/workqueue behavior.
+          # ------------------------------------------------------------
+          QOS_SRC="kernel/power/qos.c"
+          test -f "$QOS_SRC"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("kernel/power/qos.c")
+          s = p.read_text()
+          include = "#include <linux/uaccess.h>"
+
+          if include not in s:
+              p.write_text(include + "\n" + s)
+              print("[FIXED] kernel/power/qos.c: added Linux 4.19 uaccess.h declaration for probe_kernel_read")
+          else:
+              print("[PASS] kernel/power/qos.c already includes linux/uaccess.h")
+          PY
+
+          echo "[PASS] kernel/power/qos.c probe_kernel_read declaration is explicitly visible."
+
+          # ------------------------------------------------------------
           # 7) LG NFC prototype compatibility
           #    Clang 20 treats -Wstrict-prototypes as an error for this
           #    old-style zero-argument declaration. Make it explicit.
