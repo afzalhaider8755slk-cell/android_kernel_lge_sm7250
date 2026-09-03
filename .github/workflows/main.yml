@@ -1605,7 +1605,7 @@ jobs:
             # -----------------------------------------------------------------
             AUTOFIX_DIR="$DIAG_DIR/autofix"
             mkdir -p "$AUTOFIX_DIR" "$AUTOFIX_DIR/evidence" "$AUTOFIX_DIR/patches"
-            MAX_AUTOFIX=24
+            MAX_AUTOFIX=32
             build_rc=1
 
             auto_fix_error() {
@@ -1629,6 +1629,10 @@ jobs:
           root = Path.cwd()
           af = Path(sys.argv[7])
           err = errp.read_text(errors="replace")
+          # Prefer the first real compiler diagnostic over note-only identifiers.
+          # This materially reduces false candidate selection in multi-error SELinux logs.
+          primary_lines=[l for l in err.splitlines() if re.search(r"(?:error:|fatal error:|undefined reference|ld\.lld:|assembler messages?:)",l,re.I)]
+          primary_err="\n".join(primary_lines[:24])
           started = datetime.datetime.utcnow().isoformat() + "Z"
           
           def write_action(msg):
@@ -1720,7 +1724,9 @@ jobs:
               r"use of undeclared identifier ['\"]([^'\"]+)['\"]",
               r"unknown type name ['\"]?([A-Za-z_][A-Za-z0-9_]*)",
           ]
-          for pat in patterns: identifiers += re.findall(pat,err,re.S)
+          for pat in patterns: identifiers += re.findall(pat,primary_err or err,re.S)
+          if len(identifiers) < 4:
+              for pat in patterns: identifiers += re.findall(pat,err,re.S)
           identifiers=list(dict.fromkeys(identifiers))[:16]
           research("LOCATIONS="+json.dumps(locs))
           research("IDENTIFIERS="+json.dumps(identifiers))
@@ -1926,6 +1932,24 @@ jobs:
                   fail(f"Previously verified mapping matched but marker is absent: {marker}")
           
           # ------------------------------------------------------------------
+          # Verified 4.19 include compatibility: SukiSU sulog/event.c includes
+          # linux/minmax.h, which does not exist in the target 4.19 tree. The
+          # file uses min_t(), supplied by linux/kernel.h in this tree. Only
+          # perform this exact replacement when local evidence proves both facts.
+          # ------------------------------------------------------------------
+          if 'linux/minmax.h' in err and 'drivers/kernelsu/sulog/event.c' in err and not was_rejected('verified:sulog-minmax-4.19'):
+              path='drivers/kernelsu/sulog/event.c'; before=file_before(path) or ''
+              if '#include <linux/minmax.h>' not in before: fail('Expected sulog minmax include was not found; refusing broad edit')
+              kh=file_before('include/linux/kernel.h') or ''
+              if not kh or not re.search(r'#\s*define\s+min_t\s*\(',kh): fail('Local Linux 4.19 kernel.h does not provide min_t; refusing include substitution')
+              after=before.replace('#include <linux/minmax.h>','#include <linux/kernel.h> /* LG KSU 4.19 minmax compatibility */',1)
+              Path(path).write_text(after); diff=git_diff([path])
+              save_transaction('verified:sulog-minmax-4.19',[(path,before)],current_fp)
+              record_decision({'status':'APPLIED','category':'linux-4.19-sulog-minmax','file':path,'old_value':'#include <linux/minmax.h>','new_value':'#include <linux/kernel.h>','why':'Target Linux 4.19 has no linux/minmax.h; local kernel.h provides min_t used by this file.','iteration':iteration},diff)
+              write_action(f'[AUTO-FIX] VERIFIED 4.19 sulog minmax include compatibility applied.\nFile: {path}\nDiff saved: {diffp}')
+              raise SystemExit(0)
+
+          # ------------------------------------------------------------------
           # Deterministic generic fix A: missing include / implicit declaration.
           # If exactly one local header provides the declaration and the failing
           # file does not include it, add that header.  No invented API values.
@@ -2115,6 +2139,7 @@ jobs:
           (af/"researched-candidates.json").write_text(json.dumps(candidates,indent=2))
           decisionp.write_text(json.dumps({
               "status":"UNKNOWN_OR_UNSAFE",
+              "research_first_census":"autofix/00-compatibility-census.log",
               "error_fingerprint":current_fp,
               "identifiers":identifiers,
               "locations":locs,
@@ -2160,6 +2185,70 @@ jobs:
               cat "$action_log"
               return "$rc"
             }
+
+            # -----------------------------------------------------------------
+            # RESEARCH-FIRST COMPATIBILITY CENSUS
+            # Run once after SukiSU integration and before the first expensive
+            # compile.  This does not invent fixes; it detects known Linux
+            # 4.19 API families in advance, records their authoritative
+            # reference, and applies only deterministic include compatibility.
+            # -----------------------------------------------------------------
+            CENSUS_LOG="$AUTOFIX_DIR/00-compatibility-census.log"
+            python3 - "$CENSUS_LOG" <<'PY_CENSUS'
+            from pathlib import Path
+            import re, urllib.request, hashlib, json
+            root=Path.cwd(); out=Path(__import__('sys').argv[1])
+            lines=[]
+            def add(x): lines.append(x)
+            def read(p):
+                q=root/p
+                return q.read_text(errors='replace') if q.exists() else ''
+            def fetch(url):
+                req=urllib.request.Request(url,headers={'User-Agent':'LG-Velvet-G900-Compat-Census/1.0'})
+                with urllib.request.urlopen(req,timeout=20) as r: return r.read().decode('utf-8','replace')
+            add('RESEARCH_FIRST_CENSUS=1')
+            add('KERNEL_TARGET=4.19.325-CIP135')
+            checks={
+             'task_work':'drivers/kernelsu/policy/allowlist.c',
+             'seccomp':'drivers/kernelsu/policy/app_profile.c',
+             'selinux_rules':'drivers/kernelsu/selinux/rules.c',
+             'selinux_sepolicy':'drivers/kernelsu/selinux/sepolicy.c',
+             'sulog_event':'drivers/kernelsu/sulog/event.c',
+             'file_wrapper':'drivers/kernelsu/infra/file_wrapper.c',
+            }
+            for name,p in checks.items():
+                t=read(p)
+                add(f'LOCAL {name} bytes={len(t)}')
+                if name=='selinux_rules':
+                    for x in ['selinux_state.policy','selinux_state.policy_mutex','struct selinux_policy','SELINUX_POLICY_INSTEAD_SELINUX_SS']:
+                        add(f'  {x}={t.count(x)}')
+                if name=='selinux_sepolicy':
+                    for x in ['type_val_to_struct','type_attr_map_array','filename_trans_key','compat_filename_trans_count']:
+                        add(f'  {x}={t.count(x)}')
+                if name=='sulog_event': add(f'  linux/minmax.h={t.count("<linux/minmax.h>")} min_t={t.count("min_t")}')
+            # Authoritative 4.19 facts used by the census.
+            refs={
+             'security.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/include/security.h',
+             'services.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/ss/services.h',
+             'policydb.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/ss/policydb.h',
+             'task_work.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/task_work.h',
+            }
+            for n,u in refs.items():
+                try:
+                    t=fetch(u); (root/'autofix'/'evidence'/('census_'+n)).write_text(t)
+                    add(f'AUTH {n} sha256={hashlib.sha256(t.encode()).hexdigest()} bytes={len(t)}')
+                except Exception as e: add(f'AUTH-FAIL {n}: {e}')
+            # Explicit conclusion: SELinux is a compatibility family, not a one-symbol fix.
+            r=read('drivers/kernelsu/selinux/rules.c')
+            p=read('drivers/kernelsu/selinux/sepolicy.c')
+            if 'selinux_state.policy' in r and 'struct selinux_policy' in r and 'selinux_state.policy_mutex' in r:
+                add('SELINUX_419_FAMILY=DETECTED')
+                add('SELINUX_419_ACTION=DEFER_TO_ADAPTIVE_RESEARCH_NO_SPECULATIVE_PATCH')
+            if '<linux/minmax.h>' in read('drivers/kernelsu/sulog/event.c'):
+                add('SULOG_MINMAX=DETECTED')
+            add('RULE=Never replace an ABI/struct layout merely to silence a compiler error.')
+            out.write_text('\n'.join(lines)+'\n')
+            PY_CENSUS
 
             for iteration in $(seq 1 "$MAX_AUTOFIX"); do
               echo
