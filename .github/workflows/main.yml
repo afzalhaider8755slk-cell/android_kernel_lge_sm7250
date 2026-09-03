@@ -1,4 +1,4 @@
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -2492,8 +2492,14 @@ jobs:
           : > "$LOG"
           {
             echo "========== CLEAN CONFIG PREFLIGHT =========="
-            "$CLANG" --version | head -5
-            make ARCH=arm64 LLVM=1 LLVM_IAS=1               CROSS_COMPILE="$CROSS_COMPILE"               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"               olddefconfig
+            test -x "$CLANG_DIR/bin/clang"
+            "$CLANG_DIR/bin/clang" --version | head -5
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CC="$CLANG_DIR/bin/clang" \
+              LD="$CLANG_DIR/bin/ld.lld" \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              olddefconfig
             echo "[PASS] 4.19 config regenerated before compilation."
           } > "$LOG" 2>&1
           cat "$LOG"
@@ -2791,7 +2797,7 @@ jobs:
 
           START=$(date +%s)
 
-          # KERNEL-ONLY MODE (V46): build the pure compressed arm64 kernel.
+          # KERNEL-ONLY MODE (V47): build the pure compressed arm64 kernel.
           # Do NOT invoke the top-level default target and do NOT invoke dtbs.
           # This deliberately avoids DTB/DTBO compilation for this run.
           # All previously fixed kernel/SukiSU/SUSFS/BBG/Maphide compatibility
@@ -2801,7 +2807,7 @@ jobs:
             echo "[FAIL] arch/arm64/boot/Makefile does not expose the pure Image.gz target."
             exit 2
           fi
-          echo "[INFO] DTB/DTBO build disabled for V46 kernel-only run."
+          echo "[INFO] DTB/DTBO build disabled for V47 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
           make \
@@ -2858,14 +2864,13 @@ jobs:
             test -n "$KERNEL_IMAGE"
             echo "KERNEL_IMAGE=$KERNEL_IMAGE"
             echo "KERNEL BUILD SUCCESSFUL"
-            find arch/arm64/boot/dts -type f \( -name '*.dtb' -o -name '*.dtbo' \) -print | sort | head -300 || true
           else
             echo "KERNEL BUILD FAILED - FULL LOG SAVED AS ARTIFACT"
           fi
 
           exit "$BUILD_STATUS"
 
-      - name: 19A - Package Kernel Only (No DTB/DTBO)
+      - name: 19A - Package Kernel + AnyKernel3 (OrangeFox Flashable, No DTB/DTBO)
         if: success()
         shell: bash
         run: |
@@ -2874,22 +2879,117 @@ jobs:
           : > "$LOG"
           {
             mkdir -p artifacts/kernel
+
             KERNEL_IMAGE="arch/arm64/boot/Image.gz"
             test -s "$KERNEL_IMAGE"
+
             cp -f "$KERNEL_IMAGE" artifacts/kernel/Image.gz
             sha256sum "$KERNEL_IMAGE" > artifacts/kernel/kernel.sha256
 
-            # Kernel-only ZIP. This is intentionally NOT a flashable DTB/DTBO
-            # package. Flashable/OrangeFox packaging will be added later when
-            # the exact boot-image/DT layout is intentionally brought back.
+            echo "========== AnyKernel3 / OrangeFox-FLASHABLE PACKAGE =========="
+            echo "[INFO] Kernel-only mode: Image.gz only."
+            echo "[INFO] DTB/DTBO are intentionally NOT built, copied, embedded, or packaged."
+
+            # Use the official AnyKernel3 template. It is a flashable ZIP
+            # framework intended to be installed from Android recoveries such
+            # as OrangeFox. This is NOT an OrangeFox recovery image itself.
+            AK3_DIR="$RUNNER_TEMP/AnyKernel3"
+            rm -rf "$AK3_DIR"
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$AK3_DIR"
+
+            # Record the exact AK3 revision used by this run.
+            AK3_COMMIT="$(git -C "$AK3_DIR" rev-parse HEAD)"
+            echo "AnyKernel3 repository: https://github.com/osm0sis/AnyKernel3"
+            echo "AnyKernel3 commit: $AK3_COMMIT"
+
+            # Put the pure kernel in the AK3 root. No Image.gz-dtb is created,
+            # because this workflow intentionally does not build a DTB.
+            cp -f "$KERNEL_IMAGE" "$AK3_DIR/Image.gz"
+
+            # Replace the sample/template installer with a minimal device
+            # configuration for LG Velvet LM-G900/G900EMW. The AK3 core script
+            # remains upstream; only the device properties and boot action are
+            # defined here. No DTB/DTBO is referenced.
+            cat > "$AK3_DIR/anykernel.sh" <<'AK3SCRIPT'
+          properties() { '
+          kernel.string=LM-G900 SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=caymanlm
+          device.name2=G900EMW
+          device.name3=LM-G900
+          device.name4=G900
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+
+          # LG Velvet boot target.
+          # AnyKernel3 auto-detects the active slot when applicable.
+          BLOCK=boot
+          IS_SLOT_DEVICE=auto
+          RAMDISK_COMPRESSION=auto
+          PATCH_VBMETA_FLAG=auto
+
+          # Import official AnyKernel3 core.
+          . tools/ak3-core.sh
+
+          # Dump/split the existing boot image, replace the kernel with the
+          # supplied Image.gz, and write the resulting boot image back.
+          dump_boot
+          write_boot
+          AK3SCRIPT
+
+            chmod 0755 "$AK3_DIR/anykernel.sh"
+
+            # Hard validation: this package must contain the kernel, AK3 core,
+            # and device checks, but no DTB/DTBO payloads.
+            test -s "$AK3_DIR/Image.gz"
+            test -s "$AK3_DIR/tools/ak3-core.sh"
+            test -x "$AK3_DIR/anykernel.sh"
+
+            grep -q 'device.name1=caymanlm' "$AK3_DIR/anykernel.sh"
+            grep -q 'device.name2=G900EMW' "$AK3_DIR/anykernel.sh"
+            grep -q 'device.name3=LM-G900' "$AK3_DIR/anykernel.sh"
+            grep -qE '^BLOCK=boot$' "$AK3_DIR/anykernel.sh"
+            grep -qE '^IS_SLOT_DEVICE=auto$' "$AK3_DIR/anykernel.sh"
+            grep -q 'dump_boot' "$AK3_DIR/anykernel.sh"
+            grep -q 'write_boot' "$AK3_DIR/anykernel.sh"
+
+            if find "$AK3_DIR" -type f \( -name '*.dtb' -o -name '*.dtbo' -o -name 'dtb' -o -name 'dtbo' \) -print -quit | grep -q .; then
+              echo "[FAIL] AnyKernel3 package unexpectedly contains DTB/DTBO payload."
+              exit 1
+            fi
+
+            # LICENSE is retained because the upstream AK3 template requires
+            # it for binary redistribution.
+            test -s "$AK3_DIR/LICENSE"
+
             (
-              cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V32.1-Kernel-Only-4.19.325-cip135.zip" Image.gz kernel.sha256 >/dev/null
+              cd "$AK3_DIR"
+              rm -rf .git
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32.1-AnyKernel3-OrangeFox-Flashable.zip" . \
+                -x 'README.md' '*placeholder' >/dev/null
             )
 
-            echo "Kernel image: artifacts/kernel/Image.gz"
-            echo "Kernel-only ZIP: artifacts/LM-G900-V32.1-Kernel-Only-4.19.325-cip135.zip"
-            echo "[PASS] No DTB or DTBO files were built or packaged in V46."
+            test -s "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32.1-AnyKernel3-OrangeFox-Flashable.zip"
+
+            # Keep a second direct kernel-only ZIP as well.
+            (
+              cd artifacts/kernel
+              zip -9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V32.1-Kernel-Only-4.19.325-cip135.zip" \
+                Image.gz kernel.sha256 >/dev/null
+            )
+
+            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32.1-AnyKernel3-OrangeFox-Flashable.zip" artifacts/kernel/
+
+            echo "[PASS] Kernel image packaged."
+            echo "[PASS] AnyKernel3 package prepared for flashing from OrangeFox/recovery."
+            echo "[PASS] No DTB/DTBO was built or packaged."
+            echo "[NOTE] This ZIP is an AnyKernel3 kernel-flash package, not an OrangeFox recovery image."
             find artifacts -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
           } > "$LOG" 2>&1
           cat "$LOG"
