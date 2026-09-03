@@ -1678,6 +1678,9 @@ jobs:
             "linux419_fs": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fs.h",
             "linux419_fsnotify": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fsnotify_backend.h",
             "linux419_seccomp": "https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/seccomp.h",
+            "linux419_seccomp_h": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/seccomp.h",
+            "sukisu_app_profile": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/policy/app_profile.c",
+            "kernelsu_next_v1_1_1_release": "https://github.com/KernelSU-Next/KernelSU-Next/releases/tag/v1.1.1",
             "linux419_module": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/module.h",
           }
           evdir=Path(actionp).parent/"authoritative-evidence"
@@ -1747,7 +1750,24 @@ jobs:
                   })
                   research(f"[SEARCH] {sym}: total={obj.get('hits',{}).get('total',0)} paths={[h.get('path') for h in hits[:12]]}")
               except Exception as ex:
-                  search_items.append({"symbol":sym,"error":str(ex)})
+                  # grep.app is only corroboration and may return HTTP 429.
+                  # Fall back to GitHub's public web search page so a rate-limited
+                  # grep.app cannot prevent an evidence-backed known mapping.
+                  fallback=None
+                  try:
+                      q2=urllib.parse.quote(sym)
+                      gh=f"https://github.com/search?q={q2}&type=code"
+                      html=fetch(gh,20)
+                      fallback={"symbol":sym,"engine":"github-web","status":"ok",
+                               "contains_symbol":bool(re.search(r"\b"+re.escape(sym)+r"\b",html))}
+                      research(f"[SEARCH-FALLBACK] {sym}: GitHub web search reachable; contains_symbol={fallback['contains_symbol']}")
+                  except Exception as ex2:
+                      fallback={"symbol":sym,"engine":"github-web","error":str(ex2)}
+                      research(f"[SEARCH-FALLBACK-FAIL] {sym}: {ex2}")
+                  item={"symbol":sym,"error":str(ex)}
+                  if fallback:
+                      item["fallback"]=fallback
+                  search_items.append(item)
                   research(f"[SEARCH-FAIL] {sym}: {ex}")
           (Path(actionp).parent/"search-engine-results.json").write_text(json.dumps(search_items,indent=2))
 
@@ -1828,6 +1848,78 @@ jobs:
                            "Search engine: corroboration only\n"
                            "A git diff was saved to iteration-%s-patch.diff" % iteration)
               research("[DECISION] APPLIED exact TWA_RESUME->true mapping with sched/task.h visibility check")
+              raise SystemExit(0)
+
+          # ---- known exact compatibility: struct seccomp.filter_count ----
+          # SukiSU v4.2.0 app_profile.c resets current->seccomp.filter_count
+          # while disabling seccomp. Linux v4.19's native struct seccomp predates
+          # that field. The verified compatibility used by KernelSU-family ports
+          # is to add an atomic_t filter_count member to struct seccomp, immediately
+          # after mode. This preserves the existing 4.19 mode/filter layout and
+          # supplies the counter required by the SukiSU app-profile operation.
+          # The official KernelSU-Next v1.1.1 release explicitly documents an
+          # automatic filter_count patch for struct seccomp; it is corroboration,
+          # not a search-result patch source.
+          if ("filter_count" in err and
+              "drivers/kernelsu/policy/app_profile.c" in err):
+              SEC_H=Path("include/linux/seccomp.h")
+              if not SEC_H.exists():
+                  fail("Target include/linux/seccomp.h is missing; refusing filter_count patch")
+              sec_local=SEC_H.read_text(errors="replace")
+              if "struct seccomp" not in sec_local:
+                  fail("Target struct seccomp was not found; refusing filter_count patch")
+              app=evidence.get("sukisu_app_profile","")
+              sec419=evidence.get("linux419_seccomp_h","")
+              rel=evidence.get("kernelsu_next_v1_1_1_release","")
+              if "atomic_set(&current->seccomp.filter_count, 0)" not in app:
+                  fail("Pinned SukiSU app_profile evidence does not contain filter_count use")
+              if not re.search(r"struct\s+seccomp\s*\{[^}]*\bint\s+mode\s*;[^}]*struct\s+seccomp_filter\s*\*filter\s*;", sec419, re.S):
+                  fail("Pinned Linux v4.19 seccomp.h does not confirm the legacy struct layout")
+              if "filter_count" not in rel:
+                  fail("KernelSU-Next v1.1.1 release does not corroborate the filter_count auto-patch")
+              m=re.search(r"struct\s+seccomp\s*\{(?P<body>[^}]*)\}", sec_local, re.S)
+              if not m:
+                  fail("Local struct seccomp body could not be parsed safely")
+              body=m.group("body")
+              if re.search(r"\bfilter_count\b", body):
+                  fail("filter_count is already present; diagnostic is inconsistent, refusing duplicate field")
+              if not re.search(r"(^|\n)\s*int\s+mode\s*;", body):
+                  fail("Local struct seccomp mode member not found in expected form")
+              new_body=re.sub(r"(^|\n)(\s*int\s+mode\s*;)",
+                              r"\1\2\n\tatomic_t filter_count;", body, count=1)
+              marker="/* LG KSU 4.19 seccomp filter_count compatibility */"
+              if marker in sec_local:
+                  fail("filter_count compatibility marker exists but field was not visible; refusing duplicate edit")
+              new_body=new_body.rstrip()+"\n\t"+marker+"\n"
+              new_sec=sec_local[:m.start("body")]+new_body+sec_local[m.end("body"): ]
+              # The marker and field are inserted inside the matched struct only.
+              if "atomic_t filter_count;" not in new_sec:
+                  fail("Failed to insert atomic_t filter_count safely")
+              SEC_H.write_text(new_sec)
+              patch=subprocess.run(["git","diff","--",str(SEC_H)],capture_output=True,text=True).stdout
+              diffp.write_text(patch)
+              decision={
+                "status":"APPLIED",
+                "category":"linux-4.19-seccomp-filter_count",
+                "error":"struct seccomp has no filter_count member",
+                "file":str(SEC_H),
+                "old_value":"struct seccomp { int mode; struct seccomp_filter *filter; }",
+                "new_value":"struct seccomp { int mode; atomic_t filter_count; struct seccomp_filter *filter; }",
+                "why":"SukiSU v4.2.0 app_profile resets seccomp.filter_count; LG/Linux 4.19 struct seccomp lacks the member; official KernelSU-Next v1.1.1 documents an automatic filter_count patch.",
+                "evidence":[refs["linux419_seccomp_h"],refs["sukisu_app_profile"],refs["kernelsu_next_v1_1_1_release"]],
+                "search_engine":"grep.app (corroboration only)",
+                "iteration":int(iteration)
+              }
+              decisionp.write_text(json.dumps(decision,indent=2))
+              write_action("[AUTO-FIX] VERIFIED LINUX 4.19 SECCOMP filter_count COMPATIBILITY APPLIED\n"
+                           f"Error: struct seccomp has no filter_count member\n"
+                           f"File: {SEC_H}\n"
+                           "Old value: no filter_count member\n"
+                           "New value: atomic_t filter_count; after int mode;\n"
+                           "Evidence: pinned Linux v4.19 seccomp.h + pinned SukiSU v4.2.0 app_profile.c + official KernelSU-Next v1.1.1 release corroboration\n"
+                           "Search engine: corroboration only\n"
+                           f"A git diff was saved to iteration-{iteration}-patch.diff")
+              research("[DECISION] APPLIED exact filter_count field compatibility mapping to include/linux/seccomp.h")
               raise SystemExit(0)
 
           # ---- previously verified mappings ----
