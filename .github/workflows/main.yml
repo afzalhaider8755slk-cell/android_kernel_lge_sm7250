@@ -1,4 +1,4 @@
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V69 Setup 19 TaskWork - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V70 Setup 19 Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -2305,7 +2305,11 @@ jobs:
           echo "[INFO] DTB/DTBO build disabled for V47 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
-          make \
+          # Live build output + persistent artifact log.
+          # Use process substitution so the real make exit code is preserved;
+          # PIPESTATUS is not needed and no compiler output is hidden from the
+          # GitHub Actions console.
+          stdbuf -oL -eL make \
             ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -2315,8 +2319,22 @@ jobs:
             V=1 \
             WERROR=0 \
             Image.gz \
-            >"$FULL_LOG" 2>&1
+            > >(stdbuf -oL tee "$FULL_LOG") 2>&1 &
+          BUILD_PID=$!
 
+          # Keep a low-rate progress/health heartbeat visible while Kbuild is
+          # busy (especially during long LTO/link phases that may emit no text).
+          # The heartbeat is diagnostic only; it never changes compiler flags,
+          # source files, targets, or job parallelism.
+          while kill -0 "$BUILD_PID" 2>/dev/null; do
+            sleep 30
+            if kill -0 "$BUILD_PID" 2>/dev/null; then
+              echo "[BUILD-HEARTBEAT] $(date -u '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
+              ps -eo pid,ppid,pcpu,pmem,rss,stat,comm --sort=-rss | head -n 16 || true
+            fi
+          done
+
+          wait "$BUILD_PID"
           BUILD_STATUS=$?
 
           END=$(date +%s)
@@ -2329,6 +2347,13 @@ jobs:
             echo "BUILD_LOG_BYTES=$(wc -c < "$FULL_LOG")"
             echo "BUILD_LOG_LINES=$(wc -l < "$FULL_LOG")"
           } | tee "$SUMMARY_LOG"
+
+          if [ "$BUILD_STATUS" -eq 137 ] || [ "$BUILD_STATUS" -eq 143 ]; then
+            echo "[DIAG] Build process was terminated by signal (status=$BUILD_STATUS); no compiler diagnostic was emitted in the captured log."
+            echo "[DIAG] This is not being converted into a speculative source fix. Runner/resource termination must be distinguished from a compiler error."
+          elif [ "$BUILD_STATUS" -ne 0 ]; then
+            echo "[DIAG] Non-zero make exit status=$BUILD_STATUS; compiler diagnostics below are authoritative."
+          fi
 
           grep -nEi \
             'fatal error:|error:|undefined reference|undeclared|implicit declaration|invalid|unknown argument|unknown warning|No such file|No rule to make target|recipe for target|Error [0-9]+|make\[[0-9]+\]: \*\*\*' \
