@@ -1,7 +1,7 @@
-# V72 research fix: Setup 19 SELinux compatibility is restored from the pinned SukiSU-Ultra v4.2.0 source.
+# V73 research fix: Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V72 Setup 19 Research Fix Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V73 Setup 19 Linux 4.19 SELinux Port + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -1695,73 +1695,62 @@ jobs:
           echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
           echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
           echo "[PASS] Manual compatibility patch set complete."
-      - name: 10B - Setup 19 SELinux 4.19 Compatibility Restore (10A LOCKED)
+      - name: 10B - Setup 19 SELinux 4.19 Compatibility Port (10A LOCKED)
         shell: bash
         run: |
           set -Eeuo pipefail
-          LOG="$DIAG_DIR/10B-setup19-selinux-419-restore.log"
+          LOG="$DIAG_DIR/10B-setup19-selinux-419-port.log"
           : > "$LOG"
           exec > >(tee -a "$LOG") 2>&1
 
-          echo "========== SETUP 19: SELINUX 4.19 UPSTREAM RESTORE =========="
-          echo "[LOCKED] Setup 10A is not modified by this step."
-          echo "[RESEARCH] The previous Setup-19 synthetic sidtab bridge was incompatible with the LG Linux 4.19 SELinux layout."
-          echo "[RESEARCH] The pinned SukiSU-Ultra v4.2.0 implementation already has the correct pre-6.6 selinux_state/policy path."
-          echo "[FIX] Restore the exact pinned SukiSU-Ultra v4.2.0 selinux_hide.c; do not maintain a synthetic sidtab clone."
+          echo "========== SETUP 19: SELINUX 4.19 COMPATIBILITY PORT =========="
+          echo "[LOCKED] Setup 10A is not modified, reopened, or reverted."
+          echo "[RESEARCH] V72 restored upstream SukiSU-Ultra v4.2.0 verbatim, but that file directly accesses newer selinux_state fields."
+          echo "[ERROR TARGET] Linux 4.19 exposes status_page/status_lock and policydb/sidtab through selinux_state.ss."
+          echo "[FIX] Keep the pinned v4.2.0 implementation, adding only the minimal 4.19 selinux_state.ss compatibility boundary."
 
           SELINUX_HIDE_C="drivers/kernelsu/feature/selinux_hide.c"
           test -f "$SELINUX_HIDE_C"
 
-          # Verify the tag itself before fetching the source file. This prevents
-          # an accidental main/latest file from silently entering the build.
-          TAG_LINE="$(git ls-remote --tags --refs "https://github.com/${SUKISU_REPO}.git" "refs/tags/${SUKISU_REF}" | tail -1)"
+          TAG_LINE="$(git ls-remote --tags --refs "https://github.com/${{ env.SUKISU_REPO }}.git" "refs/tags/${{ env.SUKISU_REF }}" | tail -1)"
           test -n "$TAG_LINE"
           TAG_SHA="${TAG_LINE%%$'\t'*}"
-          TAG_NAME="${TAG_LINE#*$'\t'}"
-          echo "[INFO] SukiSU tag ref: $TAG_NAME"
-          echo "[INFO] SukiSU tag object/commit: $TAG_SHA"
-          case "$TAG_SHA" in
-            *"$SUKISU_RELEASE_COMMIT"*) echo "[PASS] Requested SukiSU tag resolves to expected v4.2.0 commit family." ;;
-            *)
-              echo "[FAIL] SukiSU tag does not resolve to expected v4.2.0 commit family: expected $SUKISU_RELEASE_COMMIT, got $TAG_SHA"
-              exit 1
-              ;;
-          esac
+          echo "[INFO] SukiSU tag commit: $TAG_SHA"
+          test "$TAG_SHA" = "${{ env.SUKISU_RELEASE_COMMIT }}"
 
           UPSTREAM="$RUNNER_TEMP/selinux_hide-v4.2.0.c"
-          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 120 \
-            "https://raw.githubusercontent.com/${SUKISU_REPO}/${SUKISU_REF}/kernel/feature/selinux_hide.c" \
-            -o "$UPSTREAM"
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 120             "https://raw.githubusercontent.com/${{ env.SUKISU_REPO }}/${{ env.SUKISU_REF }}/kernel/feature/selinux_hide.c"             -o "$UPSTREAM"
           test -s "$UPSTREAM"
-
-          # Authoritative source checks from the actual v4.2.0 file. For Linux
-          # < 6.6 the official implementation uses fake_state.policy =
-          # backup_sepolicy and does not construct a synthetic sidtab clone.
-          grep -qF 'fake_state.policy = backup_sepolicy;' "$UPSTREAM"
-          if grep -qF 'fake_ss.sidtab' "$UPSTREAM"; then
-            echo "[FAIL] Official v4.2.0 source unexpectedly contains the obsolete synthetic sidtab bridge."
-            exit 1
-          fi
-          if grep -qF 'sidtab_set(' "$UPSTREAM"; then
-            echo "[FAIL] Official v4.2.0 source unexpectedly contains the obsolete sidtab_set call."
-            exit 1
-          fi
 
           UPSTREAM_SHA256="$(sha256sum "$UPSTREAM" | awk '{print $1}')"
           echo "[INFO] Official v4.2.0 selinux_hide.c SHA256=$UPSTREAM_SHA256"
+          test "$UPSTREAM_SHA256" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5"
+
+          # Start from the exact pinned source, then make only the 4.19 port.
           cp -f "$UPSTREAM" "$SELINUX_HIDE_C"
 
-          # Hard post-write gate: no synthetic Setup-19 sidtab bridge may remain.
-          if grep -nE 'fake_ss\.sidtab|sidtab_set\(' "$SELINUX_HIDE_C"; then
-            echo "[FAIL] Setup 19 synthetic SELinux sidtab bridge residue remains."
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQoKZm9yIG9sZCwgbmV3IGluIFsKICAgICgic2VsaW51eF9zdGF0ZS5zdGF0dXNfbG9jayIsICJzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfbG9jayIpLAogICAgKCJzZWxpbnV4X3N0YXRlLnN0YXR1c19wYWdlIiwgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlIiksCl06CiAgICBzID0gcy5yZXBsYWNlKG9sZCwgbmV3KQoKbmVlZGxlID0gInN0YXRpYyBzdHJ1Y3Qgc2VsaW51eF9zdGF0ZSBmYWtlX3N0YXRlO1xuIgppbnNlcnQgPSAiIiJzdGF0aWMgc3RydWN0IHNlbGludXhfc3RhdGUgZmFrZV9zdGF0ZTsKc3RhdGljIHN0cnVjdCBzZWxpbnV4X3NzIGZha2Vfc3M7CgpzdGF0aWMgdm9pZCBrc3Vfc2VsaW51eF9pbml0X2Zha2Vfc3RhdGUodm9pZCkKewogICAgbWVtc2V0KCZmYWtlX3N0YXRlLCAwLCBzaXplb2YoZmFrZV9zdGF0ZSkpOwogICAgbWVtc2V0KCZmYWtlX3NzLCAwLCBzaXplb2YoZmFrZV9zcykpOwoKICAgIGZha2Vfc3RhdGUuaW5pdGlhbGl6ZWQgPSB0cnVlOwogICAgZmFrZV9zdGF0ZS5zcyA9ICZmYWtlX3NzOwoKICAgIHJ3bG9ja19pbml0KCZmYWtlX3NzLnBvbGljeV9yd2xvY2spOwogICAgc3Bpbl9sb2NrX2luaXQoJmZha2Vfc3Muc2lkdGFiLmxvY2spOwoKICAgIGZha2Vfc3MucG9saWN5ZGIgPSBiYWNrdXBfc2Vwb2xpY3ktPnBvbGljeWRiOwogICAgZmFrZV9zcy5sYXRlc3RfZ3JhbnRpbmcgPSBiYWNrdXBfc2Vwb2xpY3ktPmxhdGVzdF9ncmFudGluZzsKCiAgICAvKgogICAgICogTGludXggNC4xOSBzaWR0YWJfc2V0KCkgc2hhcmVzIHRoZSBTSUQgdGFibGUgYmFja2luZyBzdG9yYWdlIHdoaWxlCiAgICAgKiByZXNldHRpbmcgdGhlIGRlc3RpbmF0aW9uIGNhY2hlLiBiYWNrdXBfc2Vwb2xpY3kgb3ducyB0aGF0IHN0b3JhZ2UuCiAgICAgKi8KICAgIHNpZHRhYl9zZXQoJmZha2Vfc3Muc2lkdGFiLCBiYWNrdXBfc2Vwb2xpY3ktPnNpZHRhYik7Cn0KIiIiCmlmIHMuY291bnQobmVlZGxlKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIGV4cGVjdGVkIGV4YWN0bHkgb25lIGZha2Vfc3RhdGUgZGVjbGFyYXRpb24iKQpzID0gcy5yZXBsYWNlKG5lZWRsZSwgaW5zZXJ0LCAxKQoKb2xkID0gIiAgICAgICAgZmFrZV9zdGF0ZS5pbml0aWFsaXplZCA9IHRydWU7XG4gICAgICAgIGZha2Vfc3RhdGUucG9saWN5ID0gYmFja3VwX3NlcG9saWN5O1xuIgpuZXcgPSAiICAgICAgICBrc3Vfc2VsaW51eF9pbml0X2Zha2Vfc3RhdGUoKTtcbiIKaWYgcy5jb3VudChvbGQpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gZXhwZWN0ZWQgZXhhY3RseSBvbmUgb2xkIGZha2Vfc3RhdGUgcG9saWN5IGluaXRpYWxpemF0aW9uIikKcyA9IHMucmVwbGFjZShvbGQsIG5ldywgMSkKCmZvciB0b2tlbiBpbiBbCiAgICAic2VsaW51eF9zdGF0ZS5zdGF0dXNfbG9jayIsCiAgICAic2VsaW51eF9zdGF0ZS5zdGF0dXNfcGFnZSIsCiAgICAiZmFrZV9zdGF0ZS5wb2xpY3kgPSIsCl06CiAgICBpZiB0b2tlbiBpbiBzOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSBvYnNvbGV0ZSB0b2tlbiByZW1haW5zOiAiICsgdG9rZW4pCgpmb3IgdG9rZW4gaW4gWwogICAgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19sb2NrIiwKICAgICJzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfcGFnZSIsCiAgICAic3RhdGljIHN0cnVjdCBzZWxpbnV4X3NzIGZha2Vfc3M7IiwKICAgICJmYWtlX3N0YXRlLnNzID0gJmZha2Vfc3M7IiwKICAgICJmYWtlX3NzLnBvbGljeWRiID0gYmFja3VwX3NlcG9saWN5LT5wb2xpY3lkYjsiLAogICAgInNpZHRhYl9zZXQoJmZha2Vfc3Muc2lkdGFiLCBiYWNrdXBfc2Vwb2xpY3ktPnNpZHRhYik7IiwKXToKICAgIGlmIHRva2VuIG5vdCBpbiBzOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSByZXF1aXJlZCB0b2tlbiBtaXNzaW5nOiAiICsgdG9rZW4pCgpwLndyaXRlX3RleHQocykKcHJpbnQoIltQQVNTXSBMaW51eCA0LjE5IHNlbGludXhfc3RhdGUvc2VsaW51eF9zcyBjb21wYXRpYmlsaXR5IGFwcGxpZWQuIikK' | base64 -d > "$RUNNER_TEMP/setup19_selinux_419_port.py"
+          chmod 700 "$RUNNER_TEMP/setup19_selinux_419_port.py"
+          python3 -m py_compile "$RUNNER_TEMP/setup19_selinux_419_port.py"
+          python3 "$RUNNER_TEMP/setup19_selinux_419_port.py" "$SELINUX_HIDE_C"
+
+          # Authoritative 4.19 structure gates.
+          grep -qF 'selinux_state.ss->status_lock' "$SELINUX_HIDE_C"
+          grep -qF 'selinux_state.ss->status_page' "$SELINUX_HIDE_C"
+          grep -qF 'static struct selinux_ss fake_ss;' "$SELINUX_HIDE_C"
+          grep -qF 'fake_state.ss = &fake_ss;' "$SELINUX_HIDE_C"
+          grep -qF 'fake_ss.policydb = backup_sepolicy->policydb;' "$SELINUX_HIDE_C"
+          grep -qF 'sidtab_set(&fake_ss.sidtab, backup_sepolicy->sidtab);' "$SELINUX_HIDE_C"
+
+          if grep -nE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=' "$SELINUX_HIDE_C"; then
+            echo "[FAIL] Newer direct selinux_state fields remain in the 4.19 port."
             exit 1
           fi
-          grep -qF 'fake_state.policy = backup_sepolicy;' "$SELINUX_HIDE_C"
-          grep -qF 'static struct selinux_state fake_state;' "$SELINUX_HIDE_C"
 
-          echo "[PASS] Setup 19 SELinux hide source is exactly the pinned SukiSU-Ultra v4.2.0 implementation."
-          echo "[PASS] Linux 4.19 path uses fake_state.policy = backup_sepolicy."
-          echo "[LOCKED] Setup 10A was not reopened, rewritten, or reverted."
+          echo "[PASS] Setup 19 SELinux hide source uses the Linux 4.19 selinux_state.ss layout."
+          echo "[PASS] fake_state is backed by a 4.19 selinux_ss view of backup_sepolicy."
+          echo "[PASS] Pinned SukiSU-Ultra v4.2.0 source was the only starting point."
+          echo "[LOCKED] Setup 10A remains untouched."
           echo "=============================================================="
       - name: 10C - Final Source Integrity Audit
         shell: bash
