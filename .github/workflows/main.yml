@@ -1166,6 +1166,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 10A-0 runs before the main 10A environment setup, so initialize
+          # the Auto-Fix directory here as well. This is infrastructure-only;
+          # no kernel feature or compatibility mapping is changed.
+          AUTOFIX_DIR="$DIAG_DIR/autofix"
+          mkdir -p "$AUTOFIX_DIR" "$AUTOFIX_DIR/evidence" "$AUTOFIX_DIR/patches"
           LOG="$DIAG_DIR/10A-0-task-work-compatibility.log"
           : > "$LOG"
           {
