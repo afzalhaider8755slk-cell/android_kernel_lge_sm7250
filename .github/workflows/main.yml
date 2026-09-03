@@ -1682,8 +1682,8 @@ jobs:
           grep -qF 'struct selinux_policy {' drivers/kernelsu/selinux/sepolicy.h
           grep -qF 'flex_array_get_ptr(db->te_avtab.htable, i)' drivers/kernelsu/selinux/sepolicy.c
           grep -qF 'struct filename_trans key;' drivers/kernelsu/selinux/sepolicy.c
-          grep -qF 'flex_array_get(db->type_attr_map_array, type->value - 1)' drivers/kernelsu/selinux/sepolicy.c
-          grep -qF 'flex_array_put_ptr(db->type_val_to_struct_array, value - 1, type' drivers/kernelsu/selinux/sepolicy.c
+          grep -qE 'flex_array_get\(db->type_attr_map_array,[[:space:]]*type->value[[:space:]]*-[[:space:]]*1\)' drivers/kernelsu/selinux/sepolicy.c
+          grep -qE 'flex_array_put_ptr\(db->type_val_to_struct_array,[[:space:]]*value[[:space:]]*-[[:space:]]*1,[[:space:]]*type' drivers/kernelsu/selinux/sepolicy.c
           echo "[PASS] sepolicy.c uses LG 4.19 flex_array/filename/type-map backend."
           echo "[PASS] SELinux 4.19 source audit complete."
           echo "[UNCHANGED] SukiSU-Ultra 4.2.0 / KPM / SUSFS / Baseband-Guard / Maphide / Full LTO"
