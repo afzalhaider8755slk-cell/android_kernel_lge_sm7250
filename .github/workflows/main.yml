@@ -2396,7 +2396,7 @@ jobs:
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 11A - Build and Verify All Existing Global/Lao DTBO Overlays
+      - name: 11A - Build and Verify All Existing Global/Lao DTBO Overlays (V45 config-tree fix)
         shell: bash
         run: |
           set -euo pipefail
@@ -2410,6 +2410,24 @@ jobs:
             test "${#dts_files[@]}" -gt 0
             mkdir -p "$GITHUB_WORKSPACE/artifacts/dtbo"
             : > "$GITHUB_WORKSPACE/artifacts/dtbo/build-list.txt"
+
+            # DTBO is built with O=out. The kernel build system requires the
+            # generated out/.config for every O=out target; V44 reached 11A
+            # correctly but invoked the DTBO target with an empty out tree,
+            # causing syncconfig to fail with ".config not found".
+            # Preserve the exact validated source .config and materialize it
+            # into the output tree before any DTBO target is requested.
+            test -s .config
+            mkdir -p "$GITHUB_WORKSPACE/out"
+            cp -f .config "$GITHUB_WORKSPACE/out/.config"
+            make -Oline O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              CC="$CLANG_DIR/bin/clang" HOSTCC="$CLANG_DIR/bin/clang" \
+              LD="$CLANG_DIR/bin/ld.lld" HOSTLD="$CLANG_DIR/bin/ld.lld" \
+              AR="$CLANG_DIR/bin/llvm-ar" NM="$CLANG_DIR/bin/llvm-nm" olddefconfig
+            test -s "$GITHUB_WORKSPACE/out/.config"
+            test -s "$GITHUB_WORKSPACE/out/include/config/auto.conf"
+            echo "[PASS] DTBO output tree has the validated kernel .config and generated config headers."
+
             lge_make="arch/arm64/boot/dts/vendor/lge/Makefile"
             if grep -q '\$(wildcard echo \$(srctree)/\$(src)' "$lge_make"; then
               cp "$lge_make" "$GITHUB_WORKSPACE/artifacts/lge-Makefile.before"
