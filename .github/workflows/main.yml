@@ -76,6 +76,28 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: 01A - Universal Diagnostics Safety Net
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$DIAG_DIR" "$GITHUB_WORKSPACE/diagnostic-artifact"
+          LOG="$DIAG_DIR/01A-diagnostics-safety-net.log"
+          {
+            echo "========== UNIVERSAL DIAGNOSTICS SAFETY NET =========="
+            date -u
+            echo "Run: $GITHUB_RUN_ID"
+            echo "Job status context: diagnostics initialized"
+            echo "Policy: EVERY failure must leave an artifact-readable log."
+            echo "Policy: NO AUTOFIX / NO SPECULATIVE FIXES."
+            echo "Working directory: $GITHUB_WORKSPACE"
+            echo "Filesystem:"
+            df -h . 2>&1
+            echo "Git status (if repository exists):"
+            git status --short 2>&1 || true
+          } > "$LOG" 2>&1
+          cp -f "$LOG" "$GITHUB_WORKSPACE/diagnostic-artifact/01A-diagnostics-safety-net.log" 2>/dev/null || true
+
       - name: 02 - Update Kernel to Official CIP 4.19.325-cip135
         shell: bash
         run: |
@@ -2655,13 +2677,43 @@ jobs:
         run: |
           set +e
           mkdir -p diagnostic-artifact
+          # Universal failure capture: collect every log and important runner state
+          # even when an earlier step failed. This step is ALWAYS executed.
+          mkdir -p diagnostic-artifact/runner-state
+          {
+            echo "========== UNIVERSAL FAILURE SNAPSHOT =========="
+            date -u
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "sha=$GITHUB_SHA"
+            echo "ref=$GITHUB_REF"
+            echo "workspace=$GITHUB_WORKSPACE"
+            echo
+            echo "===== DISK ====="
+            df -h 2>&1 || true
+            echo
+            echo "===== MEMORY ====="
+            free -h 2>&1 || true
+            echo
+            echo "===== KERNEL BUILD PROCESS/FILES ====="
+            find . -maxdepth 4 -type f \(-name '*.log' -o -name 'Image' -o -name 'Image.gz' -o -name 'vmlinux' \) -printf '%p %s bytes\n' 2>/dev/null | sort || true
+          } > diagnostic-artifact/runner-state/universal-failure-snapshot.txt 2>&1
+
           cp -f kernel-build-full.log diagnostic-artifact/12-build-full.log 2>/dev/null || true
           cp -f .config diagnostic-artifact/final.config 2>/dev/null || true
+          cp -f "$GITHUB_STEP_SUMMARY" diagnostic-artifact/runner-state/github-step-summary.md 2>/dev/null || true
+          cp -f "$GITHUB_ENV" diagnostic-artifact/runner-state/github-env.snapshot 2>/dev/null || true
           cp -f sukisu-integration-note.txt diagnostic-artifact/sukisu-integration-note.txt 2>/dev/null || true
           mkdir -p diagnostic-artifact/ci-logs
           cp -a "$DIAG_DIR"/. diagnostic-artifact/ci-logs/ 2>/dev/null || true
           git status --short > diagnostic-artifact/git-status.txt 2>&1 || true
           git rev-parse HEAD > diagnostic-artifact/kernel-head.txt 2>&1 || true
+
+          # Preserve the exact complete diagnostic directory as an additional archive.
+          # This is not a substitute for individual logs; it is a second recovery path.
+          if command -v tar >/dev/null 2>&1; then
+            tar -czf diagnostic-artifact/all-ci-logs.tar.gz \n              "$DIAG_DIR" diagnostic-artifact/runner-state kernel-build-full.log 2>/dev/null || true
+          fi
           {
             echo "GitHub Run: $GITHUB_RUN_ID"
             echo "Commit: $GITHUB_SHA"
@@ -2676,6 +2728,16 @@ jobs:
             find diagnostic-artifact -type f -printf '%p %s bytes\n' | sort
           } > diagnostic-artifact/MANIFEST.txt
           exit 0
+
+      - name: 19A-DIAG - Upload Emergency Diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: LG-Velvet-G900-V32.1-EMERGENCY-Diagnostics
+          path: diagnostic-artifact
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
 
       - name: 19B - Upload Kernel-Only Artifact
         if: success()
