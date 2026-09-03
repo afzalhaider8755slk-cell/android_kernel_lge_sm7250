@@ -499,91 +499,6 @@ jobs:
           } > "$LOG" 2>&1
           cat "$LOG"
 
-      - name: 08A - Apply Verified SELinux 4.19 Backend Compatibility
-        shell: bash
-        run: |
-          set -euo pipefail
-          LOG="$DIAG_DIR/08A-selinux-419-compatibility.log"
-          : > "$LOG"
-          {
-            echo "========== SELINUX 4.19 BACKEND COMPATIBILITY =========="
-            echo "[INFO] Problem family: SukiSU v4.2.0 SELinux backend targets newer selinux_state/policydb layouts."
-            echo "[INFO] Target: LG 4.19.325-CIP135 with legacy embedded selinux_ss/policydb + flex_array internals."
-            echo "[INFO] Evidence: Diagnostics show missing selinux_state.policy/policy_mutex and flex_array/policydb layout mismatches."
-            echo "[INFO] Historical compatibility source: KernelSU commit e934bfb64850ef1584d7920eab3dbf53507b3bd8."
-            echo "[INFO] This is a compatibility backend substitution only; SukiSU v4.2.0 core/KPM/SUSFS remain pinned."
-
-            test -d KernelSU
-            test -f KernelSU/kernel/Kconfig
-            test -f KernelSU/kernel/Makefile
-            test -d drivers/kernelsu/selinux
-            test -f drivers/kernelsu/selinux/rules.c
-            test -f drivers/kernelsu/selinux/sepolicy.c
-
-            KSU_LEGACY_COMMIT="e934bfb64850ef1584d7920eab3dbf53507b3bd8"
-            KSU_LEGACY_BASE="https://raw.githubusercontent.com/tiann/KernelSU/${KSU_LEGACY_COMMIT}/kernel/selinux"
-
-            mkdir -p "$RUNNER_TEMP/ksu-selinux-419"
-            curl -fsSL --retry 5 --retry-all-errors \
-              "$KSU_LEGACY_BASE/rules.c" \
-              -o "$RUNNER_TEMP/ksu-selinux-419/rules.c"
-            curl -fsSL --retry 5 --retry-all-errors \
-              "$KSU_LEGACY_BASE/sepolicy.c" \
-              -o "$RUNNER_TEMP/ksu-selinux-419/sepolicy.c"
-
-            test -s "$RUNNER_TEMP/ksu-selinux-419/rules.c"
-            test -s "$RUNNER_TEMP/ksu-selinux-419/sepolicy.c"
-
-            # Do not blindly replace modern code. Require the historical backend
-            # to expose the legacy selinux_ss path and NOT force the modern
-            # SELINUX_POLICY_INSTEAD_SELINUX_SS mode unconditionally.
-            grep -q 'selinux_state.ss' "$RUNNER_TEMP/ksu-selinux-419/rules.c" || {
-              echo "[FAIL] Historical rules.c does not expose legacy selinux_state.ss backend."
-              exit 1
-            }
-
-            if grep -qF '#define SELINUX_POLICY_INSTEAD_SELINUX_SS' "$RUNNER_TEMP/ksu-selinux-419/rules.c"; then
-              if grep -qF '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)' "$RUNNER_TEMP/ksu-selinux-419/rules.c"; then
-                echo "[PASS] Historical rules.c contains version-gated modern SELinux policy backend."
-              else
-                echo "[FAIL] Historical rules.c forces modern SELinux policy backend; refusing replacement."
-                exit 1
-              fi
-            else
-              echo "[PASS] Historical rules.c uses legacy SELinux backend."
-            fi
-
-            # The old backend must be policydb-oriented rather than requiring
-            # the modern struct selinux_policy layout.
-            if grep -q 'struct selinux_policy \*pol' "$RUNNER_TEMP/ksu-selinux-419/rules.c"; then
-              echo "[INFO] Historical rules.c retains newer code under version guards; accepted only if 4.19 path is legacy."
-            fi
-
-            cp -f "$RUNNER_TEMP/ksu-selinux-419/rules.c" drivers/kernelsu/selinux/rules.c
-            cp -f "$RUNNER_TEMP/ksu-selinux-419/sepolicy.c" drivers/kernelsu/selinux/sepolicy.c
-
-            # Record exact source hashes for audit/reproducibility.
-            echo "LEGACY_RULES_SHA256=$(sha256sum drivers/kernelsu/selinux/rules.c | awk '{print $1}')"
-            echo "LEGACY_SEPOLICY_SHA256=$(sha256sum drivers/kernelsu/selinux/sepolicy.c | awk '{print $1}')"
-            echo "SOURCE_COMMIT=$KSU_LEGACY_COMMIT"
-
-            # Verify that the 4.19 backend no longer requires the modern state
-            # fields that caused Diagnostics (37).
-            if grep -qF 'selinux_state.policy_mutex' drivers/kernelsu/selinux/rules.c; then
-              echo "[FAIL] 4.19 compatibility backend still references selinux_state.policy_mutex."
-              exit 1
-            fi
-            if grep -qF 'selinux_state.policy,' drivers/kernelsu/selinux/rules.c; then
-              echo "[FAIL] 4.19 compatibility backend still assigns selinux_state.policy."
-              exit 1
-            fi
-
-            echo "[PASS] Verified SELinux 4.19-compatible backend installed."
-            echo "[PASS] No DTB/DTBO/DTS build added."
-            echo "[PASS] Existing kernel features remain enabled; only SELinux implementation is adapted to target kernel ABI."
-          } > "$LOG" 2>&1
-          cat "$LOG"
-
       - name: 09 - Verify SukiSU 4.2.0 + KPM + SUSFS 4.19
         shell: bash
         run: |
@@ -1247,77 +1162,6 @@ jobs:
           tail -180 "$LOG" || true
           exit "$STATUS"
 
-      - name: 10A-0 - Apply Verified Linux 4.19 KSU Task-Work Compatibility
-        shell: bash
-        run: |
-          set -euo pipefail
-          # 10A-0 runs before the main 10A environment setup, so initialize
-          # the Auto-Fix directory here as well. This is infrastructure-only;
-          # no kernel feature or compatibility mapping is changed.
-          AUTOFIX_DIR="$DIAG_DIR/autofix"
-          mkdir -p "$AUTOFIX_DIR" "$AUTOFIX_DIR/evidence" "$AUTOFIX_DIR/patches"
-          LOG="$DIAG_DIR/10A-0-task-work-compatibility.log"
-          : > "$LOG"
-          {
-            echo "========== VERIFIED LINUX 4.19 TASK-WORK COMPATIBILITY =========="
-            FILE="drivers/kernelsu/policy/allowlist.c"
-            test -f "$FILE"
-            echo "[INFO] Target: $FILE"
-            echo "[INFO] Required legacy mapping: TWA_RESUME -> true"
-            echo "[INFO] Required declaration header: linux/sched/task.h"
-
-            if grep -qF 'task_work_add(tsk, cb, TWA_RESUME)' "$FILE"; then
-              python3 - "$FILE" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1])
-          s=p.read_text()
-          needle='task_work_add(tsk, cb, TWA_RESUME)'
-          replacement='task_work_add(tsk, cb, true)'
-          if s.count(needle) != 1:
-              raise SystemExit('[FAIL] Expected exactly one TWA_RESUME call; refusing broad edit.')
-          s=s.replace(needle,replacement,1)
-          if '#include <linux/sched/task.h>' not in s:
-              lines=s.splitlines(True)
-              idx=0
-              while idx < len(lines) and lines[idx].startswith('#!'):
-                  idx += 1
-              s=''.join(lines[:idx])+'#include <linux/sched/task.h>\n'+''.join(lines[idx:])
-          p.write_text(s)
-          PY
-              echo "[APPLIED] TWA_RESUME -> true in $FILE"
-              echo "[APPLIED] Added <linux/sched/task.h> for put_task_struct()"
-            else
-              grep -qF 'task_work_add(tsk, cb, true)' "$FILE" || {
-                echo "[FAIL] Neither the expected old call nor the verified new call exists."
-                exit 1
-              }
-              grep -qF '#include <linux/sched/task.h>' "$FILE" || {
-                echo "[FAIL] Verified task_work fix is incomplete: sched/task.h missing."
-                exit 1
-              }
-              echo "[PASS] Verified task_work compatibility already present."
-            fi
-
-            # Confirm the 4.19 API contract from the pinned evidence fetched by
-            # the research engine; do not silently accept a different signature.
-            if [ -f "$AUTOFIX_DIR/evidence/census_task_work.h" ]; then
-              grep -qE 'int task_work_add\(struct task_struct \*task, struct callback_head \*twork, bool\)' \
-                "$AUTOFIX_DIR/evidence/census_task_work.h" || {
-                echo "[FAIL] Pinned Linux 4.19 task_work API evidence does not match bool notify form."
-                exit 1
-              }
-              echo "[PASS] Pinned Linux 4.19 task_work API confirms bool notify."
-            else
-              echo "[WARN] Census evidence file not present yet; source-level verified mapping was used."
-            fi
-
-            grep -qF 'task_work_add(tsk, cb, true)' "$FILE"
-            grep -qF '#include <linux/sched/task.h>' "$FILE"
-            echo "[PASS] allowlist.c contains the verified 4.19 compatibility form."
-          } > "$LOG" 2>&1
-          cat "$LOG"
-
       - name: 10A - KPM Compatibility Preflight (v4.2.0 Kbuild)
         id: kpm_preflight
         continue-on-error: true
@@ -1747,748 +1591,168 @@ jobs:
             echo "[PASS] Official SELinux genheaders generated flask.h and av_permissions.h."
 
             # -----------------------------------------------------------------
-            # ADAPTIVE FULL-RESEARCH KERNEL COMPATIBILITY AUTO-FIX ENGINE v42
+            # MANUAL COMPATIBILITY MODE
+            # Auto-Fix/research engine intentionally removed.  Compatibility
+            # changes are applied only as explicit, reviewed source edits.
+            # The authoritative full-kernel build remains the only build gate.
             # -----------------------------------------------------------------
-            # One build job, many repair cycles.  The engine researches the
-            # actual LG tree first, then pinned Linux 4.19 + pinned SukiSU,
-            # then upstream history/patches and search corroboration.  It never
-            # treats a search hit as authority and never edits unrelated code.
-            #
-            # Transaction rule:
-            #   build -> fingerprint error -> research -> candidate -> patch
-            #   -> build.  If the NEXT build has the SAME fingerprint, the
-            #   engine automatically reverts only its own last candidate and
-            #   records it as rejected, then researches the next candidate.
-            #   If the fingerprint changes, the previous patch stays because
-            #   the build advanced to a new diagnostic.
-            #
-            # This is intentionally evidence-driven rather than an arbitrary
-            # "AI edit anything" loop.  Linux kernel internal APIs are fluid;
-            # a patch is accepted only when an exact local/upstream mapping or
-            # an applicable upstream compatibility patch supports it.
-            # -----------------------------------------------------------------
-            AUTOFIX_DIR="$DIAG_DIR/autofix"
-            mkdir -p "$AUTOFIX_DIR" "$AUTOFIX_DIR/evidence" "$AUTOFIX_DIR/patches"
-            MAX_AUTOFIX=32
-            build_rc=1
-
-            auto_fix_error() {
-              local errlog="$1"
-              local iteration="$2"
-              local action_log="$AUTOFIX_DIR/iteration-${iteration}-action.log"
-              local research_log="$AUTOFIX_DIR/iteration-${iteration}-research.log"
-              local decision_log="$AUTOFIX_DIR/iteration-${iteration}-decision.json"
-              local diff_log="$AUTOFIX_DIR/iteration-${iteration}-patch.diff"
-              : > "$action_log"
-              : > "$research_log"
-              : > "$decision_log"
-              : > "$diff_log"
-
-              python3 - "$errlog" "$action_log" "$research_log" "$decision_log" "$diff_log" "$iteration" "$AUTOFIX_DIR" <<'PY'
-          from pathlib import Path
-          import re, sys, json, subprocess, urllib.request, urllib.parse, datetime, hashlib, os, difflib
-          
-          errp, actionp, researchp, decisionp, diffp = map(Path, sys.argv[1:6])
-          iteration = int(sys.argv[6])
-          root = Path.cwd()
-          af = Path(sys.argv[7])
-          err = errp.read_text(errors="replace")
-          # Prefer the first real compiler diagnostic over note-only identifiers.
-          # This materially reduces false candidate selection in multi-error SELinux logs.
-          primary_lines=[l for l in err.splitlines() if re.search(r"(?:error:|fatal error:|undefined reference|ld\.lld:|assembler messages?:)",l,re.I)]
-          primary_err="\n".join(primary_lines[:24])
-          started = datetime.datetime.utcnow().isoformat() + "Z"
-          
-          def write_action(msg):
-              actionp.write_text(msg.rstrip() + "\n")
-          def research(msg):
-              with researchp.open("a") as f:
-                  f.write(msg.rstrip() + "\n")
-          def fail(msg, code=10):
-              write_action("[AUTO-FIX] SAFE STOP: " + msg)
-              raise SystemExit(code)
-          def sha(s):
-              return hashlib.sha256(s.encode()).hexdigest()
-          def fetch(url, timeout=20, accept="*/*"):
-              req=urllib.request.Request(url, headers={
-                  "User-Agent":"LG-Velvet-G900-Adaptive-AutoFix/4.0",
-                  "Accept":accept})
-              with urllib.request.urlopen(req, timeout=timeout) as r:
-                  return r.read().decode("utf-8", errors="replace")
-          def save_evidence(name, url, text):
-              p=af/"evidence"/name
-              p.parent.mkdir(parents=True, exist_ok=True)
-              p.write_text(text)
-              return sha(text)
-          def local(path):
-              p=root/path
-              return p.read_text(errors="replace") if p.exists() else ""
-          def git(args, check=False):
-              return subprocess.run(["git"]+args,capture_output=True,text=True,check=check)
-          def norm_path(p):
-              return str(Path(p).as_posix()).lstrip("./")
-          def error_fingerprint(text):
-              lines=[]
-              for line in text.splitlines():
-                  if re.search(r"error:|fatal error:|undefined reference|ld\.lld:|collect2:|assembler",line,re.I):
-                      lines.append(re.sub(r"\b\d+\b","#",line.strip()))
-              return sha("\n".join(lines[-12:]))
-          
-          current_fp=error_fingerprint(err)
-          statep=af/"state.json"
-          state={}
-          if statep.exists():
-              try: state=json.loads(statep.read_text())
-              except Exception: state={}
-          
-          # If our previous candidate did not change the diagnostic, reject and
-          # revert only that candidate.  Pre-existing project changes are never
-          # reset, and git reset --hard is deliberately forbidden.
-          pending=state.get("pending")
-          if pending and pending.get("expected_error_fingerprint") == current_fp:
-              files=pending.get("files",[])
-              restored=[]
-              for item in files:
-                  p=root/item["path"]
-                  if p.exists() and item.get("before_sha") == sha(p.read_text(errors="replace")):
-                      if item.get("before_text") is not None:
-                          p.write_text(item["before_text"])
-                          restored.append(item["path"])
-              state.setdefault("rejected",[]).append({
-                  "iteration":iteration,"candidate":pending.get("candidate"),
-                  "reason":"same compiler diagnostic after candidate build",
-                  "restored":restored})
-              state["pending"]=None
-              statep.write_text(json.dumps(state,indent=2))
-              research("[TRANSACTION] Previous candidate produced the identical error fingerprint; reverted only its own exact files: "+json.dumps(restored))
-          elif pending:
-              research("[TRANSACTION] Previous candidate changed the compiler fingerprint; keeping it and researching the new diagnostic.")
-              state["pending"]=None
-              statep.write_text(json.dumps(state,indent=2))
-          
-          research(f"UTC={started}")
-          research(f"ITERATION={iteration}")
-          research(f"ERROR_SHA256={sha(err)}")
-          research(f"ERROR_FINGERPRINT={current_fp}")
-          
-          # ------------------------------------------------------------------
-          # Parse the compiler diagnostic and extract the actual source context.
-          # ------------------------------------------------------------------
-          locs=[]
-          for m in re.finditer(r"(?P<file>(?:drivers/kernelsu|arch/arm64|include|fs|security|kernel)/[^:\s]+):(?P<line>\d+):(?P<col>\d+)",err):
-              locs.append((norm_path(m.group("file")),int(m.group("line")),int(m.group("col"))))
-          locs=list(dict.fromkeys(locs))[:20]
-          identifiers=[]
-          patterns=[
-              r"use of undeclared identifier ['\"]([^'\"]+)['\"]",
-              r"implicit declaration of function ['\"]([^'\"]+)['\"]",
-              r"no member named ['\"]([^'\"]+)['\"]",
-              r"field designator ['\"]([^'\"]+)['\"] does not refer",
-              r"fatal error: ['\"]([^'\"]+)['\"] file not found",
-              r"use of undeclared identifier ['\"]([^'\"]+)['\"]",
-              r"unknown type name ['\"]?([A-Za-z_][A-Za-z0-9_]*)",
-          ]
-          for pat in patterns: identifiers += re.findall(pat,primary_err or err,re.S)
-          if len(identifiers) < 4:
-              for pat in patterns: identifiers += re.findall(pat,err,re.S)
-          identifiers=list(dict.fromkeys(identifiers))[:16]
-          research("LOCATIONS="+json.dumps(locs))
-          research("IDENTIFIERS="+json.dumps(identifiers))
-          
-          context_by_file={}
-          for f,ln,col in locs:
-              text=local(f)
-              if text:
-                  ls=text.splitlines()
-                  lo=max(0,ln-16); hi=min(len(ls),ln+15)
-                  context_by_file[f]="\n".join(f"{i+1}: {ls[i]}" for i in range(lo,hi))
-                  research(f"[LOCAL-CONTEXT] {f}:{ln}:{col}\n{context_by_file[f]}")
-          
-          # ------------------------------------------------------------------
-          # Pinned authoritative sources.
-          # ------------------------------------------------------------------
-          refs={
-            "linux419_task_work":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/task_work.h",
-            "linux419_sched_task":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/sched/task.h",
-            "linux419_uaccess":"https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/uaccess.h",
-            "linux419_fs":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fs.h",
-            "linux419_fsnotify":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fsnotify_backend.h",
-            "linux419_seccomp":"https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/seccomp.h",
-            "linux419_seccomp_h":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/seccomp.h",
-            "linux419_module":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/module.h",
-            "sukisu_allowlist":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/policy/allowlist.c",
-            "sukisu_app_profile":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/policy/app_profile.c",
-            "sukisu_file_wrapper":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/infra/file_wrapper.c",
-            "sukisu_pkg_observer":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/manager/pkg_observer.c",
-            "sukisu_kpm":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/kpm/kpm.c",
-          }
-          evidence={}
-          for name,url in refs.items():
-              try:
-                  text=fetch(url)
-                  evidence[name]=text
-                  save_evidence(name,url,text)
-                  research(f"[AUTHORITATIVE] {name} sha256={sha(text)} bytes={len(text)} url={url}")
-              except Exception as ex:
-                  research(f"[AUTHORITATIVE-FAIL] {name}: {ex}")
-          
-          # ------------------------------------------------------------------
-          # Local API inventory: definitions/declarations are stronger than web
-          # search.  Keep results bounded so a noisy tree cannot explode logs.
-          # ------------------------------------------------------------------
-          local_hits={}
-          for sym in identifiers:
-              try:
-                  r=git(["grep","-n","-E",r"(^|[^A-Za-z0-9_])"+re.escape(sym)+r"([^A-Za-z0-9_]|$)","--","*.c","*.h"])
-                  local_hits[sym]=r.stdout.splitlines()[:80]
-                  research(f"[LOCAL-GREP] {sym}: {len(r.stdout.splitlines())} hits (showing <=80)")
-                  for x in local_hits[sym][:12]: research("  "+x)
-              except Exception as ex:
-                  local_hits[sym]=[]
-                  research(f"[LOCAL-GREP-FAIL] {sym}: {ex}")
-          
-          # ------------------------------------------------------------------
-          # Online history research.  GitHub commit search is evidence only.
-          # We prefer commits that mention the exact symbol/error and that touch
-          # the failing file or an authoritative API header.
-          # ------------------------------------------------------------------
-          api_items=[]
-          def gh_json(url):
-              try:
-                  return json.loads(fetch(url,20,"application/vnd.github+json"))
-              except Exception as ex:
-                  research(f"[GITHUB-API-FAIL] {url}: {ex}")
-                  return None
-          fail_file=locs[0][0] if locs else ""
-          gh_paths=[]
-          if fail_file.startswith("drivers/kernelsu/"):
-              gh_paths.append(fail_file[len("drivers/kernelsu/"):])
-          for p in ["include/linux/seccomp.h","include/linux/task_work.h","include/linux/fs.h","include/linux/module.h"]:
-              if any(x in err for x in [Path(p).name, Path(p).stem]): gh_paths.append(p)
-          gh_paths=list(dict.fromkeys(gh_paths))[:4]
-          for repo in ["SukiSU-Ultra/SukiSU-Ultra","KernelSU-Next/KernelSU-Next","torvalds/linux"]:
-              for path in gh_paths[:3]:
-                  u="https://api.github.com/repos/"+repo+"/commits?path="+urllib.parse.quote(path,safe="/")+"&per_page=12"
-                  obj=gh_json(u)
-                  if isinstance(obj,list):
-                      for c in obj[:12]:
-                          api_items.append({"repo":repo,"path":path,"sha":c.get("sha",""),"message":c.get("commit",{}).get("message","")})
-          # Also use commit search for the exact diagnostic identifiers. This is
-          # deliberately capped and never by itself authorizes a source edit.
-          for sym in identifiers[:4]:
-              q=urllib.parse.quote(f"{sym}")
-              for repo in ["SukiSU-Ultra/SukiSU-Ultra","KernelSU-Next/KernelSU-Next","torvalds/linux"]:
-                  u=f"https://api.github.com/search/commits?q={q}+repo:{repo}&per_page=8"
-                  obj=gh_json(u)
-                  if isinstance(obj,dict):
-                      for c in obj.get("items",[])[:8]:
-                          api_items.append({"repo":repo,"path":"search","sha":c.get("sha",""),"message":c.get("commit",{}).get("message","")})
-          # De-duplicate and retain likely compatibility commits first.
-          seen=set(); commits=[]
-          for x in api_items:
-              k=(x["repo"],x["sha"])
-              if not x["sha"] or k in seen: continue
-              seen.add(k); commits.append(x)
-          commits=sorted(commits,key=lambda x:(0 if re.search(r"4\.19|compat|backport|fix|build",x["message"],re.I) else 1,x["repo"]))[:30]
-          (af/"upstream-commit-candidates.json").write_text(json.dumps(commits,indent=2))
-          research(f"[HISTORY] candidate commits={len(commits)}")
-          
-          # ------------------------------------------------------------------
-          # Candidate patch helpers.
-          # ------------------------------------------------------------------
-          def file_before(path):
-              p=root/path
-              if not p.exists(): return None
-              return p.read_text(errors="replace")
-          def save_transaction(candidate, touched, expected_fp):
-              files=[]
-              for path,before in touched:
-                  after=file_before(path)
-                  if after is None: continue
-                  files.append({"path":str(path),"before_text":before,"before_sha":sha(after),"after_sha":sha(after)})
-              # after_sha above is replaced below after all edits are complete.
-              for item in files:
-                  item["after_sha"]=sha(file_before(item["path"]) or "")
-              state["pending"]={"candidate":candidate,"expected_error_fingerprint":expected_fp,"files":files}
-              statep.write_text(json.dumps(state,indent=2))
-          def record_decision(decision, diff):
-              decisionp.write_text(json.dumps(decision,indent=2))
-              diffp.write_text(diff)
-          def git_diff(paths):
-              args=["diff","--"]+paths
-              return git(args).stdout
-          def was_rejected(candidate):
-              return any(x.get("candidate") == candidate for x in state.get("rejected",[]))
-          
-          def one_file_patch(path,before,after):
-              return "".join(difflib.unified_diff(before.splitlines(True),after.splitlines(True),fromfile="a/"+path,tofile="b/"+path))
-          
-          # Apply an exact unified diff only when git says it applies cleanly.
-          def apply_patch_text(patch_text):
-              pp=af/"candidate.patch"
-              pp.write_text(patch_text)
-              r=git(["apply","--check","--whitespace=fix",str(pp)])
-              if r.returncode!=0:
-                  research("[PATCH-CHECK-FAIL] "+r.stderr.strip())
-                  return False
-              r=git(["apply","--whitespace=fix",str(pp)])
-              if r.returncode!=0:
-                  research("[PATCH-APPLY-FAIL] "+r.stderr.strip())
-                  return False
-              return True
-          
-          # ------------------------------------------------------------------
-          # VERIFIED mappings already established for this exact tree.
-          # ------------------------------------------------------------------
-          if "TWA_RESUME" in err and "drivers/kernelsu/policy/allowlist.c" in err and not was_rejected("verified:TWA_RESUME->true"):
-              target=evidence.get("linux419_task_work","")
-              old=local("drivers/kernelsu/policy/allowlist.c")
-              if not re.search(r"task_work_add\s*\(\s*struct\s+task_struct\s*\*[^,]+,\s*struct\s+callback_head\s*\*[^,]+,\s*bool(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\)",target,re.S):
-                  fail("Pinned Linux 4.19 task_work API did not match the verified bool form")
-              if not re.search(r"task_work_add\s*\(\s*tsk\s*,\s*cb\s*,\s*TWA_RESUME\s*\)",old):
-                  fail("Expected TWA_RESUME call was not found exactly; refusing broad edit")
-              new=re.sub(r"task_work_add\s*\(\s*tsk\s*,\s*cb\s*,\s*TWA_RESUME\s*\)","task_work_add(tsk, cb, true)",old,count=1)
-              if "#include <linux/sched/task.h>" not in new:
-                  pos=new.find("\n",new.find("#include"))
-                  new="#include <linux/sched/task.h>\n"+new if pos<0 else new[:pos+1]+"#include <linux/sched/task.h>\n"+new[pos+1:]
-              path="drivers/kernelsu/policy/allowlist.c"; before=old
-              Path(path).write_text(new); diff=git_diff([path])
-              save_transaction("verified:TWA_RESUME->true",[(path,before)],current_fp)
-              record_decision({"status":"APPLIED","category":"linux-4.19-task_work-api","file":path,"old_value":"TWA_RESUME","new_value":"true","evidence":[refs["linux419_task_work"],refs["linux419_sched_task"]],"iteration":iteration},diff)
-              write_action(f"[AUTO-FIX] VERIFIED TWA_RESUME -> true applied.\nFile: {path}\nOld value: TWA_RESUME\nNew value: true\nDiff saved: {diffp}")
-              raise SystemExit(0)
-          
-          if "filter_count" in err and "no member named" in err and not was_rejected("verified:seccomp.filter_count"):
-              sec_path="include/linux/seccomp.h"; sec=file_before(sec_path); app=evidence.get("sukisu_app_profile",""); linux=evidence.get("linux419_seccomp_h","")
-              if not sec or not app or not linux: fail("Required seccomp evidence was unavailable")
-              if "atomic_set(&current->seccomp.filter_count, 0)" not in app: fail("Pinned SukiSU filter_count use missing")
-              if not re.search(r"struct\s+seccomp\s*\{[^}]*int\s+mode\s*;[^}]*struct\s+seccomp_filter\s*\*filter\s*;",linux,re.S): fail("Pinned Linux 4.19 seccomp layout did not match expected form")
-              m=re.search(r"struct\s+seccomp\s*\{(?P<body>[^}]*)\}",sec,re.S)
-              if not m or "filter_count" in m.group("body"): fail("Local seccomp structure is not in expected pre-patch state")
-              body=m.group("body")
-              if not re.search(r"(^|\n)\s*int\s+mode\s*;",body): fail("Local seccomp mode member missing")
-              nb=re.sub(r"(^|\n)(\s*int\s+mode\s*;)",r"\1\2\n\tatomic_t filter_count;",body,count=1)
-              nb=nb.rstrip()+"\n\t/* LG KSU 4.19 seccomp filter_count compatibility */\n"
-              new=sec[:m.start("body")]+nb+sec[m.end("body"):]
-              Path(sec_path).write_text(new); diff=git_diff([sec_path])
-              save_transaction("verified:seccomp.filter_count",[(sec_path,sec)],current_fp)
-              record_decision({"status":"APPLIED","category":"linux-4.19-seccomp-filter_count","file":sec_path,"old_value":"no filter_count member","new_value":"atomic_t filter_count; after int mode;","why":"SukiSU v4.2.0 requires seccomp.filter_count; Linux 4.19 lacks it; this is a documented KernelSU compatibility backport.","evidence":[refs["linux419_seccomp_h"],refs["sukisu_app_profile"]],"iteration":iteration},diff)
-              write_action(f"[AUTO-FIX] VERIFIED seccomp.filter_count compatibility applied.\nFile: {sec_path}\nOld value: no filter_count member\nNew value: atomic_t filter_count; after int mode;\nDiff saved: {diffp}")
-              raise SystemExit(0)
-          
-          # ------------------------------------------------------------------
-          # Previously verified project mappings remain authoritative.  These
-          # are not removed or generalized; a recurrence means the earlier
-          # compatibility patch regressed and must not be duplicated blindly.
-          # ------------------------------------------------------------------
-          recurring=[
-            (r"too few arguments.*access_ok|access_ok\([^,]+,[^)]+\)","drivers/kernelsu/kpm/kpm.c","LG KPM 4.19 access_ok compatibility"),
-            (r"MODULE_IMPORT_NS","drivers/kernelsu/core/init.c","LG KSU 4.19 MODULE_IMPORT_NS compatibility"),
-            (r"field designator ['\"]handle_inode_event['\"] does not refer","drivers/kernelsu/manager/pkg_observer.c","LG KSU 4.19 pkg_observer fsnotify compatibility"),
-            (r"no member named ['\"]remap_file_range['\"]|no member named ['\"]iopoll['\"]","drivers/kernelsu/infra/file_wrapper.c","LG KSU 4.19 file_wrapper VFS compatibility"),
-            (r"use of undeclared identifier ['\"]SECCOMP_ARCH_NATIVE_NR['\"]","arch/arm64/include/asm/seccomp.h","LG ARM64 4.19 seccomp NR compatibility"),
-          ]
-          for pat,path,marker in recurring:
-              if re.search(pat,err,re.S):
-                  p=Path(path)
-                  if p.exists() and marker in p.read_text(errors="replace"):
-                      fail(f"Verified compatibility diagnostic recurred after marker already exists: {marker}",20)
-                  fail(f"Previously verified mapping matched but marker is absent: {marker}")
-          
-          # ------------------------------------------------------------------
-          # Verified 4.19 include compatibility: SukiSU sulog/event.c includes
-          # linux/minmax.h, which does not exist in the target 4.19 tree. The
-          # file uses min_t(), supplied by linux/kernel.h in this tree. Only
-          # perform this exact replacement when local evidence proves both facts.
-          # ------------------------------------------------------------------
-          if 'linux/minmax.h' in err and 'drivers/kernelsu/sulog/event.c' in err and not was_rejected('verified:sulog-minmax-4.19'):
-              path='drivers/kernelsu/sulog/event.c'; before=file_before(path) or ''
-              if '#include <linux/minmax.h>' not in before: fail('Expected sulog minmax include was not found; refusing broad edit')
-              kh=file_before('include/linux/kernel.h') or ''
-              if not kh or not re.search(r'#\s*define\s+min_t\s*\(',kh): fail('Local Linux 4.19 kernel.h does not provide min_t; refusing include substitution')
-              after=before.replace('#include <linux/minmax.h>','#include <linux/kernel.h> /* LG KSU 4.19 minmax compatibility */',1)
-              Path(path).write_text(after); diff=git_diff([path])
-              save_transaction('verified:sulog-minmax-4.19',[(path,before)],current_fp)
-              record_decision({'status':'APPLIED','category':'linux-4.19-sulog-minmax','file':path,'old_value':'#include <linux/minmax.h>','new_value':'#include <linux/kernel.h>','why':'Target Linux 4.19 has no linux/minmax.h; local kernel.h provides min_t used by this file.','iteration':iteration},diff)
-              write_action(f'[AUTO-FIX] VERIFIED 4.19 sulog minmax include compatibility applied.\nFile: {path}\nDiff saved: {diffp}')
-              raise SystemExit(0)
-
-          # ------------------------------------------------------------------
-          # Deterministic generic fix A: missing include / implicit declaration.
-          # If exactly one local header provides the declaration and the failing
-          # file does not include it, add that header.  No invented API values.
-          # ------------------------------------------------------------------
-          if ("implicit declaration of function" in err or "fatal error:" in err) and identifiers and locs:
-              sym=identifiers[0]; target_path=locs[0][0]; target=file_before(target_path) or ""
-              decl=[]
-              try:
-                  rg=git(["grep","-n","-l",r"\b"+re.escape(sym)+r"\b","--","*.h"])
-                  decl=[x.strip() for x in rg.stdout.splitlines() if x.strip()]
-              except Exception: decl=[]
-              # Prefer a header that actually contains a prototype/macro for the symbol.
-              exact=[]
-              for hp in decl[:80]:
-                  ht=file_before(hp) or ""
-                  if re.search(r"(?:[A-Za-z_][\w\s\*]+\s+)?"+re.escape(sym)+r"\s*\([^;{}]*\)\s*;",ht,re.S) or re.search(r"#define\s+"+re.escape(sym)+r"\b",ht):
-                      exact.append(hp)
-              if len(exact)==1:
-                  hp=exact[0]
-                  if hp.startswith("include/"):
-                      include="<"+hp[len("include/"):]+">"
-                  else:
-                      # Non-public project headers are included relative to the
-                      # failing source directory only when that relative path is
-                      # unambiguous.
-                      rel=os.path.relpath(root/hp, (root/target_path).parent).replace(os.sep,"/")
-                      if rel.startswith("../") and not (root/hp).exists():
-                          rel=None
-                      include='"'+rel+'"' if rel else None
-                  if include and include not in target:
-                      before=target
-                      lines=target.splitlines(True)
-                      idx=0
-                      while idx<len(lines) and (lines[idx].startswith("#include") or lines[idx].strip()=="" or lines[idx].startswith("/*") or lines[idx].startswith("//")): idx+=1
-                      lines.insert(idx,f"#include {include}\n")
-                      after="".join(lines)
-                      Path(target_path).write_text(after)
-                      diff=git_diff([target_path])
-                      candidate_key=f"deterministic:add-header:{hp}"
-                      if not was_rejected(candidate_key):
-                          save_transaction(candidate_key,[(target_path,before)],current_fp)
-                          record_decision({"status":"APPLIED","category":"deterministic-local-header","file":target_path,"symbol":sym,"header":hp,"old_value":"missing declaration visibility","new_value":f"#include <{hp}>","evidence":["local git grep declaration/prototype"],"iteration":iteration},diff)
-                          write_action(f"[AUTO-FIX] DETERMINISTIC header visibility fix applied.\nSymbol: {sym}\nHeader: {hp}\nFile: {target_path}\nDiff saved: {diffp}")
-                          raise SystemExit(0)
-                      Path(target_path).write_text(before)
-          
-          # ------------------------------------------------------------------
-          # Deterministic generic fix B: missing member.  If another in-tree
-          # implementation of the SAME structure contains the member, copy only
-          # the exact declaration type when it can be unambiguously recovered.
-          # This is conservative: one structure, one member, one declaration.
-          # ------------------------------------------------------------------
-          mm=re.search(r"no member named ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] in ['\"]struct\s+([A-Za-z_][A-Za-z0-9_]*)['\"]",err)
-          if mm and locs:
-              member,struct=mm.group(1),mm.group(2)
-              # Search declarations of the member in local headers/source.
-              hits=[]
-              try:
-                  rg=git(["grep","-n","-E",r"(^|[;{[:space:]])[A-Za-z_][A-Za-z0-9_[:space:]*]+\b"+re.escape(member)+r"\s*;","--","*.h","*.c"])
-                  hits=rg.stdout.splitlines()[:120]
-              except Exception: hits=[]
-              decls=[]
-              for h in hits:
-                  m2=re.search(r"([^:]+):(\d+):(.*\b"+re.escape(member)+r"\s*;)",h)
-                  if m2: decls.append((m2.group(1),int(m2.group(2)),m2.group(3).strip()))
-              # Exact same member declaration appearing in a canonical Linux
-              # header is strong evidence.  Require a unique simple declaration.
-              unique=[]
-              for d in decls:
-                  if d[2].count(member)==1 and not re.search(r"\b(struct|union|enum)\s+"+re.escape(struct)+r"\b",d[2]): unique.append(d)
-              if len(unique)==1:
-                  hp,ln,decl=unique[0]
-                  target_path=locs[0][0]; target=file_before(target_path) or ""
-                  sm=re.search(r"struct\s+"+re.escape(struct)+r"\s*\{(?P<body>[^}]*)\}",target,re.S)
-                  if sm and member not in sm.group("body"):
-                      # Do NOT blindly copy arbitrary declarations into arbitrary
-                      # structs.  Only accept if the same struct is defined in a
-                      # pinned authoritative Linux source with that member.
-                      auth=[(n,t) for n,t in evidence.items() if re.search(r"struct\s+"+re.escape(struct)+r"\s*\{[^}]*\b"+re.escape(member)+r"\b[^}]*\}",t,re.S)]
-                      if len(auth)==1:
-                          body=sm.group("body")
-                          nb=body.rstrip()+"\n\t"+decl+"\n"
-                          after=target[:sm.start("body")]+nb+target[sm.end("body"):]
-                          Path(target_path).write_text(after); diff=git_diff([target_path])
-                          candidate_key=f"deterministic:add-member:{struct}.{member}"
-                          if not was_rejected(candidate_key):
-                              save_transaction(candidate_key,[(target_path,target)],current_fp)
-                              record_decision({"status":"APPLIED","category":"deterministic-struct-member","file":target_path,"struct":struct,"member":member,"declaration":decl,"evidence":[auth[0][0],hp],"iteration":iteration},diff)
-                              write_action(f"[AUTO-FIX] DETERMINISTIC struct member compatibility applied.\nStruct: {struct}\nMember: {member}\nDeclaration: {decl}\nFile: {target_path}\nDiff saved: {diffp}")
-                              raise SystemExit(0)
-                          Path(target_path).write_text(target)
-          
-          # ------------------------------------------------------------------
-          # Exact upstream compatibility backport discovery.  For the failing
-          # SukiSU file, inspect recent SukiSU/KernelSU-Next commits and download
-          # their .patch representation.  A patch is accepted only if:
-          #   * it touches the failing file (or its exact API header),
-          #   * it contains the diagnostic symbol/error context,
-          #   * git apply --check succeeds with no fuzz,
-          #   * it does not delete a mandatory project marker/feature.
-          # ------------------------------------------------------------------
-          candidates=[]
-          for c in commits:
-              if c["repo"] not in ("SukiSU-Ultra/SukiSU-Ultra","KernelSU-Next/KernelSU-Next"): continue
-              patch_url=f"https://github.com/{c['repo']}/commit/{c['sha']}.patch"
-              try:
-                  pt=fetch(patch_url,25,"text/plain")
-              except Exception as ex:
-                  research(f"[PATCH-FETCH-FAIL] {c['repo']} {c['sha']}: {ex}")
-                  continue
-              low=pt.lower()
-              if not any(sym.lower() in low for sym in identifiers): continue
-              if fail_file and Path(fail_file).name.lower() not in low and Path(fail_file).stem.lower() not in low:
-                  continue
-              # SukiSU/KernelSU source is integrated under drivers/kernelsu in
-              # this project.  Rewrite ONLY the standard kernel/ prefix in a
-              # candidate patch; no arbitrary path relocation is allowed.
-              if c["repo"] in ("SukiSU-Ultra/SukiSU-Ultra","KernelSU-Next/KernelSU-Next"):
-                  pt=pt.replace("--- a/kernel/","--- a/drivers/kernelsu/")
-                  pt=pt.replace("+++ b/kernel/","+++ b/drivers/kernelsu/")
-              # Only inspect patches that contain a concrete removed/added line
-              # around the symbol. Search corroborates; exact git applicability
-              # is the decisive gate.
-              if not re.search(r"^[-+].*(?:"+"|".join(map(re.escape,identifiers))+r")",pt,re.M|re.I): continue
-              candidates.append((c,pt))
-              if len(candidates)>=6: break
-          
-          for c,pt in candidates:
-              # Only one clean, previously-unmodified file may be backported.
-              # Capture the exact preimage BEFORE applying the patch so the
-              # transaction can safely revert this candidate if it fails.
-              names=[]
-              for line in pt.splitlines():
-                  m=re.match(r"(?:---|\+\+\+) [ab]/(.+)",line)
-                  if m and m.group(1)!="/dev/null": names.append(m.group(1))
-              names=list(dict.fromkeys(names))
-              if len(names)!=1:
-                  research("[HISTORY-CANDIDATE-REJECT] multi-file patch is not auto-applied")
-                  continue
-              p=names[0]
-              pre=subprocess.run(["git","show",f"HEAD:{p}"],capture_output=True,text=True)
-              if pre.returncode!=0:
-                  continue
-              before=pre.stdout
-              if git(["diff","--name-only","--",p]).stdout.strip():
-                  research(f"[HISTORY-CANDIDATE-REJECT] {p} already has project changes")
-                  continue
-              # Strip commit mail headers is unnecessary; git apply accepts the
-              # .patch format directly.  Check first and never use --reject/fuzz.
-              candidate_key=f"upstream-backport:{c['repo']}@{c['sha']}"
-              if was_rejected(candidate_key):
-                  continue
-              if apply_patch_text(pt):
-                  diff=git_diff([p])
-                  touched=[]
-                  # Recover exact before-images from git for only files changed by
-                  # this candidate.  If a file was already modified in the workflow,
-                  # git show HEAD:path may be wrong, so use the pre-apply snapshot
-                  # stored immediately before application when possible.
-                  save_transaction(candidate_key,[(p,before)],current_fp)
-                  record_decision({"status":"APPLIED","category":"upstream-compatibility-backport","repository":c["repo"],"commit":c["sha"],"message":c["message"],"file":p,"evidence":f"https://github.com/{c['repo']}/commit/{c['sha']}","iteration":iteration},diff)
-                  write_action(f"[AUTO-FIX] EXACT UPSTREAM COMPATIBILITY PATCH APPLIED.\nRepository: {c['repo']}\nCommit: {c['sha']}\nMessage: {c['message'].splitlines()[0]}\nFile: {p}\nPatch was accepted only after git apply --check.\nDiff saved: {diffp}")
-                  raise SystemExit(0)
-          
-          # ------------------------------------------------------------------
-          # Search-engine corroboration is recorded but never converted into an
-          # arbitrary patch.  This is the fail-closed boundary for truly unknown
-          # ABI/semantic/linker problems.
-          # ------------------------------------------------------------------
-          search_items=[]
-          for sym in identifiers[:8]:
-              try:
-                  q=urllib.parse.quote(sym)
-                  u=f"https://grep.app/api/search?q={q}&regexp=false"
-                  obj=json.loads(fetch(u,15,"application/json"))
-                  search_items.append({"symbol":sym,"source":"grep.app","result":obj})
-              except Exception as ex:
-                  search_items.append({"symbol":sym,"source":"grep.app","error":str(ex)})
-          (af/"search-engine-results.json").write_text(json.dumps(search_items,indent=2))
-          
-          candidates=[]
-          for sym in identifiers:
-              for name,text in evidence.items():
-                  if re.search(r"\b"+re.escape(sym)+r"\b",text):
-                      lines=[i+1 for i,l in enumerate(text.splitlines()) if re.search(r"\b"+re.escape(sym)+r"\b",l)]
-                      candidates.append({"symbol":sym,"source":name,"lines":lines[:20]})
-          (af/"researched-candidates.json").write_text(json.dumps(candidates,indent=2))
-          decisionp.write_text(json.dumps({
-              "status":"UNKNOWN_OR_UNSAFE",
-              "research_first_census":"autofix/00-compatibility-census.log",
-              "error_fingerprint":current_fp,
-              "identifiers":identifiers,
-              "locations":locs,
-              "upstream_commit_candidates":len(commits),
-              "research_candidates":candidates,
-              "rule":"No arbitrary identifier, constant, field type, function signature, ABI, or linker replacement is invented. Only deterministic local mappings or exact applicable compatibility patches are auto-applied."
-          },indent=2))
-          write_action("[AUTO-FIX] RESEARCH COMPLETE BUT NO VERIFIED SAFE PATCH.\n"
-                       "Local LG truth, pinned Linux 4.19, pinned SukiSU v4.2.0, upstream commit history, and search corroboration were checked.\n"
-                       "No deterministic or exact applicable compatibility patch passed the safety gates; no speculative source edit was made.")
-          raise SystemExit(10)
-          PY
-              local rc=$?
-              if [ "$rc" -eq 0 ]; then
-                echo "[PASS] Adaptive Auto-Fix applied on iteration $iteration."
-                cat "$action_log"
-                return 0
-              fi
-              if [ "$rc" -eq 20 ]; then
-                echo "[FAIL] A verified compatibility error recurred; safe stop."
-                cat "$action_log"
-                return 20
-              fi
-              echo "[FAIL] Adaptive Auto-Fix stopped safely (rc=$rc)."
-              if [ ! -s "$action_log" ]; then
-                {
-                  echo "[AUTO-FIX] ENGINE ERROR / SAFE STOP"
-                  echo "Python return code: $rc"
-                  echo "No speculative source edit was accepted."
-                } > "$action_log"
-              fi
-              if [ ! -s "$decision_log" ]; then
-                python3 - "$decision_log" "$research_log" "$rc" <<'PYERR'
-          from pathlib import Path
-          import json,sys
-          Path(sys.argv[1]).write_text(json.dumps({
-            "status":"ENGINE_ERROR_SAFE_STOP",
-            "python_return_code":int(sys.argv[3]),
-            "research_log":sys.argv[2]
-          },indent=2))
-          PYERR
-              fi
-              cat "$action_log"
-              return "$rc"
-            }
-
-            # -----------------------------------------------------------------
-            # RESEARCH-FIRST COMPATIBILITY CENSUS
-            # Run once after SukiSU integration and before the first expensive
-            # compile.  This does not invent fixes; it detects known Linux
-            # 4.19 API families in advance, records their authoritative
-            # reference, and applies only deterministic include compatibility.
-            # -----------------------------------------------------------------
-            CENSUS_LOG="$AUTOFIX_DIR/00-compatibility-census.log"
-            python3 - "$CENSUS_LOG" <<'PY_CENSUS'
-          from pathlib import Path
-          import re, urllib.request, hashlib, json
-          root=Path.cwd(); out=Path(__import__('sys').argv[1])
-          lines=[]
-          def add(x): lines.append(x)
-          def read(p):
-              q=root/p
-              return q.read_text(errors='replace') if q.exists() else ''
-          def fetch(url):
-              req=urllib.request.Request(url,headers={'User-Agent':'LG-Velvet-G900-Compat-Census/1.0'})
-              with urllib.request.urlopen(req,timeout=20) as r: return r.read().decode('utf-8','replace')
-          add('RESEARCH_FIRST_CENSUS=1')
-          add('KERNEL_TARGET=4.19.325-CIP135')
-          checks={
-           'task_work':'drivers/kernelsu/policy/allowlist.c',
-           'seccomp':'drivers/kernelsu/policy/app_profile.c',
-           'selinux_rules':'drivers/kernelsu/selinux/rules.c',
-           'selinux_sepolicy':'drivers/kernelsu/selinux/sepolicy.c',
-           'sulog_event':'drivers/kernelsu/sulog/event.c',
-           'file_wrapper':'drivers/kernelsu/infra/file_wrapper.c',
-          }
-          for name,p in checks.items():
-              t=read(p)
-              add(f'LOCAL {name} bytes={len(t)}')
-              if name=='selinux_rules':
-                  for x in ['selinux_state.policy','selinux_state.policy_mutex','struct selinux_policy','SELINUX_POLICY_INSTEAD_SELINUX_SS']:
-                      add(f'  {x}={t.count(x)}')
-              if name=='selinux_sepolicy':
-                  for x in ['type_val_to_struct','type_attr_map_array','filename_trans_key','compat_filename_trans_count']:
-                      add(f'  {x}={t.count(x)}')
-              if name=='sulog_event': add(f'  linux/minmax.h={t.count("<linux/minmax.h>")} min_t={t.count("min_t")}')
-          # Authoritative 4.19 facts used by the census.
-          refs={
-           'security.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/include/security.h',
-           'services.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/ss/services.h',
-           'policydb.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/ss/policydb.h',
-           'task_work.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/task_work.h',
-          }
-          for n,u in refs.items():
-              try:
-                  t=fetch(u); (root/'autofix'/'evidence'/('census_'+n)).write_text(t)
-                  add(f'AUTH {n} sha256={hashlib.sha256(t.encode()).hexdigest()} bytes={len(t)}')
-              except Exception as e: add(f'AUTH-FAIL {n}: {e}')
-          # Explicit conclusion: SELinux is a compatibility family, not a one-symbol fix.
-          r=read('drivers/kernelsu/selinux/rules.c')
-          p=read('drivers/kernelsu/selinux/sepolicy.c')
-          if 'selinux_state.policy' in r and 'struct selinux_policy' in r and 'selinux_state.policy_mutex' in r:
-              add('SELINUX_419_FAMILY=DETECTED')
-              add('SELINUX_419_ACTION=DEFER_TO_ADAPTIVE_RESEARCH_NO_SPECULATIVE_PATCH')
-          if '<linux/minmax.h>' in read('drivers/kernelsu/sulog/event.c'):
-              add('SULOG_MINMAX=DETECTED')
-          add('RULE=Never replace an ABI/struct layout merely to silence a compiler error.')
-          out.write_text('\n'.join(lines)+'\n')
-          PY_CENSUS
-
-            for iteration in $(seq 1 "$MAX_AUTOFIX"); do
-              echo
-              echo "========== ADAPTIVE FULL-RESEARCH AUTO-FIX BUILD ITERATION $iteration/$MAX_AUTOFIX =========="
-              ITER_LOG="$AUTOFIX_DIR/iteration-${iteration}-build.log"
-              : > "$ITER_LOG"
-              set +e
-              make -j"$(nproc)" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-                CROSS_COMPILE="$CROSS_COMPILE" \
-                CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-                M=drivers/kernelsu V=1 > >(tee "$ITER_LOG") 2>&1
-              build_rc=${PIPESTATUS[0]}
-              set -e
-
-              if [ "$build_rc" -eq 0 ]; then
-                echo "[PASS] SukiSU v4.2.0 + KPM subtree preflight compiled on iteration $iteration."
-                printf '%s\n' "$iteration" > "$AUTOFIX_DIR/successful-iteration.txt"
-                break
-              fi
-
-              echo "[WARN] Build failed on iteration $iteration (rc=$build_rc)."
-              tail -160 "$ITER_LOG" || true
-              set +e
-              auto_fix_error "$ITER_LOG" "$iteration"
-              fix_rc=$?
-              set -e
-              if [ "$fix_rc" -eq 0 ]; then
-                continue
-              fi
-              echo "[FAIL] ADAPTIVE AUTO-FIX stopped: no evidence-backed patch was safe for this diagnostic."
-              break
-            done
-
-            echo "========== AUTO-FIX SUMMARY =========="
-            echo "MAX_ITERATIONS=$MAX_AUTOFIX"
-            echo "FINAL_BUILD_RC=$build_rc"
-            if [ "$build_rc" -eq 0 ]; then
-              echo "STATUS=SUCCESS"
-            else
-              echo "STATUS=FAILED_OR_UNSAFE"
-              echo "Unknown/high-risk errors were not guessed or patched."
-            fi
-            find "$AUTOFIX_DIR" -maxdepth 2 -type f -printf '%P\n' | sort || true
-            echo "========== AUTO-FIX SUMMARY =========="
-            echo "MAX_ITERATIONS=$MAX_AUTOFIX"
-            echo "FINAL_BUILD_RC=$build_rc"
-            if [ "$build_rc" -eq 0 ]; then
-              echo "STATUS=SUCCESS"
-            else
-              echo "STATUS=FAILED_OR_UNSAFE"
-              echo "Unknown/high-risk errors were not guessed or patched."
-            fi
-            find "$AUTOFIX_DIR" -maxdepth 1 -type f -printf '%f\n' | sort || true
-            if [ "$build_rc" -ne 0 ]; then
-              exit "$build_rc"
-            fi
-
-            echo "[PASS] SukiSU v4.2.0 + KPM subtree preflight compiled."
+            echo "[PASS] Adaptive Auto-Fix engine removed; manual compatibility mode is active."
+            echo "[INFO] No automatic source mutation/research loop will run."
           } > "$LOG" 2>&1
           STATUS=$?
           echo "PREFLIGHT_GROUP_STATUS=$STATUS" >> "$LOG"
           echo "PREFLIGHT_POLICY=diagnostic-only; authoritative full build must run" >> "$LOG"
           cat "$LOG"
 
-      - name: 10A-A - Upload Safe Auto-Fix Diagnostics
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: LG-Velvet-G900-V32.1-KPM-Safe-AutoFix-Diagnostics
-          path: |
-            ci-logs/10A-kpm-preflight.log
-            ci-logs/10A-0-task-work-compatibility.log
-            ci-logs/autofix/
-          if-no-files-found: warn
-          retention-days: 14
-          compression-level: 6
+      - name: 10A-MANUAL - Apply Reviewed 4.19 Compatibility Fixes Only
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/10A-manual-compatibility-fixes.log"
+          : > "$LOG"
+          {
+            echo "========== MANUAL 4.19 COMPATIBILITY FIXES =========="
+            echo "Auto-Fix: DISABLED"
+            echo "Scope: only previously verified fixes + Diagnostics 38 current SELinux errors"
+
+            # 1) Previously verified: SukiSU task_work API on Linux 4.19 uses bool notify.
+            FILE="drivers/kernelsu/policy/allowlist.c"
+            test -f "$FILE"
+            python3 - "$FILE" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text()
+          old='task_work_add(tsk, cb, TWA_RESUME)'
+          new='task_work_add(tsk, cb, true)'
+          if old in s:
+              if s.count(old) != 1:
+                  raise SystemExit('TWA_RESUME occurs more than once; refusing broad edit')
+              s=s.replace(old,new,1)
+          if new not in s:
+              raise SystemExit('Verified TWA_RESUME -> true form not present')
+          if '#include <linux/sched/task.h>' not in s:
+              s='#include <linux/sched/task.h>\n'+s
+          p.write_text(s)
+          PY
+            echo "[PASS] TWA_RESUME -> true + sched/task.h"
+
+            # 2) Previously verified: SukiSU v4.2.0 uses seccomp.filter_count.
+            SEC="include/linux/seccomp.h"
+            APP="drivers/kernelsu/policy/app_profile.c"
+            test -f "$SEC"; test -f "$APP"
+            grep -q 'atomic_set(&current->seccomp.filter_count, 0)' "$APP"
+            python3 - "$SEC" <<'PY'
+          from pathlib import Path
+          import sys,re
+          p=Path(sys.argv[1]); s=p.read_text()
+          if 'atomic_t filter_count;' in s:
+              print('[PASS] seccomp.filter_count already present')
+          else:
+              pat=r'(^\s*int\s+mode\s*;\n)'
+              if not re.search(pat,s,re.M): raise SystemExit('seccomp struct mode field not found')
+              s=re.sub(pat,r'\1\tatomic_t filter_count;\n',s,count=1,flags=re.M)
+              p.write_text(s)
+              print('[FIXED] atomic_t filter_count added after int mode')
+          PY
+            grep -q 'atomic_t filter_count;' "$SEC"
+            echo "[PASS] seccomp.filter_count compatibility"
+
+            # 3) Previously verified: this 4.19 tree provides min_t through kernel.h.
+            SULOG="drivers/kernelsu/sulog/event.c"
+            test -f "$SULOG"
+            python3 - "$SULOG" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text()
+          old='#include <linux/minmax.h>'
+          if old in s:
+              s=s.replace(old,'#include <linux/kernel.h>',1)
+              p.write_text(s)
+              print('[FIXED] linux/minmax.h -> linux/kernel.h for existing min_t usage')
+          elif 'min_t' in s and '#include <linux/kernel.h>' in s:
+              print('[PASS] sulog min_t compatibility already present')
+          else:
+              raise SystemExit('Unexpected sulog min_t include state')
+          PY
+            echo "[PASS] sulog min_t include compatibility"
+
+            # 4) Diagnostics 38 current error: both SukiSU SELinux files point to
+            # ../klog.h, but the integrated build exposes klog.h directly.
+            for f in drivers/kernelsu/selinux/rules.c drivers/kernelsu/selinux/sepolicy.c; do
+              test -f "$f"
+              grep -qF '#include "../klog.h"' "$f" || true
+              python3 - "$f" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text()
+          old='#include "../klog.h"'
+          new='#include "klog.h"'
+          if old in s:
+              if s.count(old) != 1: raise SystemExit(f'multiple ../klog.h includes in {p}')
+              s=s.replace(old,new,1); p.write_text(s); print(f'[FIXED] {p}: ../klog.h -> klog.h')
+          elif new in s:
+              print(f'[PASS] {p}: klog.h include already fixed')
+          else:
+              raise SystemExit(f'klog include not found in {p}')
+          PY
+            done
+
+            # 5) Diagnostics 38 current SELinux backend errors.  The local LG
+            # 4.19 SELinux state contains selinux_state.ss->policydb, and its
+            # AVC/status APIs use the legacy 4.19 two-argument forms.  The
+            # historical compatibility backend already contains the correct
+            # version-gated paths; enable that path instead of inventing a new
+            # policydb object or changing SELinux internals.
+            RULES="drivers/kernelsu/selinux/rules.c"
+            test -f "$RULES"
+            python3 - "$RULES" <<'PY'
+          from pathlib import Path
+          import sys,re
+          p=Path(sys.argv[1]); s=p.read_text()
+          # Use the existing compatibility branch already present in this rules.c.
+          if '#define KSU_COMPAT_USE_SELINUX_STATE' not in s:
+              anchor='#define ALL NULL\n'
+              if anchor not in s: raise SystemExit('rules.c compatibility anchor missing')
+              s=s.replace(anchor,anchor+'#define KSU_COMPAT_USE_SELINUX_STATE\n',1)
+          # The 4.19 branch of this file must resolve policy through selinux_state.ss.
+          if re.search(r'(?m)^\s*db\s*=\s*&policydb;\s*$',s):
+              s=re.sub(r'(?m)^\s*db\s*=\s*&policydb;\s*$', '\\tdb = &ss->policydb;', s, count=1)
+              # Ensure the local ss declaration exists in the legacy branch.
+              if 'struct selinux_ss *ss = rcu_dereference(selinux_state.ss);' not in s:
+                  raise SystemExit('legacy selinux_ss declaration missing; refusing partial policydb edit')
+          # Diagnostics 38 showed the legacy 4.19 reset APIs are required.
+          s=s.replace('    avc_ss_reset(0);','    avc_ss_reset(selinux_state.avc, 0);')
+          s=s.replace('    selinux_status_update_policyload(0);','    selinux_status_update_policyload(&selinux_state, 0);')
+          # Match the declaration in selinux.h: pointer first, length second.
+          old='int handle_sepolicy(unsigned long arg3, void __user *arg4)'
+          new='int handle_sepolicy(void __user *user_data, u64 data_len)'
+          if old in s:
+              s=s.replace(old,new,1)
+              # These parameter names are local to this legacy handler. Rename
+              # them globally only after proving the old signature exists.
+              s=re.sub(r'\barg4\b','user_data',s)
+              s=re.sub(r'\barg3\b','data_len',s)
+          elif new not in s:
+              raise SystemExit('handle_sepolicy signature is neither old nor fixed form')
+          p.write_text(s)
+          PY
+            grep -qF '#define KSU_COMPAT_USE_SELINUX_STATE' "$RULES"
+            grep -qF 'struct selinux_ss *ss = rcu_dereference(selinux_state.ss);' "$RULES"
+            grep -qF 'db = &ss->policydb;' "$RULES"
+            grep -qF 'avc_ss_reset(selinux_state.avc, 0);' "$RULES"
+            grep -qF 'selinux_status_update_policyload(&selinux_state, 0);' "$RULES"
+            grep -qF 'int handle_sepolicy(void __user *user_data, u64 data_len)' "$RULES"
+            echo "[PASS] Diagnostics 38 SELinux rules.c errors fixed with the existing 4.19 compatibility backend."
+
+            echo
+            echo "========== FIX SCOPE =========="
+            echo "[UNCHANGED] SukiSU-Ultra 4.2.0 / KPM / SUSFS / Baseband-Guard / Maphide / Full LTO"
+            echo "[UNCHANGED] Fingerprint / vibration / Dual-SIM-RIL / audio / IMS / VoWiFi requirements"
+            echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
+            echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
+            echo "[PASS] Manual compatibility patch set complete."
+          } > "$LOG" 2>&1
+          cat "$LOG"
 
       - name: 10C - Final Source Integrity Audit
         shell: bash
