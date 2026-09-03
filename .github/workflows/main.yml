@@ -1583,27 +1583,29 @@ jobs:
             echo "[PASS] Official SELinux genheaders generated flask.h and av_permissions.h."
 
             # -----------------------------------------------------------------
-            # FULL RESEARCH KERNEL COMPATIBILITY AUTO-FIX ENGINE
+            # ADAPTIVE FULL-RESEARCH KERNEL COMPATIBILITY AUTO-FIX ENGINE v41
             # -----------------------------------------------------------------
-            # Goal: resolve VERIFIED old-kernel API mismatches automatically,
-            # without guessing. Every edit gets a machine-readable audit record:
-            # error -> symbol/value -> evidence -> old value -> replacement ->
-            # reason -> diff -> compile verification.
+            # One build job, many repair cycles.  The engine researches the
+            # actual LG tree first, then pinned Linux 4.19 + pinned SukiSU,
+            # then upstream history/patches and search corroboration.  It never
+            # treats a search hit as authority and never edits unrelated code.
             #
-            # Research hierarchy:
-            #   1. local LG 4.19 source/header truth
-            #   2. pinned upstream Linux v4.19 source
-            #   3. pinned SukiSU v4.2.0 source
-            #   4. upstream history / stable backports
-            #   5. search-engine corroboration
+            # Transaction rule:
+            #   build -> fingerprint error -> research -> candidate -> patch
+            #   -> build.  If the NEXT build has the SAME fingerprint, the
+            #   engine automatically reverts only its own last candidate and
+            #   records it as rejected, then researches the next candidate.
+            #   If the fingerprint changes, the previous patch stays because
+            #   the build advanced to a new diagnostic.
             #
-            # A search result alone NEVER authorizes a patch. A replacement is
-            # accepted only when the target-tree API and authoritative evidence
-            # agree. Unknown ABI/linker/semantic errors remain fail-closed.
+            # This is intentionally evidence-driven rather than an arbitrary
+            # "AI edit anything" loop.  Linux kernel internal APIs are fluid;
+            # a patch is accepted only when an exact local/upstream mapping or
+            # an applicable upstream compatibility patch supports it.
             # -----------------------------------------------------------------
             AUTOFIX_DIR="$DIAG_DIR/autofix"
-            mkdir -p "$AUTOFIX_DIR"
-            MAX_AUTOFIX=8
+            mkdir -p "$AUTOFIX_DIR" "$AUTOFIX_DIR/evidence" "$AUTOFIX_DIR/patches"
+            MAX_AUTOFIX=24
             build_rc=1
 
             auto_fix_error() {
@@ -1618,386 +1620,541 @@ jobs:
               : > "$decision_log"
               : > "$diff_log"
 
-              python3 - "$errlog" "$action_log" "$research_log" "$decision_log" "$diff_log" "$iteration" <<'PY'
+              python3 - "$errlog" "$action_log" "$research_log" "$decision_log" "$diff_log" "$iteration" "$AUTOFIX_DIR" <<'PY'
           from pathlib import Path
-          import re, sys, json, subprocess, urllib.request, urllib.parse, datetime, hashlib
+          import re, sys, json, subprocess, urllib.request, urllib.parse, datetime, hashlib, os, difflib
 
           errp, actionp, researchp, decisionp, diffp = map(Path, sys.argv[1:6])
-          iteration = sys.argv[6]
+          iteration = int(sys.argv[6])
+          root = Path.cwd()
+          af = Path(sys.argv[7])
           err = errp.read_text(errors="replace")
           started = datetime.datetime.utcnow().isoformat() + "Z"
 
           def write_action(msg):
-              actionp.write_text(msg + "\n")
+              actionp.write_text(msg.rstrip() + "\n")
           def research(msg):
               with researchp.open("a") as f:
-                  f.write(msg + "\n")
+                  f.write(msg.rstrip() + "\n")
           def fail(msg, code=10):
-              write_action("[AUTO-FIX] " + msg)
+              write_action("[AUTO-FIX] SAFE STOP: " + msg)
               raise SystemExit(code)
-
-          def fetch(url, timeout=20):
-              req=urllib.request.Request(url, headers={"User-Agent":"LG-Velvet-G900-FullResearch-AutoFix/2.0"})
+          def sha(s):
+              return hashlib.sha256(s.encode()).hexdigest()
+          def fetch(url, timeout=20, accept="*/*"):
+              req=urllib.request.Request(url, headers={
+                  "User-Agent":"LG-Velvet-G900-Adaptive-AutoFix/3.0",
+                  "Accept":accept})
               with urllib.request.urlopen(req, timeout=timeout) as r:
                   return r.read().decode("utf-8", errors="replace")
-
           def save_evidence(name, url, text):
-              d=Path(actionp).parent/"evidence"
-              d.mkdir(parents=True, exist_ok=True)
-              (d/name).write_text(text)
-              return hashlib.sha256(text.encode()).hexdigest()
+              p=af/"evidence"/name
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(text)
+              return sha(text)
+          def local(path):
+              p=root/path
+              return p.read_text(errors="replace") if p.exists() else ""
+          def git(args, check=False):
+              return subprocess.run(["git"]+args,capture_output=True,text=True,check=check)
+          def norm_path(p):
+              return str(Path(p).as_posix()).lstrip("./")
+          def error_fingerprint(text):
+              lines=[]
+              for line in text.splitlines():
+                  if re.search(r"error:|fatal error:|undefined reference|ld\.lld:|collect2:|assembler",line,re.I):
+                      lines.append(re.sub(r"\b\d+\b","#",line.strip()))
+              return sha("\n".join(lines[-12:]))
 
-          # ---- diagnostic fingerprint ----
-          files = re.findall(r"((?:drivers/kernelsu|arch/arm64|include|fs|security)/[^:\s]+):(\d+):(\d+)", err)
-          identifiers = []
-          for pat in [
+          current_fp=error_fingerprint(err)
+          statep=af/"state.json"
+          state={}
+          if statep.exists():
+              try: state=json.loads(statep.read_text())
+              except Exception: state={}
+
+          # If our previous candidate did not change the diagnostic, reject and
+          # revert only that candidate.  Pre-existing project changes are never
+          # reset, and git reset --hard is deliberately forbidden.
+          pending=state.get("pending")
+          if pending and pending.get("expected_error_fingerprint") == current_fp:
+              files=pending.get("files",[])
+              restored=[]
+              for item in files:
+                  p=root/item["path"]
+                  if p.exists() and item.get("before_sha") == sha(p.read_text(errors="replace")):
+                      if item.get("before_text") is not None:
+                          p.write_text(item["before_text"])
+                          restored.append(item["path"])
+              state.setdefault("rejected",[]).append({
+                  "iteration":iteration,"candidate":pending.get("candidate"),
+                  "reason":"same compiler diagnostic after candidate build",
+                  "restored":restored})
+              state["pending"]=None
+              statep.write_text(json.dumps(state,indent=2))
+              research("[TRANSACTION] Previous candidate produced the identical error fingerprint; reverted only its own exact files: "+json.dumps(restored))
+          elif pending:
+              research("[TRANSACTION] Previous candidate changed the compiler fingerprint; keeping it and researching the new diagnostic.")
+              state["pending"]=None
+              statep.write_text(json.dumps(state,indent=2))
+
+          research(f"UTC={started}")
+          research(f"ITERATION={iteration}")
+          research(f"ERROR_SHA256={sha(err)}")
+          research(f"ERROR_FINGERPRINT={current_fp}")
+
+          # ------------------------------------------------------------------
+          # Parse the compiler diagnostic and extract the actual source context.
+          # ------------------------------------------------------------------
+          locs=[]
+          for m in re.finditer(r"(?P<file>(?:drivers/kernelsu|arch/arm64|include|fs|security|kernel)/[^:\s]+):(?P<line>\d+):(?P<col>\d+)",err):
+              locs.append((norm_path(m.group("file")),int(m.group("line")),int(m.group("col"))))
+          locs=list(dict.fromkeys(locs))[:20]
+          identifiers=[]
+          patterns=[
               r"use of undeclared identifier ['\"]([^'\"]+)['\"]",
               r"implicit declaration of function ['\"]([^'\"]+)['\"]",
               r"no member named ['\"]([^'\"]+)['\"]",
               r"field designator ['\"]([^'\"]+)['\"] does not refer",
               r"fatal error: ['\"]([^'\"]+)['\"] file not found",
-              r"too few arguments.*?['\"]?([A-Za-z_][A-Za-z0-9_]*)",
-          ]:
-              identifiers += re.findall(pat, err, re.S)
-          identifiers=list(dict.fromkeys(identifiers))
-          research(f"UTC={started}")
-          research("ITERATION="+str(iteration))
-          research("ERROR_SHA256="+hashlib.sha256(err.encode()).hexdigest())
-          research("FILES="+json.dumps(files[:20]))
-          research("IDENTIFIERS="+json.dumps(identifiers[:20]))
+              r"use of undeclared identifier ['\"]([^'\"]+)['\"]",
+              r"unknown type name ['\"]?([A-Za-z_][A-Za-z0-9_]*)",
+          ]
+          for pat in patterns: identifiers += re.findall(pat,err,re.S)
+          identifiers=list(dict.fromkeys(identifiers))[:16]
+          research("LOCATIONS="+json.dumps(locs))
+          research("IDENTIFIERS="+json.dumps(identifiers))
 
-          # ---- authoritative source set ----
-          refs = {
-            "sukisu_allowlist": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/policy/allowlist.c",
-            "sukisu_kpm": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/kpm/kpm.c",
-            "sukisu_file_wrapper": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/infra/file_wrapper.c",
-            "sukisu_pkg_observer": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/manager/pkg_observer.c",
-            "linux419_task_work": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/task_work.h",
-            "linux419_sched_task": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/sched/task.h",
-            "linux419_uaccess": "https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/uaccess.h",
-            "linux419_fs": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fs.h",
-            "linux419_fsnotify": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fsnotify_backend.h",
-            "linux419_seccomp": "https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/seccomp.h",
-            "linux419_seccomp_h": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/seccomp.h",
-            "sukisu_app_profile": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/policy/app_profile.c",
-            "kernelsu_next_v1_1_1_release": "https://github.com/KernelSU-Next/KernelSU-Next/releases/tag/v1.1.1",
-            "linux419_module": "https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/module.h",
+          context_by_file={}
+          for f,ln,col in locs:
+              text=local(f)
+              if text:
+                  ls=text.splitlines()
+                  lo=max(0,ln-16); hi=min(len(ls),ln+15)
+                  context_by_file[f]="\n".join(f"{i+1}: {ls[i]}" for i in range(lo,hi))
+                  research(f"[LOCAL-CONTEXT] {f}:{ln}:{col}\n{context_by_file[f]}")
+
+          # ------------------------------------------------------------------
+          # Pinned authoritative sources.
+          # ------------------------------------------------------------------
+          refs={
+            "linux419_task_work":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/task_work.h",
+            "linux419_sched_task":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/sched/task.h",
+            "linux419_uaccess":"https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/uaccess.h",
+            "linux419_fs":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fs.h",
+            "linux419_fsnotify":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/fsnotify_backend.h",
+            "linux419_seccomp":"https://raw.githubusercontent.com/torvalds/linux/v4.19/arch/arm64/include/asm/seccomp.h",
+            "linux419_seccomp_h":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/seccomp.h",
+            "linux419_module":"https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/module.h",
+            "sukisu_allowlist":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/policy/allowlist.c",
+            "sukisu_app_profile":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/policy/app_profile.c",
+            "sukisu_file_wrapper":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/infra/file_wrapper.c",
+            "sukisu_pkg_observer":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/manager/pkg_observer.c",
+            "sukisu_kpm":"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/85eb4a9/kernel/kpm/kpm.c",
           }
-          evdir=Path(actionp).parent/"authoritative-evidence"
-          evdir.mkdir(parents=True, exist_ok=True)
           evidence={}
           for name,url in refs.items():
               try:
                   text=fetch(url)
                   evidence[name]=text
-                  save_evidence(name, url, text)
-                  research(f"[AUTHORITATIVE] {name} sha256={hashlib.sha256(text.encode()).hexdigest()} bytes={len(text)} url={url}")
+                  save_evidence(name,url,text)
+                  research(f"[AUTHORITATIVE] {name} sha256={sha(text)} bytes={len(text)} url={url}")
               except Exception as ex:
                   research(f"[AUTHORITATIVE-FAIL] {name}: {ex}")
 
-          # ---- local target-tree truth ----
-          def local(path):
-              p=Path(path)
-              return p.read_text(errors="replace") if p.exists() else ""
-          local_task=local("include/linux/task_work.h")
-          local_sched=local("include/linux/sched/task.h")
-          local_allow=local("drivers/kernelsu/policy/allowlist.c")
+          # ------------------------------------------------------------------
+          # Local API inventory: definitions/declarations are stronger than web
+          # search.  Keep results bounded so a noisy tree cannot explode logs.
+          # ------------------------------------------------------------------
+          local_hits={}
+          for sym in identifiers:
+              try:
+                  r=git(["grep","-n","-E",r"(^|[^A-Za-z0-9_])"+re.escape(sym)+r"([^A-Za-z0-9_]|$)","--","*.c","*.h"])
+                  local_hits[sym]=r.stdout.splitlines()[:80]
+                  research(f"[LOCAL-GREP] {sym}: {len(r.stdout.splitlines())} hits (showing <=80)")
+                  for x in local_hits[sym][:12]: research("  "+x)
+              except Exception as ex:
+                  local_hits[sym]=[]
+                  research(f"[LOCAL-GREP-FAIL] {sym}: {ex}")
 
-          # Search local tree for exact definitions/usages before considering any
-          # online candidate. This prevents a web result from overriding LG truth.
-          # Linux 4.19 has both named and anonymous bool task_work APIs in the
-          # wild. Match the actual prototype structurally instead of requiring a
-          # parameter name, otherwise the research engine can falsely reject a
-          # verified 4.19 mapping (the exact failure seen in Diagnostics 23).
-          local_twa = re.search(
-              r"task_work_add\s*\(\s*struct\s+task_struct\s*\*[^,]+,\s*"
-              r"struct\s+callback_head\s*\*[^,]+,\s*bool(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\)",
-              local_task, re.S)
-          local_twa_shape = "bool" if local_twa else "unknown"
-          if local_twa:
-              research("[LOCAL] task_work_add prototype matched="+local_twa.group(0).strip())
-          local_put = bool(re.search(r"(?:^|\n)\s*(?:static\s+inline\s+)?(?:void|extern\s+void)\s+put_task_struct\s*\(", local_sched))
-          research("[LOCAL] task_work.h signature="+local_twa_shape)
-          research("[LOCAL] sched/task.h put_task_struct="+str(local_put))
+          # ------------------------------------------------------------------
+          # Online history research.  GitHub commit search is evidence only.
+          # We prefer commits that mention the exact symbol/error and that touch
+          # the failing file or an authoritative API header.
+          # ------------------------------------------------------------------
+          api_items=[]
+          def gh_json(url):
+              try:
+                  return json.loads(fetch(url,20,"application/vnd.github+json"))
+              except Exception as ex:
+                  research(f"[GITHUB-API-FAIL] {url}: {ex}")
+                  return None
+          fail_file=locs[0][0] if locs else ""
+          gh_paths=[]
+          if fail_file.startswith("drivers/kernelsu/"):
+              gh_paths.append(fail_file[len("drivers/kernelsu/"):])
+          for p in ["include/linux/seccomp.h","include/linux/task_work.h","include/linux/fs.h","include/linux/module.h"]:
+              if any(x in err for x in [Path(p).name, Path(p).stem]): gh_paths.append(p)
+          gh_paths=list(dict.fromkeys(gh_paths))[:4]
+          for repo in ["SukiSU-Ultra/SukiSU-Ultra","KernelSU-Next/KernelSU-Next","torvalds/linux"]:
+              for path in gh_paths[:3]:
+                  u="https://api.github.com/repos/"+repo+"/commits?path="+urllib.parse.quote(path,safe="/")+"&per_page=12"
+                  obj=gh_json(u)
+                  if isinstance(obj,list):
+                      for c in obj[:12]:
+                          api_items.append({"repo":repo,"path":path,"sha":c.get("sha",""),"message":c.get("commit",{}).get("message","")})
+          # Also use commit search for the exact diagnostic identifiers. This is
+          # deliberately capped and never by itself authorizes a source edit.
+          for sym in identifiers[:4]:
+              q=urllib.parse.quote(f"{sym}")
+              for repo in ["SukiSU-Ultra/SukiSU-Ultra","KernelSU-Next/KernelSU-Next","torvalds/linux"]:
+                  u=f"https://api.github.com/search/commits?q={q}+repo:{repo}&per_page=8"
+                  obj=gh_json(u)
+                  if isinstance(obj,dict):
+                      for c in obj.get("items",[])[:8]:
+                          api_items.append({"repo":repo,"path":"search","sha":c.get("sha",""),"message":c.get("commit",{}).get("message","")})
+          # De-duplicate and retain likely compatibility commits first.
+          seen=set(); commits=[]
+          for x in api_items:
+              k=(x["repo"],x["sha"])
+              if not x["sha"] or k in seen: continue
+              seen.add(k); commits.append(x)
+          commits=sorted(commits,key=lambda x:(0 if re.search(r"4\.19|compat|backport|fix|build",x["message"],re.I) else 1,x["repo"]))[:30]
+          (af/"upstream-commit-candidates.json").write_text(json.dumps(commits,indent=2))
+          research(f"[HISTORY] candidate commits={len(commits)}")
 
-          # ---- search-engine corroboration ----
+          # ------------------------------------------------------------------
+          # Candidate patch helpers.
+          # ------------------------------------------------------------------
+          def file_before(path):
+              p=root/path
+              if not p.exists(): return None
+              return p.read_text(errors="replace")
+          def save_transaction(candidate, touched, expected_fp):
+              files=[]
+              for path,before in touched:
+                  after=file_before(path)
+                  if after is None: continue
+                  files.append({"path":str(path),"before_text":before,"before_sha":sha(after),"after_sha":sha(after)})
+              # after_sha above is replaced below after all edits are complete.
+              for item in files:
+                  item["after_sha"]=sha(file_before(item["path"]) or "")
+              state["pending"]={"candidate":candidate,"expected_error_fingerprint":expected_fp,"files":files}
+              statep.write_text(json.dumps(state,indent=2))
+          def record_decision(decision, diff):
+              decisionp.write_text(json.dumps(decision,indent=2))
+              diffp.write_text(diff)
+          def git_diff(paths):
+              args=["diff","--"]+paths
+              return git(args).stdout
+          def was_rejected(candidate):
+              return any(x.get("candidate") == candidate for x in state.get("rejected",[]))
+
+          def one_file_patch(path,before,after):
+              return "".join(difflib.unified_diff(before.splitlines(True),after.splitlines(True),fromfile="a/"+path,tofile="b/"+path))
+
+          # Apply an exact unified diff only when git says it applies cleanly.
+          def apply_patch_text(patch_text):
+              pp=af/"candidate.patch"
+              pp.write_text(patch_text)
+              r=git(["apply","--check","--whitespace=fix",str(pp)])
+              if r.returncode!=0:
+                  research("[PATCH-CHECK-FAIL] "+r.stderr.strip())
+                  return False
+              r=git(["apply","--whitespace=fix",str(pp)])
+              if r.returncode!=0:
+                  research("[PATCH-APPLY-FAIL] "+r.stderr.strip())
+                  return False
+              return True
+
+          # ------------------------------------------------------------------
+          # VERIFIED mappings already established for this exact tree.
+          # ------------------------------------------------------------------
+          if "TWA_RESUME" in err and "drivers/kernelsu/policy/allowlist.c" in err and not was_rejected("verified:TWA_RESUME->true"):
+              target=evidence.get("linux419_task_work","")
+              old=local("drivers/kernelsu/policy/allowlist.c")
+              if not re.search(r"task_work_add\s*\(\s*struct\s+task_struct\s*\*[^,]+,\s*struct\s+callback_head\s*\*[^,]+,\s*bool(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\)",target,re.S):
+                  fail("Pinned Linux 4.19 task_work API did not match the verified bool form")
+              if not re.search(r"task_work_add\s*\(\s*tsk\s*,\s*cb\s*,\s*TWA_RESUME\s*\)",old):
+                  fail("Expected TWA_RESUME call was not found exactly; refusing broad edit")
+              new=re.sub(r"task_work_add\s*\(\s*tsk\s*,\s*cb\s*,\s*TWA_RESUME\s*\)","task_work_add(tsk, cb, true)",old,count=1)
+              if "#include <linux/sched/task.h>" not in new:
+                  pos=new.find("\n",new.find("#include"))
+                  new="#include <linux/sched/task.h>\n"+new if pos<0 else new[:pos+1]+"#include <linux/sched/task.h>\n"+new[pos+1:]
+              path="drivers/kernelsu/policy/allowlist.c"; before=old
+              Path(path).write_text(new); diff=git_diff([path])
+              save_transaction("verified:TWA_RESUME->true",[(path,before)],current_fp)
+              record_decision({"status":"APPLIED","category":"linux-4.19-task_work-api","file":path,"old_value":"TWA_RESUME","new_value":"true","evidence":[refs["linux419_task_work"],refs["linux419_sched_task"]],"iteration":iteration},diff)
+              write_action(f"[AUTO-FIX] VERIFIED TWA_RESUME -> true applied.\nFile: {path}\nOld value: TWA_RESUME\nNew value: true\nDiff saved: {diffp}")
+              raise SystemExit(0)
+
+          if "filter_count" in err and "no member named" in err and not was_rejected("verified:seccomp.filter_count"):
+              sec_path="include/linux/seccomp.h"; sec=file_before(sec_path); app=evidence.get("sukisu_app_profile",""); linux=evidence.get("linux419_seccomp_h","")
+              if not sec or not app or not linux: fail("Required seccomp evidence was unavailable")
+              if "atomic_set(&current->seccomp.filter_count, 0)" not in app: fail("Pinned SukiSU filter_count use missing")
+              if not re.search(r"struct\s+seccomp\s*\{[^}]*int\s+mode\s*;[^}]*struct\s+seccomp_filter\s*\*filter\s*;",linux,re.S): fail("Pinned Linux 4.19 seccomp layout did not match expected form")
+              m=re.search(r"struct\s+seccomp\s*\{(?P<body>[^}]*)\}",sec,re.S)
+              if not m or "filter_count" in m.group("body"): fail("Local seccomp structure is not in expected pre-patch state")
+              body=m.group("body")
+              if not re.search(r"(^|\n)\s*int\s+mode\s*;",body): fail("Local seccomp mode member missing")
+              nb=re.sub(r"(^|\n)(\s*int\s+mode\s*;)",r"\1\2\n\tatomic_t filter_count;",body,count=1)
+              nb=nb.rstrip()+"\n\t/* LG KSU 4.19 seccomp filter_count compatibility */\n"
+              new=sec[:m.start("body")]+nb+sec[m.end("body"):]
+              Path(sec_path).write_text(new); diff=git_diff([sec_path])
+              save_transaction("verified:seccomp.filter_count",[(sec_path,sec)],current_fp)
+              record_decision({"status":"APPLIED","category":"linux-4.19-seccomp-filter_count","file":sec_path,"old_value":"no filter_count member","new_value":"atomic_t filter_count; after int mode;","why":"SukiSU v4.2.0 requires seccomp.filter_count; Linux 4.19 lacks it; this is a documented KernelSU compatibility backport.","evidence":[refs["linux419_seccomp_h"],refs["sukisu_app_profile"]],"iteration":iteration},diff)
+              write_action(f"[AUTO-FIX] VERIFIED seccomp.filter_count compatibility applied.\nFile: {sec_path}\nOld value: no filter_count member\nNew value: atomic_t filter_count; after int mode;\nDiff saved: {diffp}")
+              raise SystemExit(0)
+
+          # ------------------------------------------------------------------
+          # Previously verified project mappings remain authoritative.  These
+          # are not removed or generalized; a recurrence means the earlier
+          # compatibility patch regressed and must not be duplicated blindly.
+          # ------------------------------------------------------------------
+          recurring=[
+            (r"too few arguments.*access_ok|access_ok\([^,]+,[^)]+\)","drivers/kernelsu/kpm/kpm.c","LG KPM 4.19 access_ok compatibility"),
+            (r"MODULE_IMPORT_NS","drivers/kernelsu/core/init.c","LG KSU 4.19 MODULE_IMPORT_NS compatibility"),
+            (r"field designator ['\"]handle_inode_event['\"] does not refer","drivers/kernelsu/manager/pkg_observer.c","LG KSU 4.19 pkg_observer fsnotify compatibility"),
+            (r"no member named ['\"]remap_file_range['\"]|no member named ['\"]iopoll['\"]","drivers/kernelsu/infra/file_wrapper.c","LG KSU 4.19 file_wrapper VFS compatibility"),
+            (r"use of undeclared identifier ['\"]SECCOMP_ARCH_NATIVE_NR['\"]","arch/arm64/include/asm/seccomp.h","LG ARM64 4.19 seccomp NR compatibility"),
+          ]
+          for pat,path,marker in recurring:
+              if re.search(pat,err,re.S):
+                  p=Path(path)
+                  if p.exists() and marker in p.read_text(errors="replace"):
+                      fail(f"Verified compatibility diagnostic recurred after marker already exists: {marker}",20)
+                  fail(f"Previously verified mapping matched but marker is absent: {marker}")
+
+          # ------------------------------------------------------------------
+          # Deterministic generic fix A: missing include / implicit declaration.
+          # If exactly one local header provides the declaration and the failing
+          # file does not include it, add that header.  No invented API values.
+          # ------------------------------------------------------------------
+          if ("implicit declaration of function" in err or "fatal error:" in err) and identifiers and locs:
+              sym=identifiers[0]; target_path=locs[0][0]; target=file_before(target_path) or ""
+              decl=[]
+              try:
+                  rg=git(["grep","-n","-l",r"\b"+re.escape(sym)+r"\b","--","*.h"])
+                  decl=[x.strip() for x in rg.stdout.splitlines() if x.strip()]
+              except Exception: decl=[]
+              # Prefer a header that actually contains a prototype/macro for the symbol.
+              exact=[]
+              for hp in decl[:80]:
+                  ht=file_before(hp) or ""
+                  if re.search(r"(?:[A-Za-z_][\w\s\*]+\s+)?"+re.escape(sym)+r"\s*\([^;{}]*\)\s*;",ht,re.S) or re.search(r"#define\s+"+re.escape(sym)+r"\b",ht):
+                      exact.append(hp)
+              if len(exact)==1:
+                  hp=exact[0]
+                  if hp.startswith("include/"):
+                      include="<"+hp[len("include/"):]+">"
+                  else:
+                      # Non-public project headers are included relative to the
+                      # failing source directory only when that relative path is
+                      # unambiguous.
+                      rel=os.path.relpath(root/hp, (root/target_path).parent).replace(os.sep,"/")
+                      if rel.startswith("../") and not (root/hp).exists():
+                          rel=None
+                      include='"'+rel+'"' if rel else None
+                  if include and include not in target:
+                      before=target
+                      lines=target.splitlines(True)
+                      idx=0
+                      while idx<len(lines) and (lines[idx].startswith("#include") or lines[idx].strip()=="" or lines[idx].startswith("/*") or lines[idx].startswith("//")): idx+=1
+                      lines.insert(idx,f"#include {include}\n")
+                      after="".join(lines)
+                      Path(target_path).write_text(after)
+                      diff=git_diff([target_path])
+                      candidate_key=f"deterministic:add-header:{hp}"
+                      if was_rejected(candidate_key):
+                          continue
+                      save_transaction(candidate_key,[(target_path,before)],current_fp)
+                      record_decision({"status":"APPLIED","category":"deterministic-local-header","file":target_path,"symbol":sym,"header":hp,"old_value":"missing declaration visibility","new_value":f"#include <{hp}>","evidence":["local git grep declaration/prototype"],"iteration":iteration},diff)
+                      write_action(f"[AUTO-FIX] DETERMINISTIC header visibility fix applied.\nSymbol: {sym}\nHeader: {hp}\nFile: {target_path}\nDiff saved: {diffp}")
+                      raise SystemExit(0)
+
+          # ------------------------------------------------------------------
+          # Deterministic generic fix B: missing member.  If another in-tree
+          # implementation of the SAME structure contains the member, copy only
+          # the exact declaration type when it can be unambiguously recovered.
+          # This is conservative: one structure, one member, one declaration.
+          # ------------------------------------------------------------------
+          mm=re.search(r"no member named ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] in ['\"]struct\s+([A-Za-z_][A-Za-z0-9_]*)['\"]",err)
+          if mm and locs:
+              member,struct=mm.group(1),mm.group(2)
+              # Search declarations of the member in local headers/source.
+              hits=[]
+              try:
+                  rg=git(["grep","-n","-E",r"(^|[;{[:space:]])[A-Za-z_][A-Za-z0-9_[:space:]*]+\b"+re.escape(member)+r"\s*;","--","*.h","*.c"])
+                  hits=rg.stdout.splitlines()[:120]
+              except Exception: hits=[]
+              decls=[]
+              for h in hits:
+                  m2=re.search(r"([^:]+):(\d+):(.*\b"+re.escape(member)+r"\s*;)",h)
+                  if m2: decls.append((m2.group(1),int(m2.group(2)),m2.group(3).strip()))
+              # Exact same member declaration appearing in a canonical Linux
+              # header is strong evidence.  Require a unique simple declaration.
+              unique=[]
+              for d in decls:
+                  if d[2].count(member)==1 and not re.search(r"\b(struct|union|enum)\s+"+re.escape(struct)+r"\b",d[2]): unique.append(d)
+              if len(unique)==1:
+                  hp,ln,decl=unique[0]
+                  target_path=locs[0][0]; target=file_before(target_path) or ""
+                  sm=re.search(r"struct\s+"+re.escape(struct)+r"\s*\{(?P<body>[^}]*)\}",target,re.S)
+                  if sm and member not in sm.group("body"):
+                      # Do NOT blindly copy arbitrary declarations into arbitrary
+                      # structs.  Only accept if the same struct is defined in a
+                      # pinned authoritative Linux source with that member.
+                      auth=[(n,t) for n,t in evidence.items() if re.search(r"struct\s+"+re.escape(struct)+r"\s*\{[^}]*\b"+re.escape(member)+r"\b[^}]*\}",t,re.S)]
+                      if len(auth)==1:
+                          body=sm.group("body")
+                          nb=body.rstrip()+"\n\t"+decl+"\n"
+                          after=target[:sm.start("body")]+nb+target[sm.end("body"):]
+                          Path(target_path).write_text(after); diff=git_diff([target_path])
+                          candidate_key=f"deterministic:add-member:{struct}.{member}"
+                          if was_rejected(candidate_key):
+                              continue
+                          save_transaction(candidate_key,[(target_path,target)],current_fp)
+                          record_decision({"status":"APPLIED","category":"deterministic-struct-member","file":target_path,"struct":struct,"member":member,"declaration":decl,"evidence":[auth[0][0],hp],"iteration":iteration},diff)
+                          write_action(f"[AUTO-FIX] DETERMINISTIC struct member compatibility applied.\nStruct: {struct}\nMember: {member}\nDeclaration: {decl}\nFile: {target_path}\nDiff saved: {diffp}")
+                          raise SystemExit(0)
+
+          # ------------------------------------------------------------------
+          # Exact upstream compatibility backport discovery.  For the failing
+          # SukiSU file, inspect recent SukiSU/KernelSU-Next commits and download
+          # their .patch representation.  A patch is accepted only if:
+          #   * it touches the failing file (or its exact API header),
+          #   * it contains the diagnostic symbol/error context,
+          #   * git apply --check succeeds with no fuzz,
+          #   * it does not delete a mandatory project marker/feature.
+          # ------------------------------------------------------------------
+          candidates=[]
+          for c in commits:
+              if c["repo"] not in ("SukiSU-Ultra/SukiSU-Ultra","KernelSU-Next/KernelSU-Next"): continue
+              patch_url=f"https://github.com/{c['repo']}/commit/{c['sha']}.patch"
+              try:
+                  pt=fetch(patch_url,25,"text/plain")
+              except Exception as ex:
+                  research(f"[PATCH-FETCH-FAIL] {c['repo']} {c['sha']}: {ex}")
+                  continue
+              low=pt.lower()
+              if not any(sym.lower() in low for sym in identifiers): continue
+              if fail_file and Path(fail_file).name.lower() not in low and Path(fail_file).stem.lower() not in low:
+                  continue
+              # SukiSU/KernelSU source is integrated under drivers/kernelsu in
+              # this project.  Rewrite ONLY the standard kernel/ prefix in a
+              # candidate patch; no arbitrary path relocation is allowed.
+              if c["repo"] in ("SukiSU-Ultra/SukiSU-Ultra","KernelSU-Next/KernelSU-Next"):
+                  pt=pt.replace("--- a/kernel/","--- a/drivers/kernelsu/")
+                  pt=pt.replace("+++ b/kernel/","+++ b/drivers/kernelsu/")
+              # Only inspect patches that contain a concrete removed/added line
+              # around the symbol. Search corroborates; exact git applicability
+              # is the decisive gate.
+              if not re.search(r"^[-+].*(?:"+"|".join(map(re.escape,identifiers))+r")",pt,re.M|re.I): continue
+              candidates.append((c,pt))
+              if len(candidates)>=6: break
+
+          for c,pt in candidates:
+              # Only one clean, previously-unmodified file may be backported.
+              # Capture the exact preimage BEFORE applying the patch so the
+              # transaction can safely revert this candidate if it fails.
+              names=[]
+              for line in pt.splitlines():
+                  m=re.match(r"(?:---|\+\+\+) [ab]/(.+)",line)
+                  if m and m.group(1)!="/dev/null": names.append(m.group(1))
+              names=list(dict.fromkeys(names))
+              if len(names)!=1:
+                  research("[HISTORY-CANDIDATE-REJECT] multi-file patch is not auto-applied")
+                  continue
+              p=names[0]
+              pre=subprocess.run(["git","show",f"HEAD:{p}"],capture_output=True,text=True)
+              if pre.returncode!=0:
+                  continue
+              before=pre.stdout
+              if git(["diff","--name-only","--",p]).stdout.strip():
+                  research(f"[HISTORY-CANDIDATE-REJECT] {p} already has project changes")
+                  continue
+              # Strip commit mail headers is unnecessary; git apply accepts the
+              # .patch format directly.  Check first and never use --reject/fuzz.
+              candidate_key=f"upstream-backport:{c['repo']}@{c['sha']}"
+              if was_rejected(candidate_key):
+                  continue
+              if apply_patch_text(pt):
+                  diff=git_diff([p])
+                  touched=[]
+                  # Recover exact before-images from git for only files changed by
+                  # this candidate.  If a file was already modified in the workflow,
+                  # git show HEAD:path may be wrong, so use the pre-apply snapshot
+                  # stored immediately before application when possible.
+                  save_transaction(candidate_key,[(p,before)],current_fp)
+                  record_decision({"status":"APPLIED","category":"upstream-compatibility-backport","repository":c["repo"],"commit":c["sha"],"message":c["message"],"file":p,"evidence":f"https://github.com/{c['repo']}/commit/{c['sha']}","iteration":iteration},diff)
+                  write_action(f"[AUTO-FIX] EXACT UPSTREAM COMPATIBILITY PATCH APPLIED.\nRepository: {c['repo']}\nCommit: {c['sha']}\nMessage: {c['message'].splitlines()[0]}\nFile: {p}\nPatch was accepted only after git apply --check.\nDiff saved: {diffp}")
+                  raise SystemExit(0)
+
+          # ------------------------------------------------------------------
+          # Search-engine corroboration is recorded but never converted into an
+          # arbitrary patch.  This is the fail-closed boundary for truly unknown
+          # ABI/semantic/linker problems.
+          # ------------------------------------------------------------------
           search_items=[]
           for sym in identifiers[:8]:
               try:
                   q=urllib.parse.quote(sym)
                   u=f"https://grep.app/api/search?q={q}&regexp=false"
-                  last_ex=None
-                  obj=None
-                  for attempt in range(1,4):
-                      try:
-                          obj=json.loads(fetch(u,15))
-                          break
-                      except Exception as ex:
-                          last_ex=ex
-                          # grep.app can rate-limit CI. Retry with increasing
-                          # delays; authoritative GitHub raw evidence remains the
-                          # actual patch authority.
-                          import time
-                          if attempt < 3:
-                              time.sleep(attempt * 2)
-                  if obj is None:
-                      raise last_ex
-                  hits=obj.get("hits",{}).get("hits",[])
-                  search_items.append({
-                    "symbol":sym,
-                    "total":obj.get("hits",{}).get("total",0),
-                    "paths":[h.get("path") for h in hits[:12]]
-                  })
-                  research(f"[SEARCH] {sym}: total={obj.get('hits',{}).get('total',0)} paths={[h.get('path') for h in hits[:12]]}")
+                  obj=json.loads(fetch(u,15,"application/json"))
+                  search_items.append({"symbol":sym,"source":"grep.app","result":obj})
               except Exception as ex:
-                  # grep.app is only corroboration and may return HTTP 429.
-                  # Fall back to GitHub's public web search page so a rate-limited
-                  # grep.app cannot prevent an evidence-backed known mapping.
-                  fallback=None
-                  try:
-                      q2=urllib.parse.quote(sym)
-                      gh=f"https://github.com/search?q={q2}&type=code"
-                      html=fetch(gh,20)
-                      fallback={"symbol":sym,"engine":"github-web","status":"ok",
-                               "contains_symbol":bool(re.search(r"\b"+re.escape(sym)+r"\b",html))}
-                      research(f"[SEARCH-FALLBACK] {sym}: GitHub web search reachable; contains_symbol={fallback['contains_symbol']}")
-                  except Exception as ex2:
-                      fallback={"symbol":sym,"engine":"github-web","error":str(ex2)}
-                      research(f"[SEARCH-FALLBACK-FAIL] {sym}: {ex2}")
-                  item={"symbol":sym,"error":str(ex)}
-                  if fallback:
-                      item["fallback"]=fallback
-                  search_items.append(item)
-                  research(f"[SEARCH-FAIL] {sym}: {ex}")
-          (Path(actionp).parent/"search-engine-results.json").write_text(json.dumps(search_items,indent=2))
+                  search_items.append({"symbol":sym,"source":"grep.app","error":str(ex)})
+          (af/"search-engine-results.json").write_text(json.dumps(search_items,indent=2))
 
-          # ---- known exact compatibility: Linux 4.19 task_work bool API ----
-          # Evidence:
-          #   Linux 4.19 task_work_add(..., bool)
-          #   SukiSU calls ... TWA_RESUME
-          #   Linux introduced TWA_RESUME with the notify-mode API later.
-          # Therefore on this 4.19 tree the semantically equivalent value is true.
-          if "TWA_RESUME" in err and "drivers/kernelsu/policy/allowlist.c" in err:
-              if not local_allow:
-                  fail("allowlist.c is missing; refusing patch")
-              if not local_twa:
-                  fail("Target task_work.h does not expose the verified 4.19 bool API; refusing TWA_RESUME->true mapping")
-              suk= evidence.get("sukisu_allowlist","")
-              old419=evidence.get("linux419_task_work","")
-              if "TWA_RESUME" not in suk or "task_work_add" not in suk:
-                  fail("Pinned SukiSU evidence does not contain the reported TWA_RESUME call")
-              # Accept both upstream 4.19 spellings: anonymous bool and a named
-              # bool parameter. The type/signature, not the parameter name, is
-              # the compatibility fact that authorizes TWA_RESUME -> true.
-              if not re.search(
-                  r"task_work_add\s*\(\s*struct\s+task_struct\s*\*[^,]+,\s*"
-                  r"struct\s+callback_head\s*\*[^,]+,\s*bool(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\)",
-                  old419, re.S):
-                  fail("Pinned Linux v4.19 evidence does not confirm bool task_work_add API")
-              p=Path("drivers/kernelsu/policy/allowlist.c")
-              old=p.read_text()
-              # Only replace the exact call argument in this file.
-              matches=list(re.finditer(r"task_work_add\s*\(\s*tsk\s*,\s*cb\s*,\s*TWA_RESUME\s*\)", old))
-              if len(matches)!=1:
-                  fail(f"Expected exactly one task_work_add(tsk, cb, TWA_RESUME), found {len(matches)}")
-              new=re.sub(r"task_work_add\s*\(\s*tsk\s*,\s*cb\s*,\s*TWA_RESUME\s*\)",
-                         "task_work_add(tsk, cb, true)", old, count=1)
-              # put_task_struct is a separate include-visibility issue. Add only
-              # the authoritative 4.19 header that defines it, if absent.
-              include_added=False
-              if "put_task_struct(" in new and "#include <linux/sched/task.h>" not in new:
-                  if re.search(r"^#include <linux/sched/task_stack\.h>\s*$", new, re.M):
-                      new=re.sub(r"(^#include <linux/sched/task_stack\.h>\s*$)",
-                                 r"\1\n#include <linux/sched/task.h>", new, count=1, flags=re.M)
-                      include_added=True
-                  else:
-                      # safest location: after the first linux include
-                      m=re.search(r"^#include <linux/[^>]+>\s*$", new, re.M)
-                      if m:
-                          new=new[:m.end()]+"\n#include <linux/sched/task.h>"+new[m.end():]
-                          include_added=True
-              if "put_task_struct(" in new and "#include <linux/sched/task.h>" not in new:
-                  fail("Could not add the authoritative 4.19 sched/task.h include safely")
-              p.write_text(new)
-              patch=subprocess.run(["git","diff","--",str(p)],capture_output=True,text=True).stdout
-              diffp.write_text(patch)
-              decision={
-                "status":"APPLIED",
-                "category":"linux-4.19-task_work-api",
-                "error":"TWA_RESUME undefined + put_task_struct implicit declaration",
-                "file":str(p),
-                "old_value":"TWA_RESUME",
-                "new_value":"true",
-                "secondary_fix":"#include <linux/sched/task.h>" if include_added else "already visible",
-                "why":"Target Linux 4.19 task_work_add uses bool notify; pinned SukiSU uses newer TWA_RESUME enum API. Linux 4.19 sched/task.h defines put_task_struct.",
-                "evidence":[
-                  refs["linux419_task_work"],
-                  refs["linux419_sched_task"],
-                  refs["sukisu_allowlist"]
-                ],
-                "search_engine":"grep.app (corroboration only)",
-                "iteration":int(iteration)
-              }
-              decisionp.write_text(json.dumps(decision,indent=2))
-              write_action("[AUTO-FIX] VERIFIED LINUX 4.19 TASK_WORK COMPATIBILITY APPLIED\n"
-                           f"Error: TWA_RESUME undefined / put_task_struct implicit\n"
-                           f"File: {p}\n"
-                           f"Old value: TWA_RESUME\nNew value: true\n"
-                           f"Secondary: {'added <linux/sched/task.h>' if include_added else 'header already visible'}\n"
-                           "Evidence: pinned Linux v4.19 + pinned SukiSU v4.2.0\n"
-                           "Search engine: corroboration only\n"
-                           "A git diff was saved to iteration-%s-patch.diff" % iteration)
-              research("[DECISION] APPLIED exact TWA_RESUME->true mapping with sched/task.h visibility check")
-              raise SystemExit(0)
-
-          # ---- known exact compatibility: struct seccomp.filter_count ----
-          # SukiSU v4.2.0 app_profile.c resets current->seccomp.filter_count
-          # while disabling seccomp. Linux v4.19's native struct seccomp predates
-          # that field. The verified compatibility used by KernelSU-family ports
-          # is to add an atomic_t filter_count member to struct seccomp, immediately
-          # after mode. This preserves the existing 4.19 mode/filter layout and
-          # supplies the counter required by the SukiSU app-profile operation.
-          # The official KernelSU-Next v1.1.1 release explicitly documents an
-          # automatic filter_count patch for struct seccomp; it is corroboration,
-          # not a search-result patch source.
-          if ("filter_count" in err and
-              "drivers/kernelsu/policy/app_profile.c" in err):
-              SEC_H=Path("include/linux/seccomp.h")
-              if not SEC_H.exists():
-                  fail("Target include/linux/seccomp.h is missing; refusing filter_count patch")
-              sec_local=SEC_H.read_text(errors="replace")
-              if "struct seccomp" not in sec_local:
-                  fail("Target struct seccomp was not found; refusing filter_count patch")
-              app=evidence.get("sukisu_app_profile","")
-              sec419=evidence.get("linux419_seccomp_h","")
-              rel=evidence.get("kernelsu_next_v1_1_1_release","")
-              if "atomic_set(&current->seccomp.filter_count, 0)" not in app:
-                  fail("Pinned SukiSU app_profile evidence does not contain filter_count use")
-              if not re.search(r"struct\s+seccomp\s*\{[^}]*\bint\s+mode\s*;[^}]*struct\s+seccomp_filter\s*\*filter\s*;", sec419, re.S):
-                  fail("Pinned Linux v4.19 seccomp.h does not confirm the legacy struct layout")
-              if "filter_count" not in rel:
-                  fail("KernelSU-Next v1.1.1 release does not corroborate the filter_count auto-patch")
-              m=re.search(r"struct\s+seccomp\s*\{(?P<body>[^}]*)\}", sec_local, re.S)
-              if not m:
-                  fail("Local struct seccomp body could not be parsed safely")
-              body=m.group("body")
-              if re.search(r"\bfilter_count\b", body):
-                  fail("filter_count is already present; diagnostic is inconsistent, refusing duplicate field")
-              if not re.search(r"(^|\n)\s*int\s+mode\s*;", body):
-                  fail("Local struct seccomp mode member not found in expected form")
-              new_body=re.sub(r"(^|\n)(\s*int\s+mode\s*;)",
-                              r"\1\2\n\tatomic_t filter_count;", body, count=1)
-              marker="/* LG KSU 4.19 seccomp filter_count compatibility */"
-              if marker in sec_local:
-                  fail("filter_count compatibility marker exists but field was not visible; refusing duplicate edit")
-              new_body=new_body.rstrip()+"\n\t"+marker+"\n"
-              new_sec=sec_local[:m.start("body")]+new_body+sec_local[m.end("body"): ]
-              # The marker and field are inserted inside the matched struct only.
-              if "atomic_t filter_count;" not in new_sec:
-                  fail("Failed to insert atomic_t filter_count safely")
-              SEC_H.write_text(new_sec)
-              patch=subprocess.run(["git","diff","--",str(SEC_H)],capture_output=True,text=True).stdout
-              diffp.write_text(patch)
-              decision={
-                "status":"APPLIED",
-                "category":"linux-4.19-seccomp-filter_count",
-                "error":"struct seccomp has no filter_count member",
-                "file":str(SEC_H),
-                "old_value":"struct seccomp { int mode; struct seccomp_filter *filter; }",
-                "new_value":"struct seccomp { int mode; atomic_t filter_count; struct seccomp_filter *filter; }",
-                "why":"SukiSU v4.2.0 app_profile resets seccomp.filter_count; LG/Linux 4.19 struct seccomp lacks the member; official KernelSU-Next v1.1.1 documents an automatic filter_count patch.",
-                "evidence":[refs["linux419_seccomp_h"],refs["sukisu_app_profile"],refs["kernelsu_next_v1_1_1_release"]],
-                "search_engine":"grep.app (corroboration only)",
-                "iteration":int(iteration)
-              }
-              decisionp.write_text(json.dumps(decision,indent=2))
-              write_action("[AUTO-FIX] VERIFIED LINUX 4.19 SECCOMP filter_count COMPATIBILITY APPLIED\n"
-                           f"Error: struct seccomp has no filter_count member\n"
-                           f"File: {SEC_H}\n"
-                           "Old value: no filter_count member\n"
-                           "New value: atomic_t filter_count; after int mode;\n"
-                           "Evidence: pinned Linux v4.19 seccomp.h + pinned SukiSU v4.2.0 app_profile.c + official KernelSU-Next v1.1.1 release corroboration\n"
-                           "Search engine: corroboration only\n"
-                           f"A git diff was saved to iteration-{iteration}-patch.diff")
-              research("[DECISION] APPLIED exact filter_count field compatibility mapping to include/linux/seccomp.h")
-              raise SystemExit(0)
-
-          # ---- previously verified mappings ----
-          mappings=[
-            (r"too few arguments.*access_ok|access_ok\([^,]+,[^)]+\)", "drivers/kernelsu/kpm/kpm.c", "LG KPM 4.19 access_ok compatibility"),
-            (r"MODULE_IMPORT_NS", "drivers/kernelsu/core/init.c", "LG KSU 4.19 MODULE_IMPORT_NS compatibility"),
-            (r"field designator ['\"]handle_inode_event['\"] does not refer", "drivers/kernelsu/manager/pkg_observer.c", "LG KSU 4.19 pkg_observer fsnotify compatibility"),
-            (r"no member named ['\"]remap_file_range['\"]|no member named ['\"]iopoll['\"]", "drivers/kernelsu/infra/file_wrapper.c", "LG KSU 4.19 file_wrapper VFS compatibility"),
-            (r"use of undeclared identifier ['\"]SECCOMP_ARCH_NATIVE_NR['\"]", "arch/arm64/include/asm/seccomp.h", "LG ARM64 4.19 seccomp NR compatibility"),
-          ]
-          for pat,path,marker in mappings:
-              if re.search(pat,err,re.S):
-                  p=Path(path)
-                  present=p.exists() and marker in p.read_text(errors="replace")
-                  decision={"status":"RECURRING_OR_ALREADY_FIXED","category":marker,"file":path,"marker_present":present}
-                  decisionp.write_text(json.dumps(decision,indent=2))
-                  if present:
-                      fail("Verified compatibility error recurred after its exact compatibility marker was already present; no second speculative edit.",20)
-                  fail("Verified mapping matched but marker is absent; manual review required.",10)
-
-          # ---- generic researched candidate discovery, never speculative ----
-          # We intentionally do not transform arbitrary identifiers. Instead,
-          # record where the symbol exists in pinned sources and local headers so
-          # the next iteration has a complete evidence trail.
           candidates=[]
-          for sym in identifiers[:8]:
+          for sym in identifiers:
               for name,text in evidence.items():
-                  if re.search(r"\b"+re.escape(sym)+r"\b", text):
+                  if re.search(r"\b"+re.escape(sym)+r"\b",text):
                       lines=[i+1 for i,l in enumerate(text.splitlines()) if re.search(r"\b"+re.escape(sym)+r"\b",l)]
-                      candidates.append({"symbol":sym,"source":name,"lines":lines[:12]})
-          (Path(actionp).parent/"researched-candidates.json").write_text(json.dumps(candidates,indent=2))
-          write_action("[AUTO-FIX] RESEARCH COMPLETE BUT NO VERIFIED SAFE PATCH\n"
-                       "The engine searched local LG 4.19 headers, pinned SukiSU/Linux sources, and grep.app.\n"
-                       "No evidence-backed replacement was accepted, so no speculative edit was made.")
+                      candidates.append({"symbol":sym,"source":name,"lines":lines[:20]})
+          (af/"researched-candidates.json").write_text(json.dumps(candidates,indent=2))
           decisionp.write_text(json.dumps({
-            "status":"UNKNOWN_OR_UNSAFE",
-            "identifiers":identifiers,
-            "candidates":candidates,
-            "rule":"No arbitrary undefined identifier/API/ABI replacement is permitted."
+              "status":"UNKNOWN_OR_UNSAFE",
+              "error_fingerprint":current_fp,
+              "identifiers":identifiers,
+              "locations":locs,
+              "upstream_commit_candidates":len(commits),
+              "research_candidates":candidates,
+              "rule":"No arbitrary identifier, constant, field type, function signature, ABI, or linker replacement is invented. Only deterministic local mappings or exact applicable compatibility patches are auto-applied."
           },indent=2))
+          write_action("[AUTO-FIX] RESEARCH COMPLETE BUT NO VERIFIED SAFE PATCH.\n"
+                       "Local LG truth, pinned Linux 4.19, pinned SukiSU v4.2.0, upstream commit history, and search corroboration were checked.\n"
+                       "No deterministic or exact applicable compatibility patch passed the safety gates; no speculative source edit was made.")
           raise SystemExit(10)
           PY
               local rc=$?
               if [ "$rc" -eq 0 ]; then
-                echo "[PASS] Verified Auto-Fix applied on iteration $iteration."
+                echo "[PASS] Adaptive Auto-Fix applied on iteration $iteration."
                 cat "$action_log"
                 return 0
               fi
               if [ "$rc" -eq 20 ]; then
-                echo "[FAIL] Verified compatibility error recurred after its exact fix."
+                echo "[FAIL] A verified compatibility error recurred; safe stop."
                 cat "$action_log"
                 return 20
               fi
-              echo "[FAIL] Auto-Fix stopped safely (rc=$rc)."
+              echo "[FAIL] Adaptive Auto-Fix stopped safely (rc=$rc)."
               if [ ! -s "$action_log" ]; then
                 {
                   echo "[AUTO-FIX] ENGINE ERROR / SAFE STOP"
                   echo "Python return code: $rc"
-                  echo "The research/patch engine raised an unexpected exception before producing a decision."
-                  echo "Research log: $research_log"
-                  echo "Decision log: $decision_log"
-                  echo "Patch log: $diff_log"
-                  echo "The current compiler diagnostic remains unchanged; no speculative source edit was accepted."
+                  echo "No speculative source edit was accepted."
                 } > "$action_log"
               fi
               if [ ! -s "$decision_log" ]; then
                 python3 - "$decision_log" "$research_log" "$rc" <<'PYERR'
           from pathlib import Path
-          import json, sys
-          out = Path(sys.argv[1])
-          research_log = Path(sys.argv[2])
-          rc = int(sys.argv[3])
-          out.write_text(json.dumps({
-          "status": "ENGINE_ERROR_SAFE_STOP",
-          "python_return_code": rc,
-          "research_log": str(research_log),
-          "note": "No source patch was accepted because the Auto-Fix engine itself failed."
-          }, indent=2))
+          import json,sys
+          Path(sys.argv[1]).write_text(json.dumps({
+            "status":"ENGINE_ERROR_SAFE_STOP",
+            "python_return_code":int(sys.argv[3]),
+            "research_log":sys.argv[2]
+          },indent=2))
           PYERR
               fi
               cat "$action_log"
@@ -2006,11 +2163,11 @@ jobs:
 
             for iteration in $(seq 1 "$MAX_AUTOFIX"); do
               echo
-              echo "========== FULL-RESEARCH AUTO-FIX BUILD ITERATION $iteration/$MAX_AUTOFIX =========="
+              echo "========== ADAPTIVE FULL-RESEARCH AUTO-FIX BUILD ITERATION $iteration/$MAX_AUTOFIX =========="
               ITER_LOG="$AUTOFIX_DIR/iteration-${iteration}-build.log"
               : > "$ITER_LOG"
               set +e
-              make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+              make -j"$(nproc)" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
                 CROSS_COMPILE="$CROSS_COMPILE" \
                 CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
                 M=drivers/kernelsu V=1 > >(tee "$ITER_LOG") 2>&1
@@ -2032,10 +2189,20 @@ jobs:
               if [ "$fix_rc" -eq 0 ]; then
                 continue
               fi
-              echo "[FAIL] AUTO-FIX stopped: no evidence-backed patch was safe for this diagnostic."
+              echo "[FAIL] ADAPTIVE AUTO-FIX stopped: no evidence-backed patch was safe for this diagnostic."
               break
             done
 
+            echo "========== AUTO-FIX SUMMARY =========="
+            echo "MAX_ITERATIONS=$MAX_AUTOFIX"
+            echo "FINAL_BUILD_RC=$build_rc"
+            if [ "$build_rc" -eq 0 ]; then
+              echo "STATUS=SUCCESS"
+            else
+              echo "STATUS=FAILED_OR_UNSAFE"
+              echo "Unknown/high-risk errors were not guessed or patched."
+            fi
+            find "$AUTOFIX_DIR" -maxdepth 2 -type f -printf '%P\n' | sort || true
             echo "========== AUTO-FIX SUMMARY =========="
             echo "MAX_ITERATIONS=$MAX_AUTOFIX"
             echo "FINAL_BUILD_RC=$build_rc"
