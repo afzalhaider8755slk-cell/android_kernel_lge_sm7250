@@ -2757,36 +2757,75 @@ jobs:
           PY
 
           # ------------------------------------------------------------
-          # 8) Linux 4.19 maccess declaration for kernel/power/qos.c
+          # 8) Linux 4.19/modern-maccess compatibility for kernel/power/qos.c
           #
-          # Build log evidence:
+          # DIAGNOSTIC (Diagnostics 33):
           #   kernel/power/qos.c:191:3: error:
           #   implicit declaration of function 'probe_kernel_read'
           #
-          # Linux 4.19 declares probe_kernel_read() in linux/uaccess.h.
-          # The stock qos.c path reaches this call without that declaration
-          # visible under the current Clang 20 include graph. Add ONLY the
-          # authoritative stock header include; do not replace the API and
-          # do not change the qos/workqueue behavior.
+          # IMPORTANT: this is NOT fixed by adding <linux/uaccess.h>.
+          # The actual checked LG source header at HEAD 90f583e83d4b...
+          # declares copy_from_kernel_nofault(), not probe_kernel_read().
+          # The matching mm/maccess.c implementation exports
+          # copy_from_kernel_nofault() and mm/maccess.o is built-in.
+          # Therefore use the API that actually exists in THIS tree.
+          #
+          # Evidence checked before this workflow change:
+          #   include/linux/uaccess.h -> copy_from_kernel_nofault() declaration
+          #   mm/maccess.c             -> implementation + EXPORT_SYMBOL_GPL
+          #   build log                -> mm/maccess.o is compiled and archived
+          #   qos.c                    -> the call is only in CONFIG_LGE_PM_DEBUG
+          #
+          # Scope: replace ONLY probe_kernel_read() calls in kernel/power/qos.c.
+          # No global API rename, no behavior/config change, no DTB/DTBO.
           # ------------------------------------------------------------
           QOS_SRC="kernel/power/qos.c"
+          QOS_UACCESS="include/linux/uaccess.h"
+          QOS_MACCESS="mm/maccess.c"
           test -f "$QOS_SRC"
+          test -f "$QOS_UACCESS"
+          test -f "$QOS_MACCESS"
 
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          p = Path("kernel/power/qos.c")
-          s = p.read_text()
-          include = "#include <linux/uaccess.h>"
+          qos = Path("kernel/power/qos.c")
+          uaccess = Path("include/linux/uaccess.h")
+          maccess = Path("mm/maccess.c")
 
-          if include not in s:
-              p.write_text(include + "\n" + s)
-              print("[FIXED] kernel/power/qos.c: added Linux 4.19 uaccess.h declaration for probe_kernel_read")
+          s = qos.read_text()
+          uh = uaccess.read_text()
+          mh = maccess.read_text()
+
+          if "long copy_from_kernel_nofault(void *dst, const void *src, size_t size);" not in uh:
+              raise SystemExit("AUTHORITATIVE CHECK FAILED: copy_from_kernel_nofault declaration is missing from include/linux/uaccess.h")
+          if "long copy_from_kernel_nofault(void *dst, const void *src, size_t size)" not in mh:
+              raise SystemExit("AUTHORITATIVE CHECK FAILED: copy_from_kernel_nofault implementation is missing from mm/maccess.c")
+          if "EXPORT_SYMBOL_GPL(copy_from_kernel_nofault);" not in mh:
+              raise SystemExit("AUTHORITATIVE CHECK FAILED: copy_from_kernel_nofault is not exported by mm/maccess.c")
+
+          # Only operate on actual function calls, not comments or unrelated text.
+          calls = len(re.findall(r"\bprobe_kernel_read\s*\(", s))
+          if calls:
+              s2 = re.sub(r"\bprobe_kernel_read(?=\s*\()", "copy_from_kernel_nofault", s)
+              qos.write_text(s2)
+              print(f"[FIXED] kernel/power/qos.c: replaced {calls} probe_kernel_read() call(s) with copy_from_kernel_nofault()")
           else:
-              print("[PASS] kernel/power/qos.c already includes linux/uaccess.h")
+              if "copy_from_kernel_nofault(" in s:
+                  print("[PASS] kernel/power/qos.c already uses copy_from_kernel_nofault()")
+              else:
+                  raise SystemExit("EXPECTED QOS CALL NOT FOUND: neither probe_kernel_read() nor copy_from_kernel_nofault() exists")
+
+          # Verify no executable call to the obsolete API remains.
+          remaining = len(re.findall(r"\bprobe_kernel_read\s*\(", qos.read_text()))
+          if remaining:
+              raise SystemExit(f"VERIFY FAILED: {remaining} probe_kernel_read() call(s) remain in kernel/power/qos.c")
+          print("[PASS] qos.c uses the API actually provided by this kernel tree.")
+          print("[PASS] copy_from_kernel_nofault() declaration + implementation + export verified.")
           PY
 
-          echo "[PASS] kernel/power/qos.c probe_kernel_read declaration is explicitly visible."
+          echo "[PASS] QOS maccess compatibility fix is source-evidence-backed; no DTB/DTBO touched."
 
           # ------------------------------------------------------------
           # 7) LG NFC prototype compatibility
