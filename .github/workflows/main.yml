@@ -1,7 +1,8 @@
-# V73 research fix: Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V74 research + compatibility preflight: Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V73 Setup 19 Linux 4.19 SELinux Port + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+# V74 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V74 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Port + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -1695,6 +1696,73 @@ jobs:
           echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
           echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
           echo "[PASS] Manual compatibility patch set complete."
+      - name: 10B-00 - Preflight Linux 4.19 SELinux Layout (10A LOCKED)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG="$DIAG_DIR/10B-00-selinux-419-preflight.log"
+          : > "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
+
+          echo "========== PRE-BUILD SELINUX 4.19 LAYOUT PREFLIGHT =========="
+          echo "[LOCKED] Setup 10A is immutable and is not modified by this preflight."
+          echo "[RESEARCH] Validate the actual CIP135 source headers before Setup 19 mutation."
+          echo "[TARGET] Linux 4.19.325-cip135 + SukiSU-Ultra v4.2.0 non-GKI."
+
+          SEC_H="security/selinux/include/security.h"
+          SS_H="security/selinux/ss/services.h"
+          SID_H="security/selinux/ss/sidtab.h"
+          HASH_H="security/selinux/ss/hashtab.h"
+          HIDE_C="drivers/kernelsu/feature/selinux_hide.c"
+
+          for f in "$SEC_H" "$SS_H" "$SID_H" "$HASH_H" "$HIDE_C"; do
+            test -f "$f" || { echo "[FAIL] Missing required source: $f"; exit 1; }
+          done
+
+          echo "--- Actual selinux_state layout ---"
+          grep -n -A24 -B3 'struct selinux_state[[:space:]]*{' "$SEC_H" | head -40
+          grep -qF 'struct selinux_ss *ss;' "$SEC_H" \
+            || { echo "[FAIL] This tree does not expose selinux_state.ss; the 4.19 port would be invalid."; exit 1; }
+
+          echo "--- Actual selinux_ss layout ---"
+          grep -n -A30 -B3 'struct selinux_ss[[:space:]]*{' "$SS_H" | head -50
+          for token in 'struct sidtab sidtab;' 'struct policydb policydb;' 'struct selinux_map map;' 'struct page *status_page;' 'struct mutex status_lock;'; do
+            grep -qF "$token" "$SS_H" \
+              || { echo "[FAIL] Expected Linux 4.19 selinux_ss member missing: $token"; exit 1; }
+          done
+
+          echo "--- Actual sidtab API ---"
+          grep -qF 'void sidtab_set(struct sidtab *dst, struct sidtab *src);' "$SID_H" \
+            || { echo "[FAIL] sidtab_set() is not available in this tree; refusing a legacy 4.19 fake-state port."; exit 1; }
+
+          echo "--- Actual hashtab representation ---"
+          grep -n -A20 -B3 'struct hashtab[[:space:]]*{' "$HASH_H" | head -35
+          grep -qF 'htable' "$HASH_H" || { echo "[FAIL] hashtab->htable is absent."; exit 1; }
+
+          echo "--- Pinned SukiSU source ---"
+          LOCAL_SHA="$(sha256sum "$HIDE_C" | awk '{print $1}')"
+          echo "[INFO] Local integrated selinux_hide.c SHA256=$LOCAL_SHA"
+          echo "[INFO] Expected pinned v4.2.0 SHA256=efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5"
+          test "$LOCAL_SHA" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5" \
+            || { echo "[FAIL] Local SukiSU selinux_hide.c is not the pinned v4.2.0 source; no speculative replacement will be attempted."; exit 1; }
+
+          echo "--- Known 4.19 compatibility signals ---"
+          if grep -qF 'TWA_RESUME' drivers/kernelsu/supercall/supercall.c; then
+            echo "[PLAN] task_work TWA_RESUME boundary will be handled by the existing Setup 19 exact fix."
+          else
+            echo "[PASS] task_work source is already on the 4.19-compatible form."
+          fi
+
+          if grep -qF 'flex_array_get_ptr(node_ptr, i)' drivers/kernelsu/selinux/sepolicy.c; then
+            echo "[PLAN] legacy 4.19 hashtab iteration boundary will be handled by the existing Setup 19 exact fix."
+          else
+            echo "[PASS] hashtab iteration is already on the 4.19-compatible form."
+          fi
+
+          echo "[PASS] SELinux state/ss/map/sidtab structure matches the researched 4.19 model."
+          echo "[PASS] Preflight performed source inspection only; no source mutation."
+          echo "=============================================================="
+
       - name: 10B - Setup 19 SELinux 4.19 Compatibility Port (10A LOCKED)
         shell: bash
         run: |
@@ -1705,41 +1773,28 @@ jobs:
 
           echo "========== SETUP 19: SELINUX 4.19 COMPATIBILITY PORT =========="
           echo "[LOCKED] Setup 10A is not modified, reopened, or reverted."
-          echo "[RESEARCH] V72 restored upstream SukiSU-Ultra v4.2.0 verbatim, but that file directly accesses newer selinux_state fields."
-          echo "[ERROR TARGET] Linux 4.19 exposes status_page/status_lock and policydb/sidtab through selinux_state.ss."
-          echo "[FIX] Keep the pinned v4.2.0 implementation, adding only the minimal 4.19 selinux_state.ss compatibility boundary."
+          echo "[RESEARCH] Reuse the hash-verified SukiSU-Ultra v4.2.0 source already integrated by Setup 08."
+          echo "[RESEARCH] Linux 4.19 exposes SELinux policydb/map/sidtab/status state through selinux_state.ss."
+          echo "[FIX] Apply only the minimal source-derived 4.19 compatibility boundary."
 
           SELINUX_HIDE_C="drivers/kernelsu/feature/selinux_hide.c"
           test -f "$SELINUX_HIDE_C"
+          LOCAL_SHA256="$(sha256sum "$SELINUX_HIDE_C" | awk '{print $1}')"
+          echo "[INFO] Integrated v4.2.0 selinux_hide.c SHA256=$LOCAL_SHA256"
+          test "$LOCAL_SHA256" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5"
 
-          TAG_LINE="$(git ls-remote --tags --refs "https://github.com/${{ env.SUKISU_REPO }}.git" "refs/tags/${{ env.SUKISU_REF }}" | tail -1)"
-          test -n "$TAG_LINE"
-          TAG_SHA="${TAG_LINE%%$'\t'*}"
-          echo "[INFO] SukiSU tag commit: $TAG_SHA"
-          test "$TAG_SHA" = "${{ env.SUKISU_RELEASE_COMMIT }}"
-
-          UPSTREAM="$RUNNER_TEMP/selinux_hide-v4.2.0.c"
-          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 120             "https://raw.githubusercontent.com/${{ env.SUKISU_REPO }}/${{ env.SUKISU_REF }}/kernel/feature/selinux_hide.c"             -o "$UPSTREAM"
-          test -s "$UPSTREAM"
-
-          UPSTREAM_SHA256="$(sha256sum "$UPSTREAM" | awk '{print $1}')"
-          echo "[INFO] Official v4.2.0 selinux_hide.c SHA256=$UPSTREAM_SHA256"
-          test "$UPSTREAM_SHA256" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5"
-
-          # Start from the exact pinned source, then make only the 4.19 port.
-          cp -f "$UPSTREAM" "$SELINUX_HIDE_C"
-
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQoKZm9yIG9sZCwgbmV3IGluIFsKICAgICgic2VsaW51eF9zdGF0ZS5zdGF0dXNfbG9jayIsICJzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfbG9jayIpLAogICAgKCJzZWxpbnV4X3N0YXRlLnN0YXR1c19wYWdlIiwgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlIiksCl06CiAgICBzID0gcy5yZXBsYWNlKG9sZCwgbmV3KQoKbmVlZGxlID0gInN0YXRpYyBzdHJ1Y3Qgc2VsaW51eF9zdGF0ZSBmYWtlX3N0YXRlO1xuIgppbnNlcnQgPSAiIiJzdGF0aWMgc3RydWN0IHNlbGludXhfc3RhdGUgZmFrZV9zdGF0ZTsKc3RhdGljIHN0cnVjdCBzZWxpbnV4X3NzIGZha2Vfc3M7CgpzdGF0aWMgdm9pZCBrc3Vfc2VsaW51eF9pbml0X2Zha2Vfc3RhdGUodm9pZCkKewogICAgbWVtc2V0KCZmYWtlX3N0YXRlLCAwLCBzaXplb2YoZmFrZV9zdGF0ZSkpOwogICAgbWVtc2V0KCZmYWtlX3NzLCAwLCBzaXplb2YoZmFrZV9zcykpOwoKICAgIGZha2Vfc3RhdGUuaW5pdGlhbGl6ZWQgPSB0cnVlOwogICAgZmFrZV9zdGF0ZS5zcyA9ICZmYWtlX3NzOwoKICAgIHJ3bG9ja19pbml0KCZmYWtlX3NzLnBvbGljeV9yd2xvY2spOwogICAgc3Bpbl9sb2NrX2luaXQoJmZha2Vfc3Muc2lkdGFiLmxvY2spOwoKICAgIGZha2Vfc3MucG9saWN5ZGIgPSBiYWNrdXBfc2Vwb2xpY3ktPnBvbGljeWRiOwogICAgZmFrZV9zcy5sYXRlc3RfZ3JhbnRpbmcgPSBiYWNrdXBfc2Vwb2xpY3ktPmxhdGVzdF9ncmFudGluZzsKCiAgICAvKgogICAgICogTGludXggNC4xOSBzaWR0YWJfc2V0KCkgc2hhcmVzIHRoZSBTSUQgdGFibGUgYmFja2luZyBzdG9yYWdlIHdoaWxlCiAgICAgKiByZXNldHRpbmcgdGhlIGRlc3RpbmF0aW9uIGNhY2hlLiBiYWNrdXBfc2Vwb2xpY3kgb3ducyB0aGF0IHN0b3JhZ2UuCiAgICAgKi8KICAgIHNpZHRhYl9zZXQoJmZha2Vfc3Muc2lkdGFiLCBiYWNrdXBfc2Vwb2xpY3ktPnNpZHRhYik7Cn0KIiIiCmlmIHMuY291bnQobmVlZGxlKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIGV4cGVjdGVkIGV4YWN0bHkgb25lIGZha2Vfc3RhdGUgZGVjbGFyYXRpb24iKQpzID0gcy5yZXBsYWNlKG5lZWRsZSwgaW5zZXJ0LCAxKQoKb2xkID0gIiAgICAgICAgZmFrZV9zdGF0ZS5pbml0aWFsaXplZCA9IHRydWU7XG4gICAgICAgIGZha2Vfc3RhdGUucG9saWN5ID0gYmFja3VwX3NlcG9saWN5O1xuIgpuZXcgPSAiICAgICAgICBrc3Vfc2VsaW51eF9pbml0X2Zha2Vfc3RhdGUoKTtcbiIKaWYgcy5jb3VudChvbGQpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gZXhwZWN0ZWQgZXhhY3RseSBvbmUgb2xkIGZha2Vfc3RhdGUgcG9saWN5IGluaXRpYWxpemF0aW9uIikKcyA9IHMucmVwbGFjZShvbGQsIG5ldywgMSkKCmZvciB0b2tlbiBpbiBbCiAgICAic2VsaW51eF9zdGF0ZS5zdGF0dXNfbG9jayIsCiAgICAic2VsaW51eF9zdGF0ZS5zdGF0dXNfcGFnZSIsCiAgICAiZmFrZV9zdGF0ZS5wb2xpY3kgPSIsCl06CiAgICBpZiB0b2tlbiBpbiBzOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSBvYnNvbGV0ZSB0b2tlbiByZW1haW5zOiAiICsgdG9rZW4pCgpmb3IgdG9rZW4gaW4gWwogICAgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19sb2NrIiwKICAgICJzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfcGFnZSIsCiAgICAic3RhdGljIHN0cnVjdCBzZWxpbnV4X3NzIGZha2Vfc3M7IiwKICAgICJmYWtlX3N0YXRlLnNzID0gJmZha2Vfc3M7IiwKICAgICJmYWtlX3NzLnBvbGljeWRiID0gYmFja3VwX3NlcG9saWN5LT5wb2xpY3lkYjsiLAogICAgInNpZHRhYl9zZXQoJmZha2Vfc3Muc2lkdGFiLCBiYWNrdXBfc2Vwb2xpY3ktPnNpZHRhYik7IiwKXToKICAgIGlmIHRva2VuIG5vdCBpbiBzOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSByZXF1aXJlZCB0b2tlbiBtaXNzaW5nOiAiICsgdG9rZW4pCgpwLndyaXRlX3RleHQocykKcHJpbnQoIltQQVNTXSBMaW51eCA0LjE5IHNlbGludXhfc3RhdGUvc2VsaW51eF9zcyBjb21wYXRpYmlsaXR5IGFwcGxpZWQuIikK' | base64 -d > "$RUNNER_TEMP/setup19_selinux_419_port.py"
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQoKZm9yIG9sZCwgbmV3IGluIFsKICAgICgic2VsaW51eF9zdGF0ZS5zdGF0dXNfbG9jayIsICJzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfbG9jayIpLAogICAgKCJzZWxpbnV4X3N0YXRlLnN0YXR1c19wYWdlIiwgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlIiksCl06CiAgICBzID0gcy5yZXBsYWNlKG9sZCwgbmV3KQoKbmVlZGxlID0gInN0YXRpYyBzdHJ1Y3Qgc2VsaW51eF9zdGF0ZSBmYWtlX3N0YXRlO1xuIgppbnNlcnQgPSAiIiJzdGF0aWMgc3RydWN0IHNlbGludXhfc3RhdGUgZmFrZV9zdGF0ZTsKc3RhdGljIHN0cnVjdCBzZWxpbnV4X3NzIGZha2Vfc3M7CgpzdGF0aWMgdm9pZCBrc3Vfc2VsaW51eF9pbml0X2Zha2Vfc3RhdGUodm9pZCkKewogICAgbWVtc2V0KCZmYWtlX3N0YXRlLCAwLCBzaXplb2YoZmFrZV9zdGF0ZSkpOwogICAgbWVtc2V0KCZmYWtlX3NzLCAwLCBzaXplb2YoZmFrZV9zcykpOwoKICAgIGZha2Vfc3RhdGUuaW5pdGlhbGl6ZWQgPSB0cnVlOwogICAgZmFrZV9zdGF0ZS5zcyA9ICZmYWtlX3NzOwoKICAgIHJ3bG9ja19pbml0KCZmYWtlX3NzLnBvbGljeV9yd2xvY2spOwogICAgc3Bpbl9sb2NrX2luaXQoJmZha2Vfc3Muc2lkdGFiLmxvY2spOwoKICAgIGZha2Vfc3MucG9saWN5ZGIgPSBiYWNrdXBfc2Vwb2xpY3ktPnBvbGljeWRiOwogICAgZmFrZV9zcy5tYXAgPSBiYWNrdXBfc2Vwb2xpY3ktPm1hcDsKICAgIGZha2Vfc3MubGF0ZXN0X2dyYW50aW5nID0gYmFja3VwX3NlcG9saWN5LT5sYXRlc3RfZ3JhbnRpbmc7CgogICAgc2lkdGFiX3NldCgmZmFrZV9zcy5zaWR0YWIsIGJhY2t1cF9zZXBvbGljeS0+c2lkdGFiKTsKfQoiIiIKaWYgcy5jb3VudChuZWVkbGUpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gZXhwZWN0ZWQgZXhhY3RseSBvbmUgZmFrZV9zdGF0ZSBkZWNsYXJhdGlvbiIpCnMgPSBzLnJlcGxhY2UobmVlZGxlLCBpbnNlcnQsIDEpCgpvbGQgPSAiICAgICAgICBmYWtlX3N0YXRlLmluaXRpYWxpemVkID0gdHJ1ZTtcbiAgICAgICAgZmFrZV9zdGF0ZS5wb2xpY3kgPSBiYWNrdXBfc2Vwb2xpY3k7XG4iCm5ldyA9ICIgICAgICAgIGtzdV9zZWxpbnV4X2luaXRfZmFrZV9zdGF0ZSgpO1xuIgppZiBzLmNvdW50KG9sZCkgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSBleHBlY3RlZCBleGFjdGx5IG9uZSBvbGQgZmFrZV9zdGF0ZSBwb2xpY3kgaW5pdGlhbGl6YXRpb24iKQpzID0gcy5yZXBsYWNlKG9sZCwgbmV3LCAxKQoKZm9yIHRva2VuIGluIFsKICAgICJzZWxpbnV4X3N0YXRlLnN0YXR1c19sb2NrIiwKICAgICJzZWxpbnV4X3N0YXRlLnN0YXR1c19wYWdlIiwKICAgICJmYWtlX3N0YXRlLnBvbGljeSA9IiwKXToKICAgIGlmIHRva2VuIGluIHM6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIG9ic29sZXRlIHRva2VuIHJlbWFpbnM6ICIgKyB0b2tlbikKCmZvciB0b2tlbiBpbiBbCiAgICAic2VsaW51eF9zdGF0ZS5zcy0+c3RhdHVzX2xvY2siLAogICAgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlIiwKICAgICJzdGF0aWMgc3RydWN0IHNlbGludXhfc3MgZmFrZV9zczsiLAogICAgImZha2Vfc3RhdGUuc3MgPSAmZmFrZV9zczsiLAogICAgImZha2Vfc3MucG9saWN5ZGIgPSBiYWNrdXBfc2Vwb2xpY3ktPnBvbGljeWRiOyIsCiAgICAiZmFrZV9zcy5tYXAgPSBiYWNrdXBfc2Vwb2xpY3ktPm1hcDsiLAogICAgInNpZHRhYl9zZXQoJmZha2Vfc3Muc2lkdGFiLCBiYWNrdXBfc2Vwb2xpY3ktPnNpZHRhYik7IiwKXToKICAgIGlmIHRva2VuIG5vdCBpbiBzOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSByZXF1aXJlZCB0b2tlbiBtaXNzaW5nOiAiICsgdG9rZW4pCgpwLndyaXRlX3RleHQocykKcHJpbnQoIltQQVNTXSBMaW51eCA0LjE5IHNlbGludXhfc3RhdGUvc2VsaW51eF9zcyBjb21wYXRpYmlsaXR5IGFwcGxpZWQuIikK' | base64 -d > "$RUNNER_TEMP/setup19_selinux_419_port.py"
           chmod 700 "$RUNNER_TEMP/setup19_selinux_419_port.py"
           python3 -m py_compile "$RUNNER_TEMP/setup19_selinux_419_port.py"
           python3 "$RUNNER_TEMP/setup19_selinux_419_port.py" "$SELINUX_HIDE_C"
 
-          # Authoritative 4.19 structure gates.
+          echo "========== POST-FIX AUDIT =========="
           grep -qF 'selinux_state.ss->status_lock' "$SELINUX_HIDE_C"
           grep -qF 'selinux_state.ss->status_page' "$SELINUX_HIDE_C"
           grep -qF 'static struct selinux_ss fake_ss;' "$SELINUX_HIDE_C"
           grep -qF 'fake_state.ss = &fake_ss;' "$SELINUX_HIDE_C"
           grep -qF 'fake_ss.policydb = backup_sepolicy->policydb;' "$SELINUX_HIDE_C"
+          grep -qF 'fake_ss.map = backup_sepolicy->map;' "$SELINUX_HIDE_C"
           grep -qF 'sidtab_set(&fake_ss.sidtab, backup_sepolicy->sidtab);' "$SELINUX_HIDE_C"
 
           if grep -nE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=' "$SELINUX_HIDE_C"; then
@@ -1748,10 +1803,11 @@ jobs:
           fi
 
           echo "[PASS] Setup 19 SELinux hide source uses the Linux 4.19 selinux_state.ss layout."
-          echo "[PASS] fake_state is backed by a 4.19 selinux_ss view of backup_sepolicy."
-          echo "[PASS] Pinned SukiSU-Ultra v4.2.0 source was the only starting point."
+          echo "[PASS] fake_state carries policydb + map + sidtab backing required by 4.19 security helpers."
+          echo "[PASS] Pinned SukiSU-Ultra v4.2.0 source was reused locally; no network replacement."
           echo "[LOCKED] Setup 10A remains untouched."
           echo "=============================================================="
+
       - name: 10C - Final Source Integrity Audit
         shell: bash
         run: |
@@ -1923,6 +1979,116 @@ jobs:
           } > "$LOG" 2>&1
           cat "$LOG"
 
+      - name: 18A - Full Source-Derived Compatibility Matrix (NO MUTATION)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG="$DIAG_DIR/18A-prebuild-compatibility-matrix.log"
+          REPORT="$GITHUB_WORKSPACE/compatibility-matrix.txt"
+          : > "$LOG"
+          : > "$REPORT"
+          exec > >(tee -a "$LOG") 2>&1
+
+          echo "========== PRE-BUILD COMPATIBILITY MATRIX ==========" | tee -a "$REPORT"
+          echo "Target: LG Velvet LM-G900 / G900EMW" | tee -a "$REPORT"
+          echo "Kernel: Linux 4.19.325-cip135" | tee -a "$REPORT"
+          echo "SukiSU-Ultra: v4.2.0" | tee -a "$REPORT"
+          echo "SUSFS: $SUSFS_VERSION @ $SUSFS_COMMIT" | tee -a "$REPORT"
+          echo "Clang: r547379" | tee -a "$REPORT"
+          echo
+
+          pass=0
+          warn=0
+          fail=0
+          check() {
+            if "$@"; then
+              pass=$((pass+1))
+            else
+              fail=$((fail+1))
+              echo "[FAIL] $*" | tee -a "$REPORT"
+            fi
+          }
+          note() {
+            warn=$((warn+1))
+            echo "[CHECK] $*" | tee -a "$REPORT"
+          }
+
+          echo "--- Required source/config symbols ---" | tee -a "$REPORT"
+          for req in CONFIG_KSU=y CONFIG_KPROBES=y CONFIG_KPROBE_EVENTS=y CONFIG_KALLSYMS=y CONFIG_KALLSYMS_ALL=y CONFIG_KPM=y CONFIG_LTO=y CONFIG_LTO_CLANG=y CONFIG_LTO_CLANG_FULL=y CONFIG_EXT4_FS=y CONFIG_OVERLAY_FS=y CONFIG_BBG=y; do
+            check grep -qx "$req" .config
+          done
+
+          if grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
+            echo "[FAIL] Full LTO exclusivity violated." | tee -a "$REPORT"
+            fail=$((fail+1))
+          else
+            echo "[PASS] Full Clang LTO exclusivity." | tee -a "$REPORT"
+            pass=$((pass+1))
+          fi
+
+          echo "--- SukiSU/SUSFS/Maphide/Baseband source consistency ---" | tee -a "$REPORT"
+          check grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU fs include
+          check grep -Rqs 'susfs' fs include/linux KernelSU/kernel
+          check grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
+          check grep -q 'framework-res.apk' fs/proc/task_mmu.c
+          check grep -RqsE 'baseband.?guard|CONFIG_BBG' Baseband-guard security
+
+          echo "--- Linux 4.19 API boundaries ---" | tee -a "$REPORT"
+          check grep -qF 'struct selinux_ss *ss;' security/selinux/include/security.h
+          check grep -qF 'struct policydb policydb;' security/selinux/ss/services.h
+          check grep -qF 'struct selinux_map map;' security/selinux/ss/services.h
+          check grep -qF 'struct sidtab sidtab;' security/selinux/ss/services.h
+          check grep -qF 'void sidtab_set(struct sidtab *dst, struct sidtab *src);' security/selinux/ss/sidtab.h
+          check grep -qF 'struct page *status_page;' security/selinux/ss/services.h
+          check grep -qF 'struct mutex status_lock;' security/selinux/ss/services.h
+
+          if grep -qF 'TWA_RESUME' drivers/kernelsu/supercall/supercall.c; then
+            note "TWA_RESUME remains before Setup 19 mutation; the existing exact bool-API fix must run."
+          else
+            echo "[PASS] No obsolete TWA_RESUME in dispatcher source." | tee -a "$REPORT"
+            pass=$((pass+1))
+          fi
+
+          if grep -qF 'flex_array_get_ptr(node_ptr, i)' drivers/kernelsu/selinux/sepolicy.c; then
+            note "Legacy flex_array hashtab iteration remains before Setup 19 mutation; the existing exact fix must run."
+          else
+            echo "[PASS] No obsolete flex_array hashtab iteration." | tee -a "$REPORT"
+            pass=$((pass+1))
+          fi
+
+          echo "--- SELinux-hide post-port invariant ---" | tee -a "$REPORT"
+          check grep -qF 'selinux_state.ss->status_lock' drivers/kernelsu/feature/selinux_hide.c
+          check grep -qF 'selinux_state.ss->status_page' drivers/kernelsu/feature/selinux_hide.c
+          check grep -qF 'fake_ss.map = backup_sepolicy->map;' drivers/kernelsu/feature/selinux_hide.c
+          if grep -qE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=' drivers/kernelsu/feature/selinux_hide.c; then
+            echo "[FAIL] Modern direct SELinux state fields remain after the 4.19 port." | tee -a "$REPORT"
+            fail=$((fail+1))
+          else
+            echo "[PASS] No obsolete direct SELinux state fields remain." | tee -a "$REPORT"
+            pass=$((pass+1))
+          fi
+
+          echo "--- Hardware source-presence sanity ---" | tee -a "$REPORT"
+          for p in drivers/input drivers/vibrator drivers/haptics drivers/soc/qcom sound techpack/audio techpack/voice techpack/data drivers/net/wireless; do
+            if [ -d "$p" ]; then
+              echo "[PASS] $p" | tee -a "$REPORT"
+              pass=$((pass+1))
+            else
+              echo "[WARN] source directory absent: $p" | tee -a "$REPORT"
+              warn=$((warn+1))
+            fi
+          done
+
+          echo | tee -a "$REPORT"
+          echo "SUMMARY: PASS=$pass CHECKS=$warn FAIL=$fail" | tee -a "$REPORT"
+          if [ "$fail" -ne 0 ]; then
+            echo "[FAIL] Pre-build compatibility matrix found a blocking mismatch." | tee -a "$REPORT"
+            exit 1
+          fi
+          echo "[PASS] Pre-build compatibility matrix completed before kernel compilation." | tee -a "$REPORT"
+          echo "[PASS] This step performs no source mutation." | tee -a "$REPORT"
+          echo "====================================================" | tee -a "$REPORT"
+
       - name: 19 - Build Kernel (Full Log to Artifact)
         shell: bash
         run: |
@@ -1939,7 +2105,7 @@ jobs:
 
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
           # ------------------------------------------------------------
-          # SETUP 19 — EXACT CURRENT ERROR ONLY
+          # SETUP 19 — EXACT CURRENT COMPATIBILITY BOUNDARIES AFTER PRE-BUILD MATRIX
           # The full build reached drivers/kernelsu/selinux/sepolicy.c and
           # failed because ksu_hash_for_each() was using flex_array_get_ptr()
           # against Linux 4.19 SELinux hashtab->htable (struct hashtab_node **).
