@@ -1162,6 +1162,72 @@ jobs:
           tail -180 "$LOG" || true
           exit "$STATUS"
 
+      - name: 10A-0 - Apply Verified Linux 4.19 KSU Task-Work Compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$DIAG_DIR/10A-0-task-work-compatibility.log"
+          : > "$LOG"
+          {
+            echo "========== VERIFIED LINUX 4.19 TASK-WORK COMPATIBILITY =========="
+            FILE="drivers/kernelsu/policy/allowlist.c"
+            test -f "$FILE"
+            echo "[INFO] Target: $FILE"
+            echo "[INFO] Required legacy mapping: TWA_RESUME -> true"
+            echo "[INFO] Required declaration header: linux/sched/task.h"
+
+            if grep -qF 'task_work_add(tsk, cb, TWA_RESUME)' "$FILE"; then
+              python3 - "$FILE" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text()
+          needle='task_work_add(tsk, cb, TWA_RESUME)'
+          replacement='task_work_add(tsk, cb, true)'
+          if s.count(needle) != 1:
+              raise SystemExit('[FAIL] Expected exactly one TWA_RESUME call; refusing broad edit.')
+          s=s.replace(needle,replacement,1)
+          if '#include <linux/sched/task.h>' not in s:
+              lines=s.splitlines(True)
+              idx=0
+              while idx < len(lines) and lines[idx].startswith('#!'):
+                  idx += 1
+              s=''.join(lines[:idx])+'#include <linux/sched/task.h>\n'+''.join(lines[idx:])
+          p.write_text(s)
+          PY
+              echo "[APPLIED] TWA_RESUME -> true in $FILE"
+              echo "[APPLIED] Added <linux/sched/task.h> for put_task_struct()"
+            else
+              grep -qF 'task_work_add(tsk, cb, true)' "$FILE" || {
+                echo "[FAIL] Neither the expected old call nor the verified new call exists."
+                exit 1
+              }
+              grep -qF '#include <linux/sched/task.h>' "$FILE" || {
+                echo "[FAIL] Verified task_work fix is incomplete: sched/task.h missing."
+                exit 1
+              }
+              echo "[PASS] Verified task_work compatibility already present."
+            fi
+
+            # Confirm the 4.19 API contract from the pinned evidence fetched by
+            # the research engine; do not silently accept a different signature.
+            if [ -f "$AUTOFIX_DIR/evidence/census_task_work.h" ]; then
+              grep -qE 'int task_work_add\(struct task_struct \*task, struct callback_head \*twork, bool\)' \
+                "$AUTOFIX_DIR/evidence/census_task_work.h" || {
+                echo "[FAIL] Pinned Linux 4.19 task_work API evidence does not match bool notify form."
+                exit 1
+              }
+              echo "[PASS] Pinned Linux 4.19 task_work API confirms bool notify."
+            else
+              echo "[WARN] Census evidence file not present yet; source-level verified mapping was used."
+            fi
+
+            grep -qF 'task_work_add(tsk, cb, true)' "$FILE"
+            grep -qF '#include <linux/sched/task.h>' "$FILE"
+            echo "[PASS] allowlist.c contains the verified 4.19 compatibility form."
+          } > "$LOG" 2>&1
+          cat "$LOG"
+
       - name: 10A - KPM Compatibility Preflight (v4.2.0 Kbuild)
         id: kpm_preflight
         continue-on-error: true
@@ -2203,59 +2269,59 @@ jobs:
             # -----------------------------------------------------------------
             CENSUS_LOG="$AUTOFIX_DIR/00-compatibility-census.log"
             python3 - "$CENSUS_LOG" <<'PY_CENSUS'
-            from pathlib import Path
-            import re, urllib.request, hashlib, json
-            root=Path.cwd(); out=Path(__import__('sys').argv[1])
-            lines=[]
-            def add(x): lines.append(x)
-            def read(p):
-                q=root/p
-                return q.read_text(errors='replace') if q.exists() else ''
-            def fetch(url):
-                req=urllib.request.Request(url,headers={'User-Agent':'LG-Velvet-G900-Compat-Census/1.0'})
-                with urllib.request.urlopen(req,timeout=20) as r: return r.read().decode('utf-8','replace')
-            add('RESEARCH_FIRST_CENSUS=1')
-            add('KERNEL_TARGET=4.19.325-CIP135')
-            checks={
-             'task_work':'drivers/kernelsu/policy/allowlist.c',
-             'seccomp':'drivers/kernelsu/policy/app_profile.c',
-             'selinux_rules':'drivers/kernelsu/selinux/rules.c',
-             'selinux_sepolicy':'drivers/kernelsu/selinux/sepolicy.c',
-             'sulog_event':'drivers/kernelsu/sulog/event.c',
-             'file_wrapper':'drivers/kernelsu/infra/file_wrapper.c',
-            }
-            for name,p in checks.items():
-                t=read(p)
-                add(f'LOCAL {name} bytes={len(t)}')
-                if name=='selinux_rules':
-                    for x in ['selinux_state.policy','selinux_state.policy_mutex','struct selinux_policy','SELINUX_POLICY_INSTEAD_SELINUX_SS']:
-                        add(f'  {x}={t.count(x)}')
-                if name=='selinux_sepolicy':
-                    for x in ['type_val_to_struct','type_attr_map_array','filename_trans_key','compat_filename_trans_count']:
-                        add(f'  {x}={t.count(x)}')
-                if name=='sulog_event': add(f'  linux/minmax.h={t.count("<linux/minmax.h>")} min_t={t.count("min_t")}')
-            # Authoritative 4.19 facts used by the census.
-            refs={
-             'security.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/include/security.h',
-             'services.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/ss/services.h',
-             'policydb.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/ss/policydb.h',
-             'task_work.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/task_work.h',
-            }
-            for n,u in refs.items():
-                try:
-                    t=fetch(u); (root/'autofix'/'evidence'/('census_'+n)).write_text(t)
-                    add(f'AUTH {n} sha256={hashlib.sha256(t.encode()).hexdigest()} bytes={len(t)}')
-                except Exception as e: add(f'AUTH-FAIL {n}: {e}')
-            # Explicit conclusion: SELinux is a compatibility family, not a one-symbol fix.
-            r=read('drivers/kernelsu/selinux/rules.c')
-            p=read('drivers/kernelsu/selinux/sepolicy.c')
-            if 'selinux_state.policy' in r and 'struct selinux_policy' in r and 'selinux_state.policy_mutex' in r:
-                add('SELINUX_419_FAMILY=DETECTED')
-                add('SELINUX_419_ACTION=DEFER_TO_ADAPTIVE_RESEARCH_NO_SPECULATIVE_PATCH')
-            if '<linux/minmax.h>' in read('drivers/kernelsu/sulog/event.c'):
-                add('SULOG_MINMAX=DETECTED')
-            add('RULE=Never replace an ABI/struct layout merely to silence a compiler error.')
-            out.write_text('\n'.join(lines)+'\n')
+          from pathlib import Path
+          import re, urllib.request, hashlib, json
+          root=Path.cwd(); out=Path(__import__('sys').argv[1])
+          lines=[]
+          def add(x): lines.append(x)
+          def read(p):
+              q=root/p
+              return q.read_text(errors='replace') if q.exists() else ''
+          def fetch(url):
+              req=urllib.request.Request(url,headers={'User-Agent':'LG-Velvet-G900-Compat-Census/1.0'})
+              with urllib.request.urlopen(req,timeout=20) as r: return r.read().decode('utf-8','replace')
+          add('RESEARCH_FIRST_CENSUS=1')
+          add('KERNEL_TARGET=4.19.325-CIP135')
+          checks={
+           'task_work':'drivers/kernelsu/policy/allowlist.c',
+           'seccomp':'drivers/kernelsu/policy/app_profile.c',
+           'selinux_rules':'drivers/kernelsu/selinux/rules.c',
+           'selinux_sepolicy':'drivers/kernelsu/selinux/sepolicy.c',
+           'sulog_event':'drivers/kernelsu/sulog/event.c',
+           'file_wrapper':'drivers/kernelsu/infra/file_wrapper.c',
+          }
+          for name,p in checks.items():
+              t=read(p)
+              add(f'LOCAL {name} bytes={len(t)}')
+              if name=='selinux_rules':
+                  for x in ['selinux_state.policy','selinux_state.policy_mutex','struct selinux_policy','SELINUX_POLICY_INSTEAD_SELINUX_SS']:
+                      add(f'  {x}={t.count(x)}')
+              if name=='selinux_sepolicy':
+                  for x in ['type_val_to_struct','type_attr_map_array','filename_trans_key','compat_filename_trans_count']:
+                      add(f'  {x}={t.count(x)}')
+              if name=='sulog_event': add(f'  linux/minmax.h={t.count("<linux/minmax.h>")} min_t={t.count("min_t")}')
+          # Authoritative 4.19 facts used by the census.
+          refs={
+           'security.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/include/security.h',
+           'services.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/ss/services.h',
+           'policydb.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/security/selinux/ss/policydb.h',
+           'task_work.h':'https://raw.githubusercontent.com/torvalds/linux/v4.19/include/linux/task_work.h',
+          }
+          for n,u in refs.items():
+              try:
+                  t=fetch(u); (root/'autofix'/'evidence'/('census_'+n)).write_text(t)
+                  add(f'AUTH {n} sha256={hashlib.sha256(t.encode()).hexdigest()} bytes={len(t)}')
+              except Exception as e: add(f'AUTH-FAIL {n}: {e}')
+          # Explicit conclusion: SELinux is a compatibility family, not a one-symbol fix.
+          r=read('drivers/kernelsu/selinux/rules.c')
+          p=read('drivers/kernelsu/selinux/sepolicy.c')
+          if 'selinux_state.policy' in r and 'struct selinux_policy' in r and 'selinux_state.policy_mutex' in r:
+              add('SELINUX_419_FAMILY=DETECTED')
+              add('SELINUX_419_ACTION=DEFER_TO_ADAPTIVE_RESEARCH_NO_SPECULATIVE_PATCH')
+          if '<linux/minmax.h>' in read('drivers/kernelsu/sulog/event.c'):
+              add('SULOG_MINMAX=DETECTED')
+          add('RULE=Never replace an ABI/struct layout merely to silence a compiler error.')
+          out.write_text('\n'.join(lines)+'\n')
           PY_CENSUS
 
             for iteration in $(seq 1 "$MAX_AUTOFIX"); do
@@ -2328,6 +2394,7 @@ jobs:
           name: LG-Velvet-G900-V32.1-KPM-Safe-AutoFix-Diagnostics
           path: |
             ci-logs/10A-kpm-preflight.log
+            ci-logs/10A-0-task-work-compatibility.log
             ci-logs/autofix/
           if-no-files-found: warn
           retention-days: 14
