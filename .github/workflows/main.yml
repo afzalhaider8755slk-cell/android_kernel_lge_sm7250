@@ -1163,11 +1163,19 @@ jobs:
           exit "$STATUS"
 
       - name: 10A - KPM Compatibility Preflight (v4.2.0 Kbuild)
+        id: kpm_preflight
+        continue-on-error: true
         shell: bash
         run: |
+          # Diagnostic-only gate: this step must not hide the authoritative
+          # full-kernel compiler result. Every probe failure is logged with the
+          # exact command/line, then the real build is allowed to run.
           set -euo pipefail
           LOG="$DIAG_DIR/10A-kpm-preflight.log"
           : > "$LOG"
+          # Preserve fail-fast safety inside the preflight, but never let this
+          # diagnostic step suppress the real compiler run (continue-on-error).
+          trap 'rc=$?; echo "[PREFLIGHT-ERR] rc=$rc line=$LINENO cmd=$BASH_COMMAND" >> "$LOG"' ERR
           {
             echo "========== SUKISU v4.2.0 KPM PREFLIGHT =========="
             test -d KernelSU/kernel/kpm
@@ -2308,6 +2316,9 @@ jobs:
 
             echo "[PASS] SukiSU v4.2.0 + KPM subtree preflight compiled."
           } > "$LOG" 2>&1
+          STATUS=$?
+          echo "PREFLIGHT_GROUP_STATUS=$STATUS" >> "$LOG"
+          echo "PREFLIGHT_POLICY=diagnostic-only; authoritative full build must run" >> "$LOG"
           cat "$LOG"
 
       - name: 10A-A - Upload Safe Auto-Fix Diagnostics
