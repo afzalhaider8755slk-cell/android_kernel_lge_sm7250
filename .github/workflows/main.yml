@@ -1654,256 +1654,34 @@ jobs:
           set -Eeuo pipefail
           LOG="$DIAG_DIR/10A-manual-compatibility-fixes.log"
           : > "$LOG"
-          trap 'rc=$?; echo "[FAIL] 10A manual compatibility step failed: rc=$rc line=$LINENO cmd=$BASH_COMMAND" >> "$LOG"; exit $rc' ERR
-          {
-            echo "========== MANUAL 4.19 COMPATIBILITY FIXES =========="
-            echo "Auto-Fix: DISABLED"
-            echo "Scope: previously verified compatibility fixes only"
-            echo "SELinux current-error mutation: DISABLED pending exact compiler diagnostic"
-
-            # 1) Previously verified: SukiSU task_work API on Linux 4.19 uses bool notify.
-            FILE="drivers/kernelsu/policy/allowlist.c"
-            test -f "$FILE"
-            python3 - "$FILE" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1]); s=p.read_text()
-          old='task_work_add(tsk, cb, TWA_RESUME)'
-          new='task_work_add(tsk, cb, true)'
-          if old in s:
-              if s.count(old) != 1:
-                  raise SystemExit('TWA_RESUME occurs more than once; refusing broad edit')
-              s=s.replace(old,new,1)
-          if new not in s:
-              raise SystemExit('Verified TWA_RESUME -> true form not present')
-          if '#include <linux/sched/task.h>' not in s:
-              s='#include <linux/sched/task.h>\n'+s
-          p.write_text(s)
-          PY
-            echo "[PASS] TWA_RESUME -> true + sched/task.h"
-
-            # 2) Previously verified: SukiSU v4.2.0 uses seccomp.filter_count.
-            SEC="include/linux/seccomp.h"
-            APP="drivers/kernelsu/policy/app_profile.c"
-            test -f "$SEC"; test -f "$APP"
-            grep -q 'atomic_set(&current->seccomp.filter_count, 0)' "$APP"
-            python3 - "$SEC" <<'PY'
-          from pathlib import Path
-          import sys,re
-          p=Path(sys.argv[1]); s=p.read_text()
-          if 'atomic_t filter_count;' in s:
-              print('[PASS] seccomp.filter_count already present')
-          else:
-              pat=r'(^\s*int\s+mode\s*;\n)'
-              if not re.search(pat,s,re.M): raise SystemExit('seccomp struct mode field not found')
-              s=re.sub(pat,r'\1\tatomic_t filter_count;\n',s,count=1,flags=re.M)
-              p.write_text(s)
-              print('[FIXED] atomic_t filter_count added after int mode')
-          PY
-            grep -q 'atomic_t filter_count;' "$SEC"
-            echo "[PASS] seccomp.filter_count compatibility"
-
-            # 3) Previously verified: this 4.19 tree provides min_t through kernel.h.
-            SULOG="drivers/kernelsu/sulog/event.c"
-            test -f "$SULOG"
-            python3 - "$SULOG" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1]); s=p.read_text()
-          old='#include <linux/minmax.h>'
-          if old in s:
-              s=s.replace(old,'#include <linux/kernel.h>',1)
-              p.write_text(s)
-              print('[FIXED] linux/minmax.h -> linux/kernel.h for existing min_t usage')
-          elif 'min_t' in s and '#include <linux/kernel.h>' in s:
-              print('[PASS] sulog min_t compatibility already present')
-          else:
-              raise SystemExit('Unexpected sulog min_t include state')
-          PY
-            echo "[PASS] sulog min_t include compatibility"
-
-            # 4) EXACT CURRENT ERROR FIX: SukiSU rules.c is using the modern
-            #    selinux_state.policy/policy_mutex representation, but this LG
-            #    lineage-23.2 kernel is Linux 4.19 and exposes policy through
-            #    selinux_state.ss->policydb guarded by ss->policy_rwlock.
-            #    Exact build diagnostics: rules.c:47+ reports missing policy,
-            #    missing policy_mutex, and incomplete struct selinux_policy.
-            #    Authoritative LG 4.19 headers confirm the ss-based layout.
-            RULES="drivers/kernelsu/selinux/rules.c"
-            test -f "$RULES"
-            python3 - "$RULES" <<'PY'
-            from pathlib import Path
-            import sys
-            p=Path(sys.argv[1]); s=p.read_text()
-            anchor='struct selinux_policy *backup_sepolicy;\n'
-            if 'struct selinux_policy {\n    struct policydb policydb;\n};' not in s:
-                if anchor not in s: raise SystemExit('rules.c policy anchor missing')
-                s=s.replace(anchor, anchor+'struct selinux_policy {\n    struct policydb policydb;\n};\n',1)
-            s=s.replace('#define SELINUX_POLICY_INSTEAD_SELINUX_SS\n\n','',1)
-            def end_func(text,pos):
-                b=text.index('{',pos); d=0
-                for i in range(b,len(text)):
-                    if text[i]=='{': d+=1
-                    elif text[i]=='}':
-                        d-=1
-                        if d==0: return i+1
-                raise SystemExit('function brace mismatch')
-            a=s.index('void apply_kernelsu_rules()'); ae=end_func(s,a)
-            h=s.index('int handle_sepolicy(void __user *user_data, u64 data_len)'); he=end_func(s,h)
-            apply=r'''void apply_kernelsu_rules()
-            {
-            struct selinux_ss *ss = selinux_state.ss;
-            struct selinux_policy live = { 0 };
-            struct selinux_policy *pol;
-            if (!ss) {
-            pr_err("SELinux ss is unavailable, cannot apply KernelSU rules!\n");
-            return;
-            }
-            if (!getenforce())
-            pr_info("SELinux permissive or disabled, apply rules!\n");
-            write_lock(&ss->policy_rwlock);
-            live.policydb = ss->policydb;
-            backup_sepolicy = ksu_dup_sepolicy(&live);
-            if (IS_ERR(backup_sepolicy)) {
-            pr_err("failed to create backup sepolicy: %ld\n", PTR_ERR(backup_sepolicy));
-            backup_sepolicy = NULL;
-            }
-            pol = ksu_dup_sepolicy(&live);
-            if (IS_ERR(pol)) {
-            pr_err("failed to dup selinux policy: %ld\n", PTR_ERR(pol));
-            write_unlock(&ss->policy_rwlock);
-            return;
-            }
-            ksu_type(&pol->policydb, KERNEL_SU_DOMAIN, "domain");
-            ksu_permissive(&pol->policydb, KERNEL_SU_DOMAIN);
-            ksu_typeattribute(&pol->policydb, KERNEL_SU_DOMAIN, "mlstrustedsubject");
-            ksu_typeattribute(&pol->policydb, KERNEL_SU_DOMAIN, "netdomain");
-            ksu_typeattribute(&pol->policydb, KERNEL_SU_DOMAIN, "bluetoothdomain");
-            ksu_type(&pol->policydb, KERNEL_SU_FILE, "file_type");
-            ksu_typeattribute(&pol->policydb, KERNEL_SU_FILE, "mlstrustedobject");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_FILE, ALL, ALL);
-            ksu_allow(&pol->policydb, KERNEL_SU_DOMAIN, ALL, ALL, ALL);
-            if (pol->policydb.policyvers >= POLICYDB_VERSION_XPERMS_IOCTL) {
-            ksu_allowxperm(&pol->policydb, KERNEL_SU_DOMAIN, ALL, "blk_file", ALL);
-            ksu_allowxperm(&pol->policydb, KERNEL_SU_DOMAIN, ALL, "fifo_file", ALL);
-            ksu_allowxperm(&pol->policydb, KERNEL_SU_DOMAIN, ALL, "chr_file", ALL);
-            ksu_allowxperm(&pol->policydb, KERNEL_SU_DOMAIN, ALL, "file", ALL);
-            }
-            ksu_allow(&pol->policydb, "init", KERNEL_SU_DOMAIN, ALL, ALL);
-            ksu_allow(&pol->policydb, "servicemanager", KERNEL_SU_DOMAIN, "dir", "search");
-            ksu_allow(&pol->policydb, "servicemanager", KERNEL_SU_DOMAIN, "dir", "read");
-            ksu_allow(&pol->policydb, "servicemanager", KERNEL_SU_DOMAIN, "file", "open");
-            ksu_allow(&pol->policydb, "servicemanager", KERNEL_SU_DOMAIN, "file", "read");
-            ksu_allow(&pol->policydb, "servicemanager", KERNEL_SU_DOMAIN, "process", "getattr");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "process", "sigchld");
-            ksu_allow(&pol->policydb, "logd", KERNEL_SU_DOMAIN, "dir", "search");
-            ksu_allow(&pol->policydb, "logd", KERNEL_SU_DOMAIN, "file", "read");
-            ksu_allow(&pol->policydb, "logd", KERNEL_SU_DOMAIN, "file", "open");
-            ksu_allow(&pol->policydb, "logd", KERNEL_SU_DOMAIN, "file", "getattr");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "fd", "use");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "fifo_file", "write");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "fifo_file", "read");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "fifo_file", "open");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "fifo_file", "getattr");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "read");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "write");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "connectto");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "getopt");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "getattr");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "memfd_file", "execute");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "memfd_file", "getattr");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "memfd_file", "map");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "memfd_file", "read");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "memfd_file", "write");
-            ksu_allow(&pol->policydb, "hwservicemanager", KERNEL_SU_DOMAIN, "dir", "search");
-            ksu_allow(&pol->policydb, "hwservicemanager", KERNEL_SU_DOMAIN, "file", "read");
-            ksu_allow(&pol->policydb, "hwservicemanager", KERNEL_SU_DOMAIN, "file", "open");
-            ksu_allow(&pol->policydb, "hwservicemanager", KERNEL_SU_DOMAIN, "process", "getattr");
-            ksu_allow(&pol->policydb, "domain", KERNEL_SU_DOMAIN, "binder", ALL);
-            ksu_allow(&pol->policydb, "system_server", KERNEL_SU_DOMAIN, "process", "getpgid");
-            ksu_allow(&pol->policydb, "system_server", KERNEL_SU_DOMAIN, "process", "sigkill");
-            policydb_destroy(&ss->policydb);
-            ss->policydb = pol->policydb;
-            memset(&pol->policydb, 0, sizeof(pol->policydb));
-            kfree(pol);
-            write_unlock(&ss->policy_rwlock);
-            reset_avc_cache();
-            }'''
-            handle=r'''int handle_sepolicy(void __user *user_data, u64 data_len)
-            {
-            struct selinux_ss *ss = selinux_state.ss;
-            struct selinux_policy live = { 0 };
-            struct selinux_policy *pol;
-            struct sepol_batch_cursor cursor;
-            u8 *payload;
-            int ret;
-            int success_cmd_count;
-            u32 cmd_index;
-            if (!ss || !user_data || !data_len) return -EINVAL;
-            if (data_len > KSU_SEPOLICY_MAX_BATCH_SIZE) return -E2BIG;
-            payload = kvmalloc((size_t)data_len, GFP_KERNEL);
-            if (!payload) return -ENOMEM;
-            if (copy_from_user(payload, user_data, (size_t)data_len)) { kvfree(payload); return -EFAULT; }
-            write_lock(&ss->policy_rwlock);
-            live.policydb = ss->policydb;
-            pol = ksu_dup_sepolicy(&live);
-            if (IS_ERR(pol)) { ret = PTR_ERR(pol); write_unlock(&ss->policy_rwlock); kvfree(payload); return ret; }
-            cursor.cur = payload; cursor.end = payload + (size_t)data_len;
-            ret = 0; success_cmd_count = 0; cmd_index = 0;
-            while (cursor.cur < cursor.end) {
-            struct sepol_data header;
-            const char *args[KSU_SEPOLICY_MAX_ARGS] = { 0 };
-            int expected_argc; u32 arg_index;
-            ret = sepol_read_cmd_header(&cursor, &header);
-            if (ret < 0) goto out_drop_new_policy;
-            expected_argc = sepol_expected_argc(header.cmd);
-            if (expected_argc < 0 || expected_argc > KSU_SEPOLICY_MAX_ARGS) { ret = -EINVAL; goto out_drop_new_policy; }
-            for (arg_index = 0; arg_index < (u32)expected_argc; arg_index++) {
-              ret = sepol_read_string(&cursor, &args[arg_index]);
-              if (ret < 0) goto out_drop_new_policy;
-            }
-            ret = apply_one_sepolicy_cmd(&pol->policydb, &header, args);
-            if (ret < 0) pr_err("sepol: cmd #%u failed, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
-            else success_cmd_count++;
-            cmd_index++;
-            }
-            policydb_destroy(&ss->policydb);
-            ss->policydb = pol->policydb;
-            memset(&pol->policydb, 0, sizeof(pol->policydb));
-            kfree(pol);
-            write_unlock(&ss->policy_rwlock);
-            reset_avc_cache();
-            kvfree(payload);
-            return success_cmd_count;
-            out_drop_new_policy:
-            ksu_destroy_sepolicy(pol);
-            write_unlock(&ss->policy_rwlock);
-            kvfree(payload);
-            return ret;
-            }'''
-            s=s[:a]+apply+s[ae:]
-            h=s.index('int handle_sepolicy(void __user *user_data, u64 data_len)'); he=end_func(s,h)
-            s=s[:h]+handle+s[he:]
-            p.write_text(s)
-            PY
-            if grep -qF 'selinux_state.policy' "$RULES" || grep -qF 'selinux_state.policy_mutex' "$RULES"; then
-              echo "[FAIL] modern selinux_state.policy/policy_mutex references remain in rules.c"; exit 1
-            fi
-            grep -qF 'struct selinux_ss *ss = selinux_state.ss;' "$RULES"
-            grep -qF 'write_lock(&ss->policy_rwlock);' "$RULES"
-            grep -qF 'policydb_destroy(&ss->policydb);' "$RULES"
-            echo "[PASS] Exact rules.c 4.19 SELinux compatibility fix applied and audited."
-            echo
-            echo "========== FIX SCOPE =========="
-            echo "[UNCHANGED] SukiSU-Ultra 4.2.0 / KPM / SUSFS / Baseband-Guard / Maphide / Full LTO"
-            echo "[UNCHANGED] Fingerprint / vibration / Dual-SIM-RIL / audio / IMS / VoWiFi requirements"
-            echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
-            echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
-            echo "[DISABLED] Speculative SELinux backend edits"
-            echo "[PASS] Manual compatibility patch set complete."
-          } > "$LOG" 2>&1
-          cat "$LOG"
-
+          exec > >(tee -a "$LOG") 2>&1
+          trap 'rc=$?; echo "[FAIL] 10A manual compatibility step failed: rc=$rc line=$LINENO cmd=$BASH_COMMAND"; exit $rc' ERR
+          echo "========== MANUAL 4.19 COMPATIBILITY FIXES =========="
+          echo "Auto-Fix: DISABLED"
+          echo "Scope: previously verified compatibility fixes + exact researched SELinux 4.19 adaptation"
+          echo "Execution mode: external temporary Python scripts; NO heredoc parser dependency"
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKcCA9IFBhdGgoc3lzLmFyZ3ZbMV0pOyBzID0gcC5yZWFkX3RleHQoKQpzID0gcy5yZXBsYWNlKCcjZGVmaW5lIFNFTElOVVhfUE9MSUNZX0lOU1RFQURfU0VMSU5VWF9TU1xuJywgJycsIDEpCmRlZiBmaW5kX2Z1bmModGV4dCwgc2lnbmF0dXJlKToKICAgIHBvcyA9IHRleHQuaW5kZXgoc2lnbmF0dXJlKTsgYnJhY2U9dGV4dC5pbmRleCgneycscG9zKTsgZGVwdGg9MAogICAgZm9yIGkgaW4gcmFuZ2UoYnJhY2UsbGVuKHRleHQpKToKICAgICAgICBpZiB0ZXh0W2ldPT0neyc6IGRlcHRoKz0xCiAgICAgICAgZWxpZiB0ZXh0W2ldPT0nfSc6CiAgICAgICAgICAgIGRlcHRoLT0xCiAgICAgICAgICAgIGlmIGRlcHRoPT0wOnJldHVybiBwb3MsaSsxCiAgICByYWlzZSBTeXN0ZW1FeGl0KCdmdW5jdGlvbiBicmFjZSBtaXNtYXRjaDogJytzaWduYXR1cmUpCmEsYWU9ZmluZF9mdW5jKHMsJ3ZvaWQgYXBwbHlfa2VybmVsc3VfcnVsZXMoKScpCmgsaGU9ZmluZF9mdW5jKHMsJ2ludCBoYW5kbGVfc2Vwb2xpY3kodm9pZCBfX3VzZXIgKnVzZXJfZGF0YSwgdTY0IGRhdGFfbGVuKScpCmFwcGx5PXInJyd2b2lkIGFwcGx5X2tlcm5lbHN1X3J1bGVzKCkKewogICAgc3RydWN0IHNlbGludXhfc3MgKnNzID0gc2VsaW51eF9zdGF0ZS5zczsKICAgIHN0cnVjdCBzZWxpbnV4X3BvbGljeSBsaXZlID0geyAwIH07CiAgICBzdHJ1Y3Qgc2VsaW51eF9wb2xpY3kgKnBvbDsKICAgIHN0cnVjdCBwb2xpY3lkYiBvbGRfcG9saWN5ZGI7CgogICAgaWYgKCFzcykgewogICAgICAgIHByX2VycigiU0VMaW51eCBzcyBpcyB1bmF2YWlsYWJsZSwgY2Fubm90IGFwcGx5IEtlcm5lbFNVIHJ1bGVzIVxuIik7CiAgICAgICAgcmV0dXJuOwogICAgfQogICAgaWYgKCFnZXRlbmZvcmNlKCkpCiAgICAgICAgcHJfaW5mbygiU0VMaW51eCBwZXJtaXNzaXZlIG9yIGRpc2FibGVkLCBhcHBseSBydWxlcyFcbiIpOwoKICAgIGxpdmUucG9saWN5ZGIgPSBzcy0+cG9saWN5ZGI7CiAgICB3cml0ZV9sb2NrKCZzcy0+cG9saWN5X3J3bG9jayk7CgogICAgYmFja3VwX3NlcG9saWN5ID0ga3N1X2R1cF9zZXBvbGljeSgmbGl2ZSk7CiAgICBpZiAoSVNfRVJSKGJhY2t1cF9zZXBvbGljeSkpIHsKICAgICAgICBwcl9lcnIoImZhaWxlZCB0byBjcmVhdGUgYmFja3VwIHNlcG9saWN5OiAlbGRcbiIsIFBUUl9FUlIoYmFja3VwX3NlcG9saWN5KSk7CiAgICAgICAgYmFja3VwX3NlcG9saWN5ID0gTlVMTDsKICAgIH0KCiAgICBwb2wgPSBrc3VfZHVwX3NlcG9saWN5KCZsaXZlKTsKICAgIGlmIChJU19FUlIocG9sKSkgewogICAgICAgIHByX2VycigiZmFpbGVkIHRvIGR1cCBzZWxpbnV4IHBvbGljeTogJWxkXG4iLCBQVFJfRVJSKHBvbCkpOwogICAgICAgIHdyaXRlX3VubG9jaygmc3MtPnBvbGljeV9yd2xvY2spOwogICAgICAgIHJldHVybjsKICAgIH0KCiAgICBrc3VfdHlwZSgmcG9sLT5wb2xpY3lkYiwgS0VSTkVMX1NVX0RPTUFJTiwgImRvbWFpbiIpOwogICAga3N1X3Blcm1pc3NpdmUoJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4pOwogICAga3N1X3R5cGVhdHRyaWJ1dGUoJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4sICJtbHN0cnVzdGVkc3ViamVjdCIpOwogICAga3N1X3R5cGVhdHRyaWJ1dGUoJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4sICJuZXRkb21haW4iKTsKICAgIGtzdV90eXBlYXR0cmlidXRlKCZwb2wtPnBvbGljeWRiLCBLRVJORUxfU1VfRE9NQUlOLCAiYmx1ZXRvb3RoZG9tYWluIik7CiAgICBrc3VfdHlwZSgmcG9sLT5wb2xpY3lkYiwgS0VSTkVMX1NVX0ZJTEUsICJmaWxlX3R5cGUiKTsKICAgIGtzdV90eXBlYXR0cmlidXRlKCZwb2wtPnBvbGljeWRiLCBLRVJORUxfU1VfRklMRSwgIm1sc3RydXN0ZWRvYmplY3QiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImRvbWFpbiIsIEtFUk5FTF9TVV9GSUxFLCBBTEwsIEFMTCk7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4sIEFMTCwgQUxMLCBBTEwpOwogICAgaWYgKHBvbC0+cG9saWN5ZGIucG9saWN5dmVycyA+PSBQT0xJQ1lEQl9WRVJTSU9OX1hQRVJNU19JT0NUTCkgewogICAgICAgIGtzdV9hbGxvd3hwZXJtKCZwb2wtPnBvbGljeWRiLCBLRVJORUxfU1VfRE9NQUlOLCBBTEwsICJibGtfZmlsZSIsIEFMTCk7CiAgICAgICAga3N1X2FsbG93eHBlcm0oJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4sIEFMTCwgImZpZm9fZmlsZSIsIEFMTCk7CiAgICAgICAga3N1X2FsbG93eHBlcm0oJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4sIEFMTCwgImNocl9maWxlIiwgQUxMKTsKICAgICAgICBrc3VfYWxsb3d4cGVybSgmcG9sLT5wb2xpY3lkYiwgS0VSTkVMX1NVX0RPTUFJTiwgQUxMLCAiZmlsZSIsIEFMTCk7CiAgICB9CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJpbml0IiwgS0VSTkVMX1NVX0RPTUFJTiwgQUxMLCBBTEwpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAic2VydmljZW1hbmFnZXIiLCBLRVJORUxfU1VfRE9NQUlOLCAiZGlyIiwgInNlYXJjaCIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAic2VydmljZW1hbmFnZXIiLCBLRVJORUxfU1VfRE9NQUlOLCAiZGlyIiwgInJlYWQiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgInNlcnZpY2VtYW5hZ2VyIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZpbGUiLCAib3BlbiIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAic2VydmljZW1hbmFnZXIiLCBLRVJORUxfU1VfRE9NQUlOLCAiZmlsZSIsICJyZWFkIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJzZXJ2aWNlbWFuYWdlciIsIEtFUk5FTF9TVV9ET01BSU4sICJwcm9jZXNzIiwgImdldGF0dHIiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImRvbWFpbiIsIEtFUk5FTF9TVV9ET01BSU4sICJwcm9jZXNzIiwgInNpZ2NobGQiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImxvZ2QiLCBLRVJORUxfU1VfRE9NQUlOLCAiZGlyIiwgInNlYXJjaCIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAibG9nZCIsIEtFUk5FTF9TVV9ET01BSU4sICJmaWxlIiwgInJlYWQiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImxvZ2QiLCBLRVJORUxfU1VfRE9NQUlOLCAiZmlsZSIsICJvcGVuIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJsb2dkIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZpbGUiLCAiZ2V0YXR0ciIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZkIiwgInVzZSIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZpZm9fZmlsZSIsICJ3cml0ZSIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZpZm9fZmlsZSIsICJyZWFkIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAiZmlmb19maWxlIiwgIm9wZW4iKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImRvbWFpbiIsIEtFUk5FTF9TVV9ET01BSU4sICJmaWZvX2ZpbGUiLCAiZ2V0YXR0ciIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgInVuaXhfc3RyZWFtX3NvY2tldCIsICJyZWFkIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAidW5peF9zdHJlYW1fc29ja2V0IiwgIndyaXRlIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAidW5peF9zdHJlYW1fc29ja2V0IiwgImNvbm5lY3R0byIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgInVuaXhfc3RyZWFtX3NvY2tldCIsICJnZXRvcHQiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImRvbWFpbiIsIEtFUk5FTF9TVV9ET01BSU4sICJ1bml4X3N0cmVhbV9zb2NrZXQiLCAiZ2V0YXR0ciIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgIm1lbWZkX2ZpbGUiLCAiZXhlY3V0ZSIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgIm1lbWZkX2ZpbGUiLCAiZ2V0YXR0ciIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgIm1lbWZkX2ZpbGUiLCAibWFwIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAibWVtZmRfZmlsZSIsICJyZWFkIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAibWVtZmRfZmlsZSIsICJ3cml0ZSIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiaHdzZXJ2aWNlbWFuYWdlciIsIEtFUk5FTF9TVV9ET01BSU4sICJkaXIiLCAic2VhcmNoIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJod3NlcnZpY2VtYW5hZ2VyIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZpbGUiLCAicmVhZCIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiaHdzZXJ2aWNlbWFuYWdlciIsIEtFUk5FTF9TVV9ET01BSU4sICJmaWxlIiwgIm9wZW4iKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImh3c2VydmljZW1hbmFnZXIiLCBLRVJORUxfU1VfRE9NQUlOLCAicHJvY2VzcyIsICJnZXRhdHRyIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAiYmluZGVyIiwgQUxMKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgInN5c3RlbV9zZXJ2ZXIiLCBLRVJORUxfU1VfRE9NQUlOLCAicHJvY2VzcyIsICJnZXRwZ2lkIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJzeXN0ZW1fc2VydmVyIiwgS0VSTkVMX1NVX0RPTUFJTiwgInByb2Nlc3MiLCAic2lna2lsbCIpOwoKICAgIG9sZF9wb2xpY3lkYiA9IHNzLT5wb2xpY3lkYjsKICAgIHNzLT5wb2xpY3lkYiA9IHBvbC0+cG9saWN5ZGI7CiAgICBtZW1zZXQoJnBvbC0+cG9saWN5ZGIsIDAsIHNpemVvZihwb2wtPnBvbGljeWRiKSk7CiAgICBzcy0+bGF0ZXN0X2dyYW50aW5nKys7CiAgICB3cml0ZV91bmxvY2soJnNzLT5wb2xpY3lfcndsb2NrKTsKCiAgICBwb2xpY3lkYl9kZXN0cm95KCZvbGRfcG9saWN5ZGIpOwogICAga2ZyZWUocG9sKTsKICAgIHJlc2V0X2F2Y19jYWNoZSgpOwp9CicnJwpoYW5kbGU9cicnJ2ludCBoYW5kbGVfc2Vwb2xpY3kodm9pZCBfX3VzZXIgKnVzZXJfZGF0YSwgdTY0IGRhdGFfbGVuKQp7CiAgICBzdHJ1Y3Qgc2VsaW51eF9zcyAqc3MgPSBzZWxpbnV4X3N0YXRlLnNzOwogICAgc3RydWN0IHNlbGludXhfcG9saWN5IGxpdmUgPSB7IDAgfTsKICAgIHN0cnVjdCBzZWxpbnV4X3BvbGljeSAqcG9sOwogICAgc3RydWN0IHBvbGljeWRiIG9sZF9wb2xpY3lkYjsKICAgIHN0cnVjdCBzZXBvbF9iYXRjaF9jdXJzb3IgY3Vyc29yOwogICAgdTggKnBheWxvYWQ7CiAgICBpbnQgcmV0OwogICAgaW50IHN1Y2Nlc3NfY21kX2NvdW50OwogICAgdTMyIGNtZF9pbmRleDsKCiAgICBpZiAoIXNzIHx8ICF1c2VyX2RhdGEgfHwgIWRhdGFfbGVuKSByZXR1cm4gLUVJTlZBTDsKICAgIGlmIChkYXRhX2xlbiA+IEtTVV9TRVBPTElDWV9NQVhfQkFUQ0hfU0laRSkgcmV0dXJuIC1FMkJJRzsKICAgIHBheWxvYWQgPSBrdm1hbGxvYygoc2l6ZV90KWRhdGFfbGVuLCBHRlBfS0VSTkVMKTsKICAgIGlmICghcGF5bG9hZCkgcmV0dXJuIC1FTk9NRU07CiAgICBpZiAoY29weV9mcm9tX3VzZXIocGF5bG9hZCwgdXNlcl9kYXRhLCAoc2l6ZV90KWRhdGFfbGVuKSkgewogICAgICAgIGt2ZnJlZShwYXlsb2FkKTsgcmV0dXJuIC1FRkFVTFQ7CiAgICB9CiAgICBpZiAoIWdldGVuZm9yY2UoKSkKICAgICAgICBwcl9pbmZvKCJTRUxpbnV4IHBlcm1pc3NpdmUgb3IgZGlzYWJsZWQgd2hlbiBoYW5kbGUgcG9saWN5IVxuIik7CgogICAgbGl2ZS5wb2xpY3lkYiA9IHNzLT5wb2xpY3lkYjsKICAgIHdyaXRlX2xvY2soJnNzLT5wb2xpY3lfcndsb2NrKTsKICAgIHBvbCA9IGtzdV9kdXBfc2Vwb2xpY3koJmxpdmUpOwogICAgaWYgKElTX0VSUihwb2wpKSB7CiAgICAgICAgcmV0ID0gUFRSX0VSUihwb2wpOwogICAgICAgIHdyaXRlX3VubG9jaygmc3MtPnBvbGljeV9yd2xvY2spOwogICAgICAgIGt2ZnJlZShwYXlsb2FkKTsKICAgICAgICByZXR1cm4gcmV0OwogICAgfQoKICAgIGN1cnNvci5jdXIgPSBwYXlsb2FkOwogICAgY3Vyc29yLmVuZCA9IHBheWxvYWQgKyAoc2l6ZV90KWRhdGFfbGVuOwogICAgcmV0ID0gMDsKICAgIHN1Y2Nlc3NfY21kX2NvdW50ID0gMDsKICAgIGNtZF9pbmRleCA9IDA7CiAgICB3aGlsZSAoY3Vyc29yLmN1ciA8IGN1cnNvci5lbmQpIHsKICAgICAgICBzdHJ1Y3Qgc2Vwb2xfZGF0YSBoZWFkZXI7CiAgICAgICAgY29uc3QgY2hhciAqYXJnc1tLU1VfU0VQT0xJQ1lfTUFYX0FSR1NdID0geyAwIH07CiAgICAgICAgaW50IGV4cGVjdGVkX2FyZ2M7CiAgICAgICAgdTMyIGFyZ19pbmRleDsKICAgICAgICByZXQgPSBzZXBvbF9yZWFkX2NtZF9oZWFkZXIoJmN1cnNvciwgJmhlYWRlcik7CiAgICAgICAgaWYgKHJldCA8IDApIGdvdG8gb3V0X2Ryb3BfbmV3X3BvbGljeTsKICAgICAgICBleHBlY3RlZF9hcmdjID0gc2Vwb2xfZXhwZWN0ZWRfYXJnYyhoZWFkZXIuY21kKTsKICAgICAgICBpZiAoZXhwZWN0ZWRfYXJnYyA8IDAgfHwgZXhwZWN0ZWRfYXJnYyA+IEtTVV9TRVBPTElDWV9NQVhfQVJHUykgewogICAgICAgICAgICByZXQgPSAtRUlOVkFMOyBnb3RvIG91dF9kcm9wX25ld19wb2xpY3k7CiAgICAgICAgfQogICAgICAgIGZvciAoYXJnX2luZGV4ID0gMDsgYXJnX2luZGV4IDwgKHUzMilleHBlY3RlZF9hcmdjOyBhcmdfaW5kZXgrKykgewogICAgICAgICAgICByZXQgPSBzZXBvbF9yZWFkX3N0cmluZygmY3Vyc29yLCAmYXJnc1thcmdfaW5kZXhdKTsKICAgICAgICAgICAgaWYgKHJldCA8IDApIGdvdG8gb3V0X2Ryb3BfbmV3X3BvbGljeTsKICAgICAgICB9CiAgICAgICAgcmV0ID0gYXBwbHlfb25lX3NlcG9saWN5X2NtZCgmcG9sLT5wb2xpY3lkYiwgJmhlYWRlciwgYXJncyk7CiAgICAgICAgaWYgKHJldCA8IDApCiAgICAgICAgICAgIHByX2Vycigic2Vwb2w6IGNtZCAjJXUgZmFpbGVkLCBjbWQ9JXUgc3ViY21kPSV1LlxuIiwgY21kX2luZGV4LCBoZWFkZXIuY21kLCBoZWFkZXIuc3ViY21kKTsKICAgICAgICBlbHNlCiAgICAgICAgICAgIHN1Y2Nlc3NfY21kX2NvdW50Kys7CiAgICAgICAgY21kX2luZGV4Kys7CiAgICB9CgogICAgb2xkX3BvbGljeWRiID0gc3MtPnBvbGljeWRiOwogICAgc3MtPnBvbGljeWRiID0gcG9sLT5wb2xpY3lkYjsKICAgIG1lbXNldCgmcG9sLT5wb2xpY3lkYiwgMCwgc2l6ZW9mKHBvbC0+cG9saWN5ZGIpKTsKICAgIHNzLT5sYXRlc3RfZ3JhbnRpbmcrKzsKICAgIHdyaXRlX3VubG9jaygmc3MtPnBvbGljeV9yd2xvY2spOwogICAgcG9saWN5ZGJfZGVzdHJveSgmb2xkX3BvbGljeWRiKTsKICAgIGtmcmVlKHBvbCk7CiAgICByZXNldF9hdmNfY2FjaGUoKTsKICAgIGt2ZnJlZShwYXlsb2FkKTsKICAgIHJldHVybiBzdWNjZXNzX2NtZF9jb3VudDsKCm91dF9kcm9wX25ld19wb2xpY3k6CiAgICBrc3VfZGVzdHJveV9zZXBvbGljeShwb2wpOwogICAgd3JpdGVfdW5sb2NrKCZzcy0+cG9saWN5X3J3bG9jayk7CiAgICBrdmZyZWUocGF5bG9hZCk7CiAgICByZXR1cm4gcmV0Owp9CicnJwpzPXNbOmFdK2FwcGx5K3NbYWU6XQpoLGhlPWZpbmRfZnVuYyhzLCdpbnQgaGFuZGxlX3NlcG9saWN5KHZvaWQgX191c2VyICp1c2VyX2RhdGEsIHU2NCBkYXRhX2xlbiknKQpzPXNbOmhdK2hhbmRsZStzW2hlOl0KcC53cml0ZV90ZXh0KHMpCg==' | base64 -d > "$RUNNER_TEMP/ksu_rules_fix.py"
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCByZSwgc3VicHJvY2Vzcywgc3lzCnJvb3QgPSBQYXRoLmN3ZCgpCgpkZWYgbXVzdChwKToKICAgIGlmIG5vdCBwLmlzX2ZpbGUoKTogcmFpc2UgU3lzdGVtRXhpdChmJ01JU1NJTkcgRklMRToge3B9JykKCmRlZiB3cml0ZV9pZihwYXRoLCBvbGQsIG5ldywgZGVzYyk6CiAgICBtdXN0KHBhdGgpOyBzPXBhdGgucmVhZF90ZXh0KCkKICAgIGlmIG9sZCBpbiBzOgogICAgICAgIGlmIHMuY291bnQob2xkKSE9MTogcmFpc2UgU3lzdGVtRXhpdChmJ3tkZXNjfTogZXhwZWN0ZWQgZXhhY3RseSBvbmUgbWF0Y2gsIGdvdCB7cy5jb3VudChvbGQpfScpCiAgICAgICAgcGF0aC53cml0ZV90ZXh0KHMucmVwbGFjZShvbGQsbmV3LDEpKTsgcHJpbnQoJ1tGSVhFRF0nLGRlc2MpCiAgICBlbGlmIG5ldyBpbiBzOgogICAgICAgIHByaW50KCdbUEFTU10nLGRlc2MpCiAgICBlbHNlOiByYWlzZSBTeXN0ZW1FeGl0KGYne2Rlc2N9OiBleHBlY3RlZCBzb3VyY2UgcGF0dGVybiBub3QgZm91bmQnKQoKIyAxIHZlcmlmaWVkIHRhc2tfd29yayBjb21wYXRpYmlsaXR5CmY9cm9vdC8nZHJpdmVycy9rZXJuZWxzdS9wb2xpY3kvYWxsb3dsaXN0LmMnOyBtdXN0KGYpOyBzPWYucmVhZF90ZXh0KCkKb2xkPSd0YXNrX3dvcmtfYWRkKHRzaywgY2IsIFRXQV9SRVNVTUUpJzsgbmV3PSd0YXNrX3dvcmtfYWRkKHRzaywgY2IsIHRydWUpJwppZiBvbGQgaW4gczoKICAgIGlmIHMuY291bnQob2xkKSE9MTogcmFpc2UgU3lzdGVtRXhpdCgnVFdBX1JFU1VNRSBvY2N1cnMgbW9yZSB0aGFuIG9uY2U7IHJlZnVzaW5nIGJyb2FkIGVkaXQnKQogICAgcz1zLnJlcGxhY2Uob2xkLG5ldywxKQppZiBuZXcgbm90IGluIHM6IHJhaXNlIFN5c3RlbUV4aXQoJ1ZlcmlmaWVkIFRXQV9SRVNVTUUgLT4gdHJ1ZSBmb3JtIG5vdCBwcmVzZW50JykKaWYgJyNpbmNsdWRlIDxsaW51eC9zY2hlZC90YXNrLmg+JyBub3QgaW4gczogcz0nI2luY2x1ZGUgPGxpbnV4L3NjaGVkL3Rhc2suaD5cbicrcwpmLndyaXRlX3RleHQocyk7IHByaW50KCdbUEFTU10gVFdBX1JFU1VNRSAtPiB0cnVlICsgc2NoZWQvdGFzay5oJykKCiMgMiB2ZXJpZmllZCBzZWNjb21wIGNvbXBhdGliaWxpdHkKc2VjPXJvb3QvJ2luY2x1ZGUvbGludXgvc2VjY29tcC5oJzsgYXBwPXJvb3QvJ2RyaXZlcnMva2VybmVsc3UvcG9saWN5L2FwcF9wcm9maWxlLmMnOyBtdXN0KHNlYyk7IG11c3QoYXBwKQppZiAnYXRvbWljX3NldCgmY3VycmVudC0+c2VjY29tcC5maWx0ZXJfY291bnQsIDApJyBub3QgaW4gYXBwLnJlYWRfdGV4dCgpOiByYWlzZSBTeXN0ZW1FeGl0KCdFeHBlY3RlZCBTdWtpU1UgZmlsdGVyX2NvdW50IHVzZSBub3QgZm91bmQnKQpzPXNlYy5yZWFkX3RleHQoKQppZiAnYXRvbWljX3QgZmlsdGVyX2NvdW50Oycgbm90IGluIHM6CiAgICBwYXQ9cicoXlxzKmludFxzK21vZGVccyo7XG4pJwogICAgaWYgbm90IHJlLnNlYXJjaChwYXQscyxyZS5NKTogcmFpc2UgU3lzdGVtRXhpdCgnc2VjY29tcCBzdHJ1Y3QgbW9kZSBmaWVsZCBub3QgZm91bmQnKQogICAgcz1yZS5zdWIocGF0LHInXDFcdGF0b21pY190IGZpbHRlcl9jb3VudDtcbicscyxjb3VudD0xLGZsYWdzPXJlLk0pOyBzZWMud3JpdGVfdGV4dChzKTsgcHJpbnQoJ1tGSVhFRF0gc2VjY29tcC5maWx0ZXJfY291bnQgY29tcGF0aWJpbGl0eScpCmVsc2U6IHByaW50KCdbUEFTU10gc2VjY29tcC5maWx0ZXJfY291bnQgY29tcGF0aWJpbGl0eScpCgojIDMgdmVyaWZpZWQgbWluX3QgaW5jbHVkZSBjb21wYXRpYmlsaXR5CnN1bG9nPXJvb3QvJ2RyaXZlcnMva2VybmVsc3Uvc3Vsb2cvZXZlbnQuYyc7IG11c3Qoc3Vsb2cpOyBzPXN1bG9nLnJlYWRfdGV4dCgpCmlmICcjaW5jbHVkZSA8bGludXgvbWlubWF4Lmg+JyBpbiBzOgogICAgc3Vsb2cud3JpdGVfdGV4dChzLnJlcGxhY2UoJyNpbmNsdWRlIDxsaW51eC9taW5tYXguaD4nLCcjaW5jbHVkZSA8bGludXgva2VybmVsLmg+JywxKSk7IHByaW50KCdbRklYRURdIHN1bG9nIG1pbl90IGluY2x1ZGUgY29tcGF0aWJpbGl0eScpCmVsaWYgJ21pbl90JyBpbiBzIGFuZCAnI2luY2x1ZGUgPGxpbnV4L2tlcm5lbC5oPicgaW4gczogcHJpbnQoJ1tQQVNTXSBzdWxvZyBtaW5fdCBpbmNsdWRlIGNvbXBhdGliaWxpdHknKQplbHNlOiByYWlzZSBTeXN0ZW1FeGl0KCdVbmV4cGVjdGVkIHN1bG9nIG1pbl90IGluY2x1ZGUgc3RhdGUnKQoKIyA0IENlbnRyYWwgNC4xOSBzZWxpbnV4X3BvbGljeSBjb21wYXRpYmlsaXR5IGRlZmluaXRpb246IHNlcG9saWN5LmMgYW5kIHJ1bGVzLmMKc2VoPXJvb3QvJ2RyaXZlcnMva2VybmVsc3Uvc2VsaW51eC9zZXBvbGljeS5oJzsgbXVzdChzZWgpOyBzPXNlaC5yZWFkX3RleHQoKQppZiAnc3RydWN0IHNlbGludXhfcG9saWN5IHsnIG5vdCBpbiBzOgogICAgbWFya2VyPScjaW5jbHVkZSAic3MvcG9saWN5ZGIuaCJcbicKICAgIGlmIG1hcmtlciBub3QgaW4gczogcmFpc2UgU3lzdGVtRXhpdCgnc2Vwb2xpY3kuaCBwb2xpY3lkYiBpbmNsdWRlIGFuY2hvciBtaXNzaW5nJykKICAgIGlucz1tYXJrZXIrJ1xuLyogTEcgTGludXggNC4xOTogU0VMaW51eCBwb2xpY3kgaXMgb3duZWQgYnkgc2VsaW51eF9zdGF0ZS5zcy5cbiAqIFN1a2lTVSBwb2xpY3kgaGVscGVycyBzdGlsbCB1c2UgdGhpcyBwcml2YXRlIHdyYXBwZXIgZm9yIHBvbGljeWRiIGNsb25pbmcuICovXG5zdHJ1Y3Qgc2VsaW51eF9wb2xpY3kge1xuICAgIHN0cnVjdCBwb2xpY3lkYiBwb2xpY3lkYjtcbn07XG4nCiAgICBzPXMucmVwbGFjZShtYXJrZXIsaW5zLDEpOyBzZWgud3JpdGVfdGV4dChzKTsgcHJpbnQoJ1tGSVhFRF0gY2VudHJhbCBzdHJ1Y3Qgc2VsaW51eF9wb2xpY3kgd3JhcHBlciBhZGRlZCB0byBzZXBvbGljeS5oJykKZWxzZTogcHJpbnQoJ1tQQVNTXSBjZW50cmFsIHN0cnVjdCBzZWxpbnV4X3BvbGljeSB3cmFwcGVyIGFscmVhZHkgcHJlc2VudCcpCgojIDUgZXhhY3QgU0VMaW51eCBiYWNrZW5kIGFkYXB0YXRpb24gaW4gcnVsZXMuYwpydWxlcz1yb290Lydkcml2ZXJzL2tlcm5lbHN1L3NlbGludXgvcnVsZXMuYyc7IG11c3QocnVsZXMpOyBzPXJ1bGVzLnJlYWRfdGV4dCgpCmlmICdzZWxpbnV4X3N0YXRlLnBvbGljeScgaW4gcyBvciAnc2VsaW51eF9zdGF0ZS5wb2xpY3lfbXV0ZXgnIGluIHM6CiAgICAjIFRoZSBkZWRpY2F0ZWQgcnVsZXMgdHJhbnNmb3JtZXIgcGVyZm9ybXMgb25seSB0aGUgdHdvIHBvbGljeSBmdW5jdGlvbnMuCiAgICBzdWJwcm9jZXNzLmNoZWNrX2NhbGwoW3N5cy5leGVjdXRhYmxlLCBzdHIoUGF0aCgnL3RtcC9rc3VfcnVsZXNfZml4LnB5JykpLCBzdHIocnVsZXMpXSkKICAgIHM9cnVsZXMucmVhZF90ZXh0KCkKZWxzZToKICAgIHByaW50KCdbUEFTU10gcnVsZXMuYyBoYXMgbm8gbW9kZXJuIHNlbGludXhfc3RhdGUucG9saWN5IHJlZmVyZW5jZXMnKQoKIyBBdWRpdCB0aGUgZXhhY3QgbGVnYWN5IGJhY2tlbmQgbWFya2Vycy4Kcz1ydWxlcy5yZWFkX3RleHQoKQppZiAnc2VsaW51eF9zdGF0ZS5wb2xpY3knIGluIHMgb3IgJ3NlbGludXhfc3RhdGUucG9saWN5X211dGV4JyBpbiBzOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnQVVESVQgRkFJTEVEOiBtb2Rlcm4gc2VsaW51eF9zdGF0ZS5wb2xpY3kvcG9saWN5X211dGV4IHJlZmVyZW5jZXMgcmVtYWluJykKZm9yIG1hcmtlciBpbiAoJ3N0cnVjdCBzZWxpbnV4X3NzICpzcyA9IHNlbGludXhfc3RhdGUuc3M7JywgJ3dyaXRlX2xvY2soJnNzLT5wb2xpY3lfcndsb2NrKTsnLCAnc3MtPnBvbGljeWRiID0gcG9sLT5wb2xpY3lkYjsnKToKICAgIGlmIG1hcmtlciBub3QgaW4gczogcmFpc2UgU3lzdGVtRXhpdCgnQVVESVQgRkFJTEVEOiBtaXNzaW5nICcrbWFya2VyKQpwcmludCgnW1BBU1NdIHJ1bGVzLmMgdXNlcyBMRyA0LjE5IHNzLT5wb2xpY3lkYiArIHBvbGljeV9yd2xvY2sgYmFja2VuZCcpCnByaW50KCdbUEFTU10gTWFudWFsIGNvbXBhdGliaWxpdHkgc2V0IGNvbXBsZXRlOyBubyBBdXRvLUZpeCBlbmdpbmUgb3Igc3BlY3VsYXRpdmUgZ2xvYmFsIGZsYWdzIHVzZWQnKQo=' | base64 -d > "$RUNNER_TEMP/manual_compat.py"
+          chmod 700 "$RUNNER_TEMP/ksu_rules_fix.py" "$RUNNER_TEMP/manual_compat.py"
+          cp -f "$RUNNER_TEMP/ksu_rules_fix.py" /tmp/ksu_rules_fix.py
+          python3 "$RUNNER_TEMP/manual_compat.py"
+          echo "========== POST-FIX AUDIT =========="
+          test -s "$LOG"
+          test -f drivers/kernelsu/selinux/sepolicy.h
+          test -f drivers/kernelsu/selinux/rules.c
+          if grep -nE 'selinux_state\.policy($|[^a-zA-Z_])|selinux_state\.policy_mutex' drivers/kernelsu/selinux/rules.c; then
+            echo "[FAIL] Modern SELinux policy backend references remain in rules.c"
+            exit 1
+          fi
+          grep -qF 'struct selinux_ss *ss = selinux_state.ss;' drivers/kernelsu/selinux/rules.c
+          grep -qF 'write_lock(&ss->policy_rwlock);' drivers/kernelsu/selinux/rules.c
+          grep -qF 'struct selinux_policy {' drivers/kernelsu/selinux/sepolicy.h
+          echo "[PASS] SELinux 4.19 source audit complete."
+          echo "[UNCHANGED] SukiSU-Ultra 4.2.0 / KPM / SUSFS / Baseband-Guard / Maphide / Full LTO"
+          echo "[UNCHANGED] Fingerprint / vibration / Dual-SIM-RIL / audio / IMS / VoWiFi requirements"
+          echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
+          echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
+          echo "[PASS] Manual compatibility patch set complete."
       - name: 10C - Final Source Integrity Audit
         shell: bash
         run: |
@@ -2699,6 +2477,13 @@ jobs:
             find . -maxdepth 4 -type f \(-name '*.log' -o -name 'Image' -o -name 'Image.gz' -o -name 'vmlinux' \) -printf '%p %s bytes\n' 2>/dev/null | sort || true
           } > diagnostic-artifact/runner-state/universal-failure-snapshot.txt 2>&1
 
+          printf '%s\n' "========== DIAGNOSTIC COLLECTION ==========" > diagnostic-artifact/runner-state/diagnostic-collection.log
+          date -u >> diagnostic-artifact/runner-state/diagnostic-collection.log
+          echo "Shell: ${BASH_VERSION:-unknown}" >> diagnostic-artifact/runner-state/diagnostic-collection.log
+          echo "diag_dir=$DIAG_DIR" >> diagnostic-artifact/runner-state/diagnostic-collection.log
+          echo "workspace=$GITHUB_WORKSPACE" >> diagnostic-artifact/runner-state/diagnostic-collection.log
+          echo "Existing CI logs:" >> diagnostic-artifact/runner-state/diagnostic-collection.log
+          find "$DIAG_DIR" -type f -printf '%p %s bytes\n' 2>/dev/null | sort >> diagnostic-artifact/runner-state/diagnostic-collection.log || true
           cp -f kernel-build-full.log diagnostic-artifact/12-build-full.log 2>/dev/null || true
           cp -f .config diagnostic-artifact/final.config 2>/dev/null || true
           cp -f "$GITHUB_STEP_SUMMARY" diagnostic-artifact/runner-state/github-step-summary.md 2>/dev/null || true
@@ -2712,7 +2497,8 @@ jobs:
           # Preserve the exact complete diagnostic directory as an additional archive.
           # This is not a substitute for individual logs; it is a second recovery path.
           if command -v tar >/dev/null 2>&1; then
-            tar -czf diagnostic-artifact/all-ci-logs.tar.gz \n              "$DIAG_DIR" diagnostic-artifact/runner-state kernel-build-full.log 2>/dev/null || true
+            tar -czf diagnostic-artifact/all-ci-logs.tar.gz \
+              "$DIAG_DIR" diagnostic-artifact/runner-state kernel-build-full.log 2>/dev/null || true
           fi
           {
             echo "GitHub Run: $GITHUB_RUN_ID"
