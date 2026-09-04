@@ -2,7 +2,7 @@
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V79 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V80 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -2191,6 +2191,102 @@ jobs:
           echo "[PASS] Pre-build compatibility matrix completed before kernel compilation." | tee -a "$REPORT"
           echo "[PASS] This step performs no source mutation." | tee -a "$REPORT"
           echo "====================================================" | tee -a "$REPORT"
+
+      - name: 12A - Pre-Build HID + QCACLD Argument-Length Compatibility Audit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG="$DIAG_DIR/12A-hid-argmax-compatibility.log"
+          : > "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
+          echo "========== PRE-BUILD HID + QCACLD ARGUMENT-LENGTH AUDIT =========="
+          echo "[LOCKED] Setup 10A is not modified by this step."
+          echo "[LOCKED] Setup 19 SELinux/SukiSU source boundaries are not modified by this step."
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # ---------------------------------------------------------------
+          # USB HID: source-derived compatibility fix only.
+          # V80 diagnostics proved f_hid.c accesses hid_descriptor.desc[0],
+          # while this checked-out tree's struct hid_descriptor provides the
+          # named rpt_desc member instead.  Upstream stable changed these
+          # accesses from desc[0] to rpt_desc; do not alter include/linux/hid.h.
+          # ---------------------------------------------------------------
+          hid_h = Path('include/linux/hid.h')
+          f_hid = Path('drivers/usb/gadget/function/f_hid.c')
+          if not hid_h.is_file() or not f_hid.is_file():
+              raise SystemExit('[FAIL] Required HID source/header is missing.')
+          hh = hid_h.read_text(errors='replace')
+          fh = f_hid.read_text(errors='replace')
+          m = re.search(r'struct\s+hid_descriptor\s*\{(?P<body>.*?)\}\s*__attribute__', hh, re.S)
+          if not m:
+              m = re.search(r'struct\s+hid_descriptor\s*\{(?P<body>.*?)\}', hh, re.S)
+          if not m:
+              raise SystemExit('[FAIL] Could not locate actual struct hid_descriptor in checked-out include/linux/hid.h.')
+          body = m.group('body')
+          has_rpt = bool(re.search(r'\\brpt_desc\\b', body))
+          has_desc = bool(re.search(r'\\bdesc\\s*\\[', body))
+          print(f'[EVIDENCE] hid_descriptor: rpt_desc={has_rpt} desc_array={has_desc}')
+          if not has_rpt:
+              raise SystemExit('[FAIL] Tree does not expose hid_descriptor.rpt_desc; refusing speculative HID mutation.')
+          old1 = 'hidg_desc_copy.desc[0].bDescriptorType'
+          old2 = 'hidg_desc_copy.desc[0].wDescriptorLength'
+          old3 = 'hidg_desc.desc[0].bDescriptorType'
+          old4 = 'hidg_desc.desc[0].wDescriptorLength'
+          active_old = sum(fh.count(x) for x in (old1,old2,old3,old4))
+          print(f'[AUDIT] f_hid.c active old desc accesses={active_old}')
+          if active_old:
+              fh2 = fh.replace(old1, 'hidg_desc_copy.rpt_desc.bDescriptorType')
+              fh2 = fh2.replace(old2, 'hidg_desc_copy.rpt_desc.wDescriptorLength')
+              fh2 = fh2.replace(old3, 'hidg_desc.rpt_desc.bDescriptorType')
+              fh2 = fh2.replace(old4, 'hidg_desc.rpt_desc.wDescriptorLength')
+              f_hid.write_text(fh2)
+              fh = fh2
+              print('[FIXED] Updated only the four obsolete f_hid.c desc[0] accesses to rpt_desc.')
+          if any(x in fh for x in (old1,old2,old3,old4)):
+              raise SystemExit('[FAIL] Obsolete HID descriptor accesses remain after exact fix.')
+          if fh.count('hidg_desc_copy.rpt_desc.bDescriptorType') != 1 or fh.count('hidg_desc_copy.rpt_desc.wDescriptorLength') != 1:
+              raise SystemExit('[FAIL] HID GET_DESCRIPTOR fix did not produce exactly one expected assignment pair.')
+          if fh.count('hidg_desc.rpt_desc.bDescriptorType') != 1 or fh.count('hidg_desc.rpt_desc.wDescriptorLength') != 1:
+              raise SystemExit('[FAIL] HID bind fix did not produce exactly one expected assignment pair.')
+          print('[PASS] HID source/header compatibility boundary verified.')
+
+          # ---------------------------------------------------------------
+          # QCACLD argument-length: source-derived Kbuild fix.
+          # V80 reached a Qualcomm qcacld-3.0 compilation command and failed
+          # in /bin/sh with E2BIG. The 4.19 kbuild cc recipe expands c_flags
+          # directly into the shell command. Qualcomm's driver contributes
+          # a very large include/define set. Use GNU make's file function to
+          # write c_flags into a per-object response file, then invoke clang
+          # with @response-file ONLY for qcacld-3.0 sources. This preserves
+          # every compiler flag; it changes transport, not feature selection.
+          # ---------------------------------------------------------------
+          mb = Path('scripts/Makefile.build')
+          if not mb.is_file():
+              raise SystemExit('[FAIL] scripts/Makefile.build is missing.')
+          ms = mb.read_text(errors='replace')
+          old_nomod = 'cmd_cc_o_c = $(CC) $(c_flags) -c -o $@ $<'
+          old_mod = 'cmd_cc_o_c = $(CC) $(c_flags) -c -o $(@D)/.tmp_$(@F) $<'
+          count_nomod = ms.count(old_nomod)
+          count_mod = ms.count(old_mod)
+          print(f'[AUDIT] standard cmd_cc_o_c definitions={count_nomod}, MODVERSIONS definition={count_mod}')
+          if count_nomod != 1 or count_mod != 1:
+              raise SystemExit('[FAIL] Unexpected 4.19 cmd_cc_o_c layout; refusing speculative Makefile.build rewrite.')
+          new_nomod = 'cmd_cc_o_c = $(if $(findstring /qcacld-3.0/,$<),$(file >$@.kbuild.rsp,$(c_flags))$(CC) @$@.kbuild.rsp -c -o $@ $<,$(CC) $(c_flags) -c -o $@ $<)'
+          new_mod = 'cmd_cc_o_c = $(if $(findstring /qcacld-3.0/,$<),$(file >$(@D)/.$(@F).kbuild.rsp,$(c_flags))$(CC) @$(@D)/.$(@F).kbuild.rsp -c -o $(@D)/.tmp_$(@F) $<,$(CC) $(c_flags) -c -o $(@D)/.tmp_$(@F) $<)'
+          ms2 = ms.replace(old_nomod, new_nomod, 1).replace(old_mod, new_mod, 1)
+          mb.write_text(ms2)
+          if new_nomod not in ms2 or new_mod not in ms2:
+              raise SystemExit('[FAIL] Response-file kbuild rules were not installed exactly.')
+          print('[FIXED] qcacld-3.0 C compilation now transports complete c_flags through Clang response files.')
+          print('[PASS] Non-qcacld compilation path remains byte-for-byte unchanged in cmd_cc_o_c.')
+          print('[PASS] All original c_flags are preserved; no WLAN feature/config flag was removed.')
+          print('===============================================================')
+          PY
+
+          echo "[PASS] Setup 12A completed; 10A/Setup-19 feature configuration was not reopened."
 
       - name: 19 - Build Kernel (Full Log to Artifact)
         shell: bash
