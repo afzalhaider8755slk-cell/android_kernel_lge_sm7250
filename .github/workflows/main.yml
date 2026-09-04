@@ -2592,7 +2592,6 @@ jobs:
           sepolicy = Path("drivers/kernelsu/selinux/sepolicy.c")
           flex = Path("include/linux/flex_array.h")
           hashtab = Path("security/selinux/ss/hashtab.h")
-
           s = sepolicy.read_text()
           fh = flex.read_text()
           hh = hashtab.read_text()
@@ -2603,11 +2602,9 @@ jobs:
               raise SystemExit("[FAIL] 12B: Linux 4.19 SELinux hashtab->htable representation was not found.")
 
           start = s.find("#define ksu_hash_for_each(")
-          if start < 0:
-              raise SystemExit("[FAIL] 12B: ksu_hash_for_each definition not found.")
           end = s.find("#define ksu_hashtab_for_each(", start)
-          if end < 0:
-              raise SystemExit("[FAIL] 12B: ksu_hashtab_for_each boundary not found.")
+          if start < 0 or end < 0:
+              raise SystemExit("[FAIL] 12B: ksu hash iterator macro boundaries not found.")
 
           block = s[start:end]
           bad = "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)"
@@ -2615,23 +2612,38 @@ jobs:
           bad_count = block.count(bad)
           good_count = block.count(good)
 
-          if bad_count == 1 and good_count == 0:
-              block = block.replace(bad, good, 1)
-              s = s[:start] + block + s[end:]
+          # V91 exposed a mixed state (bad=1, good=1). The cause is the
+          # earlier reviewed 4.19 flex_array adaptation rewriting the shared
+          # ksu_hash_for_each() macro. That macro is also the SELinux hashtab
+          # iterator, where node_ptr is struct hashtab_node **. Restore ONLY
+          # this shared macro to the exact SukiSU-Ultra v4.2.0 source form.
+          # The separate flex_array operations elsewhere in sepolicy.c remain
+          # untouched because they serve actual flex_array-backed members.
+          bs = chr(92)
+          authoritative = (
+              "#define ksu_hash_for_each(node_ptr, n_slot, cur) " + bs + "\n"
+              "    int i; " + bs + "\n"
+              "    for (i = 0; i < n_slot; ++i) " + bs + "\n"
+              "        for (cur = node_ptr[i]; cur; cur = cur->next)\n"
+          )
+
+          if bad_count != 0 or good_count != 1:
+              print(f"[INFO] 12B: reconciling shared ksu_hash_for_each() boundary (bad={bad_count}, good={good_count}).")
+              s = s[:start] + authoritative + s[end:]
               sepolicy.write_text(s)
-              print("[FIXED] 12B: Linux 4.19 ksu_hash_for_each() now uses node_ptr[i].")
-          elif bad_count == 0 and good_count == 1:
-              print("[PASS] 12B: Linux 4.19 ksu_hash_for_each() already uses node_ptr[i].")
+              print("[FIXED] 12B: restored the authoritative SukiSU-Ultra v4.2.0 hashtab iterator node_ptr[i].")
           else:
-              raise SystemExit(f"[FAIL] 12B: unexpected ksu_hash_for_each() state (bad={bad_count}, good={good_count}).")
+              print("[PASS] 12B: authoritative SukiSU-Ultra v4.2.0 ksu_hash_for_each() form is already present.")
 
           verify = sepolicy.read_text()
           start = verify.find("#define ksu_hash_for_each(")
           end = verify.find("#define ksu_hashtab_for_each(", start)
           block = verify[start:end]
-          if bad in block or good not in block:
-              raise SystemExit("[FAIL] 12B: final hashtab iteration boundary verification failed.")
-          print("[PASS] 12B: flex_array API and 4.19 SELinux hashtab types agree with the installed iteration form.")
+          if block.count(bad) != 0 or block.count(good) != 1:
+              print("[FAIL] 12B: final ksu_hash_for_each() boundary is not exactly the verified v4.2.0 form:")
+              print(block)
+              raise SystemExit(1)
+          print("[PASS] 12B: Linux 4.19 hashtab iterator uses node_ptr[i]; separate flex_array compatibility code remains intact.")
           PY
 
           # HID has its own valid Kbuild directory target and already passed in V89.
