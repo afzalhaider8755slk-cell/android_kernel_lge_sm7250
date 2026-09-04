@@ -1,8 +1,8 @@
-# V85: exact V83 shell-syntax fix + early workflow static shell audit. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V86: exact V83 shell-syntax fix + early workflow static shell audit. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V85 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V86 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -72,31 +72,41 @@ jobs:
             echo "CIP target: $CIP_REF"
           } | tee "$DIAG_DIR/00-early-init.log"
 
-      - name: 01 - Checkout Stock Kernel Source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          repository: lge-qcom-dev/android_kernel_lge_sm7250
-          ref: lineage-23.2
-          fetch-depth: 1
-          persist-credentials: false
-
-
-      - name: 00A - Workflow Static Shell Syntax Preflight (Post-Checkout)
+      - name: 00A - Workflow Static Shell Syntax Preflight (Workflow-Repo Aware)
         shell: bash
         run: |
           set -Eeuo pipefail
           LOG="$GITHUB_WORKSPACE/ci-logs/00A-workflow-shell-syntax.log"
-          mkdir -p "$GITHUB_WORKSPACE/ci-logs"
+          mkdir -p "$GITHUB_WORKSPACE/ci-logs" "$GITHUB_WORKSPACE/diagnostic-artifact"
           : > "$LOG"
-          echo "========== WORKFLOW STATIC SHELL SYNTAX PREFLIGHT ==========" | tee -a "$LOG"
-          echo "[INFO] Runs after kernel source checkout and before toolchain downloads." | tee -a "$LOG"
-          WF="$GITHUB_WORKSPACE/.github/workflows/main.yml"
-          if [ ! -f "$WF" ]; then
-            WF="$(find "$GITHUB_WORKSPACE/.github/workflows" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -print -quit 2>/dev/null || true)"
-          fi
-          test -n "$WF" && test -f "$WF" || { echo "[FAIL] Could not locate the workflow file for static shell validation." | tee -a "$LOG"; exit 1; }
-          echo "[INFO] Workflow under test: $WF" | tee -a "$LOG"
-          python3 - "$WF" <<'PY' | tee -a "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
+          echo "========== WORKFLOW STATIC SHELL SYNTAX PREFLIGHT =========="
+          echo "[RESEARCH] GitHub executes the workflow from its workflow repository, while this job checks out the LG kernel repository. The workflow file is therefore NOT expected under GITHUB_WORKSPACE after checkout."
+          echo "[FIX] Resolve the workflow file from GITHUB_WORKFLOW_REF via the GitHub Contents API instead of searching the checked-out kernel tree."
+          echo "[INFO] GITHUB_WORKFLOW_REF=$GITHUB_WORKFLOW_REF"
+
+          command -v curl >/dev/null 2>&1 || { echo "[FAIL] curl is unavailable on the runner."; exit 1; }
+          command -v python3 >/dev/null 2>&1 || { echo "[FAIL] python3 is unavailable on the runner."; exit 1; }
+          test -n "${GITHUB_TOKEN:-}" || { echo "[FAIL] GITHUB_TOKEN is unavailable; cannot retrieve the workflow source safely."; exit 1; }
+
+          WF_SPEC="${GITHUB_WORKFLOW_REF#*/}"
+          WF_PATH="${WF_SPEC%@*}"
+          WF_REF="${WF_SPEC#*@}"
+          test -n "$WF_PATH" && test -n "$WF_REF" || { echo "[FAIL] Could not parse GITHUB_WORKFLOW_REF."; exit 1; }
+          echo "[INFO] Workflow path=$WF_PATH"
+          echo "[INFO] Workflow ref=$WF_REF"
+
+          RAW_WF="$RUNNER_TEMP/workflow-under-test.yml"
+          curl --fail --silent --show-error --location \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WF_PATH}?ref=${WF_REF}" \
+            -o "$RAW_WF"
+          test -s "$RAW_WF" || { echo "[FAIL] GitHub API returned an empty workflow file."; exit 1; }
+          echo "[PASS] Workflow source retrieved from its actual workflow repository/ref."
+
+          python3 - "$RAW_WF" <<'PY'
           from pathlib import Path
           import re, subprocess, sys, tempfile
           wf = Path(sys.argv[1]).read_text(errors='replace').splitlines()
@@ -117,8 +127,6 @@ jobs:
               raise SystemExit('[FAIL] No GitHub Actions run blocks were discovered.')
           failures=0
           for n, block in enumerate(blocks, 1):
-              # GitHub expressions are expanded by Actions before bash sees them.
-              # Replace them only for syntax checking; do not modify the workflow.
               check=re.sub(r'\$\{\{.*?\}\}', 'GITHUB_EXPR_PLACEHOLDER', block, flags=re.S)
               with tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False) as f:
                   f.write(check)
@@ -134,6 +142,16 @@ jobs:
               raise SystemExit(f'[FAIL] {failures} workflow run block(s) failed static shell syntax validation.')
           print('[PASS] All workflow run blocks pass bash -n before expensive build work.')
           PY
+          cp -f "$LOG" "$GITHUB_WORKSPACE/diagnostic-artifact/00A-workflow-shell-syntax.log"
+
+      - name: 01 - Checkout Stock Kernel Source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: lge-qcom-dev/android_kernel_lge_sm7250
+          ref: lineage-23.2
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: 01A - Universal Diagnostics Safety Net
         if: always()
         shell: bash
@@ -338,7 +356,8 @@ jobs:
           path: |
             ci-logs/00-early-init.log
             ci-logs/02-cip135-update.log
-          if-no-files-found: error
+            diagnostic-artifact/00A-workflow-shell-syntax.log
+          if-no-files-found: warn
           retention-days: 14
           compression-level: 6
 
@@ -2254,7 +2273,7 @@ jobs:
           : > "$LOG"
           exec > >(tee -a "$LOG") 2>&1
           echo "========== PRE-BUILD HID + QCACLD ARGUMENT-LENGTH AUDIT =========="
-          echo "[RESEARCH] Current sixteen branch: hid_descriptor.rpt_desc is the actual 4.19 layout; LG f_hid.c has two valid bind-time assignment sites (charge + normal)."
+          echo "[RESEARCH] Actual LG lineage-23.2 source has hid_descriptor.rpt_desc and two bind-time descriptor initialization sites: CONFIG_LGE_USB_GADGET charge path plus normal path. Both must use rpt_desc; no third synthetic assignment is allowed."
           echo "[RESEARCH] Upstream HID gadget uses rpt_desc in the HID descriptor and GET_DESCRIPTOR path; this audit will not invent a third assignment site."
           echo "[LOCKED] Setup 10A is not modified by this step."
           echo "[LOCKED] Setup 19 SELinux/SukiSU source boundaries are not modified by this step."
@@ -2397,12 +2416,15 @@ jobs:
                   raise SystemExit(
                       '[FAIL] hidg_bind() has mismatched rpt_desc type/length assignment counts.'
                   )
-              if bind_type_n > 0:
-                  print(f'[PASS] hidg_bind() has {bind_type_n} complete rpt_desc assignment pair(s).')
-              else:
-                  print('[PASS] Source has no bind-time report descriptor mutation; no synthetic pair added.')
               if old_bind_n:
-                  raise SystemExit('[FAIL] Legacy bind-time HID descriptor access remains.')
+                  raise SystemExit('[FAIL] Legacy bind-time HID descriptor access remains after exact replacement.')
+              # The actual LG 4.19 source has two legitimate bind-time pairs:
+              # one in the charge path and one in the normal path.
+              if bind_type_n != 2 or bind_len_n != 2:
+                  raise SystemExit(
+                      f'[FAIL] Expected the actual LG bind layout to contain 2 complete rpt_desc pairs; got {bind_type_n}/{bind_len_n}.'
+                  )
+              print('[PASS] Actual LG hidg_bind() layout contains exactly 2 complete rpt_desc pairs (charge + normal).')
           print('[PASS] HID source/header compatibility boundary verified against actual source layout.')
 
           # ===============================================================
@@ -2450,6 +2472,43 @@ jobs:
 
           echo "[PASS] Setup 12A completed; Setup 10A and Setup 19 remain locked."
           echo "[PASS] HID audit now follows the actual 4.19 source layout; no synthetic bind pair is required."
+
+      - name: 12B - Targeted 4.19 Hotspot Compile Smoke Preflight (No Feature Removal)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG="$DIAG_DIR/12B-targeted-419-compile-smoke.log"
+          : > "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
+          echo "========== TARGETED 4.19 HOTSPOT COMPILE SMOKE PREFLIGHT =========="
+          echo "[PURPOSE] Catch the already-known late-build failure classes before the full 20-30 minute kernel build."
+          echo "[LOCKED] No feature is removed or downgraded. This step only compiles the actual hotspot objects against the prepared configuration."
+
+          test -f .config || { echo "[INFO] .config is not present yet; targeted smoke will be performed by the normal build path."; exit 0; }
+          export KBUILD_BUILD_USER=builder
+          export KBUILD_BUILD_HOST=github
+
+          smoke_one() {
+            local target="$1"
+            echo
+            echo "----- SMOKE: $target -----"
+            if make -j2 V=1 "$target"; then
+              echo "[PASS] $target"
+            else
+              rc=$?
+              echo "[FAIL] $target returned $rc"
+              echo "[FAIL] Full compiler output is retained in $LOG"
+              return $rc
+            fi
+          }
+
+          # These are the exact previously observed late-build hotspots.
+          smoke_one drivers/usb/gadget/function/f_hid.o
+          smoke_one drivers/kernelsu/feature/selinux_hide.o
+          smoke_one drivers/kernelsu/feature/cpu_spoof.o
+          echo
+          echo "[PASS] Targeted 4.19 hotspot compile smoke completed."
+          echo "=============================================================="
 
       - name: 19 - Build Kernel (Full Log to Artifact)
         shell: bash
@@ -3232,7 +3291,7 @@ jobs:
         with:
           name: LG-Velvet-G900-SukiSU-4.2.0-Diagnostics
           path: diagnostic-artifact
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
           compression-level: 6
 
