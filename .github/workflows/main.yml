@@ -1,8 +1,8 @@
-# V83: exact V81 failure fix. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V84: exact V83 shell-syntax fix + early workflow static shell audit. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V83 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V84 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -71,6 +71,60 @@ jobs:
             echo "Requested Lineage branch: $LINEAGE_BRANCH"
             echo "CIP target: $CIP_REF"
           } | tee "$DIAG_DIR/00-early-init.log"
+
+      - name: 00A - Workflow Static Shell Syntax Preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG="$GITHUB_WORKSPACE/ci-logs/00A-workflow-shell-syntax.log"
+          mkdir -p "$GITHUB_WORKSPACE/ci-logs"
+          : > "$LOG"
+          echo "========== WORKFLOW STATIC SHELL SYNTAX PREFLIGHT ==========" | tee -a "$LOG"
+          echo "[INFO] This runs before kernel source checkout/toolchain downloads." | tee -a "$LOG"
+          WF="$GITHUB_WORKSPACE/.github/workflows/main.yml"
+          if [ ! -f "$WF" ]; then
+            WF="$(find "$GITHUB_WORKSPACE/.github/workflows" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -print -quit 2>/dev/null || true)"
+          fi
+          test -n "$WF" && test -f "$WF" || { echo "[FAIL] Could not locate the workflow file for static shell validation." | tee -a "$LOG"; exit 1; }
+          echo "[INFO] Workflow under test: $WF" | tee -a "$LOG"
+          python3 - "$WF" <<'PY' | tee -a "$LOG"
+          from pathlib import Path
+          import re, subprocess, sys, tempfile
+          wf = Path(sys.argv[1]).read_text(errors='replace').splitlines()
+          blocks=[]
+          i=0
+          while i < len(wf):
+              if wf[i].startswith('        run: |'):
+                  i += 1
+                  buf=[]
+                  while i < len(wf) and (wf[i].startswith('          ') or wf[i].strip()==''):
+                      buf.append(wf[i][10:] if wf[i].startswith('          ') else '')
+                      i += 1
+                  blocks.append('\n'.join(buf)+'\n')
+                  continue
+              i += 1
+          print(f'[AUDIT] discovered run blocks: {len(blocks)}')
+          if not blocks:
+              raise SystemExit('[FAIL] No GitHub Actions run blocks were discovered.')
+          failures=0
+          for n, block in enumerate(blocks, 1):
+              # GitHub expressions are expanded by Actions before bash sees them.
+              # Replace them only for syntax checking; do not modify the workflow.
+              check=re.sub(r'\$\{\{.*?\}\}', 'GITHUB_EXPR_PLACEHOLDER', block, flags=re.S)
+              with tempfile.NamedTemporaryFile('w', suffix='.sh', delete=False) as f:
+                  f.write(check)
+                  name=f.name
+              r=subprocess.run(['bash','-n',name], text=True, capture_output=True)
+              Path(name).unlink(missing_ok=True)
+              if r.returncode:
+                  failures += 1
+                  print(f'[FAIL] run block #{n} fails bash -n: {r.stderr.strip()}')
+              else:
+                  print(f'[PASS] run block #{n} bash syntax OK')
+          if failures:
+              raise SystemExit(f'[FAIL] {failures} workflow run block(s) failed static shell syntax validation.')
+          print('[PASS] All workflow run blocks pass bash -n before expensive build work.')
+          PY
 
       - name: 01 - Checkout Stock Kernel Source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -2201,7 +2255,7 @@ jobs:
           exec > >(tee -a "$LOG") 2>&1
           echo "========== PRE-BUILD HID + QCACLD ARGUMENT-LENGTH AUDIT =========="
           echo "[RESEARCH] Current sixteen branch: hid_descriptor.rpt_desc is the actual 4.19 layout; LG f_hid.c has two valid bind-time assignment sites (charge + normal)."
-          echo "[RESEARCH] Upstream HID gadget uses rpt_desc in the HID descriptor and GET_DESCRIPTOR path; this audit will not invent a third assignment site.
+          echo "[RESEARCH] Upstream HID gadget uses rpt_desc in the HID descriptor and GET_DESCRIPTOR path; this audit will not invent a third assignment site."
           echo "[LOCKED] Setup 10A is not modified by this step."
           echo "[LOCKED] Setup 19 SELinux/SukiSU source boundaries are not modified by this step."
 
