@@ -2400,14 +2400,29 @@ jobs:
           PY
 
           echo "----- REAL KBUILD GATES (NO AUTOFIX) -----"
-          make -n V=1 drivers/kernelsu/selinux/sepolicy.o > "$RUNNER_TEMP/12B-sepolicy-make-command.log" 2>&1
+          # Research correction: SukiSU-Ultra's Kbuild declares sepolicy.o as a
+          # member of the composite kernelsu.o target.  The previous V1 gate
+          # addressed the member object directly, which can fail at the top-level
+          # Kbuild even though the authoritative composite target is valid.
+          # Gate the exact Kbuild target that owns sepolicy.o, then require the
+          # sepolicy member to appear in the generated command graph.
+          KSU_COMPOSITE_O="drivers/kernelsu/kernelsu.o"
+          SEPOLICY_O="drivers/kernelsu/selinux/sepolicy.o"
+          : > "$RUNNER_TEMP/12B-sepolicy-make-command.log"
+          if ! make -n V=1 "$KSU_COMPOSITE_O" > "$RUNNER_TEMP/12B-sepolicy-make-command.log" 2>&1; then
+            echo "[FAIL] V1: authoritative Kbuild dry-run for $KSU_COMPOSITE_O failed."
+            echo "[FAIL] This is a build-system gate failure; no source fix is being skipped."
+            cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
+            exit 2
+          fi
           test -s "$RUNNER_TEMP/12B-sepolicy-make-command.log"
-          grep -F 'drivers/kernelsu/selinux/sepolicy.o' "$RUNNER_TEMP/12B-sepolicy-make-command.log" >/dev/null
+          grep -F "$SEPOLICY_O" "$RUNNER_TEMP/12B-sepolicy-make-command.log" >/dev/null
           cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
 
-          make -j1 V=1 drivers/kernelsu/selinux/sepolicy.o
-          test -s drivers/kernelsu/selinux/sepolicy.o
-          echo "[PASS] V1: actual cumulative sepolicy.o compilation succeeded."
+          make -j1 V=1 "$KSU_COMPOSITE_O"
+          test -s "$SEPOLICY_O"
+          test -s "$KSU_COMPOSITE_O"
+          echo "[PASS] V1: authoritative cumulative kernelsu.o target compiled and sepolicy.o was built as its Kbuild member."
 
           make -j2 V=1 drivers/usb/gadget/function/f_hid.o
           make -j2 V=1 drivers/kernelsu/
