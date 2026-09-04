@@ -6,9 +6,9 @@
 # for hashtab in Setup 17. Setup 27 is now verification/compile-only.
 # V1: Cumulative, non-destructive Linux 4.19 compatibility build workflow. V96 restored the official single iterator block but did not account for the different Linux 4.19 avtab::htable (flex_array) versus SELinux hashtab::htable (node-pointer array). V97 preserves all verified features and the four existing LG 4.19 SELinux function bodies; only the 12B source reconstruction/iterator boundary is changed.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
-# Live Activity remains concise; full V=1 compiler output remains artifact-only.
+# V4: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-Build
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V4
 
 on:
   workflow_dispatch:
@@ -65,6 +65,17 @@ jobs:
         if: always()
         shell: bash
         run: |
+          SETUP_NO="01"
+          SETUP_NAME="Setup 1 - Initialize Diagnostics"
+          SETUP_LOG="$DIAG_DIR/01-setup-01-initialize-diagnostics-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set +e
           mkdir -p "$DIAG_DIR" "$GITHUB_WORKSPACE/diagnostic-artifact"
           {
@@ -84,11 +95,43 @@ jobs:
           repository: lge-qcom-dev/android_kernel_lge_sm7250
           ref: lineage-23.2
           fetch-depth: 1
+          show-progress: true
           persist-credentials: false
+
+      - name: Setup 2A - Capture Checkout State
+        if: always()
+        shell: bash
+        run: |
+          SETUP_NO="02A"
+          SETUP_NAME="Setup 2A - Capture Checkout State"
+          SETUP_LOG="$DIAG_DIR/02A-setup-02A-checkout-state-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          export PS4='+ [SETUP-02A] '
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-02A][PASS] Checkout state captured."; else echo "[SETUP-02A][FAIL] Checkout state capture exited with code $rc."; fi' EXIT
+          echo "========== SETUP 2 CHECKOUT STATE =========="
+          git rev-parse --show-toplevel
+          git rev-parse HEAD
+          git status --short
+          git remote -v
+          echo "[PASS] Setup 2 checkout completed and its state is recorded."
 
       - name: Setup 3 - Integrate CIP135
         shell: bash
         run: |
+          SETUP_NO="03"
+          SETUP_NAME="Setup 3 - Integrate CIP135"
+          SETUP_LOG="$DIAG_DIR/03-setup-03-integrate-cip135-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           mkdir -p "$DIAG_DIR"
           LOG="$DIAG_DIR/02-cip135-update.log"
@@ -113,7 +156,7 @@ jobs:
 
           echo "--- Fetch CIP objects INTO THE ACTIVE LG REPOSITORY ---"
           echo "The active repo receives the official CIP base/target objects so 3-way application has the required preimages."
-          git fetch --no-tags --depth=1 "$CIP_REPO" \
+          git fetch --progress --no-tags --depth=1 "$CIP_REPO" \
             "refs/tags/v4.19.325:refs/cip/v4.19.325" \
             "refs/tags/$CIP_REF:refs/cip/$CIP_REF"
 
@@ -264,7 +307,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V32.1-EARLY-CIP135-FAILURE-Diagnostics
+          name: LG-Velvet-G900-V4-EARLY-CIP135-FAILURE-Diagnostics
           path: |
             ci-logs/00-early-init.log
             ci-logs/02-cip135-update.log
@@ -276,6 +319,17 @@ jobs:
       - name: Setup 4 - Install Build Dependencies
         shell: bash
         run: |
+          SETUP_NO="04"
+          SETUP_NAME="Setup 4 - Install Build Dependencies"
+          SETUP_LOG="$DIAG_DIR/04-setup-04-install-build-dependencies-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set +e
           LOG="$DIAG_DIR/03-install-dependencies.log"
           : > "$LOG"
@@ -300,12 +354,23 @@ jobs:
       - name: Setup 5 - Install Android Clang
         shell: bash
         run: |
+          SETUP_NO="05"
+          SETUP_NAME="Setup 5 - Install Android Clang"
+          SETUP_LOG="$DIAG_DIR/05-setup-05-install-android-clang-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set +e
           LOG="$DIAG_DIR/04-download-clang.log"
           : > "$LOG"
           {
             rm -rf clang-prebuilt toolchain
-            git clone --depth=1 --filter=blob:none --sparse \
+            git clone --progress --depth=1 --filter=blob:none --sparse \
               --branch android16-qpr2-release \
               https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86.git \
               clang-prebuilt
@@ -325,12 +390,23 @@ jobs:
       - name: Setup 6 - Install AArch64 GCC
         shell: bash
         run: |
+          SETUP_NO="06"
+          SETUP_NAME="Setup 6 - Install AArch64 GCC"
+          SETUP_LOG="$DIAG_DIR/06-setup-06-install-aarch64-gcc-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set +e
           LOG="$DIAG_DIR/05-download-gcc64.log"
           : > "$LOG"
           {
             rm -rf gcc64
-            git clone --depth=1 \
+            git clone --progress --depth=1 \
               https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
               gcc64
             test -x gcc64/bin/aarch64-linux-android-gcc
@@ -343,12 +419,23 @@ jobs:
       - name: Setup 7 - Install ARM32 GCC
         shell: bash
         run: |
+          SETUP_NO="07"
+          SETUP_NAME="Setup 7 - Install ARM32 GCC"
+          SETUP_LOG="$DIAG_DIR/07-setup-07-install-arm32-gcc-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set +e
           LOG="$DIAG_DIR/06-download-gcc32.log"
           : > "$LOG"
           {
             rm -rf gcc32
-            git clone --depth=1 \
+            git clone --progress --depth=1 \
               https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
               gcc32
             test -x gcc32/bin/arm-linux-androideabi-gcc
@@ -361,6 +448,17 @@ jobs:
       - name: Setup 8 - Prepare Toolchain
         shell: bash
         run: |
+          SETUP_NO="08"
+          SETUP_NAME="Setup 8 - Prepare Toolchain"
+          SETUP_LOG="$DIAG_DIR/08-setup-08-prepare-toolchain-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set +e
           LOG="$DIAG_DIR/07-toolchain-check.log"
           : > "$LOG"
@@ -418,6 +516,17 @@ jobs:
       - name: Setup 9 - Integrate SukiSU-Ultra Non-GKI
         shell: bash
         run: |
+          SETUP_NO="09"
+          SETUP_NAME="Setup 9 - Integrate SukiSU-Ultra Non-GKI"
+          SETUP_LOG="$DIAG_DIR/09-setup-09-integrate-sukisu-ultra-non-gki-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$DIAG_DIR/08-sukisu-integration.log"
           : > "$LOG"
@@ -425,7 +534,7 @@ jobs:
             echo "========== SUKISU-Ultra 4.2.0 =========="
             git ls-files -z | sort -z > "$RUNNER_TEMP/tracked-before"
 
-            curl -fsSL "https://raw.githubusercontent.com/${SUKISU_REPO}/${SUKISU_REF}/kernel/setup.sh" \
+            curl -fL --retry 5 --retry-all-errors --progress-bar "https://raw.githubusercontent.com/${SUKISU_REPO}/${SUKISU_REF}/kernel/setup.sh" \
               -o "$RUNNER_TEMP/sukisu-setup.sh"
             chmod +x "$RUNNER_TEMP/sukisu-setup.sh"
 
@@ -467,6 +576,17 @@ jobs:
       - name: Setup 10 - Verify Root KPM SUSFS
         shell: bash
         run: |
+          SETUP_NO="10"
+          SETUP_NAME="Setup 10 - Verify Root KPM SUSFS"
+          SETUP_LOG="$DIAG_DIR/10-setup-10-verify-root-kpm-susfs-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$DIAG_DIR/09-sukisu-verification.log"
           : > "$LOG"
@@ -501,6 +621,17 @@ jobs:
       - name: Setup 11 - Verify Non-GKI Hook Architecture
         shell: bash
         run: |
+          SETUP_NO="11"
+          SETUP_NAME="Setup 11 - Verify Non-GKI Hook Architecture"
+          SETUP_LOG="$DIAG_DIR/11-setup-11-verify-non-gki-hook-architecture-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$DIAG_DIR/10-hook-architecture.log"
           : > "$LOG"
@@ -515,6 +646,17 @@ jobs:
       - name: Setup 12 - Configure Defconfig and Features
         shell: bash
         run: |
+          SETUP_NO="12"
+          SETUP_NAME="Setup 12 - Configure Defconfig and Features"
+          SETUP_LOG="$DIAG_DIR/12-setup-12-configure-defconfig-and-features-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set +e
           LOG="$DIAG_DIR/10-defconfig-and-features.log"
           : > "$LOG"
@@ -551,7 +693,7 @@ jobs:
             echo
             echo "========== SUSFS NON-GKI 4.19 INTEGRATION =========="
             rm -rf "$RUNNER_TEMP/susfs4ksu"
-            git clone --depth=1 --branch "$SUSFS_REF" "https://gitlab.com/$SUSFS_REPO.git" "$RUNNER_TEMP/susfs4ksu"
+            git clone --progress --depth=1 --branch "$SUSFS_REF" "https://gitlab.com/$SUSFS_REPO.git" "$RUNNER_TEMP/susfs4ksu"
             SUSFS_HEAD="$(git -C "$RUNNER_TEMP/susfs4ksu" rev-parse HEAD)"
             SUSFS_EXPECTED=""
             if [ -n "$SUSFS_EXPECTED" ]; then test "$SUSFS_HEAD" = "$SUSFS_EXPECTED" || {
@@ -581,7 +723,7 @@ jobs:
             BBG_TAG="${BASEBAND_GUARD_TAG:-main}"
             BBG_COMMIT="${BASEBAND_GUARD_COMMIT:-}"
             rm -rf Baseband-guard
-            git clone --depth=1 --branch "$BBG_TAG" "$BBG_REPO" Baseband-guard
+            git clone --progress --depth=1 --branch "$BBG_TAG" "$BBG_REPO" Baseband-guard
             cd Baseband-guard
             BBG_HEAD="$(git rev-parse HEAD)"
             BBG_EXPECTED=""
@@ -917,6 +1059,17 @@ jobs:
       - name: Setup 13 - Integrate Maphide JIT-Zygote
         shell: bash
         run: |
+          SETUP_NO="13"
+          SETUP_NAME="Setup 13 - Integrate Maphide JIT-Zygote"
+          SETUP_LOG="$DIAG_DIR/13-setup-13-integrate-maphide-jit-zygote-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$GITHUB_WORKSPACE/ci-logs/03A-maphide.log"
           mkdir -p "$GITHUB_WORKSPACE/ci-logs"
@@ -1085,6 +1238,17 @@ jobs:
       - name: Setup 14 - Core Integration Verification
         shell: bash
         run: |
+          SETUP_NO="14"
+          SETUP_NAME="Setup 14 - Core Integration Verification"
+          SETUP_LOG="$DIAG_DIR/14-setup-14-core-integration-verification-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$DIAG_DIR/11-core-integration-verification.log"
           : > "$LOG"
@@ -1132,6 +1296,17 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
+          SETUP_NO="15"
+          SETUP_NAME="Setup 15 - KPM Kbuild Preflight"
+          SETUP_LOG="$DIAG_DIR/15-setup-15-kpm-kbuild-preflight-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           # Diagnostic-only gate: this step must not hide the authoritative
           # full-kernel compiler result. Every probe failure is logged with the
           # exact command/line, then the real build is allowed to run.
@@ -1572,6 +1747,17 @@ jobs:
       - name: Setup 16 - Hard No-Autofix Audit
         shell: bash
         run: |
+          SETUP_NO="16"
+          SETUP_NAME="Setup 16 - Hard No-Autofix Audit"
+          SETUP_LOG="$DIAG_DIR/16-setup-16-hard-no-autofix-audit-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$DIAG_DIR/10A-00-no-autofix-audit.log"
           : > "$LOG"
@@ -1594,6 +1780,17 @@ jobs:
       - name: Setup 17 - Apply Researched 4.19 Fixes
         shell: bash
         run: |
+          SETUP_NO="17"
+          SETUP_NAME="Setup 17 - Apply Researched 4.19 Fixes"
+          SETUP_LOG="$DIAG_DIR/17-setup-17-apply-researched-4-19-fixes-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           LOG="$DIAG_DIR/10A-manual-compatibility-fixes.log"
           : > "$LOG"
@@ -1638,6 +1835,17 @@ jobs:
       - name: Setup 18 - SELinux 4.19 Preflight
         shell: bash
         run: |
+          SETUP_NO="18"
+          SETUP_NAME="Setup 18 - SELinux 4.19 Preflight"
+          SETUP_LOG="$DIAG_DIR/18-setup-18-selinux-4-19-preflight-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           LOG="$DIAG_DIR/10B-00-selinux-419-preflight.log"
           : > "$LOG"
@@ -1712,6 +1920,17 @@ jobs:
       - name: Setup 19 - SELinux 4.19 Compatibility Port
         shell: bash
         run: |
+          SETUP_NO="19"
+          SETUP_NAME="Setup 19 - SELinux 4.19 Compatibility Port"
+          SETUP_LOG="$DIAG_DIR/19-setup-19-selinux-4-19-compatibility-port-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           LOG="$DIAG_DIR/10B-setup19-selinux-419-port.log"
           : > "$LOG"
@@ -1772,6 +1991,17 @@ jobs:
       - name: Setup 20 - CPU Clocksource Compatibility
         shell: bash
         run: |
+          SETUP_NO="20"
+          SETUP_NAME="Setup 20 - CPU Clocksource Compatibility"
+          SETUP_LOG="$DIAG_DIR/20-setup-20-cpu-clocksource-compatibility-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           LOG="$DIAG_DIR/10B-CPU-clocksource-419-compat.log"
           : > "$LOG"
@@ -1849,6 +2079,17 @@ jobs:
       - name: Setup 21 - Source Integrity Audit
         shell: bash
         run: |
+          SETUP_NO="21"
+          SETUP_NAME="Setup 21 - Source Integrity Audit"
+          SETUP_LOG="$DIAG_DIR/21-setup-21-source-integrity-audit-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$DIAG_DIR/10C-source-integrity.log"
           : > "$LOG"
@@ -1871,6 +2112,17 @@ jobs:
       - name: Setup 22 - Verify Maphide Baseband Guard
         shell: bash
         run: |
+          SETUP_NO="22"
+          SETUP_NAME="Setup 22 - Verify Maphide Baseband Guard"
+          SETUP_LOG="$DIAG_DIR/22-setup-22-verify-maphide-baseband-guard-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$DIAG_DIR/10C-A-required-features.log"
           : > "$LOG"
@@ -1893,6 +2145,17 @@ jobs:
       - name: Setup 23 - Stable Feature Matrix Audit
         shell: bash
         run: |
+          SETUP_NO="23"
+          SETUP_NAME="Setup 23 - Stable Feature Matrix Audit"
+          SETUP_LOG="$DIAG_DIR/23-setup-23-stable-feature-matrix-audit-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$DIAG_DIR/11B-feature-matrix.log"
           : > "$LOG"
@@ -2000,6 +2263,17 @@ jobs:
       - name: Setup 24 - Clean Compiler Preflight
         shell: bash
         run: |
+          SETUP_NO="24"
+          SETUP_NAME="Setup 24 - Clean Compiler Preflight"
+          SETUP_LOG="$DIAG_DIR/24-setup-24-clean-compiler-preflight-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$DIAG_DIR/11C-compiler-preflight.log"
           : > "$LOG"
@@ -2020,6 +2294,17 @@ jobs:
       - name: Setup 25 - Full Source-Derived Compatibility Matrix
         shell: bash
         run: |
+          SETUP_NO="25"
+          SETUP_NAME="Setup 25 - Full Source-Derived Compatibility Matrix"
+          SETUP_LOG="$DIAG_DIR/25-setup-25-full-source-derived-compatibility-matrix-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           LOG="$DIAG_DIR/18A-prebuild-compatibility-matrix.log"
           REPORT="$GITHUB_WORKSPACE/compatibility-matrix.txt"
@@ -2133,6 +2418,17 @@ jobs:
       - name: Setup 26 - HID QCACLD Compatibility
         shell: bash
         run: |
+          SETUP_NO="26"
+          SETUP_NAME="Setup 26 - HID QCACLD Compatibility"
+          SETUP_LOG="$DIAG_DIR/26-setup-26-hid-qcacld-compatibility-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           LOG="$DIAG_DIR/12A-hid-argmax-compatibility.log"
           : > "$LOG"
@@ -2341,6 +2637,17 @@ jobs:
       - name: Setup 27 - Cumulative 4.19 Hotspot Compile Gate
         shell: bash
         run: |
+          SETUP_NO="27"
+          SETUP_NAME="Setup 27 - Cumulative 4.19 Hotspot Compile Gate"
+          SETUP_LOG="$DIAG_DIR/27-setup-27-cumulative-4-19-hotspot-compile-gate-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           LOG="$DIAG_DIR/12B-targeted-419-compile-smoke.log"
           : > "$LOG"
@@ -2415,8 +2722,14 @@ jobs:
           test -f "$KSU_KBUILD"
           test -L "$KSU_BUILD_DIR" || test -d "$KSU_BUILD_DIR"
           : > "$RUNNER_TEMP/12B-sepolicy-make-command.log"
-          if ! make -n -f ./scripts/Makefile.build obj="$KSU_BUILD_DIR" V=1               > "$RUNNER_TEMP/12B-sepolicy-make-command.log" 2>&1; then
-            echo "[FAIL] V1: Linux 4.19 Kbuild directory build for $KSU_BUILD_DIR failed."
+
+          # Linux 4.19's top-level Makefile documents the directory target form
+          # '%/: ... $(MAKE) $(build)=$(build-dir)'.  Calling 'make dir/' is
+          # therefore the native single-directory Kbuild entry point.  Do not
+          # bypass it with a direct scripts/Makefile.build invocation: that
+          # invocation produced the '/drivers/kernelsu/Makefile' lookup in V3.
+          if ! make -n V=1 "$KSU_BUILD_DIR/" > "$RUNNER_TEMP/12B-sepolicy-make-command.log" 2>&1; then
+            echo "[FAIL] V1: Linux 4.19 native directory target $KSU_BUILD_DIR/ failed."
             echo "[FAIL] This is a real Kbuild failure; no compiler error is being skipped."
             cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
             exit 2
@@ -2425,10 +2738,10 @@ jobs:
           grep -F "$SEPOLICY_O" "$RUNNER_TEMP/12B-sepolicy-make-command.log" >/dev/null
           cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
 
-          make -f ./scripts/Makefile.build obj="$KSU_BUILD_DIR" V=1
+          make V=1 "$KSU_BUILD_DIR/"
           test -s "$SEPOLICY_O"
           test -s "$KSU_COMPOSITE_O"
-          echo "[PASS] V1: Linux 4.19 Kbuild directory traversal compiled kernelsu.o and its sepolicy.o member."
+          echo "[PASS] V1: Linux 4.19 native directory target compiled kernelsu.o and its sepolicy.o member."
 
           make -j2 V=1 drivers/usb/gadget/function/f_hid.o
           make -j2 V=1 drivers/kernelsu/
@@ -2444,6 +2757,17 @@ jobs:
       - name: Setup 28 - Full Kernel Build HARD GATE
         shell: bash
         run: |
+          SETUP_NO="28"
+          SETUP_NAME="Setup 28 - Full Kernel Build HARD GATE"
+          SETUP_LOG="$DIAG_DIR/28-setup-28-full-kernel-build-hard-gate-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           FULL_LOG="$GITHUB_WORKSPACE/kernel-build-full.log"
           ERROR_LOG="$DIAG_DIR/12-build-errors.log"
@@ -2975,6 +3299,17 @@ jobs:
         if: success()
         shell: bash
         run: |
+          SETUP_NO="29"
+          SETUP_NAME="Setup 29 - Package Kernel OrangeFox"
+          SETUP_LOG="$DIAG_DIR/29-setup-29-package-kernel-orangefox-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -euo pipefail
           LOG="$DIAG_DIR/19A-packaging.log"
           : > "$LOG"
@@ -2996,7 +3331,7 @@ jobs:
             # as OrangeFox. This is NOT an OrangeFox recovery image itself.
             AK3_DIR="$RUNNER_TEMP/AnyKernel3"
             rm -rf "$AK3_DIR"
-            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$AK3_DIR"
+            git clone --progress --depth=1 https://github.com/osm0sis/AnyKernel3.git "$AK3_DIR"
 
             # Record the exact AK3 revision used by this run.
             AK3_COMMIT="$(git -C "$AK3_DIR" rev-parse HEAD)"
@@ -3072,20 +3407,20 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32.1-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V4-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32.1-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V4-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V32.1-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V4-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
-            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V32.1-AnyKernel3-OrangeFox-Flashable.zip" artifacts/kernel/
+            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V4-AnyKernel3-OrangeFox-Flashable.zip" artifacts/kernel/
 
             echo "[PASS] Kernel image packaged."
             echo "[PASS] AnyKernel3 package prepared for flashing from OrangeFox/recovery."
@@ -3099,6 +3434,17 @@ jobs:
         if: always()
         shell: bash
         run: |
+          SETUP_NO="30"
+          SETUP_NAME="Setup 30 - Final Configuration Artifact Verification"
+          SETUP_LOG="$DIAG_DIR/30-setup-30-final-configuration-artifact-verification-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set +e
           LOG="$DIAG_DIR/13-final-check.log"
           : > "$LOG"
@@ -3171,12 +3517,37 @@ jobs:
           git status --short > diagnostic-artifact/git-status.txt 2>&1 || true
           git rev-parse HEAD > diagnostic-artifact/kernel-head.txt 2>&1 || true
 
+          {
+            echo "========== V4 ALL SETUP STATUS =========="
+            date -u
+            for f in "$DIAG_DIR"/*LIVE.log; do
+              [ -f "$f" ] || continue
+              base="$(basename "$f")"
+              if grep -q '\[SETUP-[^]]*\]\[FAIL\]' "$f"; then
+                status="ERROR"
+              elif grep -q '\[SETUP-[^]]*\]\[PASS\]' "$f"; then
+                status="PASS"
+              else
+                status="EXECUTED-NO-STATUS-MARKER"
+              fi
+              printf '%-75s %s\n' "$base" "$status"
+            done
+          } | tee diagnostic-artifact/ALL-SETUP-STATUS-V4.log
+
           # Preserve the exact complete diagnostic directory as an additional archive.
           # This is not a substitute for individual logs; it is a second recovery path.
           if command -v tar >/dev/null 2>&1; then
             tar -czf diagnostic-artifact/all-ci-logs.tar.gz \
               "$DIAG_DIR" diagnostic-artifact/runner-state kernel-build-full.log 2>/dev/null || true
           fi
+          rm -f diagnostic-artifact/V4-ALL-LOG-KARNAL-BUILD.zip
+          command -v zip >/dev/null 2>&1 || {
+            echo "[FAIL] zip utility is required to create V4-ALL-LOG-KARNAL-BUILD.zip."
+            exit 1
+          }
+          ( cd diagnostic-artifact && zip -qr "V4-ALL-LOG-KARNAL-BUILD.zip" ci-logs ALL-SETUP-STATUS-V4.log runner-state kernel-build-full.log final.config git-status.txt kernel-head.txt sukisu-integration-note.txt )
+          test -s diagnostic-artifact/V4-ALL-LOG-KARNAL-BUILD.zip
+          echo "[PASS] V4 consolidated all-setup log ZIP created."
           {
             echo "GitHub Run: $GITHUB_RUN_ID"
             echo "Commit: $GITHUB_SHA"
@@ -3196,8 +3567,18 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V32.1-EMERGENCY-Diagnostics
+          name: LG-Velvet-G900-V4-EMERGENCY-Diagnostics
           path: diagnostic-artifact
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
+
+      - name: Artifact - V4 All Setup Logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: V4-ALL-LOG-KARNAL-BUILD
+          path: diagnostic-artifact/V4-ALL-LOG-KARNAL-BUILD.zip
           if-no-files-found: warn
           retention-days: 14
           compression-level: 6
@@ -3206,7 +3587,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V32.1-SukiSU-4.2.0-Kernel-Only
+          name: LG-Velvet-G900-V4-SukiSU-4.2.0-Kernel-Only
           path: artifacts
           if-no-files-found: error
           retention-days: 14
@@ -3216,7 +3597,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-SukiSU-4.2.0-Diagnostics
+          name: LG-Velvet-G900-V4-SukiSU-4.2.0-Diagnostics
           path: diagnostic-artifact
           if-no-files-found: warn
           retention-days: 14
