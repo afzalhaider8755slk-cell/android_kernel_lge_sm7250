@@ -1,8 +1,8 @@
-# V86: exact V83 shell-syntax fix + early workflow static shell audit. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V87: V86 00A GitHub-token environment fix only. V86 failed before kernel checkout because GITHUB_TOKEN was tested as a shell environment variable without explicitly mapping the github.token context. All verified V86 source/features and locked setups are preserved. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V86 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V87 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -73,6 +73,12 @@ jobs:
           } | tee "$DIAG_DIR/00-early-init.log"
 
       - name: 00A - Workflow Static Shell Syntax Preflight (Workflow-Repo Aware)
+        # GitHub creates the repository GITHUB_TOKEN for every job and exposes it
+        # through the github.token context. It is not safe to assume that the
+        # secret name is already present as a shell variable named GITHUB_TOKEN.
+        # Map the official token context explicitly for this API-reading step.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -Eeuo pipefail
