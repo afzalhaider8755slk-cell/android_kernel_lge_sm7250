@@ -2,7 +2,7 @@
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V78 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V79 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -1830,6 +1830,83 @@ jobs:
           echo "[PASS] V77's five compiler errors are directly addressed by the researched ownership model."
           echo "[LOCKED] Setup 10A remains untouched."
           echo "=============================================================="
+
+      - name: 10B-CPU - Linux 4.19 clocksource API Compatibility (10A LOCKED)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG="$DIAG_DIR/10B-CPU-clocksource-419-compat.log"
+          : > "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
+
+          echo "========== SETUP 19 CPU_SPOOF LINUX 4.19 COMPATIBILITY =========="
+          echo "[LOCKED] Setup 10A is immutable and is not modified by this step."
+          echo "[EVIDENCE] V78.1 full build reached drivers/kernelsu/feature/cpu_spoof.c."
+          echo "[EVIDENCE] Clang 20 reported three errors: struct clocksource has no member vdso_clock_mode (lines 163,164,166)."
+          echo "[RESEARCH] Linux clocksource vDSO mode storage is a newer API boundary; Linux 4.19's struct clocksource does not provide this member."
+          echo "[FIX POLICY] Do not backport unrelated clocksource/vDSO core layout. Remove only the optional cpu_spoof vDSO-mode log/assignment block that cannot compile on this 4.19 tree."
+
+          CPU_C="drivers/kernelsu/feature/cpu_spoof.c"
+          test -f "$CPU_C"
+
+          COUNT="$(grep -cF 'cs->vdso_clock_mode' "$CPU_C" || true)"
+          echo "[AUDIT] cpu_spoof.c vdso_clock_mode references before fix: $COUNT"
+          test "$COUNT" -eq 3 || { echo "[FAIL] Expected exactly 3 evidenced references in cpu_spoof.c; got $COUNT"; exit 1; }
+
+          # The exact compiler evidence gives us a much safer boundary than a
+          # broad search/replace: isolate the contiguous source region containing
+          # all three obsolete member references and disable only that region.
+          python3 - "$CPU_C" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text()
+          token='cs->vdso_clock_mode'
+          poss=[]
+          off=0
+          while True:
+              i=s.find(token, off)
+              if i < 0: break
+              poss.append(i); off=i+len(token)
+          if len(poss) != 3:
+              raise SystemExit(f'[FAIL] expected 3 vdso_clock_mode references, found {len(poss)}')
+          first=poss[0]
+          # Start at the beginning of the statement containing the first reference.
+          stmt_start=s.rfind('\n', 0, first)+1
+          # Walk backwards to the nearest pr_info call opening the diagnostic block.
+          pr=s.rfind('pr_info(', 0, first)
+          if pr < 0 or pr < first-1200:
+              raise SystemExit('[FAIL] could not locate the narrow pr_info compatibility block')
+          stmt_start=s.rfind('\n', 0, pr)+1
+          # Find the closing line after the third reference. The evidence block is
+          # contiguous and ends at the semicolon/close-paren following the third ref.
+          third=poss[2]
+          end=s.find(');', third)
+          if end < 0:
+              raise SystemExit('[FAIL] could not locate end of third vDSO diagnostic statement')
+          end += 2
+          # Include the assignment between the first and third references and the
+          # complete diagnostic statements, but leave surrounding function logic intact.
+          replacement=(
+              '/*\n'
+              ' * Linux 4.19 compatibility: struct clocksource has no\n'
+              ' * vdso_clock_mode member. The cpu_spoof vDSO-mode diagnostic/force\n'
+              ' * block is optional and cannot be ported by inventing a struct member.\n'
+              ' * Keep the native 4.19 clocksource/vDSO implementation untouched.\n'
+              ' */\n'
+          )
+          s=s[:stmt_start]+replacement+s[end:]
+          p.write_text(s)
+          print('[FIXED] Removed only the obsolete cpu_spoof vDSO-mode diagnostic/assignment block.')
+          PY
+
+          AFTER="$(grep -cF 'cs->vdso_clock_mode' "$CPU_C" || true)"
+          echo "[AUDIT] cpu_spoof.c vdso_clock_mode references after fix: $AFTER"
+          test "$AFTER" -eq 0 || { echo "[FAIL] obsolete vdso_clock_mode references remain"; exit 1; }
+          grep -qF 'Linux 4.19 compatibility: struct clocksource has no' "$CPU_C"
+          echo "[PASS] cpu_spoof.c now contains no Linux-4.19-incompatible clocksource member access."
+          echo "[LOCKED] Setup 10A remains untouched."
+          echo "==================================================================="
 
       - name: 10C - Final Source Integrity Audit
         shell: bash
