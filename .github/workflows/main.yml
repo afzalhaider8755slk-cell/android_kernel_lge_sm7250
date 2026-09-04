@@ -1,8 +1,8 @@
-# V94: Correct V93's incomplete source-of-truth extraction boundary; restore the complete SukiSU-Ultra v4.2.0 SELinux iterator/hashtab compatibility section. All verified features and locked setups remain preserved. V89 reached the targeted 4.19 smoke stage, where direct feature/*.o goals failed because SukiSU-Ultra v4.2.0's feature/ directory has no child Makefile; the parent KernelSU/kernel/Kbuild owns those objects. Official source structure is preserved; only the smoke target is corrected. V87 correctly exposed the github.token context, then 00A reached the GitHub Contents API but received HTTP 404 because its parser left the repository name inside WF_PATH. All verified source/features and locked setups are preserved. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V95: Correct V93's incomplete source-of-truth extraction boundary; restore the complete SukiSU-Ultra v4.2.0 SELinux iterator/hashtab compatibility section. All verified features and locked setups remain preserved. V89 reached the targeted 4.19 smoke stage, where direct feature/*.o goals failed because SukiSU-Ultra v4.2.0's feature/ directory has no child Makefile; the parent KernelSU/kernel/Kbuild owns those objects. Official source structure is preserved; only the smoke target is corrected. V87 correctly exposed the github.token context, then 00A reached the GitHub Contents API but received HTTP 404 because its parser left the repository name inside WF_PATH. All verified source/features and locked setups are preserved. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V94 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V95 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -2552,7 +2552,7 @@ jobs:
           # SELINUX HASHTAB BOUNDARY — SOURCE OF TRUTH, NOT HAND-WRITTEN
           # V92 proved that a text-only 'good pattern' check is insufficient:
           # the compiler still saw ksu_hash_for_each() as an undefined
-          # identifier.  Therefore V94 does NOT construct this macro in Python.
+          # identifier.  Therefore V95 does NOT construct this macro in Python.
           # It obtains the exact macro block from the checked-out SukiSU-Ultra
           # git object and replaces only that block.
           #
@@ -2610,7 +2610,7 @@ jobs:
                   raise SystemExit(f"[FAIL] 12B: source-of-truth boundary not found: {b}")
               return text[start:end]
 
-          # V94 failure analysis: stopping at the ksu_hashtab_for_each()
+          # V95 failure analysis: stopping at the ksu_hashtab_for_each()
           # #define cut the official 5.8 compatibility #if/#else/#endif block
           # in half. That produced sepolicy.c:72 "unterminated conditional
           # directive" even though the iterator body itself looked correct.
@@ -2628,10 +2628,32 @@ jobs:
           current = s[current_start:current_end]
 
           official = extract(upstream, section_start, section_end)
-          if "#endif" not in official:
-              raise SystemExit("[FAIL] 12B: official SukiSU iterator section has no #endif; refusing mutation.")
-          if official.count("#if ") < 2 or official.count("#endif") < 2:
-              raise SystemExit("[FAIL] 12B: official iterator section has unexpected preprocessor structure; refusing mutation.")
+          # Do not assume a fixed number of #if/#endif directives.
+          # The pinned v4.2.0 iterator section contains ONE balanced
+          # 5.8 hashtab compatibility conditional. Validate its actual
+          # preprocessor structure instead of imposing a guessed count.
+          import re
+          directives = re.findall(r"^\\s*#\\s*(if|ifdef|ifndef|endif|else|elif)\\b", official, re.MULTILINE)
+          depth = 0
+          saw_if = False
+          saw_else = False
+          for directive in directives:
+              if directive in ("if", "ifdef", "ifndef"):
+                  depth += 1
+                  saw_if = True
+              elif directive == "endif":
+                  depth -= 1
+                  if depth < 0:
+                      raise SystemExit("[FAIL] 12B: official iterator section has an unmatched #endif; refusing mutation.")
+              elif directive == "else":
+                  if depth <= 0:
+                      raise SystemExit("[FAIL] 12B: official iterator section has an #else outside a conditional; refusing mutation.")
+                  saw_else = True
+              elif directive == "elif":
+                  if depth <= 0:
+                      raise SystemExit("[FAIL] 12B: official iterator section has an #elif outside a conditional; refusing mutation.")
+          if not saw_if or depth != 0 or not saw_else:
+              raise SystemExit("[FAIL] 12B: official iterator section is not a balanced conditional with #else/#endif; refusing mutation.")
 
           if current != official:
               print("[INFO] 12B: local SELinux iterator section differs; restoring complete authoritative v4.2.0 section.")
@@ -2653,13 +2675,23 @@ jobs:
               raise SystemExit("[FAIL] 12B: forbidden flex_array hashtab iterator remains in final section.")
           if "for (cur = node_ptr[i]; cur; cur = cur->next)" not in final:
               raise SystemExit("[FAIL] 12B: authoritative node_ptr[i] iterator missing from final section.")
-          # Explicit V94 regression guard: the 5.8 branch must be closed before
+          # Explicit V95 regression guard: the 5.8 branch must be closed before
           # the symtab compatibility section begins.
           if "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)" not in final:
               raise SystemExit("[FAIL] 12B: 5.8 hashtab compatibility #if is missing.")
-          if "#else" not in final or final.count("#endif") < 2:
-              raise SystemExit("[FAIL] 12B: complete hashtab conditional closure is missing.")
-          print("[PASS] 12B: complete authoritative SukiSU v4.2.0 iterator section is present, closed, and uses node_ptr[i].")
+          final_directives = re.findall(r"^\\s*#\\s*(if|ifdef|ifndef|endif|else|elif)\\b", final, re.MULTILINE)
+          final_depth = 0
+          final_else = False
+          for directive in final_directives:
+              if directive in ("if", "ifdef", "ifndef"):
+                  final_depth += 1
+              elif directive == "endif":
+                  final_depth -= 1
+              elif directive == "else":
+                  final_else = True
+          if final_depth != 0 or not final_else:
+              raise SystemExit("[FAIL] 12B: final authoritative iterator conditional structure is not balanced.")
+          print("[PASS] 12B: complete authoritative SukiSU v4.2.0 iterator section is present, balanced, and uses node_ptr[i].")
 
           PY
 
