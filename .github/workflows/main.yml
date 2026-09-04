@@ -1,8 +1,8 @@
-# V97: Research-verified Linux 4.19 SELinux iterator architecture correction. V96 restored the official single iterator block but did not account for the different Linux 4.19 avtab::htable (flex_array) versus SELinux hashtab::htable (node-pointer array). V97 preserves all verified features and the four existing LG 4.19 SELinux function bodies; only the 12B source reconstruction/iterator boundary is changed.
+# V98: Cumulative, non-destructive Linux 4.19 compatibility build workflow. V96 restored the official single iterator block but did not account for the different Linux 4.19 avtab::htable (flex_array) versus SELinux hashtab::htable (node-pointer array). V97 preserves all verified features and the four existing LG 4.19 SELinux function bodies; only the 12B source reconstruction/iterator boundary is changed.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V97 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V98 Cumulative Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -2505,103 +2505,103 @@ jobs:
           echo "[PASS] Setup 12A completed; Setup 10A and Setup 19 remain locked."
           echo "[PASS] HID audit now follows the actual 4.19 source layout; no synthetic bind pair is required."
 
-      - name: 12B - Targeted 4.19 Hotspot Compile Smoke Preflight (No Feature Removal)
+      - name: 12B - Cumulative 4.19 Hotspot Compile Gate (V98 LOCKED)
         shell: bash
         run: |
           set -Eeuo pipefail
           LOG="$DIAG_DIR/12B-targeted-419-compile-smoke.log"
           : > "$LOG"
           exec > >(tee -a "$LOG") 2>&1
-          echo "========== TARGETED 4.19 HOTSPOT COMPILE SMOKE PREFLIGHT =========="
-          echo "[PURPOSE] Catch known late-build failures before the full kernel build."
-          echo "[LOCKED] No feature is removed, downgraded, or replaced."
-          echo "[RESEARCH] Pinned SukiSU-Ultra v4.2.0 source + actual LG/CIP135 Linux 4.19 SELinux headers are authoritative."
-          echo "[RESEARCH] Linux 4.19 avtab::htable is struct flex_array * while SELinux hashtab::htable is struct hashtab_node **."
-          echo "[RESEARCH] Therefore avtab and hashtab MUST use separate iteration boundaries."
-          echo "[RESEARCH] V96 still allowed sepolicy.c:72 'unterminated conditional directive' to reach clang. V97 removes the parser-risk path by reconstructing the compiled sepolicy.c from the pinned git object and reapplying only the four already-verified LG 4.19 function bodies."
 
-          test -f .config || { echo "[INFO] .config is not present yet; normal build path owns compilation."; exit 0; }
-          export KBUILD_BUILD_USER=builder
-          export KBUILD_BUILD_HOST=github
+          echo "========== V98 CUMULATIVE 4.19 HOTSPOT COMPILE GATE =========="
+          echo "[RULE] No feature removal. No compiler error skipping. No destructive reconstruction."
+          echo "[RULE] This stage operates on the cumulative checked-out source produced by all prior verified stages."
+          echo "[RULE] Pinned SukiSU source is reference material only; it MUST NOT overwrite cumulative sepolicy.c."
+          echo "[RESEARCH] Linux 4.19 SELinux hashtab->htable is a direct struct hashtab_node ** array."
+          echo "[RESEARCH] Therefore flex_array_get_ptr() is not valid for ksu_hash_for_each() on this tree."
+          echo "[RESEARCH] Linux 4.19 avtab is a separate flex_array-backed structure and requires its own iterator."
 
-          KSU_DIR="drivers/kernelsu"
-          SEPOLICY_C="$KSU_DIR/selinux/sepolicy.c"
-          test -L "$KSU_DIR"
-          test -f "$KSU_DIR/Kbuild"
-          test -f "$KSU_DIR/Makefile"
-          test -f "$SEPOLICY_C"
-          test -f include/linux/flex_array.h
-          test -f security/selinux/ss/hashtab.h
-          test -f security/selinux/ss/avtab.h
-          test -f security/selinux/ss/symtab.h
-
-          HEAD="$(git -C "$KSU_DIR" rev-parse HEAD)"
-          echo "[INFO] SukiSU/KernelSU HEAD=$HEAD"
-          test "$HEAD" = "85eb4a95b8a61d756ecf53b9c5785e48e1b15039"
-
-          echo "[INFO] Actual Linux 4.19 SELinux layouts:"
-          grep -nF 'struct hashtab_node **htable;' security/selinux/ss/hashtab.h
-          grep -nF 'struct flex_array *htable;' security/selinux/ss/avtab.h
-          grep -nF 'void *flex_array_get_ptr(struct flex_array *fa, unsigned int element_nr);' include/linux/flex_array.h
-          grep -nF 'struct hashtab *table;' security/selinux/ss/symtab.h
-
-          git -C "$KSU_DIR" show HEAD:kernel/selinux/sepolicy.c > "$RUNNER_TEMP/sukisu-v4.2.0-sepolicy.c"
-          test -s "$RUNNER_TEMP/sukisu-v4.2.0-sepolicy.c"
-
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCByZSwgc3lzLCBoYXNobGliCgpzcmMgPSBQYXRoKHN5cy5hcmd2WzFdKQpkc3QgPSBQYXRoKHN5cy5hcmd2WzJdKQpzID0gc3JjLnJlYWRfdGV4dCgpCgpkZWYgZmluZF9mdW5jKHRleHQsIG5hbWUpOgogICAgcGF0ID0gcmUuY29tcGlsZShyJyg/bXMpXnN0YXRpY1xzKyg/OmJvb2x8dm9pZHxzdHJ1Y3RccythdnRhYl9ub2RlXHMqXCopXHMrJyArCiAgICAgICAgICAgICAgICAgICAgIHJlLmVzY2FwZShuYW1lKSArIHInXHMqXChbXjtdKj9cKVxzKlx7JykKICAgIG0gPSBwYXQuc2VhcmNoKHRleHQpCiAgICBpZiBub3QgbToKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KGYiW0ZBSUxdIDEyQjogZnVuY3Rpb24gYm9keSBub3QgZm91bmQgaW4gcGlubmVkIHNvdXJjZToge25hbWV9IikKICAgIGJyYWNlID0gdGV4dC5maW5kKCd7JywgbS5zdGFydCgpLCBtLmVuZCgpKQogICAgZGVwdGggPSAwCiAgICBmb3IgaSBpbiByYW5nZShicmFjZSwgbGVuKHRleHQpKToKICAgICAgICBpZiB0ZXh0W2ldID09ICd7JzoKICAgICAgICAgICAgZGVwdGggKz0gMQogICAgICAgIGVsaWYgdGV4dFtpXSA9PSAnfSc6CiAgICAgICAgICAgIGRlcHRoIC09IDEKICAgICAgICAgICAgaWYgZGVwdGggPT0gMDoKICAgICAgICAgICAgICAgIHJldHVybiBtLnN0YXJ0KCksIGkgKyAxCiAgICByYWlzZSBTeXN0ZW1FeGl0KGYiW0ZBSUxdIDEyQjogYnJhY2UgbWlzbWF0Y2ggaW4gcGlubmVkIHNvdXJjZToge25hbWV9IikKCmRlZiByZXBsYWNlX2Z1bmModGV4dCwgbmFtZSwgYm9keSk6CiAgICBhLCBiID0gZmluZF9mdW5jKHRleHQsIG5hbWUpCiAgICByZXR1cm4gdGV4dFs6YV0gKyBib2R5ICsgdGV4dFtiOl0KCnMgPSByZXBsYWNlX2Z1bmMocywgJ3JlbW92ZV9hdnRhYl9ub2RlJywgJ3N0YXRpYyBib29sIHJlbW92ZV9hdnRhYl9ub2RlKHN0cnVjdCBwb2xpY3lkYiAqZGIsIHN0cnVjdCBhdnRhYl9ub2RlICpub2RlKVxue1xuICAgIGludCBpO1xuICAgIGludCByZXQ7XG4gICAgaW50IHNocmlua19zaXplID0gc2l6ZW9mKHN0cnVjdCBhdnRhYl9rZXkpICsgc2l6ZW9mKHN0cnVjdCBhdnRhYl9kYXR1bSk7XG4gICAgc3RydWN0IGF2dGFiIHJlbW92ZWQgPSB7fTtcbiAgICBzdHJ1Y3QgYXZ0YWJfbm9kZSAqbjtcbiAgICBzdHJ1Y3QgYXZ0YWJfbm9kZSAqcHJldjtcblxuICAgIHJldCA9IGF2dGFiX2FsbG9jKCZyZW1vdmVkLCAxKTtcbiAgICBpZiAocmV0IDwgMClcbiAgICAgICAgcmV0dXJuIGZhbHNlO1xuICAgIGZvciAoaSA9IDA7IGkgPCBkYi0+dGVfYXZ0YWIubnNsb3Q7IGkrKykge1xuICAgICAgICBwcmV2ID0gTlVMTDtcbiAgICAgICAgZm9yIChuID0gZmxleF9hcnJheV9nZXRfcHRyKGRiLT50ZV9hdnRhYi5odGFibGUsIGkpOyBuOyBwcmV2ID0gbiwgbiA9IG4tPm5leHQpIHtcbiAgICAgICAgICAgIGlmIChuICE9IG5vZGUpXG4gICAgICAgICAgICAgICAgY29udGludWU7XG4gICAgICAgICAgICBpZiAocHJldilcbiAgICAgICAgICAgICAgICBwcmV2LT5uZXh0ID0gbi0+bmV4dDtcbiAgICAgICAgICAgIGVsc2UgaWYgKGZsZXhfYXJyYXlfcHV0X3B0cihkYi0+dGVfYXZ0YWIuaHRhYmxlLCBpLCBuLT5uZXh0LCBHRlBfS0VSTkVMIHwgX19HRlBfWkVSTykpIHtcbiAgICAgICAgICAgICAgICBhdnRhYl9kZXN0cm95KCZyZW1vdmVkKTtcbiAgICAgICAgICAgICAgICByZXR1cm4gZmFsc2U7XG4gICAgICAgICAgICB9XG4gICAgICAgICAgICBpZiAoZGItPnRlX2F2dGFiLm5lbCA+IDApXG4gICAgICAgICAgICAgICAgZGItPnRlX2F2dGFiLm5lbC0tO1xuICAgICAgICAgICAgaWYgKChuLT5rZXkuc3BlY2lmaWVkICYgQVZUQUJfWFBFUk1TKSAmJiBuLT5kYXR1bS51LnhwZXJtcylcbiAgICAgICAgICAgICAgICBzaHJpbmtfc2l6ZSArPSBzaXplb2YodTgpICsgc2l6ZW9mKHU4KSArIHNpemVvZih1MzIpICogQVJSQVlfU0laRShuLT5kYXR1bS51LnhwZXJtcy0+cGVybXMucCk7XG4gICAgICAgICAgICBuLT5uZXh0ID0gTlVMTDtcbiAgICAgICAgICAgIGlmIChmbGV4X2FycmF5X3B1dF9wdHIocmVtb3ZlZC5odGFibGUsIDAsIG4sIEdGUF9LRVJORUwgfCBfX0dGUF9aRVJPKSkge1xuICAgICAgICAgICAgICAgIGF2dGFiX2Rlc3Ryb3koJnJlbW92ZWQpO1xuICAgICAgICAgICAgICAgIHJldHVybiBmYWxzZTtcbiAgICAgICAgICAgIH1cbiAgICAgICAgICAgIHJlbW92ZWQubmVsID0gMTtcbiAgICAgICAgICAgIGF2dGFiX2Rlc3Ryb3koJnJlbW92ZWQpO1xuICAgICAgICAgICAgaWYgKGRiLT5sZW4gPj0gc2hyaW5rX3NpemUpXG4gICAgICAgICAgICAgICAgZGItPmxlbiAtPSBzaHJpbmtfc2l6ZTtcbiAgICAgICAgICAgIHJldHVybiB0cnVlO1xuICAgICAgICB9XG4gICAgfVxuICAgIGF2dGFiX2Rlc3Ryb3koJnJlbW92ZWQpO1xuICAgIHJldHVybiBmYWxzZTtcbn0nKQoKcyA9IHJlcGxhY2VfZnVuYyhzLCAnYWRkX2ZpbGVuYW1lX3RyYW5zJywgJ3N0YXRpYyBib29sIGFkZF9maWxlbmFtZV90cmFucyhzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBjb25zdCBjaGFyICpzLCBjb25zdCBjaGFyICp0LFxuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGNvbnN0IGNoYXIgKmMsIGNvbnN0IGNoYXIgKmQsIGNvbnN0IGNoYXIgKm8pXG57XG4gICAgc3RydWN0IHR5cGVfZGF0dW0gKnNyYywgKnRndCwgKmRlZjtcbiAgICBzdHJ1Y3QgY2xhc3NfZGF0dW0gKmNscztcbiAgICBzdHJ1Y3QgZmlsZW5hbWVfdHJhbnMga2V5O1xuICAgIHN0cnVjdCBmaWxlbmFtZV90cmFuc19kYXR1bSAqdHJhbnM7XG5cbiAgICBzcmMgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgcyk7XG4gICAgaWYgKCFzcmMpIHJldHVybiBmYWxzZTtcbiAgICB0Z3QgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgdCk7XG4gICAgaWYgKCF0Z3QpIHJldHVybiBmYWxzZTtcbiAgICBjbHMgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF9jbGFzc2VzLCBjKTtcbiAgICBpZiAoIWNscykgcmV0dXJuIGZhbHNlO1xuICAgIGRlZiA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX3R5cGVzLCBkKTtcbiAgICBpZiAoIWRlZikgcmV0dXJuIGZhbHNlO1xuXG4gICAga2V5LnN0eXBlID0gc3JjLT52YWx1ZTtcbiAgICBrZXkudHR5cGUgPSB0Z3QtPnZhbHVlO1xuICAgIGtleS50Y2xhc3MgPSBjbHMtPnZhbHVlO1xuICAgIGtleS5uYW1lID0gbztcbiAgICB0cmFucyA9IGhhc2h0YWJfc2VhcmNoKGRiLT5maWxlbmFtZV90cmFucywgJmtleSk7XG4gICAgaWYgKHRyYW5zID09IE5VTEwpIHtcbiAgICAgICAgc3RydWN0IGZpbGVuYW1lX3RyYW5zICpuZXdfa2V5O1xuICAgICAgICB0cmFucyA9IChzdHJ1Y3QgZmlsZW5hbWVfdHJhbnNfZGF0dW0gKilrY2FsbG9jKDEsIHNpemVvZigqdHJhbnMpLCBHRlBfQVRPTUlDKTtcbiAgICAgICAgaWYgKCF0cmFucykgcmV0dXJuIGZhbHNlO1xuICAgICAgICBuZXdfa2V5ID0gKHN0cnVjdCBmaWxlbmFtZV90cmFucyAqKWttYWxsb2Moc2l6ZW9mKCpuZXdfa2V5KSwgR0ZQX0FUT01JQyk7XG4gICAgICAgIGlmICghbmV3X2tleSkgeyBrZnJlZSh0cmFucyk7IHJldHVybiBmYWxzZTsgfVxuICAgICAgICAqbmV3X2tleSA9IGtleTtcbiAgICAgICAgbmV3X2tleS0+bmFtZSA9IGtzdHJkdXAoa2V5Lm5hbWUsIEdGUF9BVE9NSUMpO1xuICAgICAgICBpZiAoIW5ld19rZXktPm5hbWUpIHsga2ZyZWUobmV3X2tleSk7IHJldHVybiBmYWxzZTsgfVxuICAgICAgICB0cmFucy0+b3R5cGUgPSBkZWYtPnZhbHVlO1xuICAgICAgICBpZiAoaGFzaHRhYl9pbnNlcnQoZGItPmZpbGVuYW1lX3RyYW5zLCBuZXdfa2V5LCB0cmFucykpIHtcbiAgICAgICAgICAgIGtmcmVlKChjaGFyICopbmV3X2tleS0+bmFtZSk7IGtmcmVlKG5ld19rZXkpOyBrZnJlZSh0cmFucyk7IHJldHVybiBmYWxzZTtcbiAgICAgICAgfVxuICAgIH0gZWxzZSB7XG4gICAgICAgIHRyYW5zLT5vdHlwZSA9IGRlZi0+dmFsdWU7XG4gICAgfVxuICAgIHJldHVybiBlYml0bWFwX3NldF9iaXQoJmRiLT5maWxlbmFtZV90cmFuc190dHlwZXMsIHNyYy0+dmFsdWUgLSAxLCAxKSA9PSAwO1xufScpCgpzID0gcmVwbGFjZV9mdW5jKHMsICdhZGRfdHlwZScsICdzdGF0aWMgYm9vbCBhZGRfdHlwZShzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBjb25zdCBjaGFyICp0eXBlX25hbWUsIGJvb2wgYXR0cilcbntcbiAgICBzdHJ1Y3QgdHlwZV9kYXR1bSAqdHlwZSA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX3R5cGVzLCB0eXBlX25hbWUpO1xuICAgIHUzMiB2YWx1ZTtcbiAgICBjaGFyICprZXk7XG4gICAgc3RydWN0IGZsZXhfYXJyYXkgKm5ld190eXBlX2F0dHJfbWFwX2FycmF5O1xuICAgIHN0cnVjdCBmbGV4X2FycmF5ICpuZXdfdHlwZV92YWxfdG9fc3RydWN0O1xuICAgIHN0cnVjdCBmbGV4X2FycmF5ICpuZXdfdmFsX3RvX25hbWVfdHlwZXM7XG4gICAgaW50IGksIGo7XG4gICAgdm9pZCAqb2xkX2VsZW07XG4gICAgc3RydWN0IGZsZXhfYXJyYXkgKm9sZF9mYTtcblxuICAgIGlmICh0eXBlKSByZXR1cm4gdHJ1ZTtcbiAgICB2YWx1ZSA9ICsrZGItPnBfdHlwZXMubnByaW07XG4gICAgdHlwZSA9IChzdHJ1Y3QgdHlwZV9kYXR1bSAqKWt6YWxsb2Moc2l6ZW9mKCp0eXBlKSwgR0ZQX0FUT01JQyk7XG4gICAgaWYgKCF0eXBlKSByZXR1cm4gZmFsc2U7XG4gICAgdHlwZS0+cHJpbWFyeSA9IDE7IHR5cGUtPnZhbHVlID0gdmFsdWU7IHR5cGUtPmF0dHJpYnV0ZSA9IGF0dHI7XG4gICAga2V5ID0ga3N0cmR1cCh0eXBlX25hbWUsIEdGUF9BVE9NSUMpO1xuICAgIGlmICgha2V5KSB7IGtmcmVlKHR5cGUpOyByZXR1cm4gZmFsc2U7IH1cbiAgICBpZiAoc3ltdGFiX2luc2VydCgmZGItPnBfdHlwZXMsIGtleSwgdHlwZSkpIHsga2ZyZWUoa2V5KTsga2ZyZWUodHlwZSk7IHJldHVybiBmYWxzZTsgfVxuXG4gICAgbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXkgPSBmbGV4X2FycmF5X2FsbG9jKHNpemVvZihzdHJ1Y3QgZWJpdG1hcCksIGRiLT5wX3R5cGVzLm5wcmltLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTyk7XG4gICAgbmV3X3R5cGVfdmFsX3RvX3N0cnVjdCA9IGZsZXhfYXJyYXlfYWxsb2Moc2l6ZW9mKHN0cnVjdCB0eXBlX2RhdHVtICopLCBkYi0+cF90eXBlcy5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pO1xuICAgIG5ld192YWxfdG9fbmFtZV90eXBlcyA9IGZsZXhfYXJyYXlfYWxsb2Moc2l6ZW9mKGNoYXIgKiksIGRiLT5zeW10YWJbU1lNX1RZUEVTXS5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pO1xuICAgIGlmICghbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXkgfHwgIW5ld190eXBlX3ZhbF90b19zdHJ1Y3QgfHwgIW5ld192YWxfdG9fbmFtZV90eXBlcykgcmV0dXJuIGZhbHNlO1xuXG4gICAgaWYgKGZsZXhfYXJyYXlfcHJlYWxsb2MobmV3X3R5cGVfYXR0cl9tYXBfYXJyYXksIDAsIGRiLT5wX3R5cGVzLm5wcmltLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykgfHxcbiAgICAgICAgZmxleF9hcnJheV9wcmVhbGxvYyhuZXdfdHlwZV92YWxfdG9fc3RydWN0LCAwLCBkYi0+cF90eXBlcy5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pIHx8XG4gICAgICAgIGZsZXhfYXJyYXlfcHJlYWxsb2MobmV3X3ZhbF90b19uYW1lX3R5cGVzLCAwLCBkYi0+c3ltdGFiW1NZTV9UWVBFU10ubnByaW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSlcbiAgICAgICAgcmV0dXJuIGZhbHNlO1xuXG4gICAgaWYgKGRiLT50eXBlX2F0dHJfbWFwX2FycmF5KSB7XG4gICAgICAgIGZvciAoaiA9IDA7IGogPCBkYi0+dHlwZV9hdHRyX21hcF9hcnJheS0+dG90YWxfbnJfZWxlbWVudHM7IGorKykge1xuICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldChkYi0+dHlwZV9hdHRyX21hcF9hcnJheSwgaik7XG4gICAgICAgICAgICBpZiAob2xkX2VsZW0gJiYgZmxleF9hcnJheV9wdXQobmV3X3R5cGVfYXR0cl9tYXBfYXJyYXksIGosIG9sZF9lbGVtLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykpIHJldHVybiBmYWxzZTtcbiAgICAgICAgfVxuICAgIH1cbiAgICBpZiAoZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheSkge1xuICAgICAgICBmb3IgKGogPSAwOyBqIDwgZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheS0+dG90YWxfbnJfZWxlbWVudHM7IGorKykge1xuICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheSwgaik7XG4gICAgICAgICAgICBpZiAob2xkX2VsZW0gJiYgZmxleF9hcnJheV9wdXRfcHRyKG5ld190eXBlX3ZhbF90b19zdHJ1Y3QsIGosIG9sZF9lbGVtLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykpIHJldHVybiBmYWxzZTtcbiAgICAgICAgfVxuICAgIH1cbiAgICBpZiAoZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdKSB7XG4gICAgICAgIGZvciAoaiA9IDA7IGogPCBkYi0+c3ltdGFiW1NZTV9UWVBFU10ubnByaW07IGorKykge1xuICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdLCBqKTtcbiAgICAgICAgICAgIGlmIChvbGRfZWxlbSAmJiBmbGV4X2FycmF5X3B1dF9wdHIobmV3X3ZhbF90b19uYW1lX3R5cGVzLCBqLCBvbGRfZWxlbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pKSByZXR1cm4gZmFsc2U7XG4gICAgICAgIH1cbiAgICB9XG5cbiAgICBvbGRfZmEgPSBkYi0+dHlwZV9hdHRyX21hcF9hcnJheTsgZGItPnR5cGVfYXR0cl9tYXBfYXJyYXkgPSBuZXdfdHlwZV9hdHRyX21hcF9hcnJheTsgaWYgKG9sZF9mYSkgZmxleF9hcnJheV9mcmVlKG9sZF9mYSk7XG4gICAgZWJpdG1hcF9pbml0KGZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB2YWx1ZSAtIDEpKTtcbiAgICBpZiAoZWJpdG1hcF9zZXRfYml0KGZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB2YWx1ZSAtIDEpLCB2YWx1ZSAtIDEsIDEpKSByZXR1cm4gZmFsc2U7XG5cbiAgICBvbGRfZmEgPSBkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5OyBkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5ID0gbmV3X3R5cGVfdmFsX3RvX3N0cnVjdDsgaWYgKG9sZF9mYSkgZmxleF9hcnJheV9mcmVlKG9sZF9mYSk7XG4gICAgaWYgKGZsZXhfYXJyYXlfcHV0X3B0cihkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5LCB2YWx1ZSAtIDEsIHR5cGUsIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSkgcmV0dXJuIGZhbHNlO1xuXG4gICAgb2xkX2ZhID0gZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdOyBkYi0+c3ltX3ZhbF90b19uYW1lW1NZTV9UWVBFU10gPSBuZXdfdmFsX3RvX25hbWVfdHlwZXM7IGlmIChvbGRfZmEpIGZsZXhfYXJyYXlfZnJlZShvbGRfZmEpO1xuICAgIGlmIChmbGV4X2FycmF5X3B1dF9wdHIoZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdLCB2YWx1ZSAtIDEsIGtleSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pKSByZXR1cm4gZmFsc2U7XG5cbiAgICBmb3IgKGkgPSAwOyBpIDwgZGItPnBfcm9sZXMubnByaW07ICsraSlcbiAgICAgICAgZWJpdG1hcF9zZXRfYml0KCZkYi0+cm9sZV92YWxfdG9fc3RydWN0W2ldLT50eXBlcywgdmFsdWUgLSAxLCAxKTtcbiAgICByZXR1cm4gdHJ1ZTtcbn0nKQoKcyA9IHJlcGxhY2VfZnVuYyhzLCAnYWRkX3R5cGVhdHRyaWJ1dGVfcmF3JywgJ3N0YXRpYyB2b2lkIGFkZF90eXBlYXR0cmlidXRlX3JhdyhzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBzdHJ1Y3QgdHlwZV9kYXR1bSAqdHlwZSwgc3RydWN0IHR5cGVfZGF0dW0gKmF0dHIpXG57XG4gICAgc3RydWN0IGViaXRtYXAgKnNhdHRyID0gZmxleF9hcnJheV9nZXQoZGItPnR5cGVfYXR0cl9tYXBfYXJyYXksIHR5cGUtPnZhbHVlIC0gMSk7XG4gICAgc3RydWN0IGhhc2h0YWJfbm9kZSAqbm9kZTtcbiAgICBzdHJ1Y3QgY29uc3RyYWludF9ub2RlICpuO1xuICAgIHN0cnVjdCBjb25zdHJhaW50X2V4cHIgKmU7XG4gICAgaWYgKCFzYXR0cikgcmV0dXJuO1xuICAgIGViaXRtYXBfc2V0X2JpdChzYXR0ciwgYXR0ci0+dmFsdWUgLSAxLCAxKTtcbiAgICBrc3VfaGFzaHRhYl9mb3JfZWFjaChkYi0+cF9jbGFzc2VzLnRhYmxlLCBub2RlKVxuICAgIHtcbiAgICAgICAgc3RydWN0IGNsYXNzX2RhdHVtICpjbHMgPSAoc3RydWN0IGNsYXNzX2RhdHVtICopKG5vZGUtPmRhdHVtKTtcbiAgICAgICAgZm9yIChuID0gY2xzLT5jb25zdHJhaW50czsgbjsgbiA9IG4tPm5leHQpXG4gICAgICAgICAgICBmb3IgKGUgPSBuLT5leHByOyBlOyBlID0gZS0+bmV4dClcbiAgICAgICAgICAgICAgICBpZiAoZS0+ZXhwcl90eXBlID09IENFWFBSX05BTUVTICYmIGViaXRtYXBfZ2V0X2JpdCgmZS0+dHlwZV9uYW1lcy0+dHlwZXMsIGF0dHItPnZhbHVlIC0gMSkpXG4gICAgICAgICAgICAgICAgICAgIGViaXRtYXBfc2V0X2JpdCgmZS0+bmFtZXMsIHR5cGUtPnZhbHVlIC0gMSwgMSk7XG4gICAgfTtcbn0nKQoKc3RhcnQgPSBzLmZpbmQoIiNkZWZpbmUga3N1X2hhc2hfZm9yX2VhY2goIikKZW5kID0gcy5maW5kKCIjZGVmaW5lIGF2dGFiX2Zvcl9lYWNoKCIsIHN0YXJ0KQppZiBzdGFydCA8IDAgb3IgZW5kIDwgMDoKICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSAxMkI6IGl0ZXJhdG9yIG1hY3JvIGJvdW5kYXJpZXMgbWlzc2luZyBpbiBwaW5uZWQgc291cmNlLiIpCnMgPSBzWzpzdGFydF0gKyAnI2RlZmluZSBrc3VfaGFzaF9mb3JfZWFjaChub2RlX3B0ciwgbl9zbG90LCBjdXIpIFxcXG4gICAgaW50IGk7IFxcXG4gICAgZm9yIChpID0gMDsgaSA8IG5fc2xvdDsgKytpKSBcXFxuICAgICAgICBmb3IgKGN1ciA9IG5vZGVfcHRyW2ldOyBjdXI7IGN1ciA9IGN1ci0+bmV4dClcbi8vIGh0YWJsZSBpcyBhIHN0cnVjdCBpbnN0ZWFkIG9mIHBvaW50ZXIgYWJvdmUgNS44LjA6XG4vLyBodHRwczovL2VsaXhpci5ib290bGluLmNvbS9saW51eC92NS44LXJjMS9zb3VyY2Uvc2VjdXJpdHkvc2VsaW51eC9zcy9zeW10YWIuaFxuI2lmIExJTlVYX1ZFUlNJT05fQ09ERSA+PSBLRVJORUxfVkVSU0lPTig1LCA4LCAwKVxuI2RlZmluZSBrc3VfaGFzaHRhYl9mb3JfZWFjaChodGFiLCBjdXIpIGtzdV9oYXNoX2Zvcl9lYWNoKGh0YWIuaHRhYmxlLCBodGFiLnNpemUsIGN1cilcbiNlbHNlXG4jZGVmaW5lIGtzdV9oYXNodGFiX2Zvcl9lYWNoKGh0YWIsIGN1cikga3N1X2hhc2hfZm9yX2VhY2goaHRhYi0+aHRhYmxlLCBodGFiLT5zaXplLCBjdXIpXG4jZW5kaWZcbi8vIExpbnV4IDQuMTkgYXZ0YWIuaCBzdG9yZXMgYXZ0YWI6Omh0YWJsZSBhcyBzdHJ1Y3QgZmxleF9hcnJheSAqLlxuLy8gS2VlcCB0aGUgb2ZmaWNpYWwgcmF3LWFycmF5IGl0ZXJhdG9yIGFib3ZlIGZvciBoYXNodGFiL21vZGVybiBhdnRhYiB1c2Vycyxcbi8vIGFuZCB1c2UgdGhlIG5hdGl2ZSA0LjE5IGZsZXhfYXJyYXkgYWNjZXNzb3Igb25seSBmb3IgYXZ0YWJfZm9yX2VhY2guXG4jZGVmaW5lIGtzdV9hdnRhYl9mb3JfZWFjaChhdnRhYiwgY3VyKSBcXFxuICAgIGludCBpOyBcXFxuICAgIGZvciAoaSA9IDA7IGkgPCBhdnRhYi5uc2xvdDsgKytpKSBcXFxuICAgICAgICBmb3IgKGN1ciA9IGZsZXhfYXJyYXlfZ2V0X3B0cihhdnRhYi5odGFibGUsIGkpOyBjdXI7IGN1ciA9IGN1ci0+bmV4dClcbicgKyBzW2VuZDpdCnMgPSBzLnJlcGxhY2UoCiAgICAiI2RlZmluZSBhdnRhYl9mb3JfZWFjaChhdnRhYiwgY3VyKSBrc3VfaGFzaF9mb3JfZWFjaChhdnRhYi5odGFibGUsIGF2dGFiLm5zbG90LCBjdXIpOyIsCiAgICAiI2RlZmluZSBhdnRhYl9mb3JfZWFjaChhdnRhYiwgY3VyKSBrc3VfYXZ0YWJfZm9yX2VhY2goYXZ0YWIsIGN1cik7IiwKICAgIDEKKQoKZGlyZWN0aXZlcyA9IHJlLmZpbmRhbGwocideXHMqI1xzKihpZnxpZmRlZnxpZm5kZWZ8ZW5kaWZ8ZWxzZXxlbGlmKVxiJywgcywgcmUuTVVMVElMSU5FKQpkZXB0aCA9IDAKZm9yIGQgaW4gZGlyZWN0aXZlczoKICAgIGlmIGQgaW4gKCJpZiIsICJpZmRlZiIsICJpZm5kZWYiKToKICAgICAgICBkZXB0aCArPSAxCiAgICBlbGlmIGQgPT0gImVuZGlmIjoKICAgICAgICBkZXB0aCAtPSAxCiAgICAgICAgaWYgZGVwdGggPCAwOgogICAgICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gMTJCOiByZWNvbnN0cnVjdGVkIHNlcG9saWN5LmMgaGFzIHVubWF0Y2hlZCAjZW5kaWYuIikKICAgIGVsaWYgZCBpbiAoImVsc2UiLCAiZWxpZiIpIGFuZCBkZXB0aCA8PSAwOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoZiJbRkFJTF0gMTJCOiByZWNvbnN0cnVjdGVkIHNlcG9saWN5LmMgaGFzIHtkfSBvdXRzaWRlIGNvbmRpdGlvbmFsLiIpCmlmIGRlcHRoICE9IDA6CiAgICByYWlzZSBTeXN0ZW1FeGl0KGYiW0ZBSUxdIDEyQjogcmVjb25zdHJ1Y3RlZCBzZXBvbGljeS5jIHByZXByb2Nlc3NvciBkZXB0aD17ZGVwdGh9LiIpCgpmb3IgbmFtZSBpbiAoInJlbW92ZV9hdnRhYl9ub2RlIiwgImFkZF9maWxlbmFtZV90cmFucyIsICJhZGRfdHlwZSIsICJhZGRfdHlwZWF0dHJpYnV0ZV9yYXciKToKICAgIHBhdCA9IHJlLmNvbXBpbGUocicoP21zKV5zdGF0aWNccysoPzpib29sfHZvaWR8c3RydWN0XHMrYXZ0YWJfbm9kZVxzKlwqKVxzKycgKwogICAgICAgICAgICAgICAgICAgICByZS5lc2NhcGUobmFtZSkgKyByJ1xzKlwoW147XSo/XClccypceycpCiAgICBpZiBsZW4ocGF0LmZpbmRhbGwocykpICE9IDE6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmIltGQUlMXSAxMkI6IGZ1bmN0aW9uLWRlZmluaXRpb24gaW52YXJpYW50IGZhaWxlZCBmb3Ige25hbWV9LiIpCmlmICJmbGV4X2FycmF5X2dldF9wdHIobm9kZV9wdHIsIGkpIiBpbiBzOgogICAgcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIDEyQjogZm9yYmlkZGVuIGZsZXhfYXJyYXkgaGFzaHRhYiBpdGVyYXRvciByZW1haW5zLiIpCmlmICIjZGVmaW5lIGF2dGFiX2Zvcl9lYWNoKGF2dGFiLCBjdXIpIGtzdV9hdnRhYl9mb3JfZWFjaChhdnRhYiwgY3VyKTsiIG5vdCBpbiBzOgogICAgcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIDEyQjogZGVkaWNhdGVkIDQuMTkgYXZ0YWIgaXRlcmF0b3Igd2FzIG5vdCBpbnN0YWxsZWQuIikKaWYgImZsZXhfYXJyYXlfZ2V0X3B0cihhdnRhYi5odGFibGUsIGkpIiBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSAxMkI6IG5hdGl2ZSA0LjE5IGF2dGFiIGZsZXhfYXJyYXkgaXRlcmF0b3IgaXMgbWlzc2luZy4iKQoKZHN0LndyaXRlX3RleHQocykKcHJpbnQoIltQQVNTXSAxMkI6IHJlY29uc3RydWN0ZWQgc2Vwb2xpY3kuYyBmcm9tIHBpbm5lZCBTdWtpU1UtVWx0cmEgdjQuMi4wLiIpCnByaW50KCJbUEFTU10gMTJCOiBwcmVzZXJ2ZWQgdGhlIGZvdXIgZXhpc3RpbmcgdmVyaWZpZWQgTEcgNC4xOSBTRUxpbnV4IGZ1bmN0aW9uIGJvZGllcy4iKQpwcmludCgiW1BBU1NdIDEyQjoga2VwdCBrc3VfaGFzaF9mb3JfZWFjaCBhdXRob3JpdGF0aXZlIGZvciBoYXNodGFiIGl0ZXJhdGlvbi4iKQpwcmludCgiW0ZJWEVEXSAxMkI6IHNlcGFyYXRlZCBMaW51eCA0LjE5IGF2dGFiIGZsZXhfYXJyYXkgaXRlcmF0aW9uIGludG8ga3N1X2F2dGFiX2Zvcl9lYWNoLiIpCnByaW50KCJbUEFTU10gMTJCOiBmdWxsLWZpbGUgcHJlcHJvY2Vzc29yIGNvbmRpdGlvbmFsIGJhbGFuY2UgaXMgemVyby4iKQpwcmludCgiW1BBU1NdIDEyQjogbm8gb2Jzb2xldGUgZmxleF9hcnJheSBoYXNodGFiIGl0ZXJhdG9yIHJlbWFpbnMuIikKcHJpbnQoIltTSEEyNTZdIiwgaGFzaGxpYi5zaGEyNTYocy5lbmNvZGUoKSkuaGV4ZGlnZXN0KCkpCg==' | base64 -d > "$RUNNER_TEMP/rebuild_sukisu_419_sepolicy.py"
-          chmod 700 "$RUNNER_TEMP/rebuild_sukisu_419_sepolicy.py"
-          python3 -m py_compile "$RUNNER_TEMP/rebuild_sukisu_419_sepolicy.py"
-          python3 "$RUNNER_TEMP/rebuild_sukisu_419_sepolicy.py" "$RUNNER_TEMP/sukisu-v4.2.0-sepolicy.c" "$SEPOLICY_C"
-
+          SEPOLICY_C="drivers/kernelsu/selinux/sepolicy.c"
           test -s "$SEPOLICY_C"
-          cmp -s "$SEPOLICY_C" "$RUNNER_TEMP/sukisu-v4.2.0-sepolicy.c"
-          echo "[PASS] Physical sepolicy.c matches the reconstructed pinned-source candidate."
 
-          echo "----- sepolicy.c iterator boundary -----"
-          sed -n '55,90p' "$SEPOLICY_C"
-          echo "----- end iterator boundary -----"
+          echo "----- CURRENT CUMULATIVE sepolicy.c BEFORE V98 FIX -----"
+          sed -n '50,105p' "$SEPOLICY_C"
+          echo "----- END CURRENT SOURCE -----"
+
+          python3 - "$SEPOLICY_C" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          start = s.find("#define ksu_hash_for_each(")
+          if start < 0:
+              raise SystemExit("[FAIL] V98: ksu_hash_for_each() definition is missing.")
+          end = s.find("\n\n", start)
+          if end < 0:
+              end = len(s)
+          block = s[start:end]
+
+          bad = "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)"
+          good = "for (cur = node_ptr[i]; cur; cur = cur->next)"
+
+          if bad in block:
+              block = block.replace(bad, good, 1)
+              s = s[:start] + block + s[end:]
+              p.write_text(s)
+              print("[FIXED] V98: Linux 4.19 hashtab iterator changed to native node_ptr[i].")
+          elif good in block:
+              print("[PASS] V98: Linux 4.19 hashtab iterator is already fixed.")
+          else:
+              raise SystemExit("[FAIL] V98: unexpected ksu_hash_for_each() iterator form; refusing to guess.")
+
+          s = p.read_text()
+          start = s.find("#define ksu_hash_for_each(")
+          end = s.find("\n\n", start)
+          block = s[start:] if end < 0 else s[start:end]
+          if bad in block:
+              raise SystemExit("[FAIL] V98: obsolete flex_array hashtab iterator remains.")
+          if good not in block:
+              raise SystemExit("[FAIL] V98: required node_ptr[i] hashtab iterator is missing.")
+
+          if "#define ksu_avtab_for_each(" not in s:
+              raise SystemExit("[FAIL] V98: dedicated avtab iterator is missing.")
+          if "flex_array_get_ptr(avtab.htable, i)" not in s:
+              raise SystemExit("[FAIL] V98: native 4.19 avtab flex_array access is missing.")
+
+          print("[PASS] V98: hashtab and avtab iterator ownership boundaries are correct.")
+          PY
+
+          echo "----- CURRENT CUMULATIVE sepolicy.c AFTER V98 FIX -----"
+          sed -n '50,105p' "$SEPOLICY_C"
+          echo "----- END CURRENT SOURCE -----"
 
           MAKE_CMD_LOG="$RUNNER_TEMP/12B-sepolicy-make-command.log"
           make -n V=1 drivers/kernelsu/selinux/sepolicy.o > "$MAKE_CMD_LOG" 2>&1
           test -s "$MAKE_CMD_LOG"
           grep -F 'drivers/kernelsu/selinux/sepolicy.o' "$MAKE_CMD_LOG" >/dev/null
-          echo "[PASS] Actual Kbuild sepolicy.o command derived."
           cat "$MAKE_CMD_LOG"
 
-          # Real Kbuild compile of the exact source that will be used by the
-          # subsequent composite SukiSU build. This catches syntax/API errors
-          # here, before the expensive full kernel compilation.
+          # REAL compiler gate. Any error is fatal; nothing is skipped.
           make -j1 V=1 drivers/kernelsu/selinux/sepolicy.o
           test -s drivers/kernelsu/selinux/sepolicy.o
-          echo "[PASS] 12B: drivers/kernelsu/selinux/sepolicy.o compiled successfully with the actual Kbuild/toolchain command."
+          echo "[PASS] V98: actual Kbuild compilation of cumulative sepolicy.o succeeded."
 
-          smoke_one() {
-            local target="$1"
-            echo
-            echo "----- SMOKE: $target -----"
-            if make -j2 V=1 "$target"; then
-              echo "[PASS] $target"
-            else
-              rc=$?
-              echo "[FAIL] $target returned $rc"
-              echo "[FAIL] Full compiler output is retained in $LOG"
-              return $rc
-            fi
-          }
-
-          smoke_one drivers/usb/gadget/function/f_hid.o
-          smoke_one drivers/kernelsu/
-
+          make -j2 V=1 drivers/usb/gadget/function/f_hid.o
+          make -j2 V=1 drivers/kernelsu/
           test -s drivers/kernelsu/feature/selinux_hide.o
           test -s drivers/kernelsu/feature/cpu_spoof.o
-          echo "[PASS] SukiSU feature objects were produced through parent Kbuild."
-          echo "[PASS] Targeted 4.19 hotspot compile smoke completed."
-          echo "=============================================================="
 
-      - name: 19 - Build Kernel (Full Log to Artifact)
+          sha256sum "$SEPOLICY_C" | tee "$RUNNER_TEMP/12B-sepolicy.sha256"
+          cp -f "$SEPOLICY_C" "$RUNNER_TEMP/12B-sepolicy.c.locked"
+
+          echo "[PASS] V98: all targeted cumulative hotspot objects compiled."
+          echo "[PASS] V98: no feature was removed and no compiler failure was skipped."
+          echo "=============================================================="
+      - name: 19 - Build Kernel (Full Log to Artifact) - V98 HARD GATE
         shell: bash
         run: |
-          set +e
+          set -Eeuo pipefail
           FULL_LOG="$GITHUB_WORKSPACE/kernel-build-full.log"
           ERROR_LOG="$DIAG_DIR/12-build-errors.log"
           TAIL_LOG="$DIAG_DIR/12-build-tail.log"
@@ -2614,26 +2614,25 @@ jobs:
 
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
           # ------------------------------------------------------------
-          # SETUP 19 — EXACT CURRENT COMPATIBILITY BOUNDARIES AFTER PRE-BUILD MATRIX
-          # The full build reached drivers/kernelsu/selinux/sepolicy.c and
-          # failed because ksu_hash_for_each() was using flex_array_get_ptr()
-          # against Linux 4.19 SELinux hashtab->htable (struct hashtab_node **).
-          # 10A is NOT changed/reopened here. Only this exact Setup 19
-          # compatibility boundary is corrected before compilation.
+          # V98 LOCK: sepolicy.c was compiler-tested by cumulative 12B.
+          # No reconstruction and no second mutation is permitted.
           # ------------------------------------------------------------
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQoKIyBTRVRVUCAxOSBPTkxZOiBMaW51eCA0LjE5IFNFTGludXggaGFzaHRhYi0+aHRhYmxlIGlzIGEgZGlyZWN0CiMgc3RydWN0IGhhc2h0YWJfbm9kZSAqKiBhcnJheS4gZmxleF9hcnJheV9nZXRfcHRyKCkgYWNjZXB0cyBzdHJ1Y3QgZmxleF9hcnJheSAqLgojIFRoZSBWOTEgcHJlZmxpZ2h0IG1heSBhbHJlYWR5IGhhdmUgYXBwbGllZCB0aGlzIGV4YWN0IHNvdXJjZS1kZXJpdmVkIGZpeDsKIyB0aGVyZWZvcmUgdGhpcyB2ZXJpZmllciBpcyBkZWxpYmVyYXRlbHkgaWRlbXBvdGVudC4Kc3RhcnQgPSBzLmZpbmQoJyNkZWZpbmUga3N1X2hhc2hfZm9yX2VhY2goJykKaWYgc3RhcnQgPCAwOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnW0ZBSUxdIFNldHVwIDE5OiBrc3VfaGFzaF9mb3JfZWFjaCBkZWZpbml0aW9uIG5vdCBmb3VuZCcpCmVuZCA9IHMuZmluZCgnI2RlZmluZSBrc3VfaGFzaHRhYl9mb3JfZWFjaCgnLCBzdGFydCkKaWYgZW5kIDwgMDoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1tGQUlMXSBTZXR1cCAxOToga3N1X2hhc2h0YWJfZm9yX2VhY2ggYm91bmRhcnkgbm90IGZvdW5kJykKYmxvY2sgPSBzW3N0YXJ0OmVuZF0KYmFkID0gJ2ZvciAoY3VyID0gZmxleF9hcnJheV9nZXRfcHRyKG5vZGVfcHRyLCBpKTsgY3VyOyBjdXIgPSBjdXItPm5leHQpJwpnb29kID0gJ2ZvciAoY3VyID0gbm9kZV9wdHJbaV07IGN1cjsgY3VyID0gY3VyLT5uZXh0KScKYmFkX2NvdW50ID0gYmxvY2suY291bnQoYmFkKQpnb29kX2NvdW50ID0gYmxvY2suY291bnQoZ29vZCkKaWYgYmFkX2NvdW50ID09IDEgYW5kIGdvb2RfY291bnQgPT0gMDoKICAgIGJsb2NrID0gYmxvY2sucmVwbGFjZShiYWQsIGdvb2QsIDEpCiAgICBzID0gc1s6c3RhcnRdICsgYmxvY2sgKyBzW2VuZDpdCiAgICBwLndyaXRlX3RleHQocykKICAgIHByaW50KCdbRklYRURdIFNldHVwIDE5IG9ubHk6IGtzdV9oYXNoX2Zvcl9lYWNoKCkgbm93IHVzZXMgbm9kZV9wdHJbaV0gZm9yIExpbnV4IDQuMTkgaGFzaHRhYi4nKQplbGlmIGJhZF9jb3VudCA9PSAwIGFuZCBnb29kX2NvdW50ID09IDE6CiAgICBwcmludCgnW1BBU1NdIFNldHVwIDE5OiBrc3VfaGFzaF9mb3JfZWFjaCgpIHdhcyBhbHJlYWR5IGNvcnJlY3RlZCBieSB0aGUgcHJlLWJ1aWxkIGNvbXBhdGliaWxpdHkgYm91bmRhcnkuJykKZWxzZToKICAgIHJhaXNlIFN5c3RlbUV4aXQoZidbRkFJTF0gU2V0dXAgMTk6IHVuZXhwZWN0ZWQga3N1X2hhc2hfZm9yX2VhY2goKSBzdGF0ZSAoYmFkPXtiYWRfY291bnR9LCBnb29kPXtnb29kX2NvdW50fSknKQoKdmVyaWZ5ID0gcC5yZWFkX3RleHQoKQpzdGFydCA9IHZlcmlmeS5maW5kKCcjZGVmaW5lIGtzdV9oYXNoX2Zvcl9lYWNoKCcpCmVuZCA9IHZlcmlmeS5maW5kKCcjZGVmaW5lIGtzdV9oYXNodGFiX2Zvcl9lYWNoKCcsIHN0YXJ0KQpibG9jayA9IHZlcmlmeVtzdGFydDplbmRdCmlmIGJhZCBpbiBibG9jayBvciBnb29kIG5vdCBpbiBibG9jazoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1tGQUlMXSBTZXR1cCAxOTogZmluYWwgZGlyZWN0IExpbnV4IDQuMTkgaGFzaHRhYiBpdGVyYXRpb24gdmVyaWZpY2F0aW9uIGZhaWxlZCcpCnByaW50KCdbUEFTU10gTm8gZmxleF9hcnJheV9nZXRfcHRyKCkgaXMgdXNlZCBmb3IgaGFzaHRhYi0+aHRhYmxlIGluIGtzdV9oYXNoX2Zvcl9lYWNoKCkuJykK' | base64 -d > "$RUNNER_TEMP/setup19_sepolicy_hashtab_fix.py"
-          chmod 700 "$RUNNER_TEMP/setup19_sepolicy_hashtab_fix.py"
-          python3 -m py_compile "$RUNNER_TEMP/setup19_sepolicy_hashtab_fix.py"
-          python3 "$RUNNER_TEMP/setup19_sepolicy_hashtab_fix.py" drivers/kernelsu/selinux/sepolicy.c
-          # Hard verification for Setup 19: fail here if the exact compiler
-          # boundary was not corrected. This does not reopen or modify 10A.
-          grep -qF 'for (cur = node_ptr[i]; cur; cur = cur->next)' drivers/kernelsu/selinux/sepolicy.c
-          if grep -qF 'for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)' drivers/kernelsu/selinux/sepolicy.c; then
-            echo '[FAIL] Setup 19: obsolete flex_array hashtab iteration remains'
+          SEPOLICY_C="drivers/kernelsu/selinux/sepolicy.c"
+          test -s "$SEPOLICY_C"
+          test -f "$RUNNER_TEMP/12B-sepolicy.c.locked"
+          cmp -s "$SEPOLICY_C" "$RUNNER_TEMP/12B-sepolicy.c.locked" || {
+            echo "[FAIL] V98: sepolicy.c changed after the compiler-tested 12B state."
+            echo "[FAIL] Refusing to reconstruct or overwrite it."
+            exit 1
+          }
+          sha256sum -c "$RUNNER_TEMP/12B-sepolicy.sha256"
+          grep -qF 'for (cur = node_ptr[i]; cur; cur = cur->next)' "$SEPOLICY_C"
+          if grep -qF 'for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)' "$SEPOLICY_C"; then
+            echo "[FAIL] V98: obsolete flex_array hashtab iterator reappeared."
             exit 1
           fi
-          echo '[PASS] Setup 19 exact hashtab compiler boundary verified before kernel build.'
-          # ------------------------------------------------------------
+          echo "[PASS] V98: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
+
           # SETUP 19 — Linux 4.19 dispatcher scheduler-header dependency
           # The current build reached drivers/kernelsu/supercall/dispatch.c.
           # Linux 4.19 keeps tasklist_lock/init_task in sched/task.h and
