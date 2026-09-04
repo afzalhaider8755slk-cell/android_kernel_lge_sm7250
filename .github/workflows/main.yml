@@ -2400,18 +2400,24 @@ jobs:
           PY
 
           echo "----- REAL KBUILD GATES (NO AUTOFIX) -----"
-          # Research correction: SukiSU-Ultra's Kbuild declares sepolicy.o as a
-          # member of the composite kernelsu.o target.  The previous V1 gate
-          # addressed the member object directly, which can fail at the top-level
-          # Kbuild even though the authoritative composite target is valid.
-          # Gate the exact Kbuild target that owns sepolicy.o, then require the
-          # sepolicy member to appear in the generated command graph.
-          KSU_COMPOSITE_O="drivers/kernelsu/kernelsu.o"
-          SEPOLICY_O="drivers/kernelsu/selinux/sepolicy.o"
+          # Research correction: Linux 4.19 Kbuild's supported directory
+          # traversal is "make -f scripts/Makefile.build obj=<dir>".  The
+          # SukiSU Kbuild declares kernelsu.o as a composite object and
+          # sepolicy.o as one of kernelsu-objs.  Calling the top-level Make
+          # target "drivers/kernelsu/kernelsu.o" directly bypasses that
+          # directory traversal and, in this tree, returns "No rule to make
+          # target".  Do not alter the Kbuild/source; invoke the same
+          # scripts/Makefile.build path used by normal kernel recursion.
+          KSU_BUILD_DIR="drivers/kernelsu"
+          SEPOLICY_O="$KSU_BUILD_DIR/selinux/sepolicy.o"
+          KSU_COMPOSITE_O="$KSU_BUILD_DIR/kernelsu.o"
+          KSU_KBUILD="$KSU_BUILD_DIR/Kbuild"
+          test -f "$KSU_KBUILD"
+          test -L "$KSU_BUILD_DIR" || test -d "$KSU_BUILD_DIR"
           : > "$RUNNER_TEMP/12B-sepolicy-make-command.log"
-          if ! make -n V=1 "$KSU_COMPOSITE_O" > "$RUNNER_TEMP/12B-sepolicy-make-command.log" 2>&1; then
-            echo "[FAIL] V1: authoritative Kbuild dry-run for $KSU_COMPOSITE_O failed."
-            echo "[FAIL] This is a build-system gate failure; no source fix is being skipped."
+          if ! make -n -f ./scripts/Makefile.build obj="$KSU_BUILD_DIR" V=1               > "$RUNNER_TEMP/12B-sepolicy-make-command.log" 2>&1; then
+            echo "[FAIL] V1: Linux 4.19 Kbuild directory build for $KSU_BUILD_DIR failed."
+            echo "[FAIL] This is a real Kbuild failure; no compiler error is being skipped."
             cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
             exit 2
           fi
@@ -2419,10 +2425,10 @@ jobs:
           grep -F "$SEPOLICY_O" "$RUNNER_TEMP/12B-sepolicy-make-command.log" >/dev/null
           cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
 
-          make -j1 V=1 "$KSU_COMPOSITE_O"
+          make -f ./scripts/Makefile.build obj="$KSU_BUILD_DIR" V=1
           test -s "$SEPOLICY_O"
           test -s "$KSU_COMPOSITE_O"
-          echo "[PASS] V1: authoritative cumulative kernelsu.o target compiled and sepolicy.o was built as its Kbuild member."
+          echo "[PASS] V1: Linux 4.19 Kbuild directory traversal compiled kernelsu.o and its sepolicy.o member."
 
           make -j2 V=1 drivers/usb/gadget/function/f_hid.o
           make -j2 V=1 drivers/kernelsu/
