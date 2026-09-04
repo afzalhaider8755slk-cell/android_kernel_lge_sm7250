@@ -1,8 +1,8 @@
-# V87: V86 00A GitHub-token environment fix only. V86 failed before kernel checkout because GITHUB_TOKEN was tested as a shell environment variable without explicitly mapping the github.token context. All verified V86 source/features and locked setups are preserved. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V88: V87 workflow-ref parsing fix only. V87 correctly exposed the github.token context, then 00A reached the GitHub Contents API but received HTTP 404 because its parser left the repository name inside WF_PATH. All verified source/features and locked setups are preserved. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V87 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V88 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -95,10 +95,35 @@ jobs:
           command -v python3 >/dev/null 2>&1 || { echo "[FAIL] python3 is unavailable on the runner."; exit 1; }
           test -n "${GITHUB_TOKEN:-}" || { echo "[FAIL] GITHUB_TOKEN is unavailable; cannot retrieve the workflow source safely."; exit 1; }
 
-          WF_SPEC="${GITHUB_WORKFLOW_REF#*/}"
+          # GITHUB_WORKFLOW_REF is documented as:
+          #   owner/repository/.github/workflows/workflow.yml@refs/heads/branch
+          # Strip the exact workflow repository prefix, not merely the first
+          # slash. The previous V87 parser removed only "owner/", leaving
+          # "repository/" inside WF_PATH and causing the Contents API to request
+          # a non-existent path and return HTTP 404.
+          test -n "${GITHUB_REPOSITORY:-}" || { echo "[FAIL] GITHUB_REPOSITORY is unavailable."; exit 1; }
+          case "$GITHUB_WORKFLOW_REF" in
+            "$GITHUB_REPOSITORY"/*@*) ;;
+            *)
+              echo "[FAIL] GITHUB_WORKFLOW_REF does not match GITHUB_REPOSITORY prefix."
+              echo "[INFO] GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
+              echo "[INFO] GITHUB_WORKFLOW_REF=$GITHUB_WORKFLOW_REF"
+              exit 1
+              ;;
+          esac
+
+          WF_SPEC="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/"}"
           WF_PATH="${WF_SPEC%@*}"
           WF_REF="${WF_SPEC#*@}"
           test -n "$WF_PATH" && test -n "$WF_REF" || { echo "[FAIL] Could not parse GITHUB_WORKFLOW_REF."; exit 1; }
+          case "$WF_PATH" in
+            .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+            *)
+              echo "[FAIL] Parsed workflow path is outside .github/workflows: $WF_PATH"
+              exit 1
+              ;;
+          esac
+          echo "[INFO] Workflow repository=$GITHUB_REPOSITORY"
           echo "[INFO] Workflow path=$WF_PATH"
           echo "[INFO] Workflow ref=$WF_REF"
 
