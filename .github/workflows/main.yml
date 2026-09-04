@@ -1,8 +1,8 @@
-# V74 research + compatibility preflight: Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V75 research + compatibility preflight: Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
-# V74 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V74 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Port + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+# V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V75 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Port + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -1726,7 +1726,7 @@ jobs:
 
           echo "--- Actual selinux_ss layout ---"
           grep -n -A30 -B3 'struct selinux_ss[[:space:]]*{' "$SS_H" | head -50
-          for token in 'struct sidtab sidtab;' 'struct policydb policydb;' 'struct selinux_map map;' 'struct page *status_page;' 'struct mutex status_lock;'; do
+          for token in 'struct sidtab *sidtab;' 'struct policydb policydb;' 'struct selinux_map map;' 'struct page *status_page;' 'struct mutex status_lock;'; do
             grep -qF "$token" "$SS_H" \
               || { echo "[FAIL] Expected Linux 4.19 selinux_ss member missing: $token"; exit 1; }
           done
@@ -1759,7 +1759,7 @@ jobs:
             echo "[PASS] hashtab iteration is already on the 4.19-compatible form."
           fi
 
-          echo "[PASS] SELinux state/ss/map/sidtab structure matches the researched 4.19 model."
+          echo "[PASS] SELinux state/ss/map/sidtab structure matches the researched 4.19 model (sidtab is a pointer)."
           echo "[PASS] Preflight performed source inspection only; no source mutation."
           echo "=============================================================="
 
@@ -1783,7 +1783,7 @@ jobs:
           echo "[INFO] Integrated v4.2.0 selinux_hide.c SHA256=$LOCAL_SHA256"
           test "$LOCAL_SHA256" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5"
 
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQoKZm9yIG9sZCwgbmV3IGluIFsKICAgICgic2VsaW51eF9zdGF0ZS5zdGF0dXNfbG9jayIsICJzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfbG9jayIpLAogICAgKCJzZWxpbnV4X3N0YXRlLnN0YXR1c19wYWdlIiwgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlIiksCl06CiAgICBzID0gcy5yZXBsYWNlKG9sZCwgbmV3KQoKbmVlZGxlID0gInN0YXRpYyBzdHJ1Y3Qgc2VsaW51eF9zdGF0ZSBmYWtlX3N0YXRlO1xuIgppbnNlcnQgPSAiIiJzdGF0aWMgc3RydWN0IHNlbGludXhfc3RhdGUgZmFrZV9zdGF0ZTsKc3RhdGljIHN0cnVjdCBzZWxpbnV4X3NzIGZha2Vfc3M7CgpzdGF0aWMgdm9pZCBrc3Vfc2VsaW51eF9pbml0X2Zha2Vfc3RhdGUodm9pZCkKewogICAgbWVtc2V0KCZmYWtlX3N0YXRlLCAwLCBzaXplb2YoZmFrZV9zdGF0ZSkpOwogICAgbWVtc2V0KCZmYWtlX3NzLCAwLCBzaXplb2YoZmFrZV9zcykpOwoKICAgIGZha2Vfc3RhdGUuaW5pdGlhbGl6ZWQgPSB0cnVlOwogICAgZmFrZV9zdGF0ZS5zcyA9ICZmYWtlX3NzOwoKICAgIHJ3bG9ja19pbml0KCZmYWtlX3NzLnBvbGljeV9yd2xvY2spOwogICAgc3Bpbl9sb2NrX2luaXQoJmZha2Vfc3Muc2lkdGFiLmxvY2spOwoKICAgIGZha2Vfc3MucG9saWN5ZGIgPSBiYWNrdXBfc2Vwb2xpY3ktPnBvbGljeWRiOwogICAgZmFrZV9zcy5tYXAgPSBiYWNrdXBfc2Vwb2xpY3ktPm1hcDsKICAgIGZha2Vfc3MubGF0ZXN0X2dyYW50aW5nID0gYmFja3VwX3NlcG9saWN5LT5sYXRlc3RfZ3JhbnRpbmc7CgogICAgc2lkdGFiX3NldCgmZmFrZV9zcy5zaWR0YWIsIGJhY2t1cF9zZXBvbGljeS0+c2lkdGFiKTsKfQoiIiIKaWYgcy5jb3VudChuZWVkbGUpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gZXhwZWN0ZWQgZXhhY3RseSBvbmUgZmFrZV9zdGF0ZSBkZWNsYXJhdGlvbiIpCnMgPSBzLnJlcGxhY2UobmVlZGxlLCBpbnNlcnQsIDEpCgpvbGQgPSAiICAgICAgICBmYWtlX3N0YXRlLmluaXRpYWxpemVkID0gdHJ1ZTtcbiAgICAgICAgZmFrZV9zdGF0ZS5wb2xpY3kgPSBiYWNrdXBfc2Vwb2xpY3k7XG4iCm5ldyA9ICIgICAgICAgIGtzdV9zZWxpbnV4X2luaXRfZmFrZV9zdGF0ZSgpO1xuIgppZiBzLmNvdW50KG9sZCkgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSBleHBlY3RlZCBleGFjdGx5IG9uZSBvbGQgZmFrZV9zdGF0ZSBwb2xpY3kgaW5pdGlhbGl6YXRpb24iKQpzID0gcy5yZXBsYWNlKG9sZCwgbmV3LCAxKQoKZm9yIHRva2VuIGluIFsKICAgICJzZWxpbnV4X3N0YXRlLnN0YXR1c19sb2NrIiwKICAgICJzZWxpbnV4X3N0YXRlLnN0YXR1c19wYWdlIiwKICAgICJmYWtlX3N0YXRlLnBvbGljeSA9IiwKXToKICAgIGlmIHRva2VuIGluIHM6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIG9ic29sZXRlIHRva2VuIHJlbWFpbnM6ICIgKyB0b2tlbikKCmZvciB0b2tlbiBpbiBbCiAgICAic2VsaW51eF9zdGF0ZS5zcy0+c3RhdHVzX2xvY2siLAogICAgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlIiwKICAgICJzdGF0aWMgc3RydWN0IHNlbGludXhfc3MgZmFrZV9zczsiLAogICAgImZha2Vfc3RhdGUuc3MgPSAmZmFrZV9zczsiLAogICAgImZha2Vfc3MucG9saWN5ZGIgPSBiYWNrdXBfc2Vwb2xpY3ktPnBvbGljeWRiOyIsCiAgICAiZmFrZV9zcy5tYXAgPSBiYWNrdXBfc2Vwb2xpY3ktPm1hcDsiLAogICAgInNpZHRhYl9zZXQoJmZha2Vfc3Muc2lkdGFiLCBiYWNrdXBfc2Vwb2xpY3ktPnNpZHRhYik7IiwKXToKICAgIGlmIHRva2VuIG5vdCBpbiBzOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSByZXF1aXJlZCB0b2tlbiBtaXNzaW5nOiAiICsgdG9rZW4pCgpwLndyaXRlX3RleHQocykKcHJpbnQoIltQQVNTXSBMaW51eCA0LjE5IHNlbGludXhfc3RhdGUvc2VsaW51eF9zcyBjb21wYXRpYmlsaXR5IGFwcGxpZWQuIikK' | base64 -d > "$RUNNER_TEMP/setup19_selinux_419_port.py"
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQoKZm9yIG9sZCwgbmV3IGluIFsKICAgICgic2VsaW51eF9zdGF0ZS5zdGF0dXNfbG9jayIsICJzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfbG9jayIpLAogICAgKCJzZWxpbnV4X3N0YXRlLnN0YXR1c19wYWdlIiwgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlIiksCl06CiAgICBzID0gcy5yZXBsYWNlKG9sZCwgbmV3KQoKbmVlZGxlID0gInN0YXRpYyBzdHJ1Y3Qgc2VsaW51eF9zdGF0ZSBmYWtlX3N0YXRlO1xuIgppbnNlcnQgPSAiIiJzdGF0aWMgc3RydWN0IHNlbGludXhfc3RhdGUgZmFrZV9zdGF0ZTsKc3RhdGljIHN0cnVjdCBzZWxpbnV4X3NzIGZha2Vfc3M7CgpzdGF0aWMgdm9pZCBrc3Vfc2VsaW51eF9pbml0X2Zha2Vfc3RhdGUodm9pZCkKewogICAgbWVtc2V0KCZmYWtlX3N0YXRlLCAwLCBzaXplb2YoZmFrZV9zdGF0ZSkpOwogICAgbWVtc2V0KCZmYWtlX3NzLCAwLCBzaXplb2YoZmFrZV9zcykpOwoKICAgIGZha2Vfc3RhdGUuaW5pdGlhbGl6ZWQgPSB0cnVlOwogICAgZmFrZV9zdGF0ZS5zcyA9ICZmYWtlX3NzOwoKICAgIHJ3bG9ja19pbml0KCZmYWtlX3NzLnBvbGljeV9yd2xvY2spOwoKICAgIGZha2Vfc3MucG9saWN5ZGIgPSBiYWNrdXBfc2Vwb2xpY3ktPnBvbGljeWRiOwogICAgZmFrZV9zcy5tYXAgPSBiYWNrdXBfc2Vwb2xpY3ktPm1hcDsKICAgIGZha2Vfc3MubGF0ZXN0X2dyYW50aW5nID0gYmFja3VwX3NlcG9saWN5LT5sYXRlc3RfZ3JhbnRpbmc7CgogICAgZmFrZV9zcy5zaWR0YWIgPSBiYWNrdXBfc2Vwb2xpY3ktPnNpZHRhYjsKfQoiIiIKaWYgcy5jb3VudChuZWVkbGUpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gZXhwZWN0ZWQgZXhhY3RseSBvbmUgZmFrZV9zdGF0ZSBkZWNsYXJhdGlvbiIpCnMgPSBzLnJlcGxhY2UobmVlZGxlLCBpbnNlcnQsIDEpCgpvbGQgPSAiICAgICAgICBmYWtlX3N0YXRlLmluaXRpYWxpemVkID0gdHJ1ZTtcbiAgICAgICAgZmFrZV9zdGF0ZS5wb2xpY3kgPSBiYWNrdXBfc2Vwb2xpY3k7XG4iCm5ldyA9ICIgICAgICAgIGtzdV9zZWxpbnV4X2luaXRfZmFrZV9zdGF0ZSgpO1xuIgppZiBzLmNvdW50KG9sZCkgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSBleHBlY3RlZCBleGFjdGx5IG9uZSBvbGQgZmFrZV9zdGF0ZSBwb2xpY3kgaW5pdGlhbGl6YXRpb24iKQpzID0gcy5yZXBsYWNlKG9sZCwgbmV3LCAxKQoKZm9yIHRva2VuIGluIFsKICAgICJzZWxpbnV4X3N0YXRlLnN0YXR1c19sb2NrIiwKICAgICJzZWxpbnV4X3N0YXRlLnN0YXR1c19wYWdlIiwKICAgICJmYWtlX3N0YXRlLnBvbGljeSA9IiwKXToKICAgIGlmIHRva2VuIGluIHM6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIG9ic29sZXRlIHRva2VuIHJlbWFpbnM6ICIgKyB0b2tlbikKCmZvciB0b2tlbiBpbiBbCiAgICAic2VsaW51eF9zdGF0ZS5zcy0+c3RhdHVzX2xvY2siLAogICAgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlIiwKICAgICJzdGF0aWMgc3RydWN0IHNlbGludXhfc3MgZmFrZV9zczsiLAogICAgImZha2Vfc3RhdGUuc3MgPSAmZmFrZV9zczsiLAogICAgImZha2Vfc3MucG9saWN5ZGIgPSBiYWNrdXBfc2Vwb2xpY3ktPnBvbGljeWRiOyIsCiAgICAiZmFrZV9zcy5tYXAgPSBiYWNrdXBfc2Vwb2xpY3ktPm1hcDsiLAogICAgImZha2Vfc3Muc2lkdGFiID0gYmFja3VwX3NlcG9saWN5LT5zaWR0YWI7IiwKXToKICAgIGlmIHRva2VuIG5vdCBpbiBzOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoIltGQUlMXSByZXF1aXJlZCB0b2tlbiBtaXNzaW5nOiAiICsgdG9rZW4pCgpwLndyaXRlX3RleHQocykKcHJpbnQoIltQQVNTXSBMaW51eCA0LjE5IHNlbGludXhfc3RhdGUvc2VsaW51eF9zcyBjb21wYXRpYmlsaXR5IGFwcGxpZWQuIikK' | base64 -d > "$RUNNER_TEMP/setup19_selinux_419_port.py"
           chmod 700 "$RUNNER_TEMP/setup19_selinux_419_port.py"
           python3 -m py_compile "$RUNNER_TEMP/setup19_selinux_419_port.py"
           python3 "$RUNNER_TEMP/setup19_selinux_419_port.py" "$SELINUX_HIDE_C"
@@ -1795,7 +1795,7 @@ jobs:
           grep -qF 'fake_state.ss = &fake_ss;' "$SELINUX_HIDE_C"
           grep -qF 'fake_ss.policydb = backup_sepolicy->policydb;' "$SELINUX_HIDE_C"
           grep -qF 'fake_ss.map = backup_sepolicy->map;' "$SELINUX_HIDE_C"
-          grep -qF 'sidtab_set(&fake_ss.sidtab, backup_sepolicy->sidtab);' "$SELINUX_HIDE_C"
+          grep -qF 'fake_ss.sidtab = backup_sepolicy->sidtab;' "$SELINUX_HIDE_C"
 
           if grep -nE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=' "$SELINUX_HIDE_C"; then
             echo "[FAIL] Newer direct selinux_state fields remain in the 4.19 port."
@@ -2037,7 +2037,7 @@ jobs:
           check grep -qF 'struct selinux_ss *ss;' security/selinux/include/security.h
           check grep -qF 'struct policydb policydb;' security/selinux/ss/services.h
           check grep -qF 'struct selinux_map map;' security/selinux/ss/services.h
-          check grep -qF 'struct sidtab sidtab;' security/selinux/ss/services.h
+          check grep -qF 'struct sidtab *sidtab;' security/selinux/ss/services.h
           check grep -qF 'void sidtab_set(struct sidtab *dst, struct sidtab *src);' security/selinux/ss/sidtab.h
           check grep -qF 'struct page *status_page;' security/selinux/ss/services.h
           check grep -qF 'struct mutex status_lock;' security/selinux/ss/services.h
