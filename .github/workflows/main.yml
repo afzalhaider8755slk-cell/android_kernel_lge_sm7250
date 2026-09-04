@@ -1,8 +1,8 @@
-# V82: exact V80 failure fix. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V83: exact V81 failure fix. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V82 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V83 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -2200,6 +2200,8 @@ jobs:
           : > "$LOG"
           exec > >(tee -a "$LOG") 2>&1
           echo "========== PRE-BUILD HID + QCACLD ARGUMENT-LENGTH AUDIT =========="
+          echo "[RESEARCH] Current sixteen branch: hid_descriptor.rpt_desc is the actual 4.19 layout; LG f_hid.c has two valid bind-time assignment sites (charge + normal)."
+          echo "[RESEARCH] Upstream HID gadget uses rpt_desc in the HID descriptor and GET_DESCRIPTOR path; this audit will not invent a third assignment site.
           echo "[LOCKED] Setup 10A is not modified by this step."
           echo "[LOCKED] Setup 19 SELinux/SukiSU source boundaries are not modified by this step."
 
@@ -2330,14 +2332,23 @@ jobs:
               bind_len_n = bind.count(new_bind_len)
               old_bind_n = bind.count(old_bind_type) + bind.count(old_bind_len)
               print(f'[AUDIT] hidg_bind(): rpt_desc type={bind_type_n} length={bind_len_n}; legacy={old_bind_n}')
-              if (bind_type_n, bind_len_n) not in ((0, 0), (1, 1)):
-                  raise SystemExit('[FAIL] hidg_bind() contains an incomplete rpt_desc assignment pair.')
-              if old_bind_n:
-                  raise SystemExit('[FAIL] Legacy bind-time HID descriptor access remains.')
-              if bind_type_n == 1:
-                  print('[PASS] Source contains a complete bind-time rpt_desc assignment pair.')
+              # The LG kernel has two legitimate bind-time descriptor
+              # initialization sites: one in the CONFIG_LGE_USB_GADGET
+              # charge path and one in the normal path.  Therefore the
+              # correct invariant is not "0 or 1 pair"; it is that every
+              # bind-time type assignment has exactly one matching length
+              # assignment.  The V82 check incorrectly rejected the valid
+              # 2/2 layout and caused the repeated 12A failure.
+              if bind_type_n != bind_len_n:
+                  raise SystemExit(
+                      '[FAIL] hidg_bind() has mismatched rpt_desc type/length assignment counts.'
+                  )
+              if bind_type_n > 0:
+                  print(f'[PASS] hidg_bind() has {bind_type_n} complete rpt_desc assignment pair(s).')
               else:
                   print('[PASS] Source has no bind-time report descriptor mutation; no synthetic pair added.')
+              if old_bind_n:
+                  raise SystemExit('[FAIL] Legacy bind-time HID descriptor access remains.')
           print('[PASS] HID source/header compatibility boundary verified against actual source layout.')
 
           # ===============================================================
