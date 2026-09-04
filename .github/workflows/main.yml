@@ -2513,10 +2513,10 @@ jobs:
           : > "$LOG"
           exec > >(tee -a "$LOG") 2>&1
           echo "========== TARGETED 4.19 HOTSPOT COMPILE SMOKE PREFLIGHT =========="
-          echo "[PURPOSE] Catch the already-known late-build failure classes before the full 20-30 minute kernel build."
-          echo "[LOCKED] No feature is removed or downgraded. This step only compiles the actual hotspot objects against the prepared configuration."
+          echo "[PURPOSE] Catch known late-build failures before the full kernel build."
+          echo "[LOCKED] No feature is removed or downgraded."
 
-          test -f .config || { echo "[INFO] .config is not present yet; targeted smoke will be performed by the normal build path."; exit 0; }
+          test -f .config || { echo "[INFO] .config is not present yet; normal build path owns compilation."; exit 0; }
           export KBUILD_BUILD_USER=builder
           export KBUILD_BUILD_HOST=github
 
@@ -2534,132 +2534,128 @@ jobs:
             fi
           }
 
-          # Linux Kbuild source-derived boundary:
-          # SukiSU-Ultra v4.2.0 installs drivers/kernelsu as a symlink to
-          # KernelSU/kernel.  Its feature/ directory contains the .c/.h files,
-          # but intentionally has NO feature/Makefile.  The parent
-          # KernelSU/kernel/Kbuild owns feature/*.o through kernelsu-objs.
-          # Therefore direct goals such as
-          # drivers/kernelsu/feature/selinux_hide.o are invalid Kbuild goals
-          # and make scripts/Makefile.build look for a nonexistent
-          # feature/Makefile.  This was the V89 failure; it is a preflight
-          # target-selection bug, not a source/compiler failure.
           KSU_DIR="drivers/kernelsu"
-          KSU_KBUILD="$KSU_DIR/Kbuild"
-          KSU_MAKEFILE="$KSU_DIR/Makefile"
           test -L "$KSU_DIR"
-          test -f "$KSU_KBUILD"
-          test -f "$KSU_MAKEFILE"
+          test -f "$KSU_DIR/Kbuild"
+          test -f "$KSU_DIR/Makefile"
           test -f "$KSU_DIR/feature/selinux_hide.c"
           test -f "$KSU_DIR/feature/cpu_spoof.c"
-          grep -qF 'feature/selinux_hide.o' "$KSU_KBUILD"
-          grep -qF 'feature/cpu_spoof.o' "$KSU_KBUILD"
+          grep -qF 'feature/selinux_hide.o' "$KSU_DIR/Kbuild"
+          grep -qF 'feature/cpu_spoof.o' "$KSU_DIR/Kbuild"
           if [ -f "$KSU_DIR/feature/Makefile" ] || [ -f "$KSU_DIR/feature/Kbuild" ]; then
-            echo "[INFO] feature/ subdirectory has its own Kbuild file; direct object goals may be valid."
+            echo "[INFO] feature/ has a child Kbuild file."
           else
-            echo "[PASS] Source-derived Kbuild check: feature/ has no child Makefile/Kbuild; parent Kbuild owns feature/*.o."
+            echo "[PASS] Source-derived Kbuild check: feature/ is owned by parent Kbuild."
           fi
 
           # ------------------------------------------------------------
-          # KNOWN 4.19 KSU SELINUX COMPATIBILITY BOUNDARY
-          # The parent Kbuild target is now correct, but the first actual
-          # compiler failure in V90 exposed a second, source-level issue:
-          # SukiSU's current ksu_hash_for_each() macro must match the Linux
-          # 4.19 SELinux hashtab representation. In this tree,
-          # hashtab->htable is struct hashtab_node **, while
-          # flex_array_get_ptr() accepts struct flex_array *.
+          # SELINUX HASHTAB BOUNDARY — SOURCE OF TRUTH, NOT HAND-WRITTEN
+          # V92 proved that a text-only 'good pattern' check is insufficient:
+          # the compiler still saw ksu_hash_for_each() as an undefined
+          # identifier.  Therefore V93 does NOT construct this macro in Python.
+          # It obtains the exact macro block from the checked-out SukiSU-Ultra
+          # git object and replaces only that block.
           #
-          # Evidence: the V90 compiler diagnostic points exactly at
-          # flex_array_get_ptr(node_ptr, i), and Linux 4.19's flex_array.h
-          # declares flex_array_get_ptr(struct flex_array *, unsigned int),
-          # while SELinux hashtab->htable is a direct node-pointer array.
-          # Official SukiSU/KernelSU compatibility code uses node_ptr[i] for
-          # this pre-5.8 SELinux hashtab layout.
-          # Apply ONLY this exact macro correction before the smoke test so
-          # the preflight tests the same source boundary that Setup 19 uses.
-          # No flex_array-backed policy map is modified.
+          # This preserves all other 10A changes while making the iterator
+          # byte-for-byte identical to the pinned SukiSU v4.2.0 source.
           # ------------------------------------------------------------
           SEPOLICY_C="$KSU_DIR/selinux/sepolicy.c"
-          FLEX_ARRAY_H="include/linux/flex_array.h"
-          HASHTAB_H="security/selinux/ss/hashtab.h"
           test -f "$SEPOLICY_C"
-          test -f "$FLEX_ARRAY_H"
-          test -f "$HASHTAB_H"
+          test -f include/linux/flex_array.h
+          test -f security/selinux/ss/hashtab.h
 
           python3 - <<'PY'
           from pathlib import Path
+          import subprocess
 
           sepolicy = Path("drivers/kernelsu/selinux/sepolicy.c")
           flex = Path("include/linux/flex_array.h")
           hashtab = Path("security/selinux/ss/hashtab.h")
-          s = sepolicy.read_text()
+          
           fh = flex.read_text()
           hh = hashtab.read_text()
+          s = sepolicy.read_text()
 
           if "void *flex_array_get_ptr(struct flex_array *fa, unsigned int element_nr);" not in fh:
-              raise SystemExit("[FAIL] 12B: Linux 4.19 flex_array_get_ptr() signature was not found.")
+              raise SystemExit("[FAIL] 12B: Linux 4.19 flex_array_get_ptr() signature not found.")
           if "struct hashtab_node **htable;" not in hh:
-              raise SystemExit("[FAIL] 12B: Linux 4.19 SELinux hashtab->htable representation was not found.")
+              raise SystemExit("[FAIL] 12B: Linux 4.19 hashtab->htable representation not found.")
 
-          start = s.find("#define ksu_hash_for_each(")
-          end = s.find("#define ksu_hashtab_for_each(", start)
-          if start < 0 or end < 0:
-              raise SystemExit("[FAIL] 12B: ksu hash iterator macro boundaries not found.")
+          # Confirm the integrated KSU repository really is the pinned v4.2.0
+          # source used by this workflow. Do not guess a replacement source.
+          root = subprocess.check_output(
+              ["git", "-C", "drivers/kernelsu", "rev-parse", "--show-toplevel"],
+              text=True
+          ).strip()
+          head = subprocess.check_output(
+              ["git", "-C", "drivers/kernelsu", "rev-parse", "HEAD"],
+              text=True
+          ).strip()
+          print(f"[INFO] SukiSU/KernelSU source root: {root}")
+          print(f"[INFO] SukiSU/KernelSU HEAD: {head}")
+          if not head.startswith("85eb4a95"):
+              raise SystemExit("[FAIL] 12B: checked-out KSU HEAD is not the pinned v4.2.0-85eb4a95 source.")
 
-          block = s[start:end]
-          bad = "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)"
-          good = "for (cur = node_ptr[i]; cur; cur = cur->next)"
-          bad_count = block.count(bad)
-          good_count = block.count(good)
-
-          # V91 exposed a mixed state (bad=1, good=1). The cause is the
-          # earlier reviewed 4.19 flex_array adaptation rewriting the shared
-          # ksu_hash_for_each() macro. That macro is also the SELinux hashtab
-          # iterator, where node_ptr is struct hashtab_node **. Restore ONLY
-          # this shared macro to the exact SukiSU-Ultra v4.2.0 source form.
-          # The separate flex_array operations elsewhere in sepolicy.c remain
-          # untouched because they serve actual flex_array-backed members.
-          bs = chr(92)
-          authoritative = (
-              "#define ksu_hash_for_each(node_ptr, n_slot, cur) " + bs + "\n"
-              "    int i; " + bs + "\n"
-              "    for (i = 0; i < n_slot; ++i) " + bs + "\n"
-              "        for (cur = node_ptr[i]; cur; cur = cur->next)\n"
+          upstream = subprocess.check_output(
+              ["git", "-C", "drivers/kernelsu", "show", "HEAD:kernel/selinux/sepolicy.c"],
+              text=True
           )
 
-          if bad_count != 0 or good_count != 1:
-              print(f"[INFO] 12B: reconciling shared ksu_hash_for_each() boundary (bad={bad_count}, good={good_count}).")
-              s = s[:start] + authoritative + s[end:]
+          def extract(text, a, b):
+              start = text.find(a)
+              if start < 0:
+                  raise SystemExit(f"[FAIL] 12B: source-of-truth marker not found: {a}")
+              end = text.find(b, start)
+              if end < 0:
+                  raise SystemExit(f"[FAIL] 12B: source-of-truth boundary not found: {b}")
+              return text[start:end]
+
+          current_start = s.find("#define ksu_hash_for_each(")
+          current_end = s.find("#define ksu_hashtab_for_each(", current_start)
+          if current_start < 0 or current_end < 0:
+              raise SystemExit("[FAIL] 12B: local ksu hash iterator boundaries not found.")
+          current = s[current_start:current_end]
+
+          official = extract(
+              upstream,
+              "#define ksu_hash_for_each(",
+              "#define ksu_hashtab_for_each("
+          )
+
+          if current != official:
+              print("[INFO] 12B: local iterator differs from pinned SukiSU v4.2.0 source; restoring only this macro block.")
+              s = s[:current_start] + official + s[current_end:]
               sepolicy.write_text(s)
-              print("[FIXED] 12B: restored the authoritative SukiSU-Ultra v4.2.0 hashtab iterator node_ptr[i].")
+              print("[FIXED] 12B: exact ksu_hash_for_each() block restored from checked-out SukiSU v4.2.0 git object.")
           else:
-              print("[PASS] 12B: authoritative SukiSU-Ultra v4.2.0 ksu_hash_for_each() form is already present.")
+              print("[PASS] 12B: ksu_hash_for_each() already exactly matches pinned SukiSU v4.2.0 source.")
 
           verify = sepolicy.read_text()
-          start = verify.find("#define ksu_hash_for_each(")
-          end = verify.find("#define ksu_hashtab_for_each(", start)
-          block = verify[start:end]
-          if block.count(bad) != 0 or block.count(good) != 1:
-              print("[FAIL] 12B: final ksu_hash_for_each() boundary is not exactly the verified v4.2.0 form:")
-              print(block)
-              raise SystemExit(1)
-          print("[PASS] 12B: Linux 4.19 hashtab iterator uses node_ptr[i]; separate flex_array compatibility code remains intact.")
+          vs = verify.find("#define ksu_hash_for_each(")
+          ve = verify.find("#define ksu_hashtab_for_each(", vs)
+          if vs < 0 or ve < 0:
+              raise SystemExit("[FAIL] 12B: final iterator boundaries disappeared.")
+          final = verify[vs:ve]
+          if final != official:
+              raise SystemExit("[FAIL] 12B: final iterator block is not byte-identical to pinned SukiSU v4.2.0 source.")
+          if "flex_array_get_ptr(node_ptr, i)" in final:
+              raise SystemExit("[FAIL] 12B: forbidden flex_array hashtab iterator remains in final block.")
+          if "for (cur = node_ptr[i]; cur; cur = cur->next)" not in final:
+              raise SystemExit("[FAIL] 12B: authoritative node_ptr[i] iterator missing from final block.")
+          print("[PASS] 12B: iterator block is exact pinned SukiSU v4.2.0 source and uses node_ptr[i].")
           PY
 
-          # HID has its own valid Kbuild directory target and already passed in V89.
+          # HID has its own valid Kbuild directory target.
           smoke_one drivers/usb/gadget/function/f_hid.o
 
-          # Build the actual SukiSU parent Kbuild target.  This is the
-          # authoritative Kbuild route for feature/selinux_hide.o and
-          # feature/cpu_spoof.o in v4.2.0.  It may compile other SukiSU
-          # objects too; that is intentional because it validates the real
-          # composite target exactly as the kernel build invokes it.
+          # The actual SukiSU parent Kbuild is the only valid boundary for
+          # feature/*.o in v4.2.0. This compiles the same composite target
+          # used by the normal kernel build.
           smoke_one drivers/kernelsu/
 
           test -s drivers/kernelsu/feature/selinux_hide.o
           test -s drivers/kernelsu/feature/cpu_spoof.o
-          echo "[PASS] SukiSU feature objects were produced through the parent Kbuild target."
-          echo
+          echo "[PASS] SukiSU feature objects were produced through parent Kbuild."
           echo "[PASS] Targeted 4.19 hotspot compile smoke completed."
           echo "=============================================================="
 
