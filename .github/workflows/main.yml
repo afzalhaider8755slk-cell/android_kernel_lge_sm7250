@@ -1,8 +1,8 @@
-# V81: exact V80 failure fix. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V82: exact V80 failure fix. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V81 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V82 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -2205,101 +2205,186 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
-          # ---------------------------------------------------------------
-          # USB HID: source-derived compatibility fix only.
-          # V80 diagnostics proved f_hid.c accesses hid_descriptor.desc[0],
-          # while this checked-out tree's struct hid_descriptor provides the
-          # named rpt_desc member instead.  Upstream stable changed these
-          # accesses from desc[0] to rpt_desc; do not alter include/linux/hid.h.
-          # ---------------------------------------------------------------
+          # ===============================================================
+          # USB HID: source-derived compatibility audit/fix.
+          #
+          # The previous V82 guard was too strict: it assumed every 4.19
+          # f_hid.c tree must contain a hidg_desc.rpt_desc assignment inside
+          # hidg_bind().  The actual checked-out LG tree has the report
+          # descriptor assignments in hidg_setup() on the GET_DESCRIPTOR
+          # path, while hidg_bind() does not perform that mutation.
+          #
+          # Upstream Linux contains both historical forms: older trees used
+          # desc[0], while newer trees expose the named rpt_desc member.
+          # Therefore this step validates the actual checked-out function
+          # layout instead of imposing a non-existent "bind pair".
+          #
+          # No regex is used for the HID source transformation.  This
+          # prevents another Python regex-parser failure from becoming a
+          # build blocker.
+          # ===============================================================
           hid_h = Path('include/linux/hid.h')
           f_hid = Path('drivers/usb/gadget/function/f_hid.c')
           if not hid_h.is_file() or not f_hid.is_file():
               raise SystemExit('[FAIL] Required HID source/header is missing.')
+
           hh = hid_h.read_text(errors='replace')
           fh = f_hid.read_text(errors='replace')
 
-          # Regression guard: compile only the two known-safe structural
-          # expressions before using them. The literal member checks above
-          # intentionally contain no regex metacharacters.
-          re.compile(r'struct\s+hid_descriptor\s*\{(?P<body>.*?)\}\s*__attribute__', re.S)
-          re.compile(r'struct\s+hid_descriptor\s*\{(?P<body>.*?)\}', re.S)
+          # Find the actual struct without regex.  The source has a single
+          # struct hid_descriptor definition in this kernel tree.
+          marker = 'struct hid_descriptor {'
+          pos = hh.find(marker)
+          if pos < 0:
+              raise SystemExit('[FAIL] Could not locate struct hid_descriptor in include/linux/hid.h.')
+          close = hh.find('};', pos)
+          if close < 0:
+              raise SystemExit('[FAIL] Could not determine struct hid_descriptor boundary.')
+          body = hh[pos:close + 2]
 
-          m = re.search(r'struct\s+hid_descriptor\s*\{(?P<body>.*?)\}\s*__attribute__', hh, re.S)
-          if not m:
-              m = re.search(r'struct\s+hid_descriptor\s*\{(?P<body>.*?)\}', hh, re.S)
-          if not m:
-              raise SystemExit('[FAIL] Could not locate actual struct hid_descriptor in checked-out include/linux/hid.h.')
-          body = m.group('body')
-          # Literal member-name checks do not need regular expressions.
-          # V80 used r'\\bdesc\\s*\\[', which reaches Python's regex parser
-          # with an opening '[' that is no longer escaped as intended and caused:
-          #   re.error: unterminated character set at position 13
-          # Use deterministic substring checks instead.
           has_rpt = 'rpt_desc' in body
-          has_desc = 'desc[' in body
-          print(f'[EVIDENCE] hid_descriptor: rpt_desc={has_rpt} desc_array={has_desc}')
-          if not has_rpt:
-              raise SystemExit('[FAIL] Tree does not expose hid_descriptor.rpt_desc; refusing speculative HID mutation.')
-          old1 = 'hidg_desc_copy.desc[0].bDescriptorType'
-          old2 = 'hidg_desc_copy.desc[0].wDescriptorLength'
-          old3 = 'hidg_desc.desc[0].bDescriptorType'
-          old4 = 'hidg_desc.desc[0].wDescriptorLength'
-          active_old = sum(fh.count(x) for x in (old1,old2,old3,old4))
-          print(f'[AUDIT] f_hid.c active old desc accesses={active_old}')
-          if active_old:
-              fh2 = fh.replace(old1, 'hidg_desc_copy.rpt_desc.bDescriptorType')
-              fh2 = fh2.replace(old2, 'hidg_desc_copy.rpt_desc.wDescriptorLength')
-              fh2 = fh2.replace(old3, 'hidg_desc.rpt_desc.bDescriptorType')
-              fh2 = fh2.replace(old4, 'hidg_desc.rpt_desc.wDescriptorLength')
-              f_hid.write_text(fh2)
-              fh = fh2
-              print('[FIXED] Updated only the four obsolete f_hid.c desc[0] accesses to rpt_desc.')
-          if any(x in fh for x in (old1,old2,old3,old4)):
-              raise SystemExit('[FAIL] Obsolete HID descriptor accesses remain after exact fix.')
-          if fh.count('hidg_desc_copy.rpt_desc.bDescriptorType') != 1 or fh.count('hidg_desc_copy.rpt_desc.wDescriptorLength') != 1:
-              raise SystemExit('[FAIL] HID GET_DESCRIPTOR fix did not produce exactly one expected assignment pair.')
-          if fh.count('hidg_desc.rpt_desc.bDescriptorType') != 1 or fh.count('hidg_desc.rpt_desc.wDescriptorLength') != 1:
-              raise SystemExit('[FAIL] HID bind fix did not produce exactly one expected assignment pair.')
-          print('[PASS] HID source/header compatibility boundary verified.')
+          has_legacy_desc = 'desc[1]' in body or 'desc[]' in body
+          print(f'[EVIDENCE] hid_descriptor: rpt_desc={has_rpt} legacy_desc_array={has_legacy_desc}')
 
-          # ---------------------------------------------------------------
+          if not has_rpt:
+              raise SystemExit('[FAIL] Checked-out HID header has no rpt_desc member; refusing speculative HID mutation.')
+
+          old_copy_type = 'hidg_desc_copy.desc[0].bDescriptorType'
+          old_copy_len = 'hidg_desc_copy.desc[0].wDescriptorLength'
+          old_bind_type = 'hidg_desc.desc[0].bDescriptorType'
+          old_bind_len = 'hidg_desc.desc[0].wDescriptorLength'
+
+          new_copy_type = 'hidg_desc_copy.rpt_desc.bDescriptorType'
+          new_copy_len = 'hidg_desc_copy.rpt_desc.wDescriptorLength'
+          new_bind_type = 'hidg_desc.rpt_desc.bDescriptorType'
+          new_bind_len = 'hidg_desc.rpt_desc.wDescriptorLength'
+
+          old_count = sum(fh.count(x) for x in (
+              old_copy_type, old_copy_len, old_bind_type, old_bind_len
+          ))
+          print(f'[AUDIT] f_hid.c obsolete desc[0] accesses={old_count}')
+
+          if old_count:
+              fixed = fh.replace(old_copy_type, new_copy_type)
+              fixed = fixed.replace(old_copy_len, new_copy_len)
+              fixed = fixed.replace(old_bind_type, new_bind_type)
+              fixed = fixed.replace(old_bind_len, new_bind_len)
+              if fixed == fh:
+                  raise SystemExit('[FAIL] Legacy HID accesses were detected but exact source replacement made no change.')
+              f_hid.write_text(fixed)
+              fh = fixed
+              print('[FIXED] Replaced only the known obsolete desc[0] HID descriptor member accesses.')
+
+          if any(x in fh for x in (
+              old_copy_type, old_copy_len, old_bind_type, old_bind_len
+          )):
+              raise SystemExit('[FAIL] Obsolete HID desc[0] accesses remain after exact replacement.')
+
+          # Extract a function body by brace counting, without regex.
+          def function_body(text, signature):
+              p = text.find(signature)
+              if p < 0:
+                  return ''
+              brace = text.find('{', p)
+              if brace < 0:
+                  return ''
+              depth = 0
+              for i in range(brace, len(text)):
+                  c = text[i]
+                  if c == '{':
+                      depth += 1
+                  elif c == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return text[brace:i + 1]
+              return ''
+
+          setup = function_body(fh, 'static int hidg_setup(')
+          bind = function_body(fh, 'static int hidg_bind(')
+
+          if not setup:
+              raise SystemExit('[FAIL] Could not locate hidg_setup(); refusing HID mutation/audit.')
+          if not bind:
+              print('[INFO] hidg_bind() not present in this source form; bind-time HID pair is not applicable.')
+
+          # The required report descriptor assignments belong to the
+          # HID_DT_HID GET_DESCRIPTOR path.  Require exactly one complete
+          # pair there.  This is the invariant that is actually needed by
+          # the current rpt_desc layout.
+          get_case = function_body(setup, 'case HID_DT_HID:')
+          if not get_case:
+              raise SystemExit('[FAIL] Could not locate HID_DT_HID GET_DESCRIPTOR case in hidg_setup().')
+
+          copy_type_n = get_case.count(new_copy_type)
+          copy_len_n = get_case.count(new_copy_len)
+          print(f'[AUDIT] hidg_setup HID_DT_HID: type_assignments={copy_type_n} length_assignments={copy_len_n}')
+          if copy_type_n != 1 or copy_len_n != 1:
+              raise SystemExit('[FAIL] HID GET_DESCRIPTOR path does not contain exactly one rpt_desc assignment pair.')
+
+          # A bind-time pair is optional and source-layout dependent.  If
+          # this actual tree has one, it must be complete; if it has none,
+          # that is valid and must not be manufactured by the workflow.
+          if bind:
+              bind_type_n = bind.count(new_bind_type)
+              bind_len_n = bind.count(new_bind_len)
+              old_bind_n = bind.count(old_bind_type) + bind.count(old_bind_len)
+              print(f'[AUDIT] hidg_bind(): rpt_desc type={bind_type_n} length={bind_len_n}; legacy={old_bind_n}')
+              if (bind_type_n, bind_len_n) not in ((0, 0), (1, 1)):
+                  raise SystemExit('[FAIL] hidg_bind() contains an incomplete rpt_desc assignment pair.')
+              if old_bind_n:
+                  raise SystemExit('[FAIL] Legacy bind-time HID descriptor access remains.')
+              if bind_type_n == 1:
+                  print('[PASS] Source contains a complete bind-time rpt_desc assignment pair.')
+              else:
+                  print('[PASS] Source has no bind-time report descriptor mutation; no synthetic pair added.')
+          print('[PASS] HID source/header compatibility boundary verified against actual source layout.')
+
+          # ===============================================================
           # QCACLD argument-length: source-derived Kbuild fix.
-          # V80 reached a Qualcomm qcacld-3.0 compilation command and failed
-          # in /bin/sh with E2BIG. The 4.19 kbuild cc recipe expands c_flags
-          # directly into the shell command. Qualcomm's driver contributes
-          # a very large include/define set. Use GNU make's file function to
-          # write c_flags into a per-object response file, then invoke clang
-          # with @response-file ONLY for qcacld-3.0 sources. This preserves
-          # every compiler flag; it changes transport, not feature selection.
-          # ---------------------------------------------------------------
+          #
+          # The V80/V82 diagnostics identified E2BIG on Qualcomm qcacld-3.0
+          # compile commands.  Keep every c_flag and change only the command
+          # transport for qcacld-3.0 C objects by using a Clang response file.
+          # Non-qcacld compilation remains unchanged.
+          # ===============================================================
           mb = Path('scripts/Makefile.build')
           if not mb.is_file():
               raise SystemExit('[FAIL] scripts/Makefile.build is missing.')
           ms = mb.read_text(errors='replace')
+
           old_nomod = 'cmd_cc_o_c = $(CC) $(c_flags) -c -o $@ $<'
           old_mod = 'cmd_cc_o_c = $(CC) $(c_flags) -c -o $(@D)/.tmp_$(@F) $<'
           count_nomod = ms.count(old_nomod)
           count_mod = ms.count(old_mod)
           print(f'[AUDIT] standard cmd_cc_o_c definitions={count_nomod}, MODVERSIONS definition={count_mod}')
+
           if count_nomod != 1 or count_mod != 1:
-              raise SystemExit('[FAIL] Unexpected 4.19 cmd_cc_o_c layout; refusing speculative Makefile.build rewrite.')
-          new_nomod = 'cmd_cc_o_c = $(if $(findstring /qcacld-3.0/,$<),$(file >$@.kbuild.rsp,$(c_flags))$(CC) @$@.kbuild.rsp -c -o $@ $<,$(CC) $(c_flags) -c -o $@ $<)'
-          new_mod = 'cmd_cc_o_c = $(if $(findstring /qcacld-3.0/,$<),$(file >$(@D)/.$(@F).kbuild.rsp,$(c_flags))$(CC) @$(@D)/.$(@F).kbuild.rsp -c -o $(@D)/.tmp_$(@F) $<,$(CC) $(c_flags) -c -o $(@D)/.tmp_$(@F) $<)'
-          ms2 = ms.replace(old_nomod, new_nomod, 1).replace(old_mod, new_mod, 1)
-          mb.write_text(ms2)
-          if new_nomod not in ms2 or new_mod not in ms2:
-              raise SystemExit('[FAIL] Response-file kbuild rules were not installed exactly.')
-          print('[FIXED] qcacld-3.0 C compilation now transports complete c_flags through Clang response files.')
-          print('[PASS] Non-qcacld compilation path remains byte-for-byte unchanged in cmd_cc_o_c.')
-          print('[PASS] All original c_flags are preserved; no WLAN feature/config flag was removed.')
+              # It may already have been converted by a previous invocation
+              # in the same checkout.  Recognize the exact installed rules
+              # rather than applying a second mutation.
+              installed_nomod = '$(if $(findstring /qcacld-3.0/,$<),$(file >$@.kbuild.rsp,$(c_flags))$(CC) @$@.kbuild.rsp -c -o $@ $<,$(CC) $(c_flags) -c -o $@ $<)'
+              installed_mod = '$(if $(findstring /qcacld-3.0/,$<),$(file >$(@D)/.$(@F).kbuild.rsp,$(c_flags))$(CC) @$(@D)/.$(@F).kbuild.rsp -c -o $(@D)/.tmp_$(@F) $<,$(CC) $(c_flags) -c -o $(@D)/.tmp_$(@F) $<)'
+              if installed_nomod in ms and installed_mod in ms:
+                  print('[PASS] Exact qcacld-3.0 response-file rules are already installed; no duplicate mutation.')
+              else:
+                  raise SystemExit('[FAIL] Unexpected 4.19 cmd_cc_o_c layout; refusing speculative Makefile.build rewrite.')
+          else:
+              new_nomod = 'cmd_cc_o_c = $(if $(findstring /qcacld-3.0/,$<),$(file >$@.kbuild.rsp,$(c_flags))$(CC) @$@.kbuild.rsp -c -o $@ $<,$(CC) $(c_flags) -c -o $@ $<)'
+              new_mod = 'cmd_cc_o_c = $(if $(findstring /qcacld-3.0/,$<),$(file >$(@D)/.$(@F).kbuild.rsp,$(c_flags))$(CC) @$(@D)/.$(@F).kbuild.rsp -c -o $(@D)/.tmp_$(@F) $<,$(CC) $(c_flags) -c -o $(@D)/.tmp_$(@F) $<)'
+              ms2 = ms.replace(old_nomod, new_nomod, 1).replace(old_mod, new_mod, 1)
+              if new_nomod not in ms2 or new_mod not in ms2:
+                  raise SystemExit('[FAIL] Response-file kbuild rules were not installed exactly.')
+              mb.write_text(ms2)
+              print('[FIXED] qcacld-3.0 C compilation now transports complete c_flags through Clang response files.')
+              print('[PASS] Non-qcacld compilation path remains byte-for-byte unchanged in cmd_cc_o_c.')
+
+          print('[PASS] All original qcacld compiler flags are preserved; no WLAN feature/config flag was removed.')
           print('===============================================================')
           PY
 
-          echo "[PASS] Setup 12A completed; 10A/Setup-19 feature configuration was not reopened."
-          echo "[PASS] V80 Python regex regression removed; literal HID member checks are regex-free."
+          echo "[PASS] Setup 12A completed; Setup 10A and Setup 19 remain locked."
+          echo "[PASS] HID audit now follows the actual 4.19 source layout; no synthetic bind pair is required."
 
       - name: 19 - Build Kernel (Full Log to Artifact)
         shell: bash
