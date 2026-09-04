@@ -1,8 +1,8 @@
-# V88: V87 workflow-ref parsing fix only. V87 correctly exposed the github.token context, then 00A reached the GitHub Contents API but received HTTP 404 because its parser left the repository name inside WF_PATH. All verified source/features and locked setups are preserved. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V90: V89 12B Kbuild-target fix only. V89 reached the targeted 4.19 smoke stage, where direct feature/*.o goals failed because SukiSU-Ultra v4.2.0's feature/ directory has no child Makefile; the parent KernelSU/kernel/Kbuild owns those objects. Official source structure is preserved; only the smoke target is corrected. V87 correctly exposed the github.token context, then 00A reached the GitHub Contents API but received HTTP 404 because its parser left the repository name inside WF_PATH. All verified source/features and locked setups are preserved. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V88 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V90 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -2534,10 +2534,45 @@ jobs:
             fi
           }
 
-          # These are the exact previously observed late-build hotspots.
+          # Linux Kbuild source-derived boundary:
+          # SukiSU-Ultra v4.2.0 installs drivers/kernelsu as a symlink to
+          # KernelSU/kernel.  Its feature/ directory contains the .c/.h files,
+          # but intentionally has NO feature/Makefile.  The parent
+          # KernelSU/kernel/Kbuild owns feature/*.o through kernelsu-objs.
+          # Therefore direct goals such as
+          # drivers/kernelsu/feature/selinux_hide.o are invalid Kbuild goals
+          # and make scripts/Makefile.build look for a nonexistent
+          # feature/Makefile.  This was the V89 failure; it is a preflight
+          # target-selection bug, not a source/compiler failure.
+          KSU_DIR="drivers/kernelsu"
+          KSU_KBUILD="$KSU_DIR/Kbuild"
+          KSU_MAKEFILE="$KSU_DIR/Makefile"
+          test -L "$KSU_DIR"
+          test -f "$KSU_KBUILD"
+          test -f "$KSU_MAKEFILE"
+          test -f "$KSU_DIR/feature/selinux_hide.c"
+          test -f "$KSU_DIR/feature/cpu_spoof.c"
+          grep -qF 'feature/selinux_hide.o' "$KSU_KBUILD"
+          grep -qF 'feature/cpu_spoof.o' "$KSU_KBUILD"
+          if [ -f "$KSU_DIR/feature/Makefile" ] || [ -f "$KSU_DIR/feature/Kbuild" ]; then
+            echo "[INFO] feature/ subdirectory has its own Kbuild file; direct object goals may be valid."
+          else
+            echo "[PASS] Source-derived Kbuild check: feature/ has no child Makefile/Kbuild; parent Kbuild owns feature/*.o."
+          fi
+
+          # HID has its own valid Kbuild directory target and already passed in V89.
           smoke_one drivers/usb/gadget/function/f_hid.o
-          smoke_one drivers/kernelsu/feature/selinux_hide.o
-          smoke_one drivers/kernelsu/feature/cpu_spoof.o
+
+          # Build the actual SukiSU parent Kbuild target.  This is the
+          # authoritative Kbuild route for feature/selinux_hide.o and
+          # feature/cpu_spoof.o in v4.2.0.  It may compile other SukiSU
+          # objects too; that is intentional because it validates the real
+          # composite target exactly as the kernel build invokes it.
+          smoke_one drivers/kernelsu/
+
+          test -s drivers/kernelsu/feature/selinux_hide.o
+          test -s drivers/kernelsu/feature/cpu_spoof.o
+          echo "[PASS] SukiSU feature objects were produced through the parent Kbuild target."
           echo
           echo "[PASS] Targeted 4.19 hotspot compile smoke completed."
           echo "=============================================================="
