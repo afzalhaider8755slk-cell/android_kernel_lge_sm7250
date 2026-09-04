@@ -1732,8 +1732,18 @@ jobs:
           done
 
           echo "--- Actual sidtab API ---"
-          grep -qF 'void sidtab_set(struct sidtab *dst, struct sidtab *src);' "$SID_H" \
-            || { echo "[FAIL] sidtab_set() is not available in this tree; refusing a legacy 4.19 fake-state port."; exit 1; }
+          # IMPORTANT: this CIP135 4.19 tree stores sidtab as a POINTER in
+          # struct selinux_ss. The old sidtab_set() check was a wrong API
+          # assumption and made 10B fail before the real build. Do not require
+          # a non-existent sidtab_set() declaration. Verify only APIs actually
+          # exposed by this tree and required by the pointer-based layout.
+          grep -qF 'struct sidtab {' "$SID_H" \
+            || { echo "[FAIL] struct sidtab definition is missing."; exit 1; }
+          grep -qF 'int sidtab_init(struct sidtab *s);' "$SID_H" \
+            || { echo "[FAIL] sidtab_init() is not available in this tree."; exit 1; }
+          grep -qE 'sidtab_search|sidtab_context_to_sid' "$SID_H" \
+            || { echo "[FAIL] No supported sidtab lookup API is exposed by this tree."; exit 1; }
+          echo "[PASS] CIP135 Linux 4.19 sidtab API is pointer-based; no sidtab_set() requirement."
 
           echo "--- Actual hashtab representation ---"
           grep -n -A20 -B3 'struct hashtab[[:space:]]*{' "$HASH_H" | head -35
@@ -1796,6 +1806,10 @@ jobs:
           grep -qF 'fake_ss.policydb = backup_sepolicy->policydb;' "$SELINUX_HIDE_C"
           grep -qF 'fake_ss.map = backup_sepolicy->map;' "$SELINUX_HIDE_C"
           grep -qF 'fake_ss.sidtab = backup_sepolicy->sidtab;' "$SELINUX_HIDE_C"
+          if grep -RniE 'sidtab_set\s*\(' drivers/kernelsu/feature/selinux_hide.c drivers/kernelsu/selinux 2>/dev/null; then
+            echo "[FAIL] Unsupported sidtab_set() call remains in the 4.19 SukiSU SELinux port."
+            exit 1
+          fi
 
           if grep -nE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=' "$SELINUX_HIDE_C"; then
             echo "[FAIL] Newer direct selinux_state fields remain in the 4.19 port."
@@ -2038,7 +2052,8 @@ jobs:
           check grep -qF 'struct policydb policydb;' security/selinux/ss/services.h
           check grep -qF 'struct selinux_map map;' security/selinux/ss/services.h
           check grep -qF 'struct sidtab *sidtab;' security/selinux/ss/services.h
-          check grep -qF 'void sidtab_set(struct sidtab *dst, struct sidtab *src);' security/selinux/ss/sidtab.h
+          check grep -qF 'int sidtab_init(struct sidtab *s);' security/selinux/ss/sidtab.h
+          check grep -qE 'sidtab_search|sidtab_context_to_sid' security/selinux/ss/sidtab.h
           check grep -qF 'struct page *status_page;' security/selinux/ss/services.h
           check grep -qF 'struct mutex status_lock;' security/selinux/ss/services.h
 
