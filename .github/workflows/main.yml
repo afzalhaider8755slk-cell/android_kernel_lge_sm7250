@@ -2560,6 +2560,80 @@ jobs:
             echo "[PASS] Source-derived Kbuild check: feature/ has no child Makefile/Kbuild; parent Kbuild owns feature/*.o."
           fi
 
+          # ------------------------------------------------------------
+          # KNOWN 4.19 KSU SELINUX COMPATIBILITY BOUNDARY
+          # The parent Kbuild target is now correct, but the first actual
+          # compiler failure in V90 exposed a second, source-level issue:
+          # SukiSU's current ksu_hash_for_each() macro must match the Linux
+          # 4.19 SELinux hashtab representation. In this tree,
+          # hashtab->htable is struct hashtab_node **, while
+          # flex_array_get_ptr() accepts struct flex_array *.
+          #
+          # Evidence: the V90 compiler diagnostic points exactly at
+          # flex_array_get_ptr(node_ptr, i), and Linux 4.19's flex_array.h
+          # declares flex_array_get_ptr(struct flex_array *, unsigned int),
+          # while SELinux hashtab->htable is a direct node-pointer array.
+          # Official SukiSU/KernelSU compatibility code uses node_ptr[i] for
+          # this pre-5.8 SELinux hashtab layout.
+          # Apply ONLY this exact macro correction before the smoke test so
+          # the preflight tests the same source boundary that Setup 19 uses.
+          # No flex_array-backed policy map is modified.
+          # ------------------------------------------------------------
+          SEPOLICY_C="$KSU_DIR/selinux/sepolicy.c"
+          FLEX_ARRAY_H="include/linux/flex_array.h"
+          HASHTAB_H="security/selinux/ss/hashtab.h"
+          test -f "$SEPOLICY_C"
+          test -f "$FLEX_ARRAY_H"
+          test -f "$HASHTAB_H"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          sepolicy = Path("drivers/kernelsu/selinux/sepolicy.c")
+          flex = Path("include/linux/flex_array.h")
+          hashtab = Path("security/selinux/ss/hashtab.h")
+
+          s = sepolicy.read_text()
+          fh = flex.read_text()
+          hh = hashtab.read_text()
+
+          if "void *flex_array_get_ptr(struct flex_array *fa, unsigned int element_nr);" not in fh:
+              raise SystemExit("[FAIL] 12B: Linux 4.19 flex_array_get_ptr() signature was not found.")
+          if "struct hashtab_node **htable;" not in hh:
+              raise SystemExit("[FAIL] 12B: Linux 4.19 SELinux hashtab->htable representation was not found.")
+
+          start = s.find("#define ksu_hash_for_each(")
+          if start < 0:
+              raise SystemExit("[FAIL] 12B: ksu_hash_for_each definition not found.")
+          end = s.find("#define ksu_hashtab_for_each(", start)
+          if end < 0:
+              raise SystemExit("[FAIL] 12B: ksu_hashtab_for_each boundary not found.")
+
+          block = s[start:end]
+          bad = "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)"
+          good = "for (cur = node_ptr[i]; cur; cur = cur->next)"
+          bad_count = block.count(bad)
+          good_count = block.count(good)
+
+          if bad_count == 1 and good_count == 0:
+              block = block.replace(bad, good, 1)
+              s = s[:start] + block + s[end:]
+              sepolicy.write_text(s)
+              print("[FIXED] 12B: Linux 4.19 ksu_hash_for_each() now uses node_ptr[i].")
+          elif bad_count == 0 and good_count == 1:
+              print("[PASS] 12B: Linux 4.19 ksu_hash_for_each() already uses node_ptr[i].")
+          else:
+              raise SystemExit(f"[FAIL] 12B: unexpected ksu_hash_for_each() state (bad={bad_count}, good={good_count}).")
+
+          verify = sepolicy.read_text()
+          start = verify.find("#define ksu_hash_for_each(")
+          end = verify.find("#define ksu_hashtab_for_each(", start)
+          block = verify[start:end]
+          if bad in block or good not in block:
+              raise SystemExit("[FAIL] 12B: final hashtab iteration boundary verification failed.")
+          print("[PASS] 12B: flex_array API and 4.19 SELinux hashtab types agree with the installed iteration form.")
+          PY
+
           # HID has its own valid Kbuild directory target and already passed in V89.
           smoke_one drivers/usb/gadget/function/f_hid.o
 
@@ -2600,7 +2674,7 @@ jobs:
           # 10A is NOT changed/reopened here. Only this exact Setup 19
           # compatibility boundary is corrected before compilation.
           # ------------------------------------------------------------
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQoKIyBTRVRVUCAxOSBPTkxZOiBMaW51eCA0LjE5IFNFTGludXggaGFzaHRhYi0+aHRhYmxlIGlzIGEgZGlyZWN0CiMgc3RydWN0IGhhc2h0YWJfbm9kZSAqKiBhcnJheS4gVGhlIGN1cnJlbnQgY29tcGlsZXIgZXJyb3IgaXMgY2F1c2VkIGJ5CiMgcGFzc2luZyB0aGF0IHBvaW50ZXIgYXJyYXkgdG8gZmxleF9hcnJheV9nZXRfcHRyKCkuIERvIG5vdCB0b3VjaCBhbnkKIyBmbGV4X2FycmF5LWJhY2tlZCBTRUxpbnV4IHBvbGljeSBtYXBzLgpzdGFydCA9IHMuZmluZCgnI2RlZmluZSBrc3VfaGFzaF9mb3JfZWFjaCgnKQppZiBzdGFydCA8IDA6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCdbRkFJTF0gU2V0dXAgMTk6IGtzdV9oYXNoX2Zvcl9lYWNoIGRlZmluaXRpb24gbm90IGZvdW5kJykKZW5kID0gcy5maW5kKCcjZGVmaW5lIGtzdV9oYXNodGFiX2Zvcl9lYWNoKCcsIHN0YXJ0KQppZiBlbmQgPCAwOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnW0ZBSUxdIFNldHVwIDE5OiBrc3VfaGFzaHRhYl9mb3JfZWFjaCBib3VuZGFyeSBub3QgZm91bmQnKQpibG9jayA9IHNbc3RhcnQ6ZW5kXQpiYWQgPSAnZm9yIChjdXIgPSBmbGV4X2FycmF5X2dldF9wdHIobm9kZV9wdHIsIGkpOyBjdXI7IGN1ciA9IGN1ci0+bmV4dCknCmdvb2QgPSAnZm9yIChjdXIgPSBub2RlX3B0cltpXTsgY3VyOyBjdXIgPSBjdXItPm5leHQpJwpjb3VudCA9IGJsb2NrLmNvdW50KGJhZCkKaWYgY291bnQgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoZidbRkFJTF0gU2V0dXAgMTk6IGV4cGVjdGVkIGV4YWN0bHkgb25lIGJhZCBoYXNodGFiIGZsZXhfYXJyYXkgaXRlcmF0aW9uIGluIG1hY3JvLCBmb3VuZCB7Y291bnR9JykKYmxvY2syID0gYmxvY2sucmVwbGFjZShiYWQsIGdvb2QsIDEpCnMgPSBzWzpzdGFydF0gKyBibG9jazIgKyBzW2VuZDpdCmlmIGJhZCBpbiBzW3N0YXJ0OmVuZF06CiAgICByYWlzZSBTeXN0ZW1FeGl0KCdbRkFJTF0gU2V0dXAgMTk6IG9ic29sZXRlIGZsZXhfYXJyYXkgaGFzaHRhYiBpdGVyYXRpb24gcmVtYWlucycpCmlmIGdvb2Qgbm90IGluIHNbc3RhcnQ6ZW5kXToKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1tGQUlMXSBTZXR1cCAxOTogZGlyZWN0IExpbnV4IDQuMTkgaGFzaHRhYiBpdGVyYXRpb24gd2FzIG5vdCBpbnN0YWxsZWQnKQpwLndyaXRlX3RleHQocykKcHJpbnQoJ1tGSVhFRF0gU2V0dXAgMTkgb25seToga3N1X2hhc2hfZm9yX2VhY2goKSBub3cgdXNlcyBub2RlX3B0cltpXSBmb3IgTGludXggNC4xOSBoYXNodGFiLicpCnByaW50KCdbUEFTU10gTm8gZmxleF9hcnJheV9nZXRfcHRyKCkgaXMgdXNlZCBmb3IgaGFzaHRhYi0+aHRhYmxlIGluIGtzdV9oYXNoX2Zvcl9lYWNoKCkuJykK' | base64 -d > "$RUNNER_TEMP/setup19_sepolicy_hashtab_fix.py"
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQoKIyBTRVRVUCAxOSBPTkxZOiBMaW51eCA0LjE5IFNFTGludXggaGFzaHRhYi0+aHRhYmxlIGlzIGEgZGlyZWN0CiMgc3RydWN0IGhhc2h0YWJfbm9kZSAqKiBhcnJheS4gZmxleF9hcnJheV9nZXRfcHRyKCkgYWNjZXB0cyBzdHJ1Y3QgZmxleF9hcnJheSAqLgojIFRoZSBWOTEgcHJlZmxpZ2h0IG1heSBhbHJlYWR5IGhhdmUgYXBwbGllZCB0aGlzIGV4YWN0IHNvdXJjZS1kZXJpdmVkIGZpeDsKIyB0aGVyZWZvcmUgdGhpcyB2ZXJpZmllciBpcyBkZWxpYmVyYXRlbHkgaWRlbXBvdGVudC4Kc3RhcnQgPSBzLmZpbmQoJyNkZWZpbmUga3N1X2hhc2hfZm9yX2VhY2goJykKaWYgc3RhcnQgPCAwOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnW0ZBSUxdIFNldHVwIDE5OiBrc3VfaGFzaF9mb3JfZWFjaCBkZWZpbml0aW9uIG5vdCBmb3VuZCcpCmVuZCA9IHMuZmluZCgnI2RlZmluZSBrc3VfaGFzaHRhYl9mb3JfZWFjaCgnLCBzdGFydCkKaWYgZW5kIDwgMDoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1tGQUlMXSBTZXR1cCAxOToga3N1X2hhc2h0YWJfZm9yX2VhY2ggYm91bmRhcnkgbm90IGZvdW5kJykKYmxvY2sgPSBzW3N0YXJ0OmVuZF0KYmFkID0gJ2ZvciAoY3VyID0gZmxleF9hcnJheV9nZXRfcHRyKG5vZGVfcHRyLCBpKTsgY3VyOyBjdXIgPSBjdXItPm5leHQpJwpnb29kID0gJ2ZvciAoY3VyID0gbm9kZV9wdHJbaV07IGN1cjsgY3VyID0gY3VyLT5uZXh0KScKYmFkX2NvdW50ID0gYmxvY2suY291bnQoYmFkKQpnb29kX2NvdW50ID0gYmxvY2suY291bnQoZ29vZCkKaWYgYmFkX2NvdW50ID09IDEgYW5kIGdvb2RfY291bnQgPT0gMDoKICAgIGJsb2NrID0gYmxvY2sucmVwbGFjZShiYWQsIGdvb2QsIDEpCiAgICBzID0gc1s6c3RhcnRdICsgYmxvY2sgKyBzW2VuZDpdCiAgICBwLndyaXRlX3RleHQocykKICAgIHByaW50KCdbRklYRURdIFNldHVwIDE5IG9ubHk6IGtzdV9oYXNoX2Zvcl9lYWNoKCkgbm93IHVzZXMgbm9kZV9wdHJbaV0gZm9yIExpbnV4IDQuMTkgaGFzaHRhYi4nKQplbGlmIGJhZF9jb3VudCA9PSAwIGFuZCBnb29kX2NvdW50ID09IDE6CiAgICBwcmludCgnW1BBU1NdIFNldHVwIDE5OiBrc3VfaGFzaF9mb3JfZWFjaCgpIHdhcyBhbHJlYWR5IGNvcnJlY3RlZCBieSB0aGUgcHJlLWJ1aWxkIGNvbXBhdGliaWxpdHkgYm91bmRhcnkuJykKZWxzZToKICAgIHJhaXNlIFN5c3RlbUV4aXQoZidbRkFJTF0gU2V0dXAgMTk6IHVuZXhwZWN0ZWQga3N1X2hhc2hfZm9yX2VhY2goKSBzdGF0ZSAoYmFkPXtiYWRfY291bnR9LCBnb29kPXtnb29kX2NvdW50fSknKQoKdmVyaWZ5ID0gcC5yZWFkX3RleHQoKQpzdGFydCA9IHZlcmlmeS5maW5kKCcjZGVmaW5lIGtzdV9oYXNoX2Zvcl9lYWNoKCcpCmVuZCA9IHZlcmlmeS5maW5kKCcjZGVmaW5lIGtzdV9oYXNodGFiX2Zvcl9lYWNoKCcsIHN0YXJ0KQpibG9jayA9IHZlcmlmeVtzdGFydDplbmRdCmlmIGJhZCBpbiBibG9jayBvciBnb29kIG5vdCBpbiBibG9jazoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1tGQUlMXSBTZXR1cCAxOTogZmluYWwgZGlyZWN0IExpbnV4IDQuMTkgaGFzaHRhYiBpdGVyYXRpb24gdmVyaWZpY2F0aW9uIGZhaWxlZCcpCnByaW50KCdbUEFTU10gTm8gZmxleF9hcnJheV9nZXRfcHRyKCkgaXMgdXNlZCBmb3IgaGFzaHRhYi0+aHRhYmxlIGluIGtzdV9oYXNoX2Zvcl9lYWNoKCkuJykK' | base64 -d > "$RUNNER_TEMP/setup19_sepolicy_hashtab_fix.py"
           chmod 700 "$RUNNER_TEMP/setup19_sepolicy_hashtab_fix.py"
           python3 -m py_compile "$RUNNER_TEMP/setup19_sepolicy_hashtab_fix.py"
           python3 "$RUNNER_TEMP/setup19_sepolicy_hashtab_fix.py" drivers/kernelsu/selinux/sepolicy.c
