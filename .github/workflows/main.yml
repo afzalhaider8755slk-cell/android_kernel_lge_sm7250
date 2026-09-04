@@ -1717,43 +1717,43 @@ jobs:
           HIDE_C="drivers/kernelsu/feature/selinux_hide.c"
 
           for f in "$SEC_H" "$SS_H" "$SID_H" "$HASH_H" "$SEPOL_H" "$HIDE_C"; do
-            test -f "$f" || {{ echo "[FAIL] Required source file missing: $f"; exit 1; }}
+            test -f "$f" || { echo "[FAIL] Required source file missing: $f"; exit 1; }
           done
 
           echo "--- Actual selinux_state layout ---"
-          grep -n -A24 -B3 'struct selinux_state[[:space:]]*{{' "$SEC_H" | head -40
-          grep -qF 'struct selinux_ss *ss;' "$SEC_H" || {{ echo "[FAIL] selinux_state.ss is missing."; exit 1; }}
+          grep -n -A24 -B3 'struct selinux_state[[:space:]]*{' "$SEC_H" | head -40
+          grep -qF 'struct selinux_ss *ss;' "$SEC_H" || { echo "[FAIL] selinux_state.ss is missing."; exit 1; }
 
           echo "--- Actual selinux_ss layout ---"
-          grep -n -A30 -B3 'struct selinux_ss[[:space:]]*{{' "$SS_H" | head -50
+          grep -n -A30 -B3 'struct selinux_ss[[:space:]]*{' "$SS_H" | head -50
           for token in 'struct sidtab *sidtab;' 'struct policydb policydb;' 'struct selinux_map map;' 'u32 latest_granting;' 'struct page *status_page;' 'struct mutex status_lock;'; do
-            grep -qF "$token" "$SS_H" || {{ echo "[FAIL] Expected selinux_ss member missing: $token"; exit 1; }}
+            grep -qF "$token" "$SS_H" || { echo "[FAIL] Expected selinux_ss member missing: $token"; exit 1; }
           done
 
           echo "--- Actual SukiSU 4.19 private policy wrapper ---"
-          grep -n -A12 -B2 'struct selinux_policy[[:space:]]*{{' "$SEPOL_H" | head -30
-          grep -qF 'struct selinux_policy {{' "$SEPOL_H" || {{ echo "[FAIL] Local SukiSU policy wrapper is missing."; exit 1; }}
-          grep -qF 'struct policydb policydb;' "$SEPOL_H" || {{ echo "[FAIL] Local SukiSU policy wrapper does not expose policydb."; exit 1; }}
+          grep -n -A12 -B2 'struct selinux_policy[[:space:]]*{' "$SEPOL_H" | head -30
+          grep -qF 'struct selinux_policy {' "$SEPOL_H" || { echo "[FAIL] Local SukiSU policy wrapper is missing."; exit 1; }
+          grep -qF 'struct policydb policydb;' "$SEPOL_H" || { echo "[FAIL] Local SukiSU policy wrapper does not expose policydb."; exit 1; }
 
-          if grep -A8 -F 'struct selinux_policy {{' "$SEPOL_H" | grep -Eq 'struct selinux_map map;|latest_granting|struct sidtab'; then
+          if grep -A8 -F 'struct selinux_policy {' "$SEPOL_H" | grep -Eq 'struct selinux_map map;|latest_granting|struct sidtab'; then
             echo "[FAIL] backup_sepolicy wrapper unexpectedly exposes ss-owned fields."
             exit 1
           fi
           echo "[PASS] backup_sepolicy is policydb-only; ss-owned state remains in selinux_state.ss."
 
           echo "--- Actual sidtab API ---"
-          grep -qF 'struct sidtab {{' "$SID_H" || {{ echo "[FAIL] struct sidtab definition is missing."; exit 1; }}
-          grep -qE 'sidtab_search|sidtab_context_to_sid' "$SID_H" || {{ echo "[FAIL] Supported sidtab lookup API missing."; exit 1; }}
+          grep -qF 'struct sidtab {' "$SID_H" || { echo "[FAIL] struct sidtab definition is missing."; exit 1; }
+          grep -qE 'sidtab_search|sidtab_context_to_sid' "$SID_H" || { echo "[FAIL] Supported sidtab lookup API missing."; exit 1; }
           echo "[PASS] Native 4.19 sidtab lookup API is present; no synthetic sidtab_set() bridge is required."
 
           echo "--- Actual hashtab representation ---"
-          grep -qF 'htable' "$HASH_H" || {{ echo "[FAIL] hashtab->htable is absent."; exit 1; }}
+          grep -qF 'htable' "$HASH_H" || { echo "[FAIL] hashtab->htable is absent."; exit 1; }
 
           echo "--- Pinned SukiSU source ---"
-          LOCAL_SHA="$(sha256sum "$HIDE_C" | awk '{{print $1}}')"
+          LOCAL_SHA="$(sha256sum "$HIDE_C" | awk '{print $1}')"
           echo "[INFO] Local integrated selinux_hide.c SHA256=$LOCAL_SHA"
           echo "[INFO] Expected pinned v4.2.0 SHA256=efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5"
-          test "$LOCAL_SHA" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5" || {{ echo "[FAIL] selinux_hide.c is not pinned v4.2.0."; exit 1; }}
+          test "$LOCAL_SHA" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5" || { echo "[FAIL] selinux_hide.c is not pinned v4.2.0."; exit 1; }
 
           echo "--- Known 4.19 compatibility signals ---"
           if grep -qF 'TWA_RESUME' drivers/kernelsu/supercall/supercall.c; then
