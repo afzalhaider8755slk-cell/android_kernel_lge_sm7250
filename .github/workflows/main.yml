@@ -1,8 +1,8 @@
-# V78 researched Setup 19 SELinux ownership fix + pre-build compatibility gate: Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V81: exact V80 failure fix. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V80 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V81 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -2220,14 +2220,26 @@ jobs:
               raise SystemExit('[FAIL] Required HID source/header is missing.')
           hh = hid_h.read_text(errors='replace')
           fh = f_hid.read_text(errors='replace')
+
+          # Regression guard: compile only the two known-safe structural
+          # expressions before using them. The literal member checks above
+          # intentionally contain no regex metacharacters.
+          re.compile(r'struct\s+hid_descriptor\s*\{(?P<body>.*?)\}\s*__attribute__', re.S)
+          re.compile(r'struct\s+hid_descriptor\s*\{(?P<body>.*?)\}', re.S)
+
           m = re.search(r'struct\s+hid_descriptor\s*\{(?P<body>.*?)\}\s*__attribute__', hh, re.S)
           if not m:
               m = re.search(r'struct\s+hid_descriptor\s*\{(?P<body>.*?)\}', hh, re.S)
           if not m:
               raise SystemExit('[FAIL] Could not locate actual struct hid_descriptor in checked-out include/linux/hid.h.')
           body = m.group('body')
-          has_rpt = bool(re.search(r'\\brpt_desc\\b', body))
-          has_desc = bool(re.search(r'\\bdesc\\s*\\[', body))
+          # Literal member-name checks do not need regular expressions.
+          # V80 used r'\\bdesc\\s*\\[', which reaches Python's regex parser
+          # with an opening '[' that is no longer escaped as intended and caused:
+          #   re.error: unterminated character set at position 13
+          # Use deterministic substring checks instead.
+          has_rpt = 'rpt_desc' in body
+          has_desc = 'desc[' in body
           print(f'[EVIDENCE] hid_descriptor: rpt_desc={has_rpt} desc_array={has_desc}')
           if not has_rpt:
               raise SystemExit('[FAIL] Tree does not expose hid_descriptor.rpt_desc; refusing speculative HID mutation.')
@@ -2287,6 +2299,7 @@ jobs:
           PY
 
           echo "[PASS] Setup 12A completed; 10A/Setup-19 feature configuration was not reopened."
+          echo "[PASS] V80 Python regex regression removed; literal HID member checks are regex-free."
 
       - name: 19 - Build Kernel (Full Log to Artifact)
         shell: bash
