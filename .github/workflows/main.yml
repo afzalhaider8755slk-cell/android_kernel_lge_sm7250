@@ -1,8 +1,8 @@
-# V95: Correct V93's incomplete source-of-truth extraction boundary; restore the complete SukiSU-Ultra v4.2.0 SELinux iterator/hashtab compatibility section. All verified features and locked setups remain preserved. V89 reached the targeted 4.19 smoke stage, where direct feature/*.o goals failed because SukiSU-Ultra v4.2.0's feature/ directory has no child Makefile; the parent KernelSU/kernel/Kbuild owns those objects. Official source structure is preserved; only the smoke target is corrected. V87 correctly exposed the github.token context, then 00A reached the GitHub Contents API but received HTTP 404 because its parser left the repository name inside WF_PATH. All verified source/features and locked setups are preserved. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V96: Research-verified correction to V95 12B validator only. Pinned SukiSU-Ultra v4.2.0 source is authoritative; Linux 4.19 hashtab/flex_array layouts were cross-checked. No guessed kernel/source mutation is introduced. Existing verified fixes and locked setups remain unchanged.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V95 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V96 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -2633,7 +2633,7 @@ jobs:
           # 5.8 hashtab compatibility conditional. Validate its actual
           # preprocessor structure instead of imposing a guessed count.
           import re
-          directives = re.findall(r"^\\s*#\\s*(if|ifdef|ifndef|endif|else|elif)\\b", official, re.MULTILINE)
+          directives = re.findall(r"^\s*#\s*(if|ifdef|ifndef|endif|else|elif)\b", official, re.MULTILINE)
           depth = 0
           saw_if = False
           saw_else = False
@@ -2675,11 +2675,11 @@ jobs:
               raise SystemExit("[FAIL] 12B: forbidden flex_array hashtab iterator remains in final section.")
           if "for (cur = node_ptr[i]; cur; cur = cur->next)" not in final:
               raise SystemExit("[FAIL] 12B: authoritative node_ptr[i] iterator missing from final section.")
-          # Explicit V95 regression guard: the 5.8 branch must be closed before
+          # Explicit V96 regression guard: the 5.8 branch must be closed before
           # the symtab compatibility section begins.
           if "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)" not in final:
               raise SystemExit("[FAIL] 12B: 5.8 hashtab compatibility #if is missing.")
-          final_directives = re.findall(r"^\\s*#\\s*(if|ifdef|ifndef|endif|else|elif)\\b", final, re.MULTILINE)
+          final_directives = re.findall(r"^\s*#\s*(if|ifdef|ifndef|endif|else|elif)\b", final, re.MULTILINE)
           final_depth = 0
           final_else = False
           for directive in final_directives:
