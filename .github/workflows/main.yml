@@ -1,8 +1,8 @@
-# V84: exact V83 shell-syntax fix + early workflow static shell audit. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V85: exact V83 shell-syntax fix + early workflow static shell audit. V82 rejected the valid LG 4.19 bind-time HID 2/2 assignment layout. Setup 10A and Setup 19 remain locked; only 12A's broken Python regex audit is corrected. Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V84 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V85 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -72,7 +72,16 @@ jobs:
             echo "CIP target: $CIP_REF"
           } | tee "$DIAG_DIR/00-early-init.log"
 
-      - name: 00A - Workflow Static Shell Syntax Preflight
+      - name: 01 - Checkout Stock Kernel Source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: lge-qcom-dev/android_kernel_lge_sm7250
+          ref: lineage-23.2
+          fetch-depth: 1
+          persist-credentials: false
+
+
+      - name: 00A - Workflow Static Shell Syntax Preflight (Post-Checkout)
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -80,7 +89,7 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/ci-logs"
           : > "$LOG"
           echo "========== WORKFLOW STATIC SHELL SYNTAX PREFLIGHT ==========" | tee -a "$LOG"
-          echo "[INFO] This runs before kernel source checkout/toolchain downloads." | tee -a "$LOG"
+          echo "[INFO] Runs after kernel source checkout and before toolchain downloads." | tee -a "$LOG"
           WF="$GITHUB_WORKSPACE/.github/workflows/main.yml"
           if [ ! -f "$WF" ]; then
             WF="$(find "$GITHUB_WORKSPACE/.github/workflows" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -print -quit 2>/dev/null || true)"
@@ -125,15 +134,6 @@ jobs:
               raise SystemExit(f'[FAIL] {failures} workflow run block(s) failed static shell syntax validation.')
           print('[PASS] All workflow run blocks pass bash -n before expensive build work.')
           PY
-
-      - name: 01 - Checkout Stock Kernel Source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          repository: lge-qcom-dev/android_kernel_lge_sm7250
-          ref: lineage-23.2
-          fetch-depth: 1
-          persist-credentials: false
-
       - name: 01A - Universal Diagnostics Safety Net
         if: always()
         shell: bash
