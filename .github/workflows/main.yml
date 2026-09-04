@@ -6,9 +6,9 @@
 # for hashtab in Setup 17. Setup 27 is now verification/compile-only.
 # V1: Cumulative, non-destructive Linux 4.19 compatibility build workflow. V96 restored the official single iterator block but did not account for the different Linux 4.19 avtab::htable (flex_array) versus SELinux hashtab::htable (node-pointer array). V97 preserves all verified features and the four existing LG 4.19 SELinux function bodies; only the 12B source reconstruction/iterator boundary is changed.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
-# V7: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
+# V8: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V7
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V8
 
 on:
   workflow_dispatch:
@@ -307,7 +307,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V7-EARLY-CIP135-FAILURE-Diagnostics
+          name: LG-Velvet-G900-V8-EARLY-CIP135-FAILURE-Diagnostics
           path: |
             ci-logs/00-early-init.log
             ci-logs/02-cip135-update.log
@@ -2634,6 +2634,61 @@ jobs:
           echo "[PASS] Setup 12A completed; Setup 10A and Setup 19 remain locked."
           echo "[PASS] HID audit now follows the actual 4.19 source layout; no synthetic bind pair is required."
 
+      - name: Setup 26A - Linux 4.19 Dispatcher Header Compatibility
+        shell: bash
+        run: |
+          SETUP_NO="26A"
+          SETUP_NAME="Setup 26A - Linux 4.19 Dispatcher Header Compatibility"
+          SETUP_LOG="$DIAG_DIR/26A-setup-26A-linux-4-19-dispatcher-header-compatibility-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
+          set -Eeuo pipefail
+
+          # CURRENT ERROR FIX ONLY:
+          # Linux 4.19 places tasklist_lock/init_task in sched/task.h and
+          # task_pgrp()/task_session() in sched/signal.h. The V8 compile gate
+          # failed in dispatch.c because these declarations were not visible.
+          # Do not modify the dispatcher implementation or any kernel feature.
+          DISPATCH_C="drivers/kernelsu/supercall/dispatch.c"
+          test -s "$DISPATCH_C"
+
+          HEADER_SIGNAL='#include <linux/sched/signal.h>'
+          HEADER_TASK='#include <linux/sched/task.h>'
+
+          signal_count="$(grep -cF "$HEADER_SIGNAL" "$DISPATCH_C" || true)"
+          task_count="$(grep -cF "$HEADER_TASK" "$DISPATCH_C" || true)"
+          echo "[AUDIT] sched/signal.h count before fix: $signal_count"
+          echo "[AUDIT] sched/task.h count before fix: $task_count"
+
+          if [ "$signal_count" -eq 0 ]; then
+            tmp="$RUNNER_TEMP/dispatch.c.header.tmp"
+            awk -v h="$HEADER_SIGNAL" 'NR==1 { print h } { print }' "$DISPATCH_C" > "$tmp"
+            mv -f "$tmp" "$DISPATCH_C"
+            echo "[FIXED] Added explicit Linux 4.19 sched/signal.h dependency to dispatch.c."
+          elif [ "$signal_count" -eq 1 ]; then
+            echo "[PASS] sched/signal.h is already present; no duplicate mutation."
+          else
+            echo "[FAIL] Multiple sched/signal.h includes found; refusing speculative rewrite."
+            exit 1
+          fi
+
+          signal_count="$(grep -cF "$HEADER_SIGNAL" "$DISPATCH_C" || true)"
+          test "$signal_count" -eq 1
+
+          # task.h is included by Linux 4.19 sched/signal.h, so do not add a
+          # second direct include unless the actual compiler proves it is needed.
+          # This keeps the current fix minimal and avoids redundant header changes.
+          echo "[PASS] dispatch.c has exactly one explicit sched/signal.h include."
+          echo "[PASS] No dispatch.c function/body/API code was changed."
+          echo "[LOCKED] SukiSU/KPM/SUSFS/Maphide/Baseband-Guard/features remain unchanged."
+          echo "=============================================================="
+
       - name: Setup 27 - Cumulative 4.19 Hotspot Compile Gate
         shell: bash
         run: |
@@ -2802,25 +2857,6 @@ jobs:
           fi
           echo "[PASS] V1: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
 
-          # SETUP 19 — Linux 4.19 dispatcher scheduler-header dependency
-          # The current build reached drivers/kernelsu/supercall/dispatch.c.
-          # Linux 4.19 keeps tasklist_lock/init_task in sched/task.h and
-          # task_pgrp()/task_session() in sched/signal.h; sched/signal.h includes
-          # sched/task.h. Add only this explicit header dependency to the actual
-          # dispatcher compiled by Kbuild. Setup 10A is not reopened or modified.
-          # ------------------------------------------------------------
-          DISPATCH_C="drivers/kernelsu/supercall/dispatch.c"
-          test -f "$DISPATCH_C"
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQpoZWFkZXIgPSAnI2luY2x1ZGUgPGxpbnV4L3NjaGVkL3NpZ25hbC5oPicKY291bnQgPSBzLmNvdW50KGhlYWRlcikKaWYgY291bnQgPT0gMDoKICAgIGZpcnN0ID0gcy5maW5kKCcjaW5jbHVkZSAnKQogICAgaWYgZmlyc3QgPCAwOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1tGQUlMXSBTZXR1cCAxOTogZGlzcGF0Y2guYyBoYXMgbm8gaW5jbHVkZSBib3VuZGFyeS4nKQogICAgcyA9IHNbOmZpcnN0XSArIGhlYWRlciArICdcbicgKyBzW2ZpcnN0Ol0KICAgIHAud3JpdGVfdGV4dChzKQogICAgcHJpbnQoJ1tGSVhFRF0gU2V0dXAgMTk6IGFkZGVkIExpbnV4IDQuMTkgc2NoZWQvc2lnbmFsLmggdG8gYWN0dWFsIGRpc3BhdGNoLmMuJykKZWxpZiBjb3VudCA9PSAxOgogICAgcHJpbnQoJ1tQQVNTXSBTZXR1cCAxOTogc2NoZWQvc2lnbmFsLmggYWxyZWFkeSBwcmVzZW50IGluIGFjdHVhbCBkaXNwYXRjaC5jLicpCmVsc2U6CiAgICByYWlzZSBTeXN0ZW1FeGl0KGYnW0ZBSUxdIFNldHVwIDE5OiBkdXBsaWNhdGUgc2NoZWQvc2lnbmFsLmggaW5jbHVkZXM6IHtjb3VudH0nKQo=' | base64 -d > "$RUNNER_TEMP/setup19_dispatch_sched_header.py"
-          chmod 700 "$RUNNER_TEMP/setup19_dispatch_sched_header.py"
-          python3 -m py_compile "$RUNNER_TEMP/setup19_dispatch_sched_header.py"
-          python3 "$RUNNER_TEMP/setup19_dispatch_sched_header.py" "$DISPATCH_C"
-          # Hard verification: exactly one scheduler signal header must be in
-          # the actual dispatcher compiled by Kbuild. No scheduler API/source
-          # modification is performed.
-          test "$(grep -cF '#include <linux/sched/signal.h>' "$DISPATCH_C")" -eq 1
-          grep -qF '#include <linux/sched/signal.h>' "$DISPATCH_C"
-          # ------------------------------------------------------------
           # SETUP 19 — Linux 4.19 task_work API boundary
           # The actual Kbuild source is drivers/kernelsu/supercall/supercall.c.
           # Linux 4.19 declares task_work_add(..., bool), not the newer
@@ -3409,20 +3445,20 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V7-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V8-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V7-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V8-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V7-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V8-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
-            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V7-AnyKernel3-OrangeFox-Flashable.zip" artifacts/kernel/
+            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V8-AnyKernel3-OrangeFox-Flashable.zip" artifacts/kernel/
 
             echo "[PASS] Kernel image packaged."
             echo "[PASS] AnyKernel3 package prepared for flashing from OrangeFox/recovery."
@@ -3520,7 +3556,7 @@ jobs:
           git rev-parse HEAD > diagnostic-artifact/kernel-head.txt 2>&1 || true
 
           {
-            echo "========== V7 ALL SETUP STATUS =========="
+            echo "========== V8 ALL SETUP STATUS =========="
             date -u
             for f in "$DIAG_DIR"/*LIVE.log; do
               [ -f "$f" ] || continue
@@ -3534,7 +3570,7 @@ jobs:
               fi
               printf '%-75s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/ALL-SETUP-STATUS-V7.log
+          } | tee diagnostic-artifact/ALL-SETUP-STATUS-V8.log
 
           # Preserve the exact complete diagnostic directory as an additional archive.
           # This is not a substitute for individual logs; it is a second recovery path.
@@ -3542,14 +3578,14 @@ jobs:
             tar -czf diagnostic-artifact/all-ci-logs.tar.gz \
               "$DIAG_DIR" diagnostic-artifact/runner-state kernel-build-full.log 2>/dev/null || true
           fi
-          rm -f diagnostic-artifact/V7-ALL-LOG-KARNAL-BUILD.zip
+          rm -f diagnostic-artifact/V8-ALL-LOG-KARNAL-BUILD.zip
           command -v zip >/dev/null 2>&1 || {
-            echo "[FAIL] zip utility is required to create V7-ALL-LOG-KARNAL-BUILD.zip."
+            echo "[FAIL] zip utility is required to create V8-ALL-LOG-KARNAL-BUILD.zip."
             exit 1
           }
-          ( cd diagnostic-artifact && zip -qr "V7-ALL-LOG-KARNAL-BUILD.zip" ci-logs ALL-SETUP-STATUS-V7.log runner-state kernel-build-full.log final.config git-status.txt kernel-head.txt sukisu-integration-note.txt )
-          test -s diagnostic-artifact/V7-ALL-LOG-KARNAL-BUILD.zip
-          echo "[PASS] V7 consolidated all-setup log ZIP created."
+          ( cd diagnostic-artifact && zip -qr "V8-ALL-LOG-KARNAL-BUILD.zip" ci-logs ALL-SETUP-STATUS-V8.log runner-state kernel-build-full.log final.config git-status.txt kernel-head.txt sukisu-integration-note.txt )
+          test -s diagnostic-artifact/V8-ALL-LOG-KARNAL-BUILD.zip
+          echo "[PASS] V8 consolidated all-setup log ZIP created."
           {
             echo "GitHub Run: $GITHUB_RUN_ID"
             echo "Commit: $GITHUB_SHA"
@@ -3569,18 +3605,18 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V7-EMERGENCY-Diagnostics
+          name: LG-Velvet-G900-V8-EMERGENCY-Diagnostics
           path: diagnostic-artifact
           if-no-files-found: warn
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V7 All Setup Logs
+      - name: Artifact - V8 All Setup Logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V7-ALL-LOG-KARNAL-BUILD
-          path: diagnostic-artifact/V7-ALL-LOG-KARNAL-BUILD.zip
+          name: V8-ALL-LOG-KARNAL-BUILD
+          path: diagnostic-artifact/V8-ALL-LOG-KARNAL-BUILD.zip
           if-no-files-found: warn
           retention-days: 14
           compression-level: 6
@@ -3589,7 +3625,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V7-SukiSU-4.2.0-Kernel-Only
+          name: LG-Velvet-G900-V8-SukiSU-4.2.0-Kernel-Only
           path: artifacts
           if-no-files-found: error
           retention-days: 14
@@ -3599,7 +3635,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V7-SukiSU-4.2.0-Diagnostics
+          name: LG-Velvet-G900-V8-SukiSU-4.2.0-Diagnostics
           path: diagnostic-artifact
           if-no-files-found: warn
           retention-days: 14
