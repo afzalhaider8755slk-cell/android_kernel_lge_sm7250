@@ -1,8 +1,8 @@
-# V77 robust 10B research + compatibility preflight: Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
+# V78 researched Setup 19 SELinux ownership fix + pre-build compatibility gate: Setup 19 ports pinned SukiSU-Ultra v4.2.0 selinux_hide.c to the real Linux 4.19 selinux_state.ss layout.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # Live Activity remains concise; full V=1 compiler output remains artifact-only.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V75 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Port + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
+name: LG Velvet 5G LM-G900/G900EMW - V32.1 FIXED - V78 Pre-Build Compatibility Matrix + Setup 19 Linux 4.19 SELinux Ownership Fix + Live Build Diagnostics - SukiSU-Ultra 4.2.0 + KPM + SUSFS 1.5.5-4.19 + CIP135 + FULL LTO + Baseband-Guard v1.1 + Maphide/JIT-Zygote + Network/Android Requirements + KERNEL-ONLY + AnyKernel3 (OrangeFox-Flashable)
 
 on:
   workflow_dispatch:
@@ -1706,71 +1706,69 @@ jobs:
 
           echo "========== PRE-BUILD SELINUX 4.19 LAYOUT PREFLIGHT =========="
           echo "[LOCKED] Setup 10A is immutable and is not modified by this preflight."
-          echo "[RESEARCH] Validate the actual CIP135 source headers before Setup 19 mutation."
+          echo "[RESEARCH] Validate the actual checked-out LG/CIP135 SELinux headers and the private SukiSU policy wrapper before Setup 19."
           echo "[TARGET] Linux 4.19.325-cip135 + SukiSU-Ultra v4.2.0 non-GKI."
 
           SEC_H="security/selinux/include/security.h"
           SS_H="security/selinux/ss/services.h"
           SID_H="security/selinux/ss/sidtab.h"
           HASH_H="security/selinux/ss/hashtab.h"
+          SEPOL_H="drivers/kernelsu/selinux/sepolicy.h"
           HIDE_C="drivers/kernelsu/feature/selinux_hide.c"
 
-          for f in "$SEC_H" "$SS_H" "$SID_H" "$HASH_H" "$HIDE_C"; do
-            test -f "$f" || { echo "[FAIL] Missing required source: $f"; exit 1; }
+          for f in "$SEC_H" "$SS_H" "$SID_H" "$HASH_H" "$SEPOL_H" "$HIDE_C"; do
+            test -f "$f" || {{ echo "[FAIL] Required source file missing: $f"; exit 1; }}
           done
 
           echo "--- Actual selinux_state layout ---"
-          grep -n -A24 -B3 'struct selinux_state[[:space:]]*{' "$SEC_H" | head -40
-          grep -qF 'struct selinux_ss *ss;' "$SEC_H" \
-            || { echo "[FAIL] This tree does not expose selinux_state.ss; the 4.19 port would be invalid."; exit 1; }
+          grep -n -A24 -B3 'struct selinux_state[[:space:]]*{{' "$SEC_H" | head -40
+          grep -qF 'struct selinux_ss *ss;' "$SEC_H" || {{ echo "[FAIL] selinux_state.ss is missing."; exit 1; }}
 
           echo "--- Actual selinux_ss layout ---"
-          grep -n -A30 -B3 'struct selinux_ss[[:space:]]*{' "$SS_H" | head -50
-          for token in 'struct sidtab *sidtab;' 'struct policydb policydb;' 'struct selinux_map map;' 'struct page *status_page;' 'struct mutex status_lock;'; do
-            grep -qF "$token" "$SS_H" \
-              || { echo "[FAIL] Expected Linux 4.19 selinux_ss member missing: $token"; exit 1; }
+          grep -n -A30 -B3 'struct selinux_ss[[:space:]]*{{' "$SS_H" | head -50
+          for token in 'struct sidtab *sidtab;' 'struct policydb policydb;' 'struct selinux_map map;' 'u32 latest_granting;' 'struct page *status_page;' 'struct mutex status_lock;'; do
+            grep -qF "$token" "$SS_H" || {{ echo "[FAIL] Expected selinux_ss member missing: $token"; exit 1; }}
           done
 
+          echo "--- Actual SukiSU 4.19 private policy wrapper ---"
+          grep -n -A12 -B2 'struct selinux_policy[[:space:]]*{{' "$SEPOL_H" | head -30
+          grep -qF 'struct selinux_policy {{' "$SEPOL_H" || {{ echo "[FAIL] Local SukiSU policy wrapper is missing."; exit 1; }}
+          grep -qF 'struct policydb policydb;' "$SEPOL_H" || {{ echo "[FAIL] Local SukiSU policy wrapper does not expose policydb."; exit 1; }}
+
+          if grep -A8 -F 'struct selinux_policy {{' "$SEPOL_H" | grep -Eq 'struct selinux_map map;|latest_granting|struct sidtab'; then
+            echo "[FAIL] backup_sepolicy wrapper unexpectedly exposes ss-owned fields."
+            exit 1
+          fi
+          echo "[PASS] backup_sepolicy is policydb-only; ss-owned state remains in selinux_state.ss."
+
           echo "--- Actual sidtab API ---"
-          # IMPORTANT: this CIP135 4.19 tree stores sidtab as a POINTER in
-          # struct selinux_ss. The old sidtab_set() check was a wrong API
-          # assumption and made 10B fail before the real build. Do not require
-          # a non-existent sidtab_set() declaration. Verify only APIs actually
-          # exposed by this tree and required by the pointer-based layout.
-          grep -qF 'struct sidtab {' "$SID_H" \
-            || { echo "[FAIL] struct sidtab definition is missing."; exit 1; }
-          grep -qF 'int sidtab_init(struct sidtab *s);' "$SID_H" \
-            || { echo "[FAIL] sidtab_init() is not available in this tree."; exit 1; }
-          grep -qE 'sidtab_search|sidtab_context_to_sid' "$SID_H" \
-            || { echo "[FAIL] No supported sidtab lookup API is exposed by this tree."; exit 1; }
-          echo "[PASS] CIP135 Linux 4.19 sidtab API is pointer-based; no sidtab_set() requirement."
+          grep -qF 'struct sidtab {{' "$SID_H" || {{ echo "[FAIL] struct sidtab definition is missing."; exit 1; }}
+          grep -qE 'sidtab_search|sidtab_context_to_sid' "$SID_H" || {{ echo "[FAIL] Supported sidtab lookup API missing."; exit 1; }}
+          echo "[PASS] Native 4.19 sidtab lookup API is present; no synthetic sidtab_set() bridge is required."
 
           echo "--- Actual hashtab representation ---"
-          grep -n -A20 -B3 'struct hashtab[[:space:]]*{' "$HASH_H" | head -35
-          grep -qF 'htable' "$HASH_H" || { echo "[FAIL] hashtab->htable is absent."; exit 1; }
+          grep -qF 'htable' "$HASH_H" || {{ echo "[FAIL] hashtab->htable is absent."; exit 1; }}
 
           echo "--- Pinned SukiSU source ---"
-          LOCAL_SHA="$(sha256sum "$HIDE_C" | awk '{print $1}')"
+          LOCAL_SHA="$(sha256sum "$HIDE_C" | awk '{{print $1}}')"
           echo "[INFO] Local integrated selinux_hide.c SHA256=$LOCAL_SHA"
           echo "[INFO] Expected pinned v4.2.0 SHA256=efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5"
-          test "$LOCAL_SHA" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5" \
-            || { echo "[FAIL] Local SukiSU selinux_hide.c is not the pinned v4.2.0 source; no speculative replacement will be attempted."; exit 1; }
+          test "$LOCAL_SHA" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5" || {{ echo "[FAIL] selinux_hide.c is not pinned v4.2.0."; exit 1; }}
 
           echo "--- Known 4.19 compatibility signals ---"
           if grep -qF 'TWA_RESUME' drivers/kernelsu/supercall/supercall.c; then
-            echo "[PLAN] task_work TWA_RESUME boundary will be handled by the existing Setup 19 exact fix."
+            echo "[PLAN] task_work TWA_RESUME boundary will be handled by existing Setup 19 exact fix."
           else
-            echo "[PASS] task_work source is already on the 4.19-compatible form."
+            echo "[PASS] task_work source is already 4.19-compatible."
           fi
-
           if grep -qF 'flex_array_get_ptr(node_ptr, i)' drivers/kernelsu/selinux/sepolicy.c; then
-            echo "[PLAN] legacy 4.19 hashtab iteration boundary will be handled by the existing Setup 19 exact fix."
+            echo "[PLAN] legacy 4.19 hashtab iteration boundary will be handled by existing Setup 19 exact fix."
           else
-            echo "[PASS] hashtab iteration is already on the 4.19-compatible form."
+            echo "[PASS] hashtab iteration is already 4.19-compatible."
           fi
 
-          echo "[PASS] SELinux state/ss/map/sidtab structure matches the researched 4.19 model (sidtab is a pointer)."
-          echo "[PASS] Preflight performed source inspection only; no source mutation."
+          echo "[PASS] Preflight found the actual 4.19 state model and private SukiSU policy-wrapper model."
+          echo "[PASS] No source mutation performed."
           echo "=============================================================="
 
       - name: 10B - Setup 19 SELinux 4.19 Compatibility Port (10A LOCKED)
@@ -1783,17 +1781,31 @@ jobs:
 
           echo "========== SETUP 19: SELINUX 4.19 COMPATIBILITY PORT =========="
           echo "[LOCKED] Setup 10A is not modified, reopened, or reverted."
-          echo "[RESEARCH] Reuse the hash-verified SukiSU-Ultra v4.2.0 source already integrated by Setup 08."
-          echo "[RESEARCH] Linux 4.19 exposes SELinux policydb/map/sidtab/status state through selinux_state.ss."
-          echo "[FIX] Apply only the minimal source-derived 4.19 compatibility boundary."
+          echo "[RESEARCH] V77 failed because backup_sepolicy->map/latest_granting/sidtab do not exist in this LG private policy wrapper."
+          echo "[RESEARCH] In this LG 4.19 tree, sidtab/map/latest_granting/status state belongs to selinux_state.ss."
+          echo "[FIX] Use backup_sepolicy only for policydb; use selinux_state.ss for native 4.19 SELinux state backing."
 
           SELINUX_HIDE_C="drivers/kernelsu/feature/selinux_hide.c"
+          SEPOL_H="drivers/kernelsu/selinux/sepolicy.h"
+          SS_H="security/selinux/ss/services.h"
           test -f "$SELINUX_HIDE_C"
+          test -f "$SEPOL_H"
+          test -f "$SS_H"
+
           LOCAL_SHA256="$(sha256sum "$SELINUX_HIDE_C" | awk '{print $1}')"
           echo "[INFO] Integrated v4.2.0 selinux_hide.c SHA256=$LOCAL_SHA256"
           test "$LOCAL_SHA256" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5"
 
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKaW1wb3J0IHJlCgpwID0gUGF0aChzeXMuYXJndlsxXSkKcyA9IHAucmVhZF90ZXh0KCkKCiMgU2V0dXAgMTBCIE9OTFk6IGFkYXB0IHBpbm5lZCBTdWtpU1UtVWx0cmEgdjQuMi4wIG5vbi1HS0kgU0VMaW51eAojIHN0YXRlIHdyYXBwZXIgdG8gdGhlIGFjdHVhbCBMaW51eCA0LjE5IHNlbGludXhfc3RhdGUuc3MgbGF5b3V0LgojIFNldHVwIDEwQSBpcyBkZWxpYmVyYXRlbHkgbm90IHRvdWNoZWQuCgpmb3Igb2xkLCBuZXcgaW4gWwogICAgKCJzZWxpbnV4X3N0YXRlLnN0YXR1c19sb2NrIiwgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19sb2NrIiksCiAgICAoInNlbGludXhfc3RhdGUuc3RhdHVzX3BhZ2UiLCAic2VsaW51eF9zdGF0ZS5zcy0+c3RhdHVzX3BhZ2UiKSwKXToKICAgIHMgPSBzLnJlcGxhY2Uob2xkLCBuZXcpCgpkZWNsID0gcmUuY29tcGlsZShyJyg/bSleWyBcdF0qc3RhdGljIHN0cnVjdCBzZWxpbnV4X3N0YXRlIGZha2Vfc3RhdGU7WyBcdF0qXG4nKQppZiBsZW4oZGVjbC5maW5kYWxsKHMpKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdChmJ1tGQUlMXSBFeHBlY3RlZCBleGFjdGx5IG9uZSBmYWtlX3N0YXRlIGRlY2xhcmF0aW9uLCBmb3VuZCB7bGVuKGRlY2wuZmluZGFsbChzKSl9JykKCmluc2VydCA9ICIiInN0YXRpYyBzdHJ1Y3Qgc2VsaW51eF9zdGF0ZSBmYWtlX3N0YXRlOwpzdGF0aWMgc3RydWN0IHNlbGludXhfc3MgZmFrZV9zczsKCnN0YXRpYyB2b2lkIGtzdV9zZWxpbnV4X2luaXRfZmFrZV9zdGF0ZSh2b2lkKQp7CiAgICBtZW1zZXQoJmZha2Vfc3RhdGUsIDAsIHNpemVvZihmYWtlX3N0YXRlKSk7CiAgICBtZW1zZXQoJmZha2Vfc3MsIDAsIHNpemVvZihmYWtlX3NzKSk7CgogICAgZmFrZV9zdGF0ZS5pbml0aWFsaXplZCA9IHRydWU7CiAgICBmYWtlX3N0YXRlLnNzID0gJmZha2Vfc3M7CgogICAgcndsb2NrX2luaXQoJmZha2Vfc3MucG9saWN5X3J3bG9jayk7CgogICAgZmFrZV9zcy5wb2xpY3lkYiA9IGJhY2t1cF9zZXBvbGljeS0+cG9saWN5ZGI7CiAgICBmYWtlX3NzLm1hcCA9IGJhY2t1cF9zZXBvbGljeS0+bWFwOwogICAgZmFrZV9zcy5sYXRlc3RfZ3JhbnRpbmcgPSBiYWNrdXBfc2Vwb2xpY3ktPmxhdGVzdF9ncmFudGluZzsKICAgIGZha2Vfc3Muc2lkdGFiID0gYmFja3VwX3NlcG9saWN5LT5zaWR0YWI7Cn0KIiIiCnMgPSBkZWNsLnN1YihpbnNlcnQsIHMsIGNvdW50PTEpCgppbml0ID0gcmUuY29tcGlsZSgKICAgIHInKD9tKV5bIFx0XSpmYWtlX3N0YXRlXC5pbml0aWFsaXplZFsgXHRdKj1bIFx0XSp0cnVlWyBcdF0qO1sgXHRdKlxuJwogICAgcideWyBcdF0qZmFrZV9zdGF0ZVwucG9saWN5WyBcdF0qPVsgXHRdKmJhY2t1cF9zZXBvbGljeVsgXHRdKjtbIFx0XSpcbicKKQppZiBsZW4oaW5pdC5maW5kYWxsKHMpKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdChmJ1tGQUlMXSBFeHBlY3RlZCBleGFjdGx5IG9uZSB2NC4yLjAgZmFrZV9zdGF0ZS5wb2xpY3kgaW5pdGlhbGl6YXRpb24gcGFpciwgZm91bmQge2xlbihpbml0LmZpbmRhbGwocykpfScpCnMgPSBpbml0LnN1YignICAgICAgICBrc3Vfc2VsaW51eF9pbml0X2Zha2Vfc3RhdGUoKTtcbicsIHMsIGNvdW50PTEpCgpmb3IgdG9rZW4gaW4gWwogICAgJ3NlbGludXhfc3RhdGUuc3RhdHVzX2xvY2snLAogICAgJ3NlbGludXhfc3RhdGUuc3RhdHVzX3BhZ2UnLAogICAgJ2Zha2Vfc3RhdGUucG9saWN5ID0nLApdOgogICAgaWYgdG9rZW4gaW4gczoKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdbRkFJTF0gT2Jzb2xldGUgNC4xOS1pbmNvbXBhdGlibGUgdG9rZW4gcmVtYWluczogJyArIHRva2VuKQoKZm9yIHRva2VuIGluIFsKICAgICdzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfbG9jaycsCiAgICAnc2VsaW51eF9zdGF0ZS5zcy0+c3RhdHVzX3BhZ2UnLAogICAgJ3N0YXRpYyBzdHJ1Y3Qgc2VsaW51eF9zcyBmYWtlX3NzOycsCiAgICAnZmFrZV9zdGF0ZS5zcyA9ICZmYWtlX3NzOycsCiAgICAncndsb2NrX2luaXQoJmZha2Vfc3MucG9saWN5X3J3bG9jayk7JywKICAgICdmYWtlX3NzLnBvbGljeWRiID0gYmFja3VwX3NlcG9saWN5LT5wb2xpY3lkYjsnLAogICAgJ2Zha2Vfc3MubWFwID0gYmFja3VwX3NlcG9saWN5LT5tYXA7JywKICAgICdmYWtlX3NzLmxhdGVzdF9ncmFudGluZyA9IGJhY2t1cF9zZXBvbGljeS0+bGF0ZXN0X2dyYW50aW5nOycsCiAgICAnZmFrZV9zcy5zaWR0YWIgPSBiYWNrdXBfc2Vwb2xpY3ktPnNpZHRhYjsnLApdOgogICAgaWYgdG9rZW4gbm90IGluIHM6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgnW0ZBSUxdIFJlcXVpcmVkIExpbnV4IDQuMTkgY29tcGF0aWJpbGl0eSB0b2tlbiBtaXNzaW5nOiAnICsgdG9rZW4pCgppZiByZS5zZWFyY2gocidcYnNpZHRhYl9zZXRccypcKCcsIHMpOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnW0ZBSUxdIFVuc3VwcG9ydGVkIHNpZHRhYl9zZXQoKSBjYWxsIHByZXNlbnQgaW4gU3VraVNVIFNFTGludXggc291cmNlJykKCnAud3JpdGVfdGV4dChzKQpwcmludCgnW0ZJWEVEXSBTZXR1cCAxOSBTRUxpbnV4IHN0YXRlIHdyYXBwZXIgYWRhcHRlZCB0byBhY3R1YWwgTGludXggNC4xOSBzZWxpbnV4X3N0YXRlLnNzIGxheW91dC4nKQpwcmludCgnW1BBU1NdIFRyYW5zZm9ybWF0aW9uIHdhcyBtYXRjaGVkIHNlbWFudGljYWxseTsgaW5kZW50YXRpb24gaXMgbm90IHBhcnQgb2YgdGhlIGNvbnRyYWN0LicpCg==' | base64 -d > "$RUNNER_TEMP/setup19_selinux_419_port.py"
+          grep -qF 'struct policydb policydb;' "$SEPOL_H"
+          if grep -A8 -F 'struct selinux_policy {' "$SEPOL_H" | grep -Eq 'struct selinux_map map;|latest_granting|struct sidtab'; then
+            echo "[FAIL] backup_sepolicy unexpectedly exposes ss-owned fields."
+            exit 1
+          fi
+          for token in 'struct sidtab *sidtab;' 'struct selinux_map map;' 'u32 latest_granting;' 'struct page *status_page;' 'struct mutex status_lock;'; do
+            grep -qF "$token" "$SS_H" || { echo "[FAIL] Actual selinux_ss member missing: $token"; exit 1; }
+          done
+
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKaW1wb3J0IHJlCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQpmb3Igb2xkLCBuZXcgaW4gWwogICAgKCJzZWxpbnV4X3N0YXRlLnN0YXR1c19sb2NrIiwgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19sb2NrIiksCiAgICAoInNlbGludXhfc3RhdGUuc3RhdHVzX3BhZ2UiLCAic2VsaW51eF9zdGF0ZS5zcy0+c3RhdHVzX3BhZ2UiKSwKXToKICAgIHMgPSBzLnJlcGxhY2Uob2xkLCBuZXcpCmRlY2wgPSByZS5jb21waWxlKHInKD9tKV5bIFx0XSpzdGF0aWMgc3RydWN0IHNlbGludXhfc3RhdGUgZmFrZV9zdGF0ZTtbIFx0XSpcbicpCmlmIGxlbihkZWNsLmZpbmRhbGwocykpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KGYiW0ZBSUxdIEV4cGVjdGVkIGV4YWN0bHkgb25lIGZha2Vfc3RhdGUgZGVjbGFyYXRpb24sIGZvdW5kIHtsZW4oZGVjbC5maW5kYWxsKHMpKX0iKQppbnNlcnQgPSAiIiJzdGF0aWMgc3RydWN0IHNlbGludXhfc3RhdGUgZmFrZV9zdGF0ZTsKc3RhdGljIHN0cnVjdCBzZWxpbnV4X3NzIGZha2Vfc3M7CgpzdGF0aWMgdm9pZCBrc3Vfc2VsaW51eF9pbml0X2Zha2Vfc3RhdGUodm9pZCkKewogICAgbWVtc2V0KCZmYWtlX3N0YXRlLCAwLCBzaXplb2YoZmFrZV9zdGF0ZSkpOwogICAgbWVtc2V0KCZmYWtlX3NzLCAwLCBzaXplb2YoZmFrZV9zcykpOwoKICAgIGZha2Vfc3RhdGUuaW5pdGlhbGl6ZWQgPSB0cnVlOwogICAgZmFrZV9zdGF0ZS5zcyA9ICZmYWtlX3NzOwoKICAgIHJ3bG9ja19pbml0KCZmYWtlX3NzLnBvbGljeV9yd2xvY2spOwoKICAgIC8qCiAgICAgKiBMRyA0LjE5L1N1a2lTVSBpbnRlZ3JhdGlvbiBtb2RlbDoKICAgICAqIGJhY2t1cF9zZXBvbGljeSBpcyB0aGUgcHJpdmF0ZSBwb2xpY3lkYiB3cmFwcGVyIG9ubHkuCiAgICAgKiBzaWR0YWIvbWFwL2xhdGVzdF9ncmFudGluZyBhcmUgb3duZWQgYnkgdGhlIGxpdmUgc2VsaW51eF9zdGF0ZS5zcy4KICAgICAqLwogICAgZmFrZV9zcy5wb2xpY3lkYiA9IGJhY2t1cF9zZXBvbGljeS0+cG9saWN5ZGI7CiAgICBmYWtlX3NzLnNpZHRhYiA9IHNlbGludXhfc3RhdGUuc3MtPnNpZHRhYjsKICAgIGZha2Vfc3MubWFwID0gc2VsaW51eF9zdGF0ZS5zcy0+bWFwOwogICAgZmFrZV9zcy5sYXRlc3RfZ3JhbnRpbmcgPSBzZWxpbnV4X3N0YXRlLnNzLT5sYXRlc3RfZ3JhbnRpbmc7Cn0KIiIiCnMgPSBkZWNsLnN1YihpbnNlcnQsIHMsIGNvdW50PTEpCmluaXQgPSByZS5jb21waWxlKAogICAgcicoP20pXlsgXHRdKmZha2Vfc3RhdGVcLmluaXRpYWxpemVkWyBcdF0qPVsgXHRdKnRydWVbIFx0XSo7XHMqXG4nCiAgICByJ15bIFx0XSpmYWtlX3N0YXRlXC5wb2xpY3lbIFx0XSo9WyBcdF0qYmFja3VwX3NlcG9saWN5WyBcdF0qO1xzKlxuJwopCmlmIGxlbihpbml0LmZpbmRhbGwocykpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KGYiW0ZBSUxdIEV4cGVjdGVkIGV4YWN0bHkgb25lIHY0LjIuMCBmYWtlX3N0YXRlLnBvbGljeSBpbml0aWFsaXphdGlvbiBwYWlyLCBmb3VuZCB7bGVuKGluaXQuZmluZGFsbChzKSl9IikKcyA9IGluaXQuc3ViKCIgICAgICAgIGtzdV9zZWxpbnV4X2luaXRfZmFrZV9zdGF0ZSgpO1xuIiwgcywgY291bnQ9MSkKY2xlYW51cCA9IHJlLmNvbXBpbGUoCiAgICByJyg/bSleWyBcdF0qc2lkdGFiX2Rlc3Ryb3lcKGJhY2t1cF9zZXBvbGljeS0+c2lkdGFiXCk7XHMqXG4nCiAgICByJ15bIFx0XSprZnJlZVwoYmFja3VwX3NlcG9saWN5LT5zaWR0YWJcKTtccypcbicKKQppZiBsZW4oY2xlYW51cC5maW5kYWxsKHMpKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdChmIltGQUlMXSBFeHBlY3RlZCBleGFjdGx5IG9uZSBvYnNvbGV0ZSBiYWNrdXAgc2lkdGFiIGNsZWFudXAgcGFpciwgZm91bmQge2xlbihjbGVhbnVwLmZpbmRhbGwocykpfSIpCnMgPSBjbGVhbnVwLnN1YigiIiwgcywgY291bnQ9MSkKZm9yIHRva2VuIGluIFsKICAgICJzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfbG9jayIsInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlIiwKICAgICJzdGF0aWMgc3RydWN0IHNlbGludXhfc3MgZmFrZV9zczsiLCJmYWtlX3N0YXRlLnNzID0gJmZha2Vfc3M7IiwKICAgICJyd2xvY2tfaW5pdCgmZmFrZV9zcy5wb2xpY3lfcndsb2NrKTsiLAogICAgImZha2Vfc3MucG9saWN5ZGIgPSBiYWNrdXBfc2Vwb2xpY3ktPnBvbGljeWRiOyIsCiAgICAiZmFrZV9zcy5zaWR0YWIgPSBzZWxpbnV4X3N0YXRlLnNzLT5zaWR0YWI7IiwKICAgICJmYWtlX3NzLm1hcCA9IHNlbGludXhfc3RhdGUuc3MtPm1hcDsiLAogICAgImZha2Vfc3MubGF0ZXN0X2dyYW50aW5nID0gc2VsaW51eF9zdGF0ZS5zcy0+bGF0ZXN0X2dyYW50aW5nOyIsCl06CiAgICBpZiB0b2tlbiBub3QgaW4gczogcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIFJlcXVpcmVkIHRva2VuIG1pc3Npbmc6ICIrdG9rZW4pCmZvciB0b2tlbiBpbiBbCiAgICAic2VsaW51eF9zdGF0ZS5zdGF0dXNfbG9jayIsInNlbGludXhfc3RhdGUuc3RhdHVzX3BhZ2UiLCJmYWtlX3N0YXRlLnBvbGljeSA9IiwKICAgICJiYWNrdXBfc2Vwb2xpY3ktPm1hcCIsImJhY2t1cF9zZXBvbGljeS0+bGF0ZXN0X2dyYW50aW5nIiwiYmFja3VwX3NlcG9saWN5LT5zaWR0YWIiLApdOgogICAgaWYgdG9rZW4gaW4gczogcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIE9ic29sZXRlIHRva2VuIHJlbWFpbnM6ICIrdG9rZW4pCmlmIHJlLnNlYXJjaChyJ1xic2lkdGFiX3NldFxzKlwoJywgcyk6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gVW5zdXBwb3J0ZWQgc2lkdGFiX3NldCgpIHJlbWFpbnMiKQpwLndyaXRlX3RleHQocykKcHJpbnQoIltGSVhFRF0gU2V0dXAgMTkgbWFwcyBiYWNrdXAgcG9saWN5ZGIgKyBuYXRpdmUgc2VsaW51eF9zdGF0ZS5zcyBiYWNraW5nLiIpCg==' | base64 -d > "$RUNNER_TEMP/setup19_selinux_419_port.py"
           chmod 700 "$RUNNER_TEMP/setup19_selinux_419_port.py"
           python3 -m py_compile "$RUNNER_TEMP/setup19_selinux_419_port.py"
           python3 "$RUNNER_TEMP/setup19_selinux_419_port.py" "$SELINUX_HIDE_C"
@@ -1804,21 +1816,18 @@ jobs:
           grep -qF 'static struct selinux_ss fake_ss;' "$SELINUX_HIDE_C"
           grep -qF 'fake_state.ss = &fake_ss;' "$SELINUX_HIDE_C"
           grep -qF 'fake_ss.policydb = backup_sepolicy->policydb;' "$SELINUX_HIDE_C"
-          grep -qF 'fake_ss.map = backup_sepolicy->map;' "$SELINUX_HIDE_C"
-          grep -qF 'fake_ss.sidtab = backup_sepolicy->sidtab;' "$SELINUX_HIDE_C"
-          if grep -RniE 'sidtab_set\s*\(' drivers/kernelsu/feature/selinux_hide.c drivers/kernelsu/selinux 2>/dev/null; then
-            echo "[FAIL] Unsupported sidtab_set() call remains in the 4.19 SukiSU SELinux port."
+          grep -qF 'fake_ss.sidtab = selinux_state.ss->sidtab;' "$SELINUX_HIDE_C"
+          grep -qF 'fake_ss.map = selinux_state.ss->map;' "$SELINUX_HIDE_C"
+          grep -qF 'fake_ss.latest_granting = selinux_state.ss->latest_granting;' "$SELINUX_HIDE_C"
+
+          if grep -nE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=|backup_sepolicy->(map|latest_granting|sidtab)|sidtab_set\(' "$SELINUX_HIDE_C"; then
+            echo "[FAIL] Obsolete/incompatible Setup 19 SELinux access remains."
             exit 1
           fi
 
-          if grep -nE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=' "$SELINUX_HIDE_C"; then
-            echo "[FAIL] Newer direct selinux_state fields remain in the 4.19 port."
-            exit 1
-          fi
-
-          echo "[PASS] Setup 19 SELinux hide source uses the Linux 4.19 selinux_state.ss layout."
-          echo "[PASS] fake_state carries policydb + map + sidtab backing required by 4.19 security helpers."
-          echo "[PASS] Pinned SukiSU-Ultra v4.2.0 source was reused locally; no network replacement."
+          echo "[PASS] Setup 19 SELinux state wrapper matches the actual LG Linux 4.19 source layout."
+          echo "[PASS] backup_sepolicy contributes policydb only; selinux_state.ss contributes sidtab/map/latest_granting."
+          echo "[PASS] V77's five compiler errors are directly addressed by the researched ownership model."
           echo "[LOCKED] Setup 10A remains untouched."
           echo "=============================================================="
 
@@ -2074,7 +2083,9 @@ jobs:
           echo "--- SELinux-hide post-port invariant ---" | tee -a "$REPORT"
           check grep -qF 'selinux_state.ss->status_lock' drivers/kernelsu/feature/selinux_hide.c
           check grep -qF 'selinux_state.ss->status_page' drivers/kernelsu/feature/selinux_hide.c
-          check grep -qF 'fake_ss.map = backup_sepolicy->map;' drivers/kernelsu/feature/selinux_hide.c
+          check grep -qF 'fake_ss.map = selinux_state.ss->map;' drivers/kernelsu/feature/selinux_hide.c
+          check grep -qF 'fake_ss.sidtab = selinux_state.ss->sidtab;' drivers/kernelsu/feature/selinux_hide.c
+          check grep -qF 'fake_ss.latest_granting = selinux_state.ss->latest_granting;' drivers/kernelsu/feature/selinux_hide.c
           if grep -qE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=' drivers/kernelsu/feature/selinux_hide.c; then
             echo "[FAIL] Modern direct SELinux state fields remain after the 4.19 port." | tee -a "$REPORT"
             fail=$((fail+1))
