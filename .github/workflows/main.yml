@@ -6,9 +6,9 @@
 # for hashtab in Setup 17. Setup 27 is now verification/compile-only.
 # V1: Cumulative, non-destructive Linux 4.19 compatibility build workflow. V96 restored the official single iterator block but did not account for the different Linux 4.19 avtab::htable (flex_array) versus SELinux hashtab::htable (node-pointer array). V97 preserves all verified features and the four existing LG 4.19 SELinux function bodies; only the 12B source reconstruction/iterator boundary is changed.
 # Setup 10A is intentionally preserved byte-for-byte from V71.
-# V8: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
+# V9: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V8
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V9
 
 on:
   workflow_dispatch:
@@ -307,7 +307,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V8-EARLY-CIP135-FAILURE-Diagnostics
+          name: LG-Velvet-G900-V9-EARLY-CIP135-FAILURE-Diagnostics
           path: |
             ci-logs/00-early-init.log
             ci-logs/02-cip135-update.log
@@ -1903,7 +1903,7 @@ jobs:
 
           echo "--- Known 4.19 compatibility signals ---"
           if grep -qF 'TWA_RESUME' drivers/kernelsu/supercall/supercall.c; then
-            echo "[PLAN] task_work TWA_RESUME boundary will be handled by existing Setup 19 exact fix."
+            echo "[PLAN] task_work TWA_RESUME boundary will be handled by Setup 26B exact bool-API fix."
           else
             echo "[PASS] task_work source is already 4.19-compatible."
           fi
@@ -2367,7 +2367,7 @@ jobs:
           check grep -qF 'struct mutex status_lock;' security/selinux/ss/services.h
 
           if grep -qF 'TWA_RESUME' drivers/kernelsu/supercall/supercall.c; then
-            note "TWA_RESUME remains before Setup 19 mutation; the existing exact bool-API fix must run."
+            note "TWA_RESUME remains before Setup 26B mutation; the existing exact bool-API fix must run."
           else
             echo "[PASS] No obsolete TWA_RESUME in dispatcher source." | tee -a "$REPORT"
             pass=$((pass+1))
@@ -2652,7 +2652,7 @@ jobs:
 
           # CURRENT ERROR FIX ONLY:
           # Linux 4.19 places tasklist_lock/init_task in sched/task.h and
-          # task_pgrp()/task_session() in sched/signal.h. The V8 compile gate
+          # task_pgrp()/task_session() in sched/signal.h. The V9 compile gate
           # failed in dispatch.c because these declarations were not visible.
           # Do not modify the dispatcher implementation or any kernel feature.
           DISPATCH_C="drivers/kernelsu/supercall/dispatch.c"
@@ -2689,6 +2689,59 @@ jobs:
           echo "[LOCKED] SukiSU/KPM/SUSFS/Maphide/Baseband-Guard/features remain unchanged."
           echo "=============================================================="
 
+      - name: Setup 26B - Linux 4.19 task_work API Compatibility
+        shell: bash
+        run: |
+          SETUP_NO="26B"
+          SETUP_NAME="Setup 26B - Linux 4.19 task_work API Compatibility"
+          SETUP_LOG="$DIAG_DIR/26B-setup-26B-linux-4-19-task-work-api-compatibility-LIVE.log"
+          mkdir -p "$DIAG_DIR"
+          : > "$SETUP_LOG"
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
+          set -Eeuo pipefail
+
+          # CURRENT ERROR FIX ONLY:
+          # Linux 4.19's task_work_add() takes a bool notify argument.
+          # TWA_RESUME belongs to the later enum-based task_work API and is not
+          # declared by this kernel's include/linux/task_work.h.
+          # The V9 compile gate proved the actual failure at:
+          #   drivers/kernelsu/supercall/supercall.c:98
+          # Replace only that exact call in the actual Kbuild source.
+          SUPERCALL_C="drivers/kernelsu/supercall/supercall.c"
+          test -s "$SUPERCALL_C"
+
+          BAD='task_work_add(current, &tw->cb, TWA_RESUME)'
+          GOOD='task_work_add(current, &tw->cb, true)'
+          bad_count="$(grep -cF "$BAD" "$SUPERCALL_C" || true)"
+          good_count="$(grep -cF "$GOOD" "$SUPERCALL_C" || true)"
+          echo "[AUDIT] obsolete supercall.c TWA_RESUME call count: $bad_count"
+          echo "[AUDIT] Linux 4.19 bool task_work_add() call count: $good_count"
+
+          if [ "$bad_count" -eq 1 ] && [ "$good_count" -eq 0 ]; then
+            tmp="$RUNNER_TEMP/supercall.taskwork.tmp"
+            sed "s|$BAD|$GOOD|" "$SUPERCALL_C" > "$tmp"
+            mv -f "$tmp" "$SUPERCALL_C"
+            echo "[FIXED] Replaced only the verified supercall.c TWA_RESUME call with Linux 4.19 bool=true."
+          elif [ "$bad_count" -eq 0 ] && [ "$good_count" -eq 1 ]; then
+            echo "[PASS] Verified Linux 4.19 bool task_work_add() form is already installed; no duplicate mutation."
+          else
+            echo "[FAIL] Unexpected task_work API state: TWA_RESUME=$bad_count bool_true=$good_count"
+            echo "[FAIL] Refusing speculative source rewrite."
+            exit 1
+          fi
+
+          test "$(grep -cF "$GOOD" "$SUPERCALL_C" || true)" -eq 1
+          test "$(grep -cF "$BAD" "$SUPERCALL_C" || true)" -eq 0
+          echo "[PASS] Actual Kbuild supercall.c now uses the native Linux 4.19 task_work_add(..., true) API."
+          echo "[LOCKED] No SukiSU/KPM/SUSFS/Maphide/Baseband-Guard feature/config changes were made."
+          echo "[LOCKED] Setup 10A/17/19 source boundaries were not reopened or reconstructed."
+          echo "=============================================================="
+
       - name: Setup 27 - Cumulative 4.19 Hotspot Compile Gate
         shell: bash
         run: |
@@ -2712,6 +2765,7 @@ jobs:
           echo "[RULE] No feature removal. No compiler-error skipping."
           echo "[RULE] Setup 27 is verification/compile-only. It performs NO source mutation."
           echo "[RULE] All compatibility fixes must already exist in the cumulative tree."
+          echo "[RULE] Setup 26A/26B apply the only pre-gate dispatcher/task_work API fixes; Setup 27 itself performs no source mutation."
 
           SEPOLICY_C="drivers/kernelsu/selinux/sepolicy.c"
           test -s "$SEPOLICY_C"
@@ -2856,27 +2910,6 @@ jobs:
             exit 1
           fi
           echo "[PASS] V1: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
-
-          # SETUP 19 — Linux 4.19 task_work API boundary
-          # The actual Kbuild source is drivers/kernelsu/supercall/supercall.c.
-          # Linux 4.19 declares task_work_add(..., bool), not the newer
-          # enum task_work_notify_mode/TWA_RESUME API. The current compiler
-          # failure is exactly supercall.c:98: undeclared TWA_RESUME.
-          # This change is limited to the actual compiled file. Setup 10A
-          # is not reopened, rewritten, or otherwise modified.
-          # ------------------------------------------------------------
-          SUPERCALL_C="drivers/kernelsu/supercall/supercall.c"
-          test -f "$SUPERCALL_C"
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQpiYWQgPSAidGFza193b3JrX2FkZChjdXJyZW50LCAmdHctPmNiLCBUV0FfUkVTVU1FKSIKZ29vZCA9ICJ0YXNrX3dvcmtfYWRkKGN1cnJlbnQsICZ0dy0+Y2IsIHRydWUpIgpjb3VudCA9IHMuY291bnQoYmFkKQppZiBjb3VudCAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdChmIltGQUlMXSBTZXR1cCAxOTogZXhwZWN0ZWQgZXhhY3RseSBvbmUgVFdBX1JFU1VNRSB0YXNrX3dvcmtfYWRkIGNhbGwsIGZvdW5kIHtjb3VudH0iKQpzID0gcy5yZXBsYWNlKGJhZCwgZ29vZCwgMSkKaWYgYmFkIGluIHM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gU2V0dXAgMTk6IFRXQV9SRVNVTUUgcmVtYWlucyBpbiBhY3R1YWwgc3VwZXJjYWxsLmMiKQppZiBzLmNvdW50KGdvb2QpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gU2V0dXAgMTk6IGV4cGVjdGVkIGV4YWN0bHkgb25lIExpbnV4IDQuMTkgYm9vbCB0YXNrX3dvcmtfYWRkIGZvcm0iKQpwLndyaXRlX3RleHQocykKcHJpbnQoIltGSVhFRF0gU2V0dXAgMTk6IGFjdHVhbCBkcml2ZXJzL2tlcm5lbHN1L3N1cGVyY2FsbC9zdXBlcmNhbGwuYyBUV0FfUkVTVU1FIC0+IHRydWUiKQo=' | base64 -d > "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
-          chmod 700 "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
-          python3 -m py_compile "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
-          python3 "$RUNNER_TEMP/setup19_taskwork_419_fix.py" "$SUPERCALL_C"
-          test "$(grep -cF 'task_work_add(current, &tw->cb, true)' "$SUPERCALL_C")" -eq 1
-          if grep -qF 'task_work_add(current, &tw->cb, TWA_RESUME)' "$SUPERCALL_C"; then
-            echo '[FAIL] Setup 19: obsolete TWA_RESUME task_work API remains'
-            exit 1
-          fi
-          echo '[PASS] Setup 19 Linux 4.19 task_work bool API verified in actual Kbuild supercall.c.'
 
           export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
@@ -3445,20 +3478,20 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V8-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V9-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V8-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V9-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V8-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/LM-G900-V9-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
-            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V8-AnyKernel3-OrangeFox-Flashable.zip" artifacts/kernel/
+            cp -f "$GITHUB_WORKSPACE/artifacts/LM-G900-SukiSU-4.2.0-V9-AnyKernel3-OrangeFox-Flashable.zip" artifacts/kernel/
 
             echo "[PASS] Kernel image packaged."
             echo "[PASS] AnyKernel3 package prepared for flashing from OrangeFox/recovery."
@@ -3556,7 +3589,7 @@ jobs:
           git rev-parse HEAD > diagnostic-artifact/kernel-head.txt 2>&1 || true
 
           {
-            echo "========== V8 ALL SETUP STATUS =========="
+            echo "========== V9 ALL SETUP STATUS =========="
             date -u
             for f in "$DIAG_DIR"/*LIVE.log; do
               [ -f "$f" ] || continue
@@ -3570,7 +3603,7 @@ jobs:
               fi
               printf '%-75s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/ALL-SETUP-STATUS-V8.log
+          } | tee diagnostic-artifact/ALL-SETUP-STATUS-V9.log
 
           # Preserve the exact complete diagnostic directory as an additional archive.
           # This is not a substitute for individual logs; it is a second recovery path.
@@ -3578,14 +3611,14 @@ jobs:
             tar -czf diagnostic-artifact/all-ci-logs.tar.gz \
               "$DIAG_DIR" diagnostic-artifact/runner-state kernel-build-full.log 2>/dev/null || true
           fi
-          rm -f diagnostic-artifact/V8-ALL-LOG-KARNAL-BUILD.zip
+          rm -f diagnostic-artifact/V9-ALL-LOG-KARNAL-BUILD.zip
           command -v zip >/dev/null 2>&1 || {
-            echo "[FAIL] zip utility is required to create V8-ALL-LOG-KARNAL-BUILD.zip."
+            echo "[FAIL] zip utility is required to create V9-ALL-LOG-KARNAL-BUILD.zip."
             exit 1
           }
-          ( cd diagnostic-artifact && zip -qr "V8-ALL-LOG-KARNAL-BUILD.zip" ci-logs ALL-SETUP-STATUS-V8.log runner-state kernel-build-full.log final.config git-status.txt kernel-head.txt sukisu-integration-note.txt )
-          test -s diagnostic-artifact/V8-ALL-LOG-KARNAL-BUILD.zip
-          echo "[PASS] V8 consolidated all-setup log ZIP created."
+          ( cd diagnostic-artifact && zip -qr "V9-ALL-LOG-KARNAL-BUILD.zip" ci-logs ALL-SETUP-STATUS-V9.log runner-state kernel-build-full.log final.config git-status.txt kernel-head.txt sukisu-integration-note.txt )
+          test -s diagnostic-artifact/V9-ALL-LOG-KARNAL-BUILD.zip
+          echo "[PASS] V9 consolidated all-setup log ZIP created."
           {
             echo "GitHub Run: $GITHUB_RUN_ID"
             echo "Commit: $GITHUB_SHA"
@@ -3605,18 +3638,18 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V8-EMERGENCY-Diagnostics
+          name: LG-Velvet-G900-V9-EMERGENCY-Diagnostics
           path: diagnostic-artifact
           if-no-files-found: warn
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V8 All Setup Logs
+      - name: Artifact - V9 All Setup Logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V8-ALL-LOG-KARNAL-BUILD
-          path: diagnostic-artifact/V8-ALL-LOG-KARNAL-BUILD.zip
+          name: V9-ALL-LOG-KARNAL-BUILD
+          path: diagnostic-artifact/V9-ALL-LOG-KARNAL-BUILD.zip
           if-no-files-found: warn
           retention-days: 14
           compression-level: 6
@@ -3625,7 +3658,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V8-SukiSU-4.2.0-Kernel-Only
+          name: LG-Velvet-G900-V9-SukiSU-4.2.0-Kernel-Only
           path: artifacts
           if-no-files-found: error
           retention-days: 14
@@ -3635,7 +3668,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V8-SukiSU-4.2.0-Diagnostics
+          name: LG-Velvet-G900-V9-SukiSU-4.2.0-Diagnostics
           path: diagnostic-artifact
           if-no-files-found: warn
           retention-days: 14
