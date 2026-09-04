@@ -112,7 +112,8 @@ jobs:
               ;;
           esac
 
-          WF_SPEC="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/"}"
+          WF_PREFIX="$GITHUB_REPOSITORY/"
+          WF_SPEC="${GITHUB_WORKFLOW_REF#"$WF_PREFIX"}"
           WF_PATH="${WF_SPEC%@*}"
           WF_REF="${WF_SPEC#*@}"
           test -n "$WF_PATH" && test -n "$WF_REF" || { echo "[FAIL] Could not parse GITHUB_WORKFLOW_REF."; exit 1; }
