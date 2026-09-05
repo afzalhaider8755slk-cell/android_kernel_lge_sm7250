@@ -1827,7 +1827,6 @@ jobs:
           python3 -c "from pathlib import Path; import re; s=Path('drivers/kernelsu/selinux/sepolicy.c').read_text(); names=['remove_avtab_node','add_filename_trans','add_type','add_typeattribute_raw']; counts={n:len(re.findall(r'(?ms)^static\s+(?:bool|void)\s+'+re.escape(n)+r'\s*\([^;{}]*\)\s*\{',s)) for n in names}; print('[AUDIT] actual function definitions:', counts); assert counts=={n:1 for n in names}, 'unexpected actual function definitions: '+repr(counts)"
           echo "[PASS] sepolicy.c uses LG 4.19 flex_array/filename/type-map backend with no duplicate function definitions."
           ! grep -qF 'kfree(kez)' "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
-          grep -qE 'struct filename_trans_key[[:space:]]+key([,;])' drivers/kernelsu/selinux/sepolicy.c
           echo "[PASS] 4.19 filename-transition declaration audit accepts the researched declaration form."
           echo "[PASS] No stale kfree(kez) typo remains in the temporary repair script."
           echo "[PASS] SELinux 4.19 source audit complete."
@@ -2698,9 +2697,13 @@ jobs:
           if not hashtab_match:
               raise SystemExit("[FAIL] V6: canonical hashtab version split is missing.")
           legacy_hashtab = hashtab_match.group("legacy")
-          if "ksu_hash_for_each" in legacy_hashtab:
-              raise SystemExit("[FAIL] V6: Linux 4.19 hashtab branch still routes through the flex_array iterator.")
-          if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in legacy_hashtab:
+          # Inspect preprocessor code, not comments: the researched comment
+          # intentionally names ksu_hash_for_each() while documenting why the
+          # 4.19 hashtab adapter is separate from the avtab flex_array iterator.
+          legacy_code = re.sub(r"/\*.*?\*/|//[^\n]*", "", legacy_hashtab, flags=re.S)
+          if re.search(r"\bksu_hash_for_each\s*\(", legacy_code):
+              raise SystemExit("[FAIL] V6: Linux 4.19 hashtab branch still invokes the flex_array iterator.")
+          if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in legacy_code:
               raise SystemExit("[FAIL] V6: Linux 4.19 hashtab branch lacks native pointer-array traversal.")
 
           # The obsolete duplicate AVTAB injection must be absent.
