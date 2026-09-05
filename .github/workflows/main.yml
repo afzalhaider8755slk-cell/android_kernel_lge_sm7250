@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # V4: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V13
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V12
 
 on:
   workflow_dispatch:
