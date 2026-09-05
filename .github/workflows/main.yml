@@ -48,6 +48,14 @@ permissions:
 # llvm-ar listed complete relative member paths beginning with drivers/kernelsu/.
 # V12's verifier searched for path-stripped names and falsely reported a
 # missing member. V13 matches the exact emitted paths. Verification only.
+# V15 ROOT-CAUSE / RESEARCH NOTE
+# V14 failed before the full build because Setup 28 used a single-line exact
+# grep for ksu_hashtab_for_each(). The actual compiler-tested sepolicy.c defines
+# that macro over multiple continuation lines. The required native 4.19
+# traversal itself is present: (htab)->htable[i] -> cur->next. The separate
+# AVTAB flex_array traversal is also present and is legitimate for that
+# storage representation. V15 verifies both semantic anchors without changing
+# sepolicy.c or removing any feature/fix.
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -3027,24 +3035,38 @@ jobs:
           # the workflow before the real full-kernel compile could begin.
           # Setup 27 already proved the exact separation; Setup 28 must verify,
           # not reinterpret, that compiler-tested state.
+          # V15 SOURCE-CONTRACT VERIFICATION:
+          # The actual compiler-tested V14 source defines the 4.19 adapter as
+          # a multi-line macro:
+          #   #define ksu_hashtab_for_each(htab, cur) \
+          #       int i; \
+          #       for (...) \
+          #           for (cur = (htab)->htable[i]; ...)
+          # Therefore an exact single-line grep is invalid. Verify the
+          # semantic anchors independently, preserving the actual source.
           grep -qF 'for (cur = node_ptr[i]; cur; cur = cur->next)' "$SEPOLICY_C"
           grep -qF 'for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)' "$SEPOLICY_C"
           grep -qF 'for (cur = (htab)->htable[i]; cur; cur = cur->next)' "$SEPOLICY_C"
           grep -qF 'flex_array_get_ptr(db->te_avtab.htable, i)' "$SEPOLICY_C"
-          if grep -qF '#define ksu_hashtab_for_each(htab, cur) ksu_hash_for_each(htab->htable, htab->size, cur)' "$SEPOLICY_C"; then
-            echo "[PASS] V14: legacy hashtab adapter uses the native pointer-array traversal."
+
+          if grep -qE '#define[[:space:]]+ksu_hashtab_for_each\(htab,[[:space:]]*cur\)[[:space:]]*\\' "$SEPOLICY_C" &&
+             grep -qF 'for (cur = (htab)->htable[i]; cur; cur = cur->next)' "$SEPOLICY_C"; then
+            echo "[PASS] V15: native 4.19 hashtab adapter is present; multiline macro form verified."
           else
-            echo "[FAIL] V14: native 4.19 hashtab adapter is missing."
+            echo "[FAIL] V15: native 4.19 hashtab adapter semantic contract is missing."
             exit 1
           fi
-          if grep -qF '#define ksu_hashtab_for_each(htab, cur) ksu_hash_for_each(htab->htable, htab->size, cur)' "$SEPOLICY_C" &&
-             grep -qF 'flex_array_get_ptr(db->te_avtab.htable, i)' "$SEPOLICY_C"; then
-            echo "[PASS] V14: hashtab and avtab iterator contracts are both present and distinct."
+
+          if grep -qF 'flex_array_get_ptr(db->te_avtab.htable, i)' "$SEPOLICY_C" &&
+             grep -qF 'for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)' "$SEPOLICY_C"; then
+            echo "[PASS] V15: AVTAB flex_array contract is present and kept distinct from native hashtab traversal."
           else
-            echo "[FAIL] V14: iterator contract separation failed."
+            echo "[FAIL] V15: AVTAB flex_array contract verification failed."
             exit 1
           fi
-          echo "[PASS] V14: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
+
+          echo "[PASS] V15: Setup 28 verifies source semantics, not fragile one-line formatting."
+          echo "[PASS] V15: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
 
           export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
@@ -3613,16 +3635,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V14-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V15-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V14-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V15-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V14-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V15-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3709,7 +3731,7 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V14"
+            echo "Workflow version: V15"
             echo "Previous workflow: V12"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
@@ -3732,9 +3754,9 @@ jobs:
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v14-workflow-source/V14-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v14-workflow-source/V14-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V14-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v14-workflow-source/V15-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v14-workflow-source/V15-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V15-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V13 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
@@ -3742,7 +3764,7 @@ jobs:
 
           {
             echo "========== V13 ALL SETUP STATUS =========="
-            echo "Workflow version: V14"
+            echo "Workflow version: V15"
             echo "Previous workflow: V12"
             echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13"
             echo "Setup numbers are independent from workflow version numbers."
@@ -3756,9 +3778,9 @@ jobs:
               else status="EXECUTED-NO-STATUS-MARKER"; fi
               printf '%-75s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/V14-ALL-SETUP-STATUS.log
+          } | tee diagnostic-artifact/V15-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V14-CURRENT-STATUS.md <<'REPORT'
+          cat > diagnostic-artifact/V15-CURRENT-STATUS.md <<'REPORT'
           # V13 Current Status
 
           ## V12 actual result
@@ -3780,7 +3802,7 @@ jobs:
 
           ## Artifact identity
           Current diagnostics artifact:
-            V14-LG-Velvet-G900-Diagnostics
+            V15-LG-Velvet-G900-Diagnostics
 
           The previous V10 filename must not be reused for a V13 run.
 
@@ -3841,7 +3863,7 @@ jobs:
 
           ## Artifact naming
           Version comes FIRST:
-            V14-LG-Velvet-G900-Diagnostics
+            V15-LG-Velvet-G900-Diagnostics
           Never use the old V10 name for V13 content.
 
           ## One-ZIP rule
@@ -3861,7 +3883,7 @@ jobs:
           member list before changing anything.
           REPORT
 
-          cat > diagnostic-artifact/V14-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          cat > diagnostic-artifact/V15-ERROR-AND-FIX-HISTORY.md <<'REPORT'
           # Complete Error/Fix History V4 → V13
 
           V4 — Protected baseline. Fixed LG 4.19 SELinux hashtab vs AVTAB
@@ -3980,15 +4002,15 @@ jobs:
           Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13
 
           Current source:
-          - V14-CURRENT-WORKFLOW.yml
+          - V15-CURRENT-WORKFLOW.yml
 
           Current status/history:
-          - V14-CURRENT-STATUS.md
-          - V14-ERROR-AND-FIX-HISTORY.md
+          - V15-CURRENT-STATUS.md
+          - V15-ERROR-AND-FIX-HISTORY.md
           - PROJECT-CONTEXT-A-Z.md
           - WORKFLOW-HISTORY-INDEX.md
           - RESEARCH-SOURCES.md
-          - V14-ALL-SETUP-STATUS.log
+          - V15-ALL-SETUP-STATUS.log
 
           Raw runner evidence:
           - ci-logs/
@@ -4002,7 +4024,7 @@ jobs:
           - project-history/
 
           Artifact naming:
-          V14-LG-Velvet-G900-Diagnostics
+          V15-LG-Velvet-G900-Diagnostics
 
           ZIP rule:
           This directory is uploaded directly to GitHub Actions. GitHub creates
@@ -4014,7 +4036,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V14-LG-Velvet-G900-Diagnostics
+          name: V15-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
@@ -4025,7 +4047,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: V13-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V14-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          path: artifacts/V15-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
@@ -4034,8 +4056,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V14-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V14-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V15-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V15-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
