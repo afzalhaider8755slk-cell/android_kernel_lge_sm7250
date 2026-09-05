@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved byte-for-byte from V71.
 # V4: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # V75 adds a source-derived compatibility preflight before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V10
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V4
 
 on:
   workflow_dispatch:
@@ -307,7 +307,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V10-EARLY-CIP135-FAILURE-Diagnostics
+          name: LG-Velvet-G900-V4-EARLY-CIP135-FAILURE-Diagnostics
           path: |
             ci-logs/00-early-init.log
             ci-logs/02-cip135-update.log
@@ -1805,7 +1805,7 @@ jobs:
           chmod 700 "$RUNNER_TEMP/ksu_rules_fix.py" "$RUNNER_TEMP/manual_compat.py"
           cp -f "$RUNNER_TEMP/ksu_rules_fix.py" /tmp/ksu_rules_fix.py
           python3 "$RUNNER_TEMP/manual_compat.py"
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMscmUKcD1QYXRoKHN5cy5hcmd2WzFdKTsgcz1wLnJlYWRfdGV4dCgpCgpkZWYgZmluZF9mdW5jKHRleHQsbmFtZSk6CiAgICBwYXQ9cmUuY29tcGlsZShyJyg/bXMpXnN0YXRpY1xzKyg/OmJvb2x8dm9pZHxzdHJ1Y3RccythdnRhYl9ub2RlXHMqXCopXHMrJytyZS5lc2NhcGUobmFtZSkrcidccypcKFteO10qP1wpXHMqXHsnKQogICAgbT1wYXQuc2VhcmNoKHRleHQpCiAgICBpZiBub3QgbTogcmFpc2UgU3lzdGVtRXhpdCgnZnVuY3Rpb24gYm9keSBub3QgZm91bmQ6ICcrbmFtZSkKICAgIGJyYWNlPXRleHQuZmluZCgneycsbS5zdGFydCgpLG0uZW5kKCkpOyBkZXB0aD0wCiAgICBmb3IgaSBpbiByYW5nZShicmFjZSxsZW4odGV4dCkpOgogICAgICAgIGlmIHRleHRbaV09PSd7JzogZGVwdGgrPTEKICAgICAgICBlbGlmIHRleHRbaV09PSd9JzoKICAgICAgICAgICAgZGVwdGgtPTEKICAgICAgICAgICAgaWYgZGVwdGg9PTA6IHJldHVybiBtLnN0YXJ0KCksaSsxCiAgICByYWlzZSBTeXN0ZW1FeGl0KCdicmFjZSBtaXNtYXRjaDogJytuYW1lKQoKZGVmIHJlcGxhY2VfZnVuYyh0ZXh0LG5hbWUsYm9keSk6CiAgICBhLGI9ZmluZF9mdW5jKHRleHQsbmFtZSkKICAgIHJldHVybiB0ZXh0WzphXStib2R5K3RleHRbYjpdCgojIExpbnV4IDQuMTkgU0VMaW51eCBhdnRhYi9oYXNoIGJ1Y2tldHMgdXNlIGZsZXhfYXJyYXkuIEtlZXAgdGhlIG1vZGVybiBwYXRoCiMgaW50YWN0IGZvciBuZXdlciBrZXJuZWxzLCBidXQgbWFrZSB0aGUgNC4xOSBicmFuY2ggZGVyZWZlcmVuY2UgZmxleF9hcnJheS4KbWFjcm9fcGF0PXJlLmNvbXBpbGUocicjZGVmaW5lIGtzdV9oYXNoX2Zvcl9lYWNoXChub2RlX3B0ciwgbl9zbG90LCBjdXJcKS4qP2ZvciBcKGN1ciA9IG5vZGVfcHRyXFtpXF07IGN1cjsgY3VyID0gY3VyLT5uZXh0XCknLHJlLlMpCm1hY3JvX25ldyA9ICdcbicuam9pbihbCiAgICAnI2lmIExJTlVYX1ZFUlNJT05fQ09ERSA+PSBLRVJORUxfVkVSU0lPTig1LCA4LCAwKScsCiAgICAnI2RlZmluZSBrc3VfaGFzaF9mb3JfZWFjaChub2RlX3B0ciwgbl9zbG90LCBjdXIpIFxcJywKICAgICcgICAgaW50IGk7IFxcJywKICAgICcgICAgZm9yIChpID0gMDsgaSA8IG5fc2xvdDsgKytpKSBcXCcsCiAgICAnICAgICAgICBmb3IgKGN1ciA9IG5vZGVfcHRyW2ldOyBjdXI7IGN1ciA9IGN1ci0+bmV4dCknLAogICAgJyNlbHNlJywKICAgICcjZGVmaW5lIGtzdV9oYXNoX2Zvcl9lYWNoKG5vZGVfcHRyLCBuX3Nsb3QsIGN1cikgXFwnLAogICAgJyAgICBpbnQgaTsgXFwnLAogICAgJyAgICBmb3IgKGkgPSAwOyBpIDwgbl9zbG90OyArK2kpIFxcJywKICAgICcgICAgICAgIGZvciAoY3VyID0gZmxleF9hcnJheV9nZXRfcHRyKG5vZGVfcHRyLCBpKTsgY3VyOyBjdXIgPSBjdXItPm5leHQpJywKICAgICcjZW5kaWYnCl0pCmlmIG5vdCBtYWNyb19wYXQuc2VhcmNoKHMpOiByYWlzZSBTeXN0ZW1FeGl0KCdoYXNoIG1hY3JvIHRhcmdldCBub3QgZm91bmQnKQpzPW1hY3JvX3BhdC5zdWIobWFjcm9fbmV3LHMsY291bnQ9MSkKCiMgTGludXggNC4xOSBTRUxpbnV4IGhhc2h0YWI6Omh0YWJsZSBpcyBhIG5hdGl2ZSBzdHJ1Y3QgaGFzaHRhYl9ub2RlICoqIGFycmF5LgojIEtlZXAgdGhlIGdlbmVyaWMga3N1X2hhc2hfZm9yX2VhY2goKSBmbGV4X2FycmF5LWF3YXJlIGZvciBhdnRhYiwgYW5kIHJlcGxhY2UKIyBvbmx5IHRoZSBvcmlnaW5hbCBkZWRpY2F0ZWQga3N1X2hhc2h0YWJfZm9yX2VhY2goKSBkZWZpbml0aW9uLgpoYXNodGFiX3BhdCA9IHJlLmNvbXBpbGUoCiAgICByJyNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPj0gS0VSTkVMX1ZFUlNJT05cKDUsIDgsIDBcKVxuJwogICAgcicjZGVmaW5lIGtzdV9oYXNodGFiX2Zvcl9lYWNoXChodGFiLCBjdXJcKSBrc3VfaGFzaF9mb3JfZWFjaFwoaHRhYlwuaHRhYmxlLCBodGFiXC5zaXplLCBjdXJcKVxuJwogICAgcicjZWxzZVxuJwogICAgcicjZGVmaW5lIGtzdV9oYXNodGFiX2Zvcl9lYWNoXChodGFiLCBjdXJcKSBrc3VfaGFzaF9mb3JfZWFjaFwoaHRhYi0+aHRhYmxlLCBodGFiLT5zaXplLCBjdXJcKVxuJwogICAgcicjZW5kaWYnCikKaGFzaHRhYl9uZXcgPSAnJycjaWYgTElOVVhfVkVSU0lPTl9DT0RFID49IEtFUk5FTF9WRVJTSU9OKDUsIDgsIDApCiNkZWZpbmUga3N1X2hhc2h0YWJfZm9yX2VhY2goaHRhYiwgY3VyKSBrc3VfaGFzaF9mb3JfZWFjaChodGFiLmh0YWJsZSwgaHRhYi5zaXplLCBjdXIpCiNlbHNlCiNkZWZpbmUga3N1X2hhc2h0YWJfZm9yX2VhY2goaHRhYiwgY3VyKSBcXAogICAgaW50IGk7IFxcCiAgICBmb3IgKGkgPSAwOyBpIDwgKGh0YWIpLT5zaXplOyArK2kpIFxcCiAgICAgICAgZm9yIChjdXIgPSAoaHRhYiktPmh0YWJsZVtpXTsgY3VyOyBjdXIgPSBjdXItPm5leHQpCiNlbmRpZicnJwppZiBub3QgaGFzaHRhYl9wYXQuc2VhcmNoKHMpOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnb3JpZ2luYWwga3N1X2hhc2h0YWJfZm9yX2VhY2ggZGVmaW5pdGlvbiBub3QgZm91bmQnKQpzID0gaGFzaHRhYl9wYXQuc3ViKGhhc2h0YWJfbmV3LCBzLCBjb3VudD0xKQoKIyBJTVBPUlRBTlQ6IHJlcGxhY2UgZWFjaCBvcmlnaW5hbCBmdW5jdGlvbiBleGFjdGx5IG9uY2UuIERvIG5vdCB3cmFwIGFuIG9sZAojIGRlZmluaXRpb24gaW4gYW5vdGhlciAjaWYvI2Vsc2UgZGVmaW5pdGlvbjsgdGhhdCBjcmVhdGVkIGZhbHNlIGR1cGxpY2F0ZQojIGRlZmluaXRpb25zIGluIFY2NCBhbmQgcHJldmVudGVkIHRoZSBidWlsZCBmcm9tIHJlYWNoaW5nIGNvbXBpbGF0aW9uLgpzPXJlcGxhY2VfZnVuYyhzLCdyZW1vdmVfYXZ0YWJfbm9kZScscicnJ3N0YXRpYyBib29sIHJlbW92ZV9hdnRhYl9ub2RlKHN0cnVjdCBwb2xpY3lkYiAqZGIsIHN0cnVjdCBhdnRhYl9ub2RlICpub2RlKQp7CiAgICBpbnQgaTsKICAgIGludCByZXQ7CiAgICBpbnQgc2hyaW5rX3NpemUgPSBzaXplb2Yoc3RydWN0IGF2dGFiX2tleSkgKyBzaXplb2Yoc3RydWN0IGF2dGFiX2RhdHVtKTsKICAgIHN0cnVjdCBhdnRhYiByZW1vdmVkID0ge307CiAgICBzdHJ1Y3QgYXZ0YWJfbm9kZSAqbjsKICAgIHN0cnVjdCBhdnRhYl9ub2RlICpwcmV2OwoKICAgIHJldCA9IGF2dGFiX2FsbG9jKCZyZW1vdmVkLCAxKTsKICAgIGlmIChyZXQgPCAwKQogICAgICAgIHJldHVybiBmYWxzZTsKICAgIGZvciAoaSA9IDA7IGkgPCBkYi0+dGVfYXZ0YWIubnNsb3Q7IGkrKykgewogICAgICAgIHByZXYgPSBOVUxMOwogICAgICAgIGZvciAobiA9IGZsZXhfYXJyYXlfZ2V0X3B0cihkYi0+dGVfYXZ0YWIuaHRhYmxlLCBpKTsgbjsgcHJldiA9IG4sIG4gPSBuLT5uZXh0KSB7CiAgICAgICAgICAgIGlmIChuICE9IG5vZGUpCiAgICAgICAgICAgICAgICBjb250aW51ZTsKICAgICAgICAgICAgaWYgKHByZXYpCiAgICAgICAgICAgICAgICBwcmV2LT5uZXh0ID0gbi0+bmV4dDsKICAgICAgICAgICAgZWxzZSBpZiAoZmxleF9hcnJheV9wdXRfcHRyKGRiLT50ZV9hdnRhYi5odGFibGUsIGksIG4tPm5leHQsIEdGUF9LRVJORUwgfCBfX0dGUF9aRVJPKSkgewogICAgICAgICAgICAgICAgYXZ0YWJfZGVzdHJveSgmcmVtb3ZlZCk7CiAgICAgICAgICAgICAgICByZXR1cm4gZmFsc2U7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgaWYgKGRiLT50ZV9hdnRhYi5uZWwgPiAwKQogICAgICAgICAgICAgICAgZGItPnRlX2F2dGFiLm5lbC0tOwogICAgICAgICAgICBpZiAoKG4tPmtleS5zcGVjaWZpZWQgJiBBVlRBQl9YUEVSTVMpICYmIG4tPmRhdHVtLnUueHBlcm1zKQogICAgICAgICAgICAgICAgc2hyaW5rX3NpemUgKz0gc2l6ZW9mKHU4KSArIHNpemVvZih1OCkgKyBzaXplb2YodTMyKSAqIEFSUkFZX1NJWkUobi0+ZGF0dW0udS54cGVybXMtPnBlcm1zLnApOwogICAgICAgICAgICBuLT5uZXh0ID0gTlVMTDsKICAgICAgICAgICAgaWYgKGZsZXhfYXJyYXlfcHV0X3B0cihyZW1vdmVkLmh0YWJsZSwgMCwgbiwgR0ZQX0tFUk5FTCB8IF9fR0ZQX1pFUk8pKSB7CiAgICAgICAgICAgICAgICBhdnRhYl9kZXN0cm95KCZyZW1vdmVkKTsKICAgICAgICAgICAgICAgIHJldHVybiBmYWxzZTsKICAgICAgICAgICAgfQogICAgICAgICAgICByZW1vdmVkLm5lbCA9IDE7CiAgICAgICAgICAgIGF2dGFiX2Rlc3Ryb3koJnJlbW92ZWQpOwogICAgICAgICAgICBpZiAoZGItPmxlbiA+PSBzaHJpbmtfc2l6ZSkKICAgICAgICAgICAgICAgIGRiLT5sZW4gLT0gc2hyaW5rX3NpemU7CiAgICAgICAgICAgIHJldHVybiB0cnVlOwogICAgICAgIH0KICAgIH0KICAgIGF2dGFiX2Rlc3Ryb3koJnJlbW92ZWQpOwogICAgcmV0dXJuIGZhbHNlOwp9JycnKQpzPXJlcGxhY2VfZnVuYyhzLCdhZGRfZmlsZW5hbWVfdHJhbnMnLHInJydzdGF0aWMgYm9vbCBhZGRfZmlsZW5hbWVfdHJhbnMoc3RydWN0IHBvbGljeWRiICpkYiwgY29uc3QgY2hhciAqcywgY29uc3QgY2hhciAqdCwKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGNvbnN0IGNoYXIgKmMsIGNvbnN0IGNoYXIgKmQsIGNvbnN0IGNoYXIgKm8pCnsKICAgIHN0cnVjdCB0eXBlX2RhdHVtICpzcmMsICp0Z3QsICpkZWY7CiAgICBzdHJ1Y3QgY2xhc3NfZGF0dW0gKmNsczsKICAgIHN0cnVjdCBmaWxlbmFtZV90cmFucyBrZXk7CiAgICBzdHJ1Y3QgZmlsZW5hbWVfdHJhbnNfZGF0dW0gKnRyYW5zOwoKICAgIHNyYyA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX3R5cGVzLCBzKTsKICAgIGlmICghc3JjKSByZXR1cm4gZmFsc2U7CiAgICB0Z3QgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgdCk7CiAgICBpZiAoIXRndCkgcmV0dXJuIGZhbHNlOwogICAgY2xzID0gc3ltdGFiX3NlYXJjaCgmZGItPnBfY2xhc3NlcywgYyk7CiAgICBpZiAoIWNscykgcmV0dXJuIGZhbHNlOwogICAgZGVmID0gc3ltdGFiX3NlYXJjaCgmZGItPnBfdHlwZXMsIGQpOwogICAgaWYgKCFkZWYpIHJldHVybiBmYWxzZTsKCiAgICBrZXkuc3R5cGUgPSBzcmMtPnZhbHVlOwogICAga2V5LnR0eXBlID0gdGd0LT52YWx1ZTsKICAgIGtleS50Y2xhc3MgPSBjbHMtPnZhbHVlOwogICAga2V5Lm5hbWUgPSBvOwogICAgdHJhbnMgPSBoYXNodGFiX3NlYXJjaChkYi0+ZmlsZW5hbWVfdHJhbnMsICZrZXkpOwogICAgaWYgKHRyYW5zID09IE5VTEwpIHsKICAgICAgICBzdHJ1Y3QgZmlsZW5hbWVfdHJhbnMgKm5ld19rZXk7CiAgICAgICAgdHJhbnMgPSAoc3RydWN0IGZpbGVuYW1lX3RyYW5zX2RhdHVtICopa2NhbGxvYygxLCBzaXplb2YoKnRyYW5zKSwgR0ZQX0FUT01JQyk7CiAgICAgICAgaWYgKCF0cmFucykgcmV0dXJuIGZhbHNlOwogICAgICAgIG5ld19rZXkgPSAoc3RydWN0IGZpbGVuYW1lX3RyYW5zICopa21hbGxvYyhzaXplb2YoKm5ld19rZXkpLCBHRlBfQVRPTUlDKTsKICAgICAgICBpZiAoIW5ld19rZXkpIHsga2ZyZWUodHJhbnMpOyByZXR1cm4gZmFsc2U7IH0KICAgICAgICAqbmV3X2tleSA9IGtleTsKICAgICAgICBuZXdfa2V5LT5uYW1lID0ga3N0cmR1cChrZXkubmFtZSwgR0ZQX0FUT01JQyk7CiAgICAgICAgaWYgKCFuZXdfa2V5LT5uYW1lKSB7IGtmcmVlKG5ld19rZXkpOyBrZnJlZSh0cmFucyk7IHJldHVybiBmYWxzZTsgfQogICAgICAgIHRyYW5zLT5vdHlwZSA9IGRlZi0+dmFsdWU7CiAgICAgICAgaWYgKGhhc2h0YWJfaW5zZXJ0KGRiLT5maWxlbmFtZV90cmFucywgbmV3X2tleSwgdHJhbnMpKSB7CiAgICAgICAgICAgIGtmcmVlKChjaGFyICopbmV3X2tleS0+bmFtZSk7IGtmcmVlKG5ld19rZXkpOyBrZnJlZSh0cmFucyk7IHJldHVybiBmYWxzZTsKICAgICAgICB9CiAgICB9IGVsc2UgewogICAgICAgIHRyYW5zLT5vdHlwZSA9IGRlZi0+dmFsdWU7CiAgICB9CiAgICByZXR1cm4gZWJpdG1hcF9zZXRfYml0KCZkYi0+ZmlsZW5hbWVfdHJhbnNfdHR5cGVzLCBzcmMtPnZhbHVlIC0gMSwgMSkgPT0gMDsKfScnJykKcz1yZXBsYWNlX2Z1bmMocywnYWRkX3R5cGUnLHInJydzdGF0aWMgYm9vbCBhZGRfdHlwZShzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBjb25zdCBjaGFyICp0eXBlX25hbWUsIGJvb2wgYXR0cikKewogICAgc3RydWN0IHR5cGVfZGF0dW0gKnR5cGUgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgdHlwZV9uYW1lKTsKICAgIHUzMiB2YWx1ZTsKICAgIGNoYXIgKmtleTsKICAgIHN0cnVjdCBmbGV4X2FycmF5ICpuZXdfdHlwZV9hdHRyX21hcF9hcnJheTsKICAgIHN0cnVjdCBmbGV4X2FycmF5ICpuZXdfdHlwZV92YWxfdG9fc3RydWN0OwogICAgc3RydWN0IGZsZXhfYXJyYXkgKm5ld192YWxfdG9fbmFtZV90eXBlczsKICAgIGludCBpLCBqOwogICAgdm9pZCAqb2xkX2VsZW07CiAgICBzdHJ1Y3QgZmxleF9hcnJheSAqb2xkX2ZhOwoKICAgIGlmICh0eXBlKSByZXR1cm4gdHJ1ZTsKICAgIHZhbHVlID0gKytkYi0+cF90eXBlcy5ucHJpbTsKICAgIHR5cGUgPSAoc3RydWN0IHR5cGVfZGF0dW0gKilremFsbG9jKHNpemVvZigqdHlwZSksIEdGUF9BVE9NSUMpOwogICAgaWYgKCF0eXBlKSByZXR1cm4gZmFsc2U7CiAgICB0eXBlLT5wcmltYXJ5ID0gMTsgdHlwZS0+dmFsdWUgPSB2YWx1ZTsgdHlwZS0+YXR0cmlidXRlID0gYXR0cjsKICAgIGtleSA9IGtzdHJkdXAodHlwZV9uYW1lLCBHRlBfQVRPTUlDKTsKICAgIGlmICgha2V5KSB7IGtmcmVlKHR5cGUpOyByZXR1cm4gZmFsc2U7IH0KICAgIGlmIChzeW10YWJfaW5zZXJ0KCZkYi0+cF90eXBlcywga2V5LCB0eXBlKSkgeyBrZnJlZShrZXkpOyBrZnJlZSh0eXBlKTsgcmV0dXJuIGZhbHNlOyB9CgogICAgbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXkgPSBmbGV4X2FycmF5X2FsbG9jKHNpemVvZihzdHJ1Y3QgZWJpdG1hcCksIGRiLT5wX3R5cGVzLm5wcmltLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTyk7CiAgICBuZXdfdHlwZV92YWxfdG9fc3RydWN0ID0gZmxleF9hcnJheV9hbGxvYyhzaXplb2Yoc3RydWN0IHR5cGVfZGF0dW0gKiksIGRiLT5wX3R5cGVzLm5wcmltLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTyk7CiAgICBuZXdfdmFsX3RvX25hbWVfdHlwZXMgPSBmbGV4X2FycmF5X2FsbG9jKHNpemVvZihjaGFyICopLCBkYi0+c3ltdGFiW1NZTV9UWVBFU10ubnByaW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKTsKICAgIGlmICghbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXkgfHwgIW5ld190eXBlX3ZhbF90b19zdHJ1Y3QgfHwgIW5ld192YWxfdG9fbmFtZV90eXBlcykgcmV0dXJuIGZhbHNlOwoKICAgIGlmIChmbGV4X2FycmF5X3ByZWFsbG9jKG5ld190eXBlX2F0dHJfbWFwX2FycmF5LCAwLCBkYi0+cF90eXBlcy5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pIHx8CiAgICAgICAgZmxleF9hcnJheV9wcmVhbGxvYyhuZXdfdHlwZV92YWxfdG9fc3RydWN0LCAwLCBkYi0+cF90eXBlcy5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pIHx8CiAgICAgICAgZmxleF9hcnJheV9wcmVhbGxvYyhuZXdfdmFsX3RvX25hbWVfdHlwZXMsIDAsIGRiLT5zeW10YWJbU1lNX1RZUEVTXS5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pKQogICAgICAgIHJldHVybiBmYWxzZTsKCiAgICBpZiAoZGItPnR5cGVfYXR0cl9tYXBfYXJyYXkpIHsKICAgICAgICBmb3IgKGogPSAwOyBqIDwgZGItPnR5cGVfYXR0cl9tYXBfYXJyYXktPnRvdGFsX25yX2VsZW1lbnRzOyBqKyspIHsKICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldChkYi0+dHlwZV9hdHRyX21hcF9hcnJheSwgaik7CiAgICAgICAgICAgIGlmIChvbGRfZWxlbSAmJiBmbGV4X2FycmF5X3B1dChuZXdfdHlwZV9hdHRyX21hcF9hcnJheSwgaiwgb2xkX2VsZW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSkgcmV0dXJuIGZhbHNlOwogICAgICAgIH0KICAgIH0KICAgIGlmIChkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5KSB7CiAgICAgICAgZm9yIChqID0gMDsgaiA8IGRiLT50eXBlX3ZhbF90b19zdHJ1Y3RfYXJyYXktPnRvdGFsX25yX2VsZW1lbnRzOyBqKyspIHsKICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheSwgaik7CiAgICAgICAgICAgIGlmIChvbGRfZWxlbSAmJiBmbGV4X2FycmF5X3B1dF9wdHIobmV3X3R5cGVfdmFsX3RvX3N0cnVjdCwgaiwgb2xkX2VsZW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSkgcmV0dXJuIGZhbHNlOwogICAgICAgIH0KICAgIH0KICAgIGlmIChkYi0+c3ltX3ZhbF90b19uYW1lW1NZTV9UWVBFU10pIHsKICAgICAgICBmb3IgKGogPSAwOyBqIDwgZGItPnN5bXRhYltTWU1fVFlQRVNdLm5wcmltOyBqKyspIHsKICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdLCBqKTsKICAgICAgICAgICAgaWYgKG9sZF9lbGVtICYmIGZsZXhfYXJyYXlfcHV0X3B0cihuZXdfdmFsX3RvX25hbWVfdHlwZXMsIGosIG9sZF9lbGVtLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykpIHJldHVybiBmYWxzZTsKICAgICAgICB9CiAgICB9CgogICAgb2xkX2ZhID0gZGItPnR5cGVfYXR0cl9tYXBfYXJyYXk7IGRiLT50eXBlX2F0dHJfbWFwX2FycmF5ID0gbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXk7IGlmIChvbGRfZmEpIGZsZXhfYXJyYXlfZnJlZShvbGRfZmEpOwogICAgZWJpdG1hcF9pbml0KGZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB2YWx1ZSAtIDEpKTsKICAgIGlmIChlYml0bWFwX3NldF9iaXQoZmxleF9hcnJheV9nZXQoZGItPnR5cGVfYXR0cl9tYXBfYXJyYXksIHZhbHVlIC0gMSksIHZhbHVlIC0gMSwgMSkpIHJldHVybiBmYWxzZTsKCiAgICBvbGRfZmEgPSBkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5OyBkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5ID0gbmV3X3R5cGVfdmFsX3RvX3N0cnVjdDsgaWYgKG9sZF9mYSkgZmxleF9hcnJheV9mcmVlKG9sZF9mYSk7CiAgICBpZiAoZmxleF9hcnJheV9wdXRfcHRyKGRiLT50eXBlX3ZhbF90b19zdHJ1Y3RfYXJyYXksIHZhbHVlIC0gMSwgdHlwZSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pKSByZXR1cm4gZmFsc2U7CgogICAgb2xkX2ZhID0gZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdOyBkYi0+c3ltX3ZhbF90b19uYW1lW1NZTV9UWVBFU10gPSBuZXdfdmFsX3RvX25hbWVfdHlwZXM7IGlmIChvbGRfZmEpIGZsZXhfYXJyYXlfZnJlZShvbGRfZmEpOwogICAgaWYgKGZsZXhfYXJyYXlfcHV0X3B0cihkYi0+c3ltX3ZhbF90b19uYW1lW1NZTV9UWVBFU10sIHZhbHVlIC0gMSwga2V5LCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykpIHJldHVybiBmYWxzZTsKCiAgICBmb3IgKGkgPSAwOyBpIDwgZGItPnBfcm9sZXMubnByaW07ICsraSkKICAgICAgICBlYml0bWFwX3NldF9iaXQoJmRiLT5yb2xlX3ZhbF90b19zdHJ1Y3RbaV0tPnR5cGVzLCB2YWx1ZSAtIDEsIDEpOwogICAgcmV0dXJuIHRydWU7Cn0nJycpCnM9cmVwbGFjZV9mdW5jKHMsJ2FkZF90eXBlYXR0cmlidXRlX3JhdycscicnJ3N0YXRpYyB2b2lkIGFkZF90eXBlYXR0cmlidXRlX3JhdyhzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBzdHJ1Y3QgdHlwZV9kYXR1bSAqdHlwZSwgc3RydWN0IHR5cGVfZGF0dW0gKmF0dHIpCnsKICAgIHN0cnVjdCBlYml0bWFwICpzYXR0ciA9IGZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB0eXBlLT52YWx1ZSAtIDEpOwogICAgc3RydWN0IGhhc2h0YWJfbm9kZSAqbm9kZTsKICAgIHN0cnVjdCBjb25zdHJhaW50X25vZGUgKm47CiAgICBzdHJ1Y3QgY29uc3RyYWludF9leHByICplOwogICAgaWYgKCFzYXR0cikgcmV0dXJuOwogICAgZWJpdG1hcF9zZXRfYml0KHNhdHRyLCBhdHRyLT52YWx1ZSAtIDEsIDEpOwogICAga3N1X2hhc2h0YWJfZm9yX2VhY2goZGItPnBfY2xhc3Nlcy50YWJsZSwgbm9kZSkKICAgIHsKICAgICAgICBzdHJ1Y3QgY2xhc3NfZGF0dW0gKmNscyA9IChzdHJ1Y3QgY2xhc3NfZGF0dW0gKikobm9kZS0+ZGF0dW0pOwogICAgICAgIGZvciAobiA9IGNscy0+Y29uc3RyYWludHM7IG47IG4gPSBuLT5uZXh0KQogICAgICAgICAgICBmb3IgKGUgPSBuLT5leHByOyBlOyBlID0gZS0+bmV4dCkKICAgICAgICAgICAgICAgIGlmIChlLT5leHByX3R5cGUgPT0gQ0VYUFJfTkFNRVMgJiYgZWJpdG1hcF9nZXRfYml0KCZlLT50eXBlX25hbWVzLT50eXBlcywgYXR0ci0+dmFsdWUgLSAxKSkKICAgICAgICAgICAgICAgICAgICBlYml0bWFwX3NldF9iaXQoJmUtPm5hbWVzLCB0eXBlLT52YWx1ZSAtIDEsIDEpOwogICAgfTsKfScnJykKCm1hcmtlcj0nI2RlZmluZSBzdHJpcF9hdihlZmZlY3QsIGludmVydCkgKChlZmZlY3QgPT0gQVZUQUJfQVVESVRERU5ZKSA9PSAhaW52ZXJ0KVxuJwpjb21wYXQ9IiNkZWZpbmUgc3RyaXBfYXYoZWZmZWN0LCBpbnZlcnQpICgoZWZmZWN0ID09IEFWVEFCX0FVRElUREVOWSkgPT0gIWludmVydClcbiNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPCBLRVJORUxfVkVSU0lPTig1LCA5LCAwKVxuI2lmbmRlZiBzeW10YWJfc2VhcmNoXG4jZGVmaW5lIHN5bXRhYl9zZWFyY2gocywgbmFtZSkgaGFzaHRhYl9zZWFyY2goKHMpLT50YWJsZSwgbmFtZSlcbiNlbmRpZlxuI2lmbmRlZiBzeW10YWJfaW5zZXJ0XG4jZGVmaW5lIHN5bXRhYl9pbnNlcnQocywgbmFtZSwgZGF0dW0pIGhhc2h0YWJfaW5zZXJ0KChzKS0+dGFibGUsIG5hbWUsIGRhdHVtKVxuI2VuZGlmXG4jZW5kaWZcblxubiIKaWYgbWFya2VyIG5vdCBpbiBzOiByYWlzZSBTeXN0ZW1FeGl0KCdzdHJpcF9hdiBtYXJrZXIgbWlzc2luZycpCnM9cy5yZXBsYWNlKG1hcmtlcixjb21wYXQsMSkKCmRlZiBjb3VudF9kZWYobmFtZSk6CiAgICBwYXQ9cmUuY29tcGlsZShyJyg/bXMpXnN0YXRpY1xzKyg/OmJvb2x8dm9pZClccysnK3JlLmVzY2FwZShuYW1lKStyJ1xzKlwoW147e31dKlwpXHMqXHsnKQogICAgcmV0dXJuIGxlbihwYXQuZmluZGFsbChzKSkKY291bnRzPXtuOmNvdW50X2RlZihuKSBmb3IgbiBpbiBbJ3JlbW92ZV9hdnRhYl9ub2RlJywnYWRkX2ZpbGVuYW1lX3RyYW5zJywnYWRkX3R5cGUnLCdhZGRfdHlwZWF0dHJpYnV0ZV9yYXcnXX0KaWYgY291bnRzICE9IHsncmVtb3ZlX2F2dGFiX25vZGUnOjEsJ2FkZF9maWxlbmFtZV90cmFucyc6MSwnYWRkX3R5cGUnOjEsJ2FkZF90eXBlYXR0cmlidXRlX3Jhdyc6MX06CiAgICByYWlzZSBTeXN0ZW1FeGl0KCd1bmV4cGVjdGVkIGFjdHVhbCBmdW5jdGlvbiBkZWZpbml0aW9uIGNvdW50czogJytyZXByKGNvdW50cykpCmZvciBuZWVkbGUgaW4gWydmbGV4X2FycmF5X2dldF9wdHIoZGItPnRlX2F2dGFiLmh0YWJsZSwgaSknLCdzdHJ1Y3QgZmlsZW5hbWVfdHJhbnMga2V5OycsJ2ZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB0eXBlLT52YWx1ZSAtIDEpJywnZmxleF9hcnJheV9wdXRfcHRyKGRiLT50eXBlX3ZhbF90b19zdHJ1Y3RfYXJyYXksIHZhbHVlIC0gMSwgdHlwZSwnXToKICAgIGlmIG5lZWRsZSBub3QgaW4gczogcmFpc2UgU3lzdGVtRXhpdCgncmVxdWlyZWQgNC4xOSBjb25zdHJ1Y3QgbWlzc2luZzogJytuZWVkbGUpCnAud3JpdGVfdGV4dChzKQpwcmludCgnW0ZJWEVEXSBFeGFjdCByZXNlYXJjaGVkIExpbnV4IDQuMTkgU0VMaW51eCBjb21wYXRpYmlsaXR5IHNvdXJjZSB0cmFuc2Zvcm1hdGlvbiBhcHBsaWVkIG9uY2UgcGVyIGZ1bmN0aW9uLicpCnByaW50KCdbQVVESVRdIGFjdHVhbCBmdW5jdGlvbiBkZWZpbml0aW9uczonLGNvdW50cykK' | base64 -d > "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMscmUKcD1QYXRoKHN5cy5hcmd2WzFdKTsgcz1wLnJlYWRfdGV4dCgpCgpkZWYgZmluZF9mdW5jKHRleHQsbmFtZSk6CiAgICBwYXQ9cmUuY29tcGlsZShyJyg/bXMpXnN0YXRpY1xzKyg/OmJvb2x8dm9pZHxzdHJ1Y3RccythdnRhYl9ub2RlXHMqXCopXHMrJytyZS5lc2NhcGUobmFtZSkrcidccypcKFteO10qP1wpXHMqXHsnKQogICAgbT1wYXQuc2VhcmNoKHRleHQpCiAgICBpZiBub3QgbTogcmFpc2UgU3lzdGVtRXhpdCgnZnVuY3Rpb24gYm9keSBub3QgZm91bmQ6ICcrbmFtZSkKICAgIGJyYWNlPXRleHQuZmluZCgneycsbS5zdGFydCgpLG0uZW5kKCkpOyBkZXB0aD0wCiAgICBmb3IgaSBpbiByYW5nZShicmFjZSxsZW4odGV4dCkpOgogICAgICAgIGlmIHRleHRbaV09PSd7JzogZGVwdGgrPTEKICAgICAgICBlbGlmIHRleHRbaV09PSd9JzoKICAgICAgICAgICAgZGVwdGgtPTEKICAgICAgICAgICAgaWYgZGVwdGg9PTA6IHJldHVybiBtLnN0YXJ0KCksaSsxCiAgICByYWlzZSBTeXN0ZW1FeGl0KCdicmFjZSBtaXNtYXRjaDogJytuYW1lKQoKZGVmIHJlcGxhY2VfZnVuYyh0ZXh0LG5hbWUsYm9keSk6CiAgICBhLGI9ZmluZF9mdW5jKHRleHQsbmFtZSkKICAgIHJldHVybiB0ZXh0WzphXStib2R5K3RleHRbYjpdCgojIExpbnV4IDQuMTkgU0VMaW51eCBhdnRhYi9oYXNoIGJ1Y2tldHMgdXNlIGZsZXhfYXJyYXkuIEtlZXAgdGhlIG1vZGVybiBwYXRoCiMgaW50YWN0IGZvciBuZXdlciBrZXJuZWxzLCBidXQgbWFrZSB0aGUgNC4xOSBicmFuY2ggZGVyZWZlcmVuY2UgZmxleF9hcnJheS4KbWFjcm9fcGF0PXJlLmNvbXBpbGUocicjZGVmaW5lIGtzdV9oYXNoX2Zvcl9lYWNoXChub2RlX3B0ciwgbl9zbG90LCBjdXJcKS4qP2ZvciBcKGN1ciA9IG5vZGVfcHRyXFtpXF07IGN1cjsgY3VyID0gY3VyLT5uZXh0XCknLHJlLlMpCm1hY3JvX25ldyA9ICdcbicuam9pbihbCiAgICAnI2lmIExJTlVYX1ZFUlNJT05fQ09ERSA+PSBLRVJORUxfVkVSU0lPTig1LCA4LCAwKScsCiAgICAnI2RlZmluZSBrc3VfaGFzaF9mb3JfZWFjaChub2RlX3B0ciwgbl9zbG90LCBjdXIpIFxcJywKICAgICcgICAgaW50IGk7IFxcJywKICAgICcgICAgZm9yIChpID0gMDsgaSA8IG5fc2xvdDsgKytpKSBcXCcsCiAgICAnICAgICAgICBmb3IgKGN1ciA9IG5vZGVfcHRyW2ldOyBjdXI7IGN1ciA9IGN1ci0+bmV4dCknLAogICAgJyNlbHNlJywKICAgICcjZGVmaW5lIGtzdV9oYXNoX2Zvcl9lYWNoKG5vZGVfcHRyLCBuX3Nsb3QsIGN1cikgXFwnLAogICAgJyAgICBpbnQgaTsgXFwnLAogICAgJyAgICBmb3IgKGkgPSAwOyBpIDwgbl9zbG90OyArK2kpIFxcJywKICAgICcgICAgICAgIGZvciAoY3VyID0gZmxleF9hcnJheV9nZXRfcHRyKG5vZGVfcHRyLCBpKTsgY3VyOyBjdXIgPSBjdXItPm5leHQpJywKICAgICcjZW5kaWYnCl0pCmlmIG5vdCBtYWNyb19wYXQuc2VhcmNoKHMpOiByYWlzZSBTeXN0ZW1FeGl0KCdoYXNoIG1hY3JvIHRhcmdldCBub3QgZm91bmQnKQpzPW1hY3JvX3BhdC5zdWIobWFjcm9fbmV3LHMsY291bnQ9MSkKCiMgSU1QT1JUQU5UOiByZXBsYWNlIGVhY2ggb3JpZ2luYWwgZnVuY3Rpb24gZXhhY3RseSBvbmNlLiBEbyBub3Qgd3JhcCBhbiBvbGQKIyBkZWZpbml0aW9uIGluIGFub3RoZXIgI2lmLyNlbHNlIGRlZmluaXRpb247IHRoYXQgY3JlYXRlZCBmYWxzZSBkdXBsaWNhdGUKIyBkZWZpbml0aW9ucyBpbiBWNjQgYW5kIHByZXZlbnRlZCB0aGUgYnVpbGQgZnJvbSByZWFjaGluZyBjb21waWxhdGlvbi4Kcz1yZXBsYWNlX2Z1bmMocywncmVtb3ZlX2F2dGFiX25vZGUnLHInJydzdGF0aWMgYm9vbCByZW1vdmVfYXZ0YWJfbm9kZShzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBzdHJ1Y3QgYXZ0YWJfbm9kZSAqbm9kZSkKewogICAgaW50IGk7CiAgICBpbnQgcmV0OwogICAgaW50IHNocmlua19zaXplID0gc2l6ZW9mKHN0cnVjdCBhdnRhYl9rZXkpICsgc2l6ZW9mKHN0cnVjdCBhdnRhYl9kYXR1bSk7CiAgICBzdHJ1Y3QgYXZ0YWIgcmVtb3ZlZCA9IHt9OwogICAgc3RydWN0IGF2dGFiX25vZGUgKm47CiAgICBzdHJ1Y3QgYXZ0YWJfbm9kZSAqcHJldjsKCiAgICByZXQgPSBhdnRhYl9hbGxvYygmcmVtb3ZlZCwgMSk7CiAgICBpZiAocmV0IDwgMCkKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICBmb3IgKGkgPSAwOyBpIDwgZGItPnRlX2F2dGFiLm5zbG90OyBpKyspIHsKICAgICAgICBwcmV2ID0gTlVMTDsKICAgICAgICBmb3IgKG4gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnRlX2F2dGFiLmh0YWJsZSwgaSk7IG47IHByZXYgPSBuLCBuID0gbi0+bmV4dCkgewogICAgICAgICAgICBpZiAobiAhPSBub2RlKQogICAgICAgICAgICAgICAgY29udGludWU7CiAgICAgICAgICAgIGlmIChwcmV2KQogICAgICAgICAgICAgICAgcHJldi0+bmV4dCA9IG4tPm5leHQ7CiAgICAgICAgICAgIGVsc2UgaWYgKGZsZXhfYXJyYXlfcHV0X3B0cihkYi0+dGVfYXZ0YWIuaHRhYmxlLCBpLCBuLT5uZXh0LCBHRlBfS0VSTkVMIHwgX19HRlBfWkVSTykpIHsKICAgICAgICAgICAgICAgIGF2dGFiX2Rlc3Ryb3koJnJlbW92ZWQpOwogICAgICAgICAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgICAgICAgICB9CiAgICAgICAgICAgIGlmIChkYi0+dGVfYXZ0YWIubmVsID4gMCkKICAgICAgICAgICAgICAgIGRiLT50ZV9hdnRhYi5uZWwtLTsKICAgICAgICAgICAgaWYgKChuLT5rZXkuc3BlY2lmaWVkICYgQVZUQUJfWFBFUk1TKSAmJiBuLT5kYXR1bS51LnhwZXJtcykKICAgICAgICAgICAgICAgIHNocmlua19zaXplICs9IHNpemVvZih1OCkgKyBzaXplb2YodTgpICsgc2l6ZW9mKHUzMikgKiBBUlJBWV9TSVpFKG4tPmRhdHVtLnUueHBlcm1zLT5wZXJtcy5wKTsKICAgICAgICAgICAgbi0+bmV4dCA9IE5VTEw7CiAgICAgICAgICAgIGlmIChmbGV4X2FycmF5X3B1dF9wdHIocmVtb3ZlZC5odGFibGUsIDAsIG4sIEdGUF9LRVJORUwgfCBfX0dGUF9aRVJPKSkgewogICAgICAgICAgICAgICAgYXZ0YWJfZGVzdHJveSgmcmVtb3ZlZCk7CiAgICAgICAgICAgICAgICByZXR1cm4gZmFsc2U7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgcmVtb3ZlZC5uZWwgPSAxOwogICAgICAgICAgICBhdnRhYl9kZXN0cm95KCZyZW1vdmVkKTsKICAgICAgICAgICAgaWYgKGRiLT5sZW4gPj0gc2hyaW5rX3NpemUpCiAgICAgICAgICAgICAgICBkYi0+bGVuIC09IHNocmlua19zaXplOwogICAgICAgICAgICByZXR1cm4gdHJ1ZTsKICAgICAgICB9CiAgICB9CiAgICBhdnRhYl9kZXN0cm95KCZyZW1vdmVkKTsKICAgIHJldHVybiBmYWxzZTsKfScnJykKcz1yZXBsYWNlX2Z1bmMocywnYWRkX2ZpbGVuYW1lX3RyYW5zJyxyJycnc3RhdGljIGJvb2wgYWRkX2ZpbGVuYW1lX3RyYW5zKHN0cnVjdCBwb2xpY3lkYiAqZGIsIGNvbnN0IGNoYXIgKnMsIGNvbnN0IGNoYXIgKnQsCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBjb25zdCBjaGFyICpjLCBjb25zdCBjaGFyICpkLCBjb25zdCBjaGFyICpvKQp7CiAgICBzdHJ1Y3QgdHlwZV9kYXR1bSAqc3JjLCAqdGd0LCAqZGVmOwogICAgc3RydWN0IGNsYXNzX2RhdHVtICpjbHM7CiAgICBzdHJ1Y3QgZmlsZW5hbWVfdHJhbnMga2V5OwogICAgc3RydWN0IGZpbGVuYW1lX3RyYW5zX2RhdHVtICp0cmFuczsKCiAgICBzcmMgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgcyk7CiAgICBpZiAoIXNyYykgcmV0dXJuIGZhbHNlOwogICAgdGd0ID0gc3ltdGFiX3NlYXJjaCgmZGItPnBfdHlwZXMsIHQpOwogICAgaWYgKCF0Z3QpIHJldHVybiBmYWxzZTsKICAgIGNscyA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX2NsYXNzZXMsIGMpOwogICAgaWYgKCFjbHMpIHJldHVybiBmYWxzZTsKICAgIGRlZiA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX3R5cGVzLCBkKTsKICAgIGlmICghZGVmKSByZXR1cm4gZmFsc2U7CgogICAga2V5LnN0eXBlID0gc3JjLT52YWx1ZTsKICAgIGtleS50dHlwZSA9IHRndC0+dmFsdWU7CiAgICBrZXkudGNsYXNzID0gY2xzLT52YWx1ZTsKICAgIGtleS5uYW1lID0gbzsKICAgIHRyYW5zID0gaGFzaHRhYl9zZWFyY2goZGItPmZpbGVuYW1lX3RyYW5zLCAma2V5KTsKICAgIGlmICh0cmFucyA9PSBOVUxMKSB7CiAgICAgICAgc3RydWN0IGZpbGVuYW1lX3RyYW5zICpuZXdfa2V5OwogICAgICAgIHRyYW5zID0gKHN0cnVjdCBmaWxlbmFtZV90cmFuc19kYXR1bSAqKWtjYWxsb2MoMSwgc2l6ZW9mKCp0cmFucyksIEdGUF9BVE9NSUMpOwogICAgICAgIGlmICghdHJhbnMpIHJldHVybiBmYWxzZTsKICAgICAgICBuZXdfa2V5ID0gKHN0cnVjdCBmaWxlbmFtZV90cmFucyAqKWttYWxsb2Moc2l6ZW9mKCpuZXdfa2V5KSwgR0ZQX0FUT01JQyk7CiAgICAgICAgaWYgKCFuZXdfa2V5KSB7IGtmcmVlKHRyYW5zKTsgcmV0dXJuIGZhbHNlOyB9CiAgICAgICAgKm5ld19rZXkgPSBrZXk7CiAgICAgICAgbmV3X2tleS0+bmFtZSA9IGtzdHJkdXAoa2V5Lm5hbWUsIEdGUF9BVE9NSUMpOwogICAgICAgIGlmICghbmV3X2tleS0+bmFtZSkgeyBrZnJlZShuZXdfa2V5KTsga2ZyZWUodHJhbnMpOyByZXR1cm4gZmFsc2U7IH0KICAgICAgICB0cmFucy0+b3R5cGUgPSBkZWYtPnZhbHVlOwogICAgICAgIGlmIChoYXNodGFiX2luc2VydChkYi0+ZmlsZW5hbWVfdHJhbnMsIG5ld19rZXksIHRyYW5zKSkgewogICAgICAgICAgICBrZnJlZSgoY2hhciAqKW5ld19rZXktPm5hbWUpOyBrZnJlZShuZXdfa2V5KTsga2ZyZWUodHJhbnMpOyByZXR1cm4gZmFsc2U7CiAgICAgICAgfQogICAgfSBlbHNlIHsKICAgICAgICB0cmFucy0+b3R5cGUgPSBkZWYtPnZhbHVlOwogICAgfQogICAgcmV0dXJuIGViaXRtYXBfc2V0X2JpdCgmZGItPmZpbGVuYW1lX3RyYW5zX3R0eXBlcywgc3JjLT52YWx1ZSAtIDEsIDEpID09IDA7Cn0nJycpCnM9cmVwbGFjZV9mdW5jKHMsJ2FkZF90eXBlJyxyJycnc3RhdGljIGJvb2wgYWRkX3R5cGUoc3RydWN0IHBvbGljeWRiICpkYiwgY29uc3QgY2hhciAqdHlwZV9uYW1lLCBib29sIGF0dHIpCnsKICAgIHN0cnVjdCB0eXBlX2RhdHVtICp0eXBlID0gc3ltdGFiX3NlYXJjaCgmZGItPnBfdHlwZXMsIHR5cGVfbmFtZSk7CiAgICB1MzIgdmFsdWU7CiAgICBjaGFyICprZXk7CiAgICBzdHJ1Y3QgZmxleF9hcnJheSAqbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXk7CiAgICBzdHJ1Y3QgZmxleF9hcnJheSAqbmV3X3R5cGVfdmFsX3RvX3N0cnVjdDsKICAgIHN0cnVjdCBmbGV4X2FycmF5ICpuZXdfdmFsX3RvX25hbWVfdHlwZXM7CiAgICBpbnQgaSwgajsKICAgIHZvaWQgKm9sZF9lbGVtOwogICAgc3RydWN0IGZsZXhfYXJyYXkgKm9sZF9mYTsKCiAgICBpZiAodHlwZSkgcmV0dXJuIHRydWU7CiAgICB2YWx1ZSA9ICsrZGItPnBfdHlwZXMubnByaW07CiAgICB0eXBlID0gKHN0cnVjdCB0eXBlX2RhdHVtICopa3phbGxvYyhzaXplb2YoKnR5cGUpLCBHRlBfQVRPTUlDKTsKICAgIGlmICghdHlwZSkgcmV0dXJuIGZhbHNlOwogICAgdHlwZS0+cHJpbWFyeSA9IDE7IHR5cGUtPnZhbHVlID0gdmFsdWU7IHR5cGUtPmF0dHJpYnV0ZSA9IGF0dHI7CiAgICBrZXkgPSBrc3RyZHVwKHR5cGVfbmFtZSwgR0ZQX0FUT01JQyk7CiAgICBpZiAoIWtleSkgeyBrZnJlZSh0eXBlKTsgcmV0dXJuIGZhbHNlOyB9CiAgICBpZiAoc3ltdGFiX2luc2VydCgmZGItPnBfdHlwZXMsIGtleSwgdHlwZSkpIHsga2ZyZWUoa2V5KTsga2ZyZWUodHlwZSk7IHJldHVybiBmYWxzZTsgfQoKICAgIG5ld190eXBlX2F0dHJfbWFwX2FycmF5ID0gZmxleF9hcnJheV9hbGxvYyhzaXplb2Yoc3RydWN0IGViaXRtYXApLCBkYi0+cF90eXBlcy5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pOwogICAgbmV3X3R5cGVfdmFsX3RvX3N0cnVjdCA9IGZsZXhfYXJyYXlfYWxsb2Moc2l6ZW9mKHN0cnVjdCB0eXBlX2RhdHVtICopLCBkYi0+cF90eXBlcy5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pOwogICAgbmV3X3ZhbF90b19uYW1lX3R5cGVzID0gZmxleF9hcnJheV9hbGxvYyhzaXplb2YoY2hhciAqKSwgZGItPnN5bXRhYltTWU1fVFlQRVNdLm5wcmltLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTyk7CiAgICBpZiAoIW5ld190eXBlX2F0dHJfbWFwX2FycmF5IHx8ICFuZXdfdHlwZV92YWxfdG9fc3RydWN0IHx8ICFuZXdfdmFsX3RvX25hbWVfdHlwZXMpIHJldHVybiBmYWxzZTsKCiAgICBpZiAoZmxleF9hcnJheV9wcmVhbGxvYyhuZXdfdHlwZV9hdHRyX21hcF9hcnJheSwgMCwgZGItPnBfdHlwZXMubnByaW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSB8fAogICAgICAgIGZsZXhfYXJyYXlfcHJlYWxsb2MobmV3X3R5cGVfdmFsX3RvX3N0cnVjdCwgMCwgZGItPnBfdHlwZXMubnByaW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSB8fAogICAgICAgIGZsZXhfYXJyYXlfcHJlYWxsb2MobmV3X3ZhbF90b19uYW1lX3R5cGVzLCAwLCBkYi0+c3ltdGFiW1NZTV9UWVBFU10ubnByaW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSkKICAgICAgICByZXR1cm4gZmFsc2U7CgogICAgaWYgKGRiLT50eXBlX2F0dHJfbWFwX2FycmF5KSB7CiAgICAgICAgZm9yIChqID0gMDsgaiA8IGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LT50b3RhbF9ucl9lbGVtZW50czsgaisrKSB7CiAgICAgICAgICAgIG9sZF9lbGVtID0gZmxleF9hcnJheV9nZXQoZGItPnR5cGVfYXR0cl9tYXBfYXJyYXksIGopOwogICAgICAgICAgICBpZiAob2xkX2VsZW0gJiYgZmxleF9hcnJheV9wdXQobmV3X3R5cGVfYXR0cl9tYXBfYXJyYXksIGosIG9sZF9lbGVtLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykpIHJldHVybiBmYWxzZTsKICAgICAgICB9CiAgICB9CiAgICBpZiAoZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheSkgewogICAgICAgIGZvciAoaiA9IDA7IGogPCBkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5LT50b3RhbF9ucl9lbGVtZW50czsgaisrKSB7CiAgICAgICAgICAgIG9sZF9lbGVtID0gZmxleF9hcnJheV9nZXRfcHRyKGRiLT50eXBlX3ZhbF90b19zdHJ1Y3RfYXJyYXksIGopOwogICAgICAgICAgICBpZiAob2xkX2VsZW0gJiYgZmxleF9hcnJheV9wdXRfcHRyKG5ld190eXBlX3ZhbF90b19zdHJ1Y3QsIGosIG9sZF9lbGVtLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykpIHJldHVybiBmYWxzZTsKICAgICAgICB9CiAgICB9CiAgICBpZiAoZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdKSB7CiAgICAgICAgZm9yIChqID0gMDsgaiA8IGRiLT5zeW10YWJbU1lNX1RZUEVTXS5ucHJpbTsgaisrKSB7CiAgICAgICAgICAgIG9sZF9lbGVtID0gZmxleF9hcnJheV9nZXRfcHRyKGRiLT5zeW1fdmFsX3RvX25hbWVbU1lNX1RZUEVTXSwgaik7CiAgICAgICAgICAgIGlmIChvbGRfZWxlbSAmJiBmbGV4X2FycmF5X3B1dF9wdHIobmV3X3ZhbF90b19uYW1lX3R5cGVzLCBqLCBvbGRfZWxlbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pKSByZXR1cm4gZmFsc2U7CiAgICAgICAgfQogICAgfQoKICAgIG9sZF9mYSA9IGRiLT50eXBlX2F0dHJfbWFwX2FycmF5OyBkYi0+dHlwZV9hdHRyX21hcF9hcnJheSA9IG5ld190eXBlX2F0dHJfbWFwX2FycmF5OyBpZiAob2xkX2ZhKSBmbGV4X2FycmF5X2ZyZWUob2xkX2ZhKTsKICAgIGViaXRtYXBfaW5pdChmbGV4X2FycmF5X2dldChkYi0+dHlwZV9hdHRyX21hcF9hcnJheSwgdmFsdWUgLSAxKSk7CiAgICBpZiAoZWJpdG1hcF9zZXRfYml0KGZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB2YWx1ZSAtIDEpLCB2YWx1ZSAtIDEsIDEpKSByZXR1cm4gZmFsc2U7CgogICAgb2xkX2ZhID0gZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheTsgZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheSA9IG5ld190eXBlX3ZhbF90b19zdHJ1Y3Q7IGlmIChvbGRfZmEpIGZsZXhfYXJyYXlfZnJlZShvbGRfZmEpOwogICAgaWYgKGZsZXhfYXJyYXlfcHV0X3B0cihkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5LCB2YWx1ZSAtIDEsIHR5cGUsIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSkgcmV0dXJuIGZhbHNlOwoKICAgIG9sZF9mYSA9IGRiLT5zeW1fdmFsX3RvX25hbWVbU1lNX1RZUEVTXTsgZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdID0gbmV3X3ZhbF90b19uYW1lX3R5cGVzOyBpZiAob2xkX2ZhKSBmbGV4X2FycmF5X2ZyZWUob2xkX2ZhKTsKICAgIGlmIChmbGV4X2FycmF5X3B1dF9wdHIoZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdLCB2YWx1ZSAtIDEsIGtleSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pKSByZXR1cm4gZmFsc2U7CgogICAgZm9yIChpID0gMDsgaSA8IGRiLT5wX3JvbGVzLm5wcmltOyArK2kpCiAgICAgICAgZWJpdG1hcF9zZXRfYml0KCZkYi0+cm9sZV92YWxfdG9fc3RydWN0W2ldLT50eXBlcywgdmFsdWUgLSAxLCAxKTsKICAgIHJldHVybiB0cnVlOwp9JycnKQpzPXJlcGxhY2VfZnVuYyhzLCdhZGRfdHlwZWF0dHJpYnV0ZV9yYXcnLHInJydzdGF0aWMgdm9pZCBhZGRfdHlwZWF0dHJpYnV0ZV9yYXcoc3RydWN0IHBvbGljeWRiICpkYiwgc3RydWN0IHR5cGVfZGF0dW0gKnR5cGUsIHN0cnVjdCB0eXBlX2RhdHVtICphdHRyKQp7CiAgICBzdHJ1Y3QgZWJpdG1hcCAqc2F0dHIgPSBmbGV4X2FycmF5X2dldChkYi0+dHlwZV9hdHRyX21hcF9hcnJheSwgdHlwZS0+dmFsdWUgLSAxKTsKICAgIHN0cnVjdCBoYXNodGFiX25vZGUgKm5vZGU7CiAgICBzdHJ1Y3QgY29uc3RyYWludF9ub2RlICpuOwogICAgc3RydWN0IGNvbnN0cmFpbnRfZXhwciAqZTsKICAgIGlmICghc2F0dHIpIHJldHVybjsKICAgIGViaXRtYXBfc2V0X2JpdChzYXR0ciwgYXR0ci0+dmFsdWUgLSAxLCAxKTsKICAgIGtzdV9oYXNodGFiX2Zvcl9lYWNoKGRiLT5wX2NsYXNzZXMudGFibGUsIG5vZGUpCiAgICB7CiAgICAgICAgc3RydWN0IGNsYXNzX2RhdHVtICpjbHMgPSAoc3RydWN0IGNsYXNzX2RhdHVtICopKG5vZGUtPmRhdHVtKTsKICAgICAgICBmb3IgKG4gPSBjbHMtPmNvbnN0cmFpbnRzOyBuOyBuID0gbi0+bmV4dCkKICAgICAgICAgICAgZm9yIChlID0gbi0+ZXhwcjsgZTsgZSA9IGUtPm5leHQpCiAgICAgICAgICAgICAgICBpZiAoZS0+ZXhwcl90eXBlID09IENFWFBSX05BTUVTICYmIGViaXRtYXBfZ2V0X2JpdCgmZS0+dHlwZV9uYW1lcy0+dHlwZXMsIGF0dHItPnZhbHVlIC0gMSkpCiAgICAgICAgICAgICAgICAgICAgZWJpdG1hcF9zZXRfYml0KCZlLT5uYW1lcywgdHlwZS0+dmFsdWUgLSAxLCAxKTsKICAgIH07Cn0nJycpCgptYXJrZXI9JyNkZWZpbmUgc3RyaXBfYXYoZWZmZWN0LCBpbnZlcnQpICgoZWZmZWN0ID09IEFWVEFCX0FVRElUREVOWSkgPT0gIWludmVydClcbicKY29tcGF0PSIjZGVmaW5lIHN0cmlwX2F2KGVmZmVjdCwgaW52ZXJ0KSAoKGVmZmVjdCA9PSBBVlRBQl9BVURJVERFTlkpID09ICFpbnZlcnQpXG4jaWYgTElOVVhfVkVSU0lPTl9DT0RFIDwgS0VSTkVMX1ZFUlNJT04oNSwgOSwgMClcbiNpZm5kZWYgc3ltdGFiX3NlYXJjaFxuI2RlZmluZSBzeW10YWJfc2VhcmNoKHMsIG5hbWUpIGhhc2h0YWJfc2VhcmNoKChzKS0+dGFibGUsIG5hbWUpXG4jZW5kaWZcbiNpZm5kZWYgc3ltdGFiX2luc2VydFxuI2RlZmluZSBzeW10YWJfaW5zZXJ0KHMsIG5hbWUsIGRhdHVtKSBoYXNodGFiX2luc2VydCgocyktPnRhYmxlLCBuYW1lLCBkYXR1bSlcbiNlbmRpZlxuI2VuZGlmXG5cbi8qIExpbnV4IDQuMTk6IFNFTGludXggaGFzaHRhYiB1c2VzIHN0cnVjdCBoYXNodGFiX25vZGUgKiosIHdoaWxlIGF2dGFiIHVzZXNcbiAqIHN0cnVjdCBmbGV4X2FycmF5ICouIEtlZXAgU3VraVNVJ3Mga3N1X2hhc2hfZm9yX2VhY2goKSBmbGV4X2FycmF5IHNlbWFudGljc1xuICogZm9yIGF2dGFiIGFuZCBjb3JyZWN0IG9ubHkgdGhlIGRlZGljYXRlZCBoYXNodGFiIGl0ZXJhdG9yLiAqL1xuI2lmIExJTlVYX1ZFUlNJT05fQ09ERSA8IEtFUk5FTF9WRVJTSU9OKDUsIDgsIDApXG4jdW5kZWYga3N1X2hhc2h0YWJfZm9yX2VhY2hcbiNkZWZpbmUga3N1X2hhc2h0YWJfZm9yX2VhY2goaHRhYiwgY3VyKSBcXFxuICAgIGludCBpOyBcXFxuICAgIGZvciAoaSA9IDA7IGkgPCAoaHRhYiktPnNpemU7ICsraSkgXFxcbiAgICAgICAgZm9yIChjdXIgPSAoaHRhYiktPmh0YWJsZVtpXTsgY3VyOyBjdXIgPSBjdXItPm5leHQpXG4jZW5kaWZcbiIKaWYgbWFya2VyIG5vdCBpbiBzOiByYWlzZSBTeXN0ZW1FeGl0KCdzdHJpcF9hdiBtYXJrZXIgbWlzc2luZycpCnM9cy5yZXBsYWNlKG1hcmtlcixjb21wYXQsMSkKCmRlZiBjb3VudF9kZWYobmFtZSk6CiAgICBwYXQ9cmUuY29tcGlsZShyJyg/bXMpXnN0YXRpY1xzKyg/OmJvb2x8dm9pZClccysnK3JlLmVzY2FwZShuYW1lKStyJ1xzKlwoW147e31dKlwpXHMqXHsnKQogICAgcmV0dXJuIGxlbihwYXQuZmluZGFsbChzKSkKY291bnRzPXtuOmNvdW50X2RlZihuKSBmb3IgbiBpbiBbJ3JlbW92ZV9hdnRhYl9ub2RlJywnYWRkX2ZpbGVuYW1lX3RyYW5zJywnYWRkX3R5cGUnLCdhZGRfdHlwZWF0dHJpYnV0ZV9yYXcnXX0KaWYgY291bnRzICE9IHsncmVtb3ZlX2F2dGFiX25vZGUnOjEsJ2FkZF9maWxlbmFtZV90cmFucyc6MSwnYWRkX3R5cGUnOjEsJ2FkZF90eXBlYXR0cmlidXRlX3Jhdyc6MX06CiAgICByYWlzZSBTeXN0ZW1FeGl0KCd1bmV4cGVjdGVkIGFjdHVhbCBmdW5jdGlvbiBkZWZpbml0aW9uIGNvdW50czogJytyZXByKGNvdW50cykpCmZvciBuZWVkbGUgaW4gWydmbGV4X2FycmF5X2dldF9wdHIoZGItPnRlX2F2dGFiLmh0YWJsZSwgaSknLCdzdHJ1Y3QgZmlsZW5hbWVfdHJhbnMga2V5OycsJ2ZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB0eXBlLT52YWx1ZSAtIDEpJywnZmxleF9hcnJheV9wdXRfcHRyKGRiLT50eXBlX3ZhbF90b19zdHJ1Y3RfYXJyYXksIHZhbHVlIC0gMSwgdHlwZSwnXToKICAgIGlmIG5lZWRsZSBub3QgaW4gczogcmFpc2UgU3lzdGVtRXhpdCgncmVxdWlyZWQgNC4xOSBjb25zdHJ1Y3QgbWlzc2luZzogJytuZWVkbGUpCnAud3JpdGVfdGV4dChzKQpwcmludCgnW0ZJWEVEXSBFeGFjdCByZXNlYXJjaGVkIExpbnV4IDQuMTkgU0VMaW51eCBjb21wYXRpYmlsaXR5IHNvdXJjZSB0cmFuc2Zvcm1hdGlvbiBhcHBsaWVkIG9uY2UgcGVyIGZ1bmN0aW9uLicpCnByaW50KCdbQVVESVRdIGFjdHVhbCBmdW5jdGlvbiBkZWZpbml0aW9uczonLGNvdW50cykK' | base64 -d > "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
           chmod 700 "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
           python3 -m py_compile "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
           python3 "$RUNNER_TEMP/ksu_sepolicy_419_fix.py" drivers/kernelsu/selinux/sepolicy.c
@@ -1832,6 +1832,7 @@ jobs:
           echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
           echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
           echo "[PASS] Manual compatibility patch set complete."
+
       - name: Setup 18 - SELinux 4.19 Preflight
         shell: bash
         run: |
@@ -1988,651 +1989,49 @@ jobs:
           echo "[LOCKED] Setup 10A remains untouched."
           echo "=============================================================="
 
-      - name: Setup 20 - CPU Clocksource Compatibility
+      # ====== NEW STEP 26A: Fix sepolicy macro for 4.19 ======
+      - name: Setup 26A - Fix sepolicy macro for 4.19
         shell: bash
         run: |
-          SETUP_NO="20"
-          SETUP_NAME="Setup 20 - CPU Clocksource Compatibility"
-          SETUP_LOG="$DIAG_DIR/20-setup-20-cpu-clocksource-compatibility-LIVE.log"
-          mkdir -p "$DIAG_DIR"
-          : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
-          echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
-          export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
-          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
-          set -Eeuo pipefail
-          LOG="$DIAG_DIR/10B-CPU-clocksource-419-compat.log"
-          : > "$LOG"
-          exec > >(tee -a "$LOG") 2>&1
-
-          echo "========== SETUP 19 CPU_SPOOF LINUX 4.19 COMPATIBILITY =========="
-          echo "[LOCKED] Setup 10A is immutable and is not modified by this step."
-          echo "[EVIDENCE] V78.1 full build reached drivers/kernelsu/feature/cpu_spoof.c."
-          echo "[EVIDENCE] Clang 20 reported three errors: struct clocksource has no member vdso_clock_mode (lines 163,164,166)."
-          echo "[RESEARCH] Linux clocksource vDSO mode storage is a newer API boundary; Linux 4.19's struct clocksource does not provide this member."
-          echo "[FIX POLICY] Do not backport unrelated clocksource/vDSO core layout. Remove only the optional cpu_spoof vDSO-mode log/assignment block that cannot compile on this 4.19 tree."
-
-          CPU_C="drivers/kernelsu/feature/cpu_spoof.c"
-          test -f "$CPU_C"
-
-          COUNT="$(grep -cF 'cs->vdso_clock_mode' "$CPU_C" || true)"
-          echo "[AUDIT] cpu_spoof.c vdso_clock_mode references before fix: $COUNT"
-          test "$COUNT" -eq 3 || { echo "[FAIL] Expected exactly 3 evidenced references in cpu_spoof.c; got $COUNT"; exit 1; }
-
-          # The exact compiler evidence gives us a much safer boundary than a
-          # broad search/replace: isolate the contiguous source region containing
-          # all three obsolete member references and disable only that region.
-          python3 - "$CPU_C" <<'PY'
+          set -e
+          python3 - <<'EOF'
           from pathlib import Path
           import sys
-          p=Path(sys.argv[1])
-          s=p.read_text()
-          token='cs->vdso_clock_mode'
-          poss=[]
-          off=0
-          while True:
-              i=s.find(token, off)
-              if i < 0: break
-              poss.append(i); off=i+len(token)
-          if len(poss) != 3:
-              raise SystemExit(f'[FAIL] expected 3 vdso_clock_mode references, found {len(poss)}')
-          first=poss[0]
-          # Start at the beginning of the statement containing the first reference.
-          stmt_start=s.rfind('\n', 0, first)+1
-          # Walk backwards to the nearest pr_info call opening the diagnostic block.
-          pr=s.rfind('pr_info(', 0, first)
-          if pr < 0 or pr < first-1200:
-              raise SystemExit('[FAIL] could not locate the narrow pr_info compatibility block')
-          stmt_start=s.rfind('\n', 0, pr)+1
-          # Find the closing line after the third reference. The evidence block is
-          # contiguous and ends at the semicolon/close-paren following the third ref.
-          third=poss[2]
-          end=s.find(');', third)
-          if end < 0:
-              raise SystemExit('[FAIL] could not locate end of third vDSO diagnostic statement')
-          end += 2
-          # Include the assignment between the first and third references and the
-          # complete diagnostic statements, but leave surrounding function logic intact.
-          replacement=(
-              '/*\n'
-              ' * Linux 4.19 compatibility: struct clocksource has no\n'
-              ' * vdso_clock_mode member. The cpu_spoof vDSO-mode diagnostic/force\n'
-              ' * block is optional and cannot be ported by inventing a struct member.\n'
-              ' * Keep the native 4.19 clocksource/vDSO implementation untouched.\n'
-              ' */\n'
-          )
-          s=s[:stmt_start]+replacement+s[end:]
-          p.write_text(s)
-          print('[FIXED] Removed only the obsolete cpu_spoof vDSO-mode diagnostic/assignment block.')
-          PY
 
-          AFTER="$(grep -cF 'cs->vdso_clock_mode' "$CPU_C" || true)"
-          echo "[AUDIT] cpu_spoof.c vdso_clock_mode references after fix: $AFTER"
-          test "$AFTER" -eq 0 || { echo "[FAIL] obsolete vdso_clock_mode references remain"; exit 1; }
-          grep -qF 'Linux 4.19 compatibility: struct clocksource has no' "$CPU_C"
-          echo "[PASS] cpu_spoof.c now contains no Linux-4.19-incompatible clocksource member access."
-          echo "[LOCKED] Setup 10A remains untouched."
-          echo "==================================================================="
+          file_path = "drivers/kernelsu/selinux/sepolicy.c"
+          file = Path(file_path)
+          if not file.is_file():
+              print(f"[ERROR] {file_path} not found.")
+              sys.exit(1)
 
-      - name: Setup 21 - Source Integrity Audit
-        shell: bash
-        run: |
-          SETUP_NO="21"
-          SETUP_NAME="Setup 21 - Source Integrity Audit"
-          SETUP_LOG="$DIAG_DIR/21-setup-21-source-integrity-audit-LIVE.log"
-          mkdir -p "$DIAG_DIR"
-          : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
-          echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
-          export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
-          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
-          set -euo pipefail
-          LOG="$DIAG_DIR/10C-source-integrity.log"
-          : > "$LOG"
-          {
-            git ls-files -z | sort -z > "$RUNNER_TEMP/tracked-final"
-            if ! cmp -s "$RUNNER_TEMP/tracked-before" "$RUNNER_TEMP/tracked-final"; then
-              echo "[FAIL] Existing tracked stock files were removed."
-              diff -u <(tr '\0' '\n' < "$RUNNER_TEMP/tracked-before") <(tr '\0' '\n' < "$RUNNER_TEMP/tracked-final") || true
-              exit 1
-            fi
-            if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-              echo "[FAIL] Reject/original files remain."
-              exit 1
-            fi
-            git diff --check
-            echo "[PASS] No pre-existing tracked stock source was removed."
-          } 2>&1 | tee -a "$LOG"
-          cat "$LOG"
+          text = file.read_text()
 
-      - name: Setup 22 - Verify Maphide Baseband Guard
-        shell: bash
-        run: |
-          SETUP_NO="22"
-          SETUP_NAME="Setup 22 - Verify Maphide Baseband Guard"
-          SETUP_LOG="$DIAG_DIR/22-setup-22-verify-maphide-baseband-guard-LIVE.log"
-          mkdir -p "$DIAG_DIR"
-          : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
-          echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
-          export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
-          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
-          set -euo pipefail
-          LOG="$DIAG_DIR/10C-A-required-features.log"
-          : > "$LOG"
-          {
-            echo "========== REQUIRED FEATURES =========="
-            test -s "$RUNNER_TEMP/69_hide_stuff.patch"
-            grep -q 'jit-zygote-cache' "$RUNNER_TEMP/69_hide_stuff.patch"
-            grep -q 'framework-res.apk' "$RUNNER_TEMP/69_hide_stuff.patch"
-            grep -q 'fs/proc/task_mmu.c' "$RUNNER_TEMP/69_hide_stuff.patch"
-            grep -q 'show_vma_header_prefix_fake' fs/proc/task_mmu.c
-            grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
-            grep -q 'framework-res.apk' fs/proc/task_mmu.c
-            grep -RqsE 'baseband.?guard|CONFIG_BBG' security Baseband-guard
-            grep -q '^CONFIG_BBG=y$' .config
-            echo "[PASS] Maphide + JIT-Zygote patch is applied and retained."
-            echo "[PASS] Baseband-Guard v1.1 is integrated and retained."
-          } 2>&1 | tee -a "$LOG"
-          cat "$LOG"
+          # The faulty block to remove (the #else branch)
+          old_block = """#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+          #define ksu_hashtab_for_each(htab, cur) ksu_hash_for_each(htab.htable, htab.size, cur)
+          #else
+          #define ksu_hashtab_for_each(htab, cur) ksu_hash_for_each(htab->htable, htab->size, cur)
+          #endif"""
 
-      - name: Setup 23 - Stable Feature Matrix Audit
-        shell: bash
-        run: |
-          SETUP_NO="23"
-          SETUP_NAME="Setup 23 - Stable Feature Matrix Audit"
-          SETUP_LOG="$DIAG_DIR/23-setup-23-stable-feature-matrix-audit-LIVE.log"
-          mkdir -p "$DIAG_DIR"
-          : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
-          echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
-          export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
-          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
-          set -euo pipefail
-          LOG="$DIAG_DIR/11B-feature-matrix.log"
-          : > "$LOG"
-          {
-            echo "========== LM-G900 / G900EMW FULL FEATURE MATRIX =========="
-            echo "Kernel: 4.19.325-cip135 (official CIP135 delta applied)"
-            echo "Target: Android 16/17 QPR2/GSI"
+          # Correct block: only keep the >=5.8 part (the #else is removed)
+          new_block = """#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+          #define ksu_hashtab_for_each(htab, cur) ksu_hash_for_each(htab.htable, htab.size, cur)
+          #endif"""
 
-            echo
-            echo "========== ROOT / KPM / VFS =========="
-            grep -E '^CONFIG_(KSU|KPROBES|HAVE_KPROBES|KPROBE_EVENTS|KALLSYMS|KALLSYMS_ALL|KPM|EXT4_FS|OVERLAY_FS)=' .config || true
-            for req in CONFIG_KSU=y CONFIG_KPROBES=y CONFIG_KPROBE_EVENTS=y CONFIG_KALLSYMS=y CONFIG_KALLSYMS_ALL=y CONFIG_KPM=y CONFIG_EXT4_FS=y CONFIG_OVERLAY_FS=y; do
-              grep -qx "$req" .config || { echo "[FAIL] Missing $req"; exit 1; }
-            done
-
-            echo
-            echo "========== FULL CLANG LTO =========="
-            for req in CONFIG_LTO=y CONFIG_LTO_CLANG=y CONFIG_LTO_CLANG_FULL=y; do
-              grep -qx "$req" .config || { echo "[FAIL] Missing $req"; exit 1; }
-            done
-            if grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
-              echo "[FAIL] ThinLTO/LTO_NONE is still enabled; Full LTO must be exclusive."
-              exit 1
-            fi
-            echo "[PASS] Full Clang LTO is selected exclusively."
-
-            echo
-            echo "========== LZ4K / LZ4KD =========="
-            grep -E '^CONFIG_(CRYPTO_LZ4|CRYPTO_LZ4HC|CRYPTO_LZ4K|CRYPTO_LZ4KD|CRYPTO_LZ4K_OPLUS|ZRAM|ZSMALLOC)=' .config || true
-            echo "Only source-defined LZ4K/LZ4KD symbols are enabled."
-
-            echo
-            echo "========== REQUIRED SECURITY FEATURES =========="
-            grep -RqsE 'MAPHIDE|maphide|69_hide_stuff|jit-zygote-cache' fs/proc || {
-              echo "[FAIL] Maphide/JIT-Zygote source marker missing."; exit 1;
-            }
-            grep -RqsE 'baseband.?guard|CONFIG_BBG' security Baseband-guard || {
-              echo "[FAIL] Baseband-Guard source marker missing."; exit 1;
-            }
-            grep -q '^CONFIG_BBG=y$' .config || { echo "[FAIL] CONFIG_BBG=y missing."; exit 1; }
-            echo "[PASS] Required Maphide/JIT-Zygote + Baseband-Guard markers are present."
-
-            echo
-            echo "========== DUAL SIM / RIL / IMS / VoLTE / VoWiFi =========="
-            grep -E '^CONFIG_(RMNET|RMNET_IPA3|RMNET_MAP|QRTR|MSM_QMI_INTERFACE|QCOM_QMI_HELPERS|NETFILTER|NF_CONNTRACK|NF_NAT|IP_SET|IP6_NF_NAT)=' .config || true
-            echo "Actual IMS/VoLTE/VoWiFi also depends on LG modem firmware, vendor RIL/IMS HAL and DT."
-
-            echo
-            echo "========== WLAN / NETWORK / TRAFFIC MONITORING =========="
-            grep -E '^CONFIG_(CFG80211|MAC80211|WLAN|WIREGUARD|BPF|BPF_SYSCALL|BPF_EVENTS|NETFILTER|NETFILTER_XT_MATCH_OWNER|NETFILTER_XT_MATCH_CONNTRACK|NETFILTER_XT_TARGET_MARK|NETFILTER_XT_TARGET_MASQUERADE)=' .config || true
-
-            echo
-            echo "========== TCP / QOS =========="
-            grep -E '^CONFIG_(TCP_CONG_BBR|TCP_CONG_CUBIC|NET_SCH_CAKE|NET_SCH_FQ_CODEL|NET_SCH_FQ)=' .config || true
-            if grep -Rqs 'bbr3' net/ipv4 2>/dev/null; then
-              echo "[PASS] BBRv3 source implementation detected."
-            else
-              echo "[INFO] No BBRv3 implementation in stock 4.19 source; real BBRv1 remains."
-            fi
-
-            echo
-            echo "========== DROIDSPACES-OSS =========="
-            grep -E '^CONFIG_(NAMESPACES|PID_NS|UTS_NS|IPC_NS|NET_NS|USER_NS|CGROUPS|CGROUP_DEVICE|CGROUP_PIDS|CGROUP_SCHED|MEMCG|SECCOMP|SECCOMP_FILTER|VETH|BRIDGE|BRIDGE_NETFILTER)=' .config || true
-            echo "[PASS] DroidSpaces legacy-kernel capability audit completed."
-
-            echo
-            echo "========== ANDROID 16/17 QPR2/GSI =========="
-            grep -E '^CONFIG_(ANDROID_BINDERFS|TMPFS_XATTR|TMPFS_POSIX_ACL|DEVTMPFS|OVERLAY_FS|FUSE_FS|FS_ENCRYPTION|FS_VERITY)=' .config || true
-            echo "Runtime GSI boot validation requires final kernel + matching vendor/DT/DTBO."
-
-            echo
-            echo "========== HARDWARE PATHS =========="
-            for p in drivers/input drivers/input/touchscreen drivers/vibrator drivers/haptics drivers/soc/qcom drivers/net drivers/net/wireless sound techpack/audio techpack/voice techpack/data; do
-              [ -d "$p" ] && echo "[PRESENT] $p"
-            done
-
-            echo
-            echo "========== DTB / DTBO =========="
-            [ -d arch/arm64/boot/dts ] && echo "[PASS] arm64 DT sources present"
-
-            echo
-            echo "========== SUSFS =========="
-            grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU fs include/linux || { echo "[FAIL] SUSFS integration missing."; exit 1; }
-            grep -Rqs 'susfs' fs include/linux KernelSU/kernel || { echo "[FAIL] SUSFS source missing."; exit 1; }
-            echo "SUSFS: $SUSFS_VERSION @ $SUSFS_COMMIT"
-            echo "[PASS] SUSFS non-GKI 4.19 integration is present."
-            echo "Feature policy: previously accepted features are never removed; errors are fixed in-place only."
-            echo "Version policy: latest stable release/commit actually compatible with 4.19.325-cip135."
-
-            echo
-            echo "========== VERIFIED VERSION MANIFEST =========="
-            echo "SukiSU-Ultra: v4.2.0 | current verified release | 2026"
-            echo "Baseband-Guard: v1.1 | current verified release | 2025"
-            echo "CIP: v4.19.325-cip135 | current 4.19 CIP target | 2026"
-            echo "DroidSpaces: legacy 4.19 capability requirements (no kernel version claim)"
-            echo "Kernel base: Linux 4.19 | first released | 2018"
-            echo "Policy: latest stable release/commit actually compatible with this 4.19.325-cip135 tree"
-            echo "Policy: previously accepted features are never removed; errors are fixed in-place only."
-            echo "Policy: source-absent features fail the strict feature gate; no feature is falsely labeled implemented."
-
-            echo "[PASS] Full feature matrix audit completed."
-          } 2>&1 | tee -a "$LOG"
-          cat "$LOG"
-
-      - name: Setup 24 - Clean Compiler Preflight
-        shell: bash
-        run: |
-          SETUP_NO="24"
-          SETUP_NAME="Setup 24 - Clean Compiler Preflight"
-          SETUP_LOG="$DIAG_DIR/24-setup-24-clean-compiler-preflight-LIVE.log"
-          mkdir -p "$DIAG_DIR"
-          : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
-          echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
-          export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
-          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
-          set -euo pipefail
-          LOG="$DIAG_DIR/11C-compiler-preflight.log"
-          : > "$LOG"
-          {
-            echo "========== CLEAN CONFIG PREFLIGHT =========="
-            test -x "$CLANG_DIR/bin/clang"
-            "$CLANG_DIR/bin/clang" --version | head -5
-            make ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-              CC="$CLANG_DIR/bin/clang" \
-              LD="$CLANG_DIR/bin/ld.lld" \
-              CROSS_COMPILE="$CROSS_COMPILE" \
-              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              olddefconfig
-            echo "[PASS] 4.19 config regenerated before compilation."
-          } 2>&1 | tee -a "$LOG"
-          cat "$LOG"
-
-      - name: Setup 25 - Full Source-Derived Compatibility Matrix
-        shell: bash
-        run: |
-          SETUP_NO="25"
-          SETUP_NAME="Setup 25 - Full Source-Derived Compatibility Matrix"
-          SETUP_LOG="$DIAG_DIR/25-setup-25-full-source-derived-compatibility-matrix-LIVE.log"
-          mkdir -p "$DIAG_DIR"
-          : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
-          echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
-          export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
-          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
-          set -Eeuo pipefail
-          LOG="$DIAG_DIR/18A-prebuild-compatibility-matrix.log"
-          REPORT="$GITHUB_WORKSPACE/compatibility-matrix.txt"
-          : > "$LOG"
-          : > "$REPORT"
-          exec > >(tee -a "$LOG") 2>&1
-
-          echo "========== PRE-BUILD COMPATIBILITY MATRIX ==========" | tee -a "$REPORT"
-          echo "Target: LG Velvet LM-G900 / G900EMW" | tee -a "$REPORT"
-          echo "Kernel: Linux 4.19.325-cip135" | tee -a "$REPORT"
-          echo "SukiSU-Ultra: v4.2.0" | tee -a "$REPORT"
-          echo "SUSFS: $SUSFS_VERSION @ $SUSFS_COMMIT" | tee -a "$REPORT"
-          echo "Clang: r547379" | tee -a "$REPORT"
-          echo
-
-          pass=0
-          warn=0
-          fail=0
-          check() {
-            if "$@"; then
-              pass=$((pass+1))
-            else
-              fail=$((fail+1))
-              echo "[FAIL] $*" | tee -a "$REPORT"
-            fi
-          }
-          note() {
-            warn=$((warn+1))
-            echo "[CHECK] $*" | tee -a "$REPORT"
-          }
-
-          echo "--- Required source/config symbols ---" | tee -a "$REPORT"
-          for req in CONFIG_KSU=y CONFIG_KPROBES=y CONFIG_KPROBE_EVENTS=y CONFIG_KALLSYMS=y CONFIG_KALLSYMS_ALL=y CONFIG_KPM=y CONFIG_LTO=y CONFIG_LTO_CLANG=y CONFIG_LTO_CLANG_FULL=y CONFIG_EXT4_FS=y CONFIG_OVERLAY_FS=y CONFIG_BBG=y; do
-            check grep -qx "$req" .config
-          done
-
-          if grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
-            echo "[FAIL] Full LTO exclusivity violated." | tee -a "$REPORT"
-            fail=$((fail+1))
-          else
-            echo "[PASS] Full Clang LTO exclusivity." | tee -a "$REPORT"
-            pass=$((pass+1))
-          fi
-
-          echo "--- SukiSU/SUSFS/Maphide/Baseband source consistency ---" | tee -a "$REPORT"
-          check grep -Rqs 'CONFIG_KSU_SUSFS' KernelSU fs include
-          check grep -Rqs 'susfs' fs include/linux KernelSU/kernel
-          check grep -q 'jit-zygote-cache' fs/proc/task_mmu.c
-          check grep -q 'framework-res.apk' fs/proc/task_mmu.c
-          check grep -RqsE 'baseband.?guard|CONFIG_BBG' Baseband-guard security
-
-          echo "--- Linux 4.19 API boundaries ---" | tee -a "$REPORT"
-          check grep -qF 'struct selinux_ss *ss;' security/selinux/include/security.h
-          check grep -qF 'struct policydb policydb;' security/selinux/ss/services.h
-          check grep -qF 'struct selinux_map map;' security/selinux/ss/services.h
-          check grep -qF 'struct sidtab *sidtab;' security/selinux/ss/services.h
-          check grep -qF 'int sidtab_init(struct sidtab *s);' security/selinux/ss/sidtab.h
-          check grep -qE 'sidtab_search|sidtab_context_to_sid' security/selinux/ss/sidtab.h
-          check grep -qF 'struct page *status_page;' security/selinux/ss/services.h
-          check grep -qF 'struct mutex status_lock;' security/selinux/ss/services.h
-
-          if grep -qF 'TWA_RESUME' drivers/kernelsu/supercall/supercall.c; then
-            note "TWA_RESUME remains before Setup 19 mutation; the existing exact bool-API fix must run."
-          else
-            echo "[PASS] No obsolete TWA_RESUME in dispatcher source." | tee -a "$REPORT"
-            pass=$((pass+1))
-          fi
-
-          if grep -qF 'flex_array_get_ptr(node_ptr, i)' drivers/kernelsu/selinux/sepolicy.c; then
-            note "Legacy flex_array hashtab iteration remains before Setup 19 mutation; the existing exact fix must run."
-          else
-            echo "[PASS] No obsolete flex_array hashtab iteration." | tee -a "$REPORT"
-            pass=$((pass+1))
-          fi
-
-          echo "--- SELinux-hide post-port invariant ---" | tee -a "$REPORT"
-          check grep -qF 'selinux_state.ss->status_lock' drivers/kernelsu/feature/selinux_hide.c
-          check grep -qF 'selinux_state.ss->status_page' drivers/kernelsu/feature/selinux_hide.c
-          check grep -qF 'fake_ss.map = selinux_state.ss->map;' drivers/kernelsu/feature/selinux_hide.c
-          check grep -qF 'fake_ss.sidtab = selinux_state.ss->sidtab;' drivers/kernelsu/feature/selinux_hide.c
-          check grep -qF 'fake_ss.latest_granting = selinux_state.ss->latest_granting;' drivers/kernelsu/feature/selinux_hide.c
-          if grep -qE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=' drivers/kernelsu/feature/selinux_hide.c; then
-            echo "[FAIL] Modern direct SELinux state fields remain after the 4.19 port." | tee -a "$REPORT"
-            fail=$((fail+1))
-          else
-            echo "[PASS] No obsolete direct SELinux state fields remain." | tee -a "$REPORT"
-            pass=$((pass+1))
-          fi
-
-          echo "--- Hardware source-presence sanity ---" | tee -a "$REPORT"
-          for p in drivers/input drivers/vibrator drivers/haptics drivers/soc/qcom sound techpack/audio techpack/voice techpack/data drivers/net/wireless; do
-            if [ -d "$p" ]; then
-              echo "[PASS] $p" | tee -a "$REPORT"
-              pass=$((pass+1))
-            else
-              echo "[WARN] source directory absent: $p" | tee -a "$REPORT"
-              warn=$((warn+1))
-            fi
-          done
-
-          echo | tee -a "$REPORT"
-          echo "SUMMARY: PASS=$pass CHECKS=$warn FAIL=$fail" | tee -a "$REPORT"
-          if [ "$fail" -ne 0 ]; then
-            echo "[FAIL] Pre-build compatibility matrix found a blocking mismatch." | tee -a "$REPORT"
-            exit 1
-          fi
-          echo "[PASS] Pre-build compatibility matrix completed before kernel compilation." | tee -a "$REPORT"
-          echo "[PASS] This step performs no source mutation." | tee -a "$REPORT"
-          echo "====================================================" | tee -a "$REPORT"
-
-      - name: Setup 26 - HID QCACLD Compatibility
-        shell: bash
-        run: |
-          SETUP_NO="26"
-          SETUP_NAME="Setup 26 - HID QCACLD Compatibility"
-          SETUP_LOG="$DIAG_DIR/26-setup-26-hid-qcacld-compatibility-LIVE.log"
-          mkdir -p "$DIAG_DIR"
-          : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
-          echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
-          export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
-          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
-          set -Eeuo pipefail
-          LOG="$DIAG_DIR/12A-hid-argmax-compatibility.log"
-          : > "$LOG"
-          exec > >(tee -a "$LOG") 2>&1
-          echo "========== PRE-BUILD HID + QCACLD ARGUMENT-LENGTH AUDIT =========="
-          echo "[RESEARCH] Actual LG lineage-23.2 source has hid_descriptor.rpt_desc and two bind-time descriptor initialization sites: CONFIG_LGE_USB_GADGET charge path plus normal path. Both must use rpt_desc; no third synthetic assignment is allowed."
-          echo "[RESEARCH] Upstream HID gadget uses rpt_desc in the HID descriptor and GET_DESCRIPTOR path; this audit will not invent a third assignment site."
-          echo "[LOCKED] Setup 10A is not modified by this step."
-          echo "[LOCKED] Setup 19 SELinux/SukiSU source boundaries are not modified by this step."
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          # ===============================================================
-          # USB HID: source-derived compatibility audit/fix.
-          #
-          # The previous V82 guard was too strict: it assumed every 4.19
-          # f_hid.c tree must contain a hidg_desc.rpt_desc assignment inside
-          # hidg_bind().  The actual checked-out LG tree has the report
-          # descriptor assignments in hidg_setup() on the GET_DESCRIPTOR
-          # path, while hidg_bind() does not perform that mutation.
-          #
-          # Upstream Linux contains both historical forms: older trees used
-          # desc[0], while newer trees expose the named rpt_desc member.
-          # Therefore this step validates the actual checked-out function
-          # layout instead of imposing a non-existent "bind pair".
-          #
-          # No regex is used for the HID source transformation.  This
-          # prevents another Python regex-parser failure from becoming a
-          # build blocker.
-          # ===============================================================
-          hid_h = Path('include/linux/hid.h')
-          f_hid = Path('drivers/usb/gadget/function/f_hid.c')
-          if not hid_h.is_file() or not f_hid.is_file():
-              raise SystemExit('[FAIL] Required HID source/header is missing.')
-
-          hh = hid_h.read_text(errors='replace')
-          fh = f_hid.read_text(errors='replace')
-
-          # Find the actual struct without regex.  The source has a single
-          # struct hid_descriptor definition in this kernel tree.
-          marker = 'struct hid_descriptor {'
-          pos = hh.find(marker)
-          if pos < 0:
-              raise SystemExit('[FAIL] Could not locate struct hid_descriptor in include/linux/hid.h.')
-          close = hh.find('};', pos)
-          if close < 0:
-              raise SystemExit('[FAIL] Could not determine struct hid_descriptor boundary.')
-          body = hh[pos:close + 2]
-
-          has_rpt = 'rpt_desc' in body
-          has_legacy_desc = 'desc[1]' in body or 'desc[]' in body
-          print(f'[EVIDENCE] hid_descriptor: rpt_desc={has_rpt} legacy_desc_array={has_legacy_desc}')
-
-          if not has_rpt:
-              raise SystemExit('[FAIL] Checked-out HID header has no rpt_desc member; refusing speculative HID mutation.')
-
-          old_copy_type = 'hidg_desc_copy.desc[0].bDescriptorType'
-          old_copy_len = 'hidg_desc_copy.desc[0].wDescriptorLength'
-          old_bind_type = 'hidg_desc.desc[0].bDescriptorType'
-          old_bind_len = 'hidg_desc.desc[0].wDescriptorLength'
-
-          new_copy_type = 'hidg_desc_copy.rpt_desc.bDescriptorType'
-          new_copy_len = 'hidg_desc_copy.rpt_desc.wDescriptorLength'
-          new_bind_type = 'hidg_desc.rpt_desc.bDescriptorType'
-          new_bind_len = 'hidg_desc.rpt_desc.wDescriptorLength'
-
-          old_count = sum(fh.count(x) for x in (
-              old_copy_type, old_copy_len, old_bind_type, old_bind_len
-          ))
-          print(f'[AUDIT] f_hid.c obsolete desc[0] accesses={old_count}')
-
-          if old_count:
-              fixed = fh.replace(old_copy_type, new_copy_type)
-              fixed = fixed.replace(old_copy_len, new_copy_len)
-              fixed = fixed.replace(old_bind_type, new_bind_type)
-              fixed = fixed.replace(old_bind_len, new_bind_len)
-              if fixed == fh:
-                  raise SystemExit('[FAIL] Legacy HID accesses were detected but exact source replacement made no change.')
-              f_hid.write_text(fixed)
-              fh = fixed
-              print('[FIXED] Replaced only the known obsolete desc[0] HID descriptor member accesses.')
-
-          if any(x in fh for x in (
-              old_copy_type, old_copy_len, old_bind_type, old_bind_len
-          )):
-              raise SystemExit('[FAIL] Obsolete HID desc[0] accesses remain after exact replacement.')
-
-          # Extract a function body by brace counting, without regex.
-          def function_body(text, signature):
-              p = text.find(signature)
-              if p < 0:
-                  return ''
-              brace = text.find('{', p)
-              if brace < 0:
-                  return ''
-              depth = 0
-              for i in range(brace, len(text)):
-                  c = text[i]
-                  if c == '{':
-                      depth += 1
-                  elif c == '}':
-                      depth -= 1
-                      if depth == 0:
-                          return text[brace:i + 1]
-              return ''
-
-          setup = function_body(fh, 'static int hidg_setup(')
-          bind = function_body(fh, 'static int hidg_bind(')
-
-          if not setup:
-              raise SystemExit('[FAIL] Could not locate hidg_setup(); refusing HID mutation/audit.')
-          if not bind:
-              print('[INFO] hidg_bind() not present in this source form; bind-time HID pair is not applicable.')
-
-          # The required report descriptor assignments belong to the
-          # HID_DT_HID GET_DESCRIPTOR path.  Require exactly one complete
-          # pair there.  This is the invariant that is actually needed by
-          # the current rpt_desc layout.
-          get_case = function_body(setup, 'case HID_DT_HID:')
-          if not get_case:
-              raise SystemExit('[FAIL] Could not locate HID_DT_HID GET_DESCRIPTOR case in hidg_setup().')
-
-          copy_type_n = get_case.count(new_copy_type)
-          copy_len_n = get_case.count(new_copy_len)
-          print(f'[AUDIT] hidg_setup HID_DT_HID: type_assignments={copy_type_n} length_assignments={copy_len_n}')
-          if copy_type_n != 1 or copy_len_n != 1:
-              raise SystemExit('[FAIL] HID GET_DESCRIPTOR path does not contain exactly one rpt_desc assignment pair.')
-
-          # A bind-time pair is optional and source-layout dependent.  If
-          # this actual tree has one, it must be complete; if it has none,
-          # that is valid and must not be manufactured by the workflow.
-          if bind:
-              bind_type_n = bind.count(new_bind_type)
-              bind_len_n = bind.count(new_bind_len)
-              old_bind_n = bind.count(old_bind_type) + bind.count(old_bind_len)
-              print(f'[AUDIT] hidg_bind(): rpt_desc type={bind_type_n} length={bind_len_n}; legacy={old_bind_n}')
-              # The LG kernel has two legitimate bind-time descriptor
-              # initialization sites: one in the CONFIG_LGE_USB_GADGET
-              # charge path and one in the normal path.  Therefore the
-              # correct invariant is not "0 or 1 pair"; it is that every
-              # bind-time type assignment has exactly one matching length
-              # assignment.  The V82 check incorrectly rejected the valid
-              # 2/2 layout and caused the repeated 12A failure.
-              if bind_type_n != bind_len_n:
-                  raise SystemExit(
-                      '[FAIL] hidg_bind() has mismatched rpt_desc type/length assignment counts.'
-                  )
-              if old_bind_n:
-                  raise SystemExit('[FAIL] Legacy bind-time HID descriptor access remains after exact replacement.')
-              # The actual LG 4.19 source has two legitimate bind-time pairs:
-              # one in the charge path and one in the normal path.
-              if bind_type_n != 2 or bind_len_n != 2:
-                  raise SystemExit(
-                      f'[FAIL] Expected the actual LG bind layout to contain 2 complete rpt_desc pairs; got {bind_type_n}/{bind_len_n}.'
-                  )
-              print('[PASS] Actual LG hidg_bind() layout contains exactly 2 complete rpt_desc pairs (charge + normal).')
-          print('[PASS] HID source/header compatibility boundary verified against actual source layout.')
-
-          # ===============================================================
-          # QCACLD argument-length: source-derived Kbuild fix.
-          #
-          # The V80/V82 diagnostics identified E2BIG on Qualcomm qcacld-3.0
-          # compile commands.  Keep every c_flag and change only the command
-          # transport for qcacld-3.0 C objects by using a Clang response file.
-          # Non-qcacld compilation remains unchanged.
-          # ===============================================================
-          mb = Path('scripts/Makefile.build')
-          if not mb.is_file():
-              raise SystemExit('[FAIL] scripts/Makefile.build is missing.')
-          ms = mb.read_text(errors='replace')
-
-          old_nomod = 'cmd_cc_o_c = $(CC) $(c_flags) -c -o $@ $<'
-          old_mod = 'cmd_cc_o_c = $(CC) $(c_flags) -c -o $(@D)/.tmp_$(@F) $<'
-          count_nomod = ms.count(old_nomod)
-          count_mod = ms.count(old_mod)
-          print(f'[AUDIT] standard cmd_cc_o_c definitions={count_nomod}, MODVERSIONS definition={count_mod}')
-
-          if count_nomod != 1 or count_mod != 1:
-              # It may already have been converted by a previous invocation
-              # in the same checkout.  Recognize the exact installed rules
-              # rather than applying a second mutation.
-              installed_nomod = '$(if $(findstring /qcacld-3.0/,$<),$(file >$@.kbuild.rsp,$(c_flags))$(CC) @$@.kbuild.rsp -c -o $@ $<,$(CC) $(c_flags) -c -o $@ $<)'
-              installed_mod = '$(if $(findstring /qcacld-3.0/,$<),$(file >$(@D)/.$(@F).kbuild.rsp,$(c_flags))$(CC) @$(@D)/.$(@F).kbuild.rsp -c -o $(@D)/.tmp_$(@F) $<,$(CC) $(c_flags) -c -o $(@D)/.tmp_$(@F) $<)'
-              if installed_nomod in ms and installed_mod in ms:
-                  print('[PASS] Exact qcacld-3.0 response-file rules are already installed; no duplicate mutation.')
-              else:
-                  raise SystemExit('[FAIL] Unexpected 4.19 cmd_cc_o_c layout; refusing speculative Makefile.build rewrite.')
+          if old_block in text:
+              text = text.replace(old_block, new_block, 1)
+              file.write_text(text)
+              print("[FIXED] Removed erroneous #else branch for ksu_hashtab_for_each on 4.19.")
           else:
-              new_nomod = 'cmd_cc_o_c = $(if $(findstring /qcacld-3.0/,$<),$(file >$@.kbuild.rsp,$(c_flags))$(CC) @$@.kbuild.rsp -c -o $@ $<,$(CC) $(c_flags) -c -o $@ $<)'
-              new_mod = 'cmd_cc_o_c = $(if $(findstring /qcacld-3.0/,$<),$(file >$(@D)/.$(@F).kbuild.rsp,$(c_flags))$(CC) @$(@D)/.$(@F).kbuild.rsp -c -o $(@D)/.tmp_$(@F) $<,$(CC) $(c_flags) -c -o $(@D)/.tmp_$(@F) $<)'
-              ms2 = ms.replace(old_nomod, new_nomod, 1).replace(old_mod, new_mod, 1)
-              if new_nomod not in ms2 or new_mod not in ms2:
-                  raise SystemExit('[FAIL] Response-file kbuild rules were not installed exactly.')
-              mb.write_text(ms2)
-              print('[FIXED] qcacld-3.0 C compilation now transports complete c_flags through Clang response files.')
-              print('[PASS] Non-qcacld compilation path remains byte-for-byte unchanged in cmd_cc_o_c.')
+              # Maybe the file already has the correct form? Let's check if the faulty line still exists.
+              if "ksu_hash_for_each(htab->htable, htab->size, cur)" in text:
+                  print("[ERROR] The faulty definition is still present but the exact block was not found. Please manually edit sepolicy.c.")
+                  sys.exit(1)
+              else:
+                  print("[PASS] The file seems already fixed or does not contain the faulty definition.")
+          EOF
 
-          print('[PASS] All original qcacld compiler flags are preserved; no WLAN feature/config flag was removed.')
-          print('===============================================================')
-          PY
-
-          echo "[PASS] Setup 12A completed; Setup 10A and Setup 19 remain locked."
-          echo "[PASS] HID audit now follows the actual 4.19 source layout; no synthetic bind pair is required."
+          echo "[PASS] sepolicy.c patched successfully."
 
       - name: Setup 27 - Cumulative 4.19 Hotspot Compile Gate
         shell: bash
@@ -2754,6 +2153,7 @@ jobs:
           echo "[PASS] V1: targeted cumulative hotspot objects compiled."
           echo "[PASS] V1: Setup 27 applied no fix and performed no source mutation."
           echo "=============================================================="
+
       - name: Setup 28 - Full Kernel Build HARD GATE
         shell: bash
         run: |
@@ -3540,13 +2940,13 @@ jobs:
             tar -czf diagnostic-artifact/all-ci-logs.tar.gz \
               "$DIAG_DIR" diagnostic-artifact/runner-state kernel-build-full.log 2>/dev/null || true
           fi
-          rm -f diagnostic-artifact/V10-ALL-LOG-KARNAL-BUILD.zip
+          rm -f diagnostic-artifact/V4-ALL-LOG-KARNAL-BUILD.zip
           command -v zip >/dev/null 2>&1 || {
-            echo "[FAIL] zip utility is required to create V10-ALL-LOG-KARNAL-BUILD.zip."
+            echo "[FAIL] zip utility is required to create V4-ALL-LOG-KARNAL-BUILD.zip."
             exit 1
           }
-          ( cd diagnostic-artifact && zip -qr "V10-ALL-LOG-KARNAL-BUILD.zip" ci-logs ALL-SETUP-STATUS-V4.log runner-state kernel-build-full.log final.config git-status.txt kernel-head.txt sukisu-integration-note.txt )
-          test -s diagnostic-artifact/V10-ALL-LOG-KARNAL-BUILD.zip
+          ( cd diagnostic-artifact && zip -qr "V4-ALL-LOG-KARNAL-BUILD.zip" ci-logs ALL-SETUP-STATUS-V4.log runner-state kernel-build-full.log final.config git-status.txt kernel-head.txt sukisu-integration-note.txt )
+          test -s diagnostic-artifact/V4-ALL-LOG-KARNAL-BUILD.zip
           echo "[PASS] V4 consolidated all-setup log ZIP created."
           {
             echo "GitHub Run: $GITHUB_RUN_ID"
@@ -3567,7 +2967,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V10-EMERGENCY-Diagnostics
+          name: LG-Velvet-G900-V4-EMERGENCY-Diagnostics
           path: diagnostic-artifact
           if-no-files-found: warn
           retention-days: 14
@@ -3577,8 +2977,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V10-ALL-LOG-KARNAL-BUILD
-          path: diagnostic-artifact/V10-ALL-LOG-KARNAL-BUILD.zip
+          name: V4-ALL-LOG-KARNAL-BUILD
+          path: diagnostic-artifact/V4-ALL-LOG-KARNAL-BUILD.zip
           if-no-files-found: warn
           retention-days: 14
           compression-level: 6
@@ -3587,7 +2987,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V10-SukiSU-4.2.0-Kernel-Only
+          name: LG-Velvet-G900-V4-SukiSU-4.2.0-Kernel-Only
           path: artifacts
           if-no-files-found: error
           retention-days: 14
@@ -3597,7 +2997,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: LG-Velvet-G900-V10-SukiSU-4.2.0-Diagnostics
+          name: LG-Velvet-G900-V4-SukiSU-4.2.0-Diagnostics
           path: diagnostic-artifact
           if-no-files-found: warn
           retention-days: 14
