@@ -29,6 +29,12 @@ permissions:
 # before Setup 27, and removes the late duplicate from Setup 28.
 #
 # This is an ordering/ownership correction, not a new API guess.
+# V12 ROOT-CAUSE / SOURCE-CONTRACT NOTE
+# V11 reached Setup 27 with successful KernelSU compilation. The failure was
+# the validator requiring drivers/kernelsu/kernelsu.o even though the actual
+# Kbuild output was drivers/kernelsu/built-in.a. V12 verifies the artifact
+# actually produced by Kbuild and inspects required members with llvm-ar.
+# No guessed output filename and no feature removal.
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -2761,7 +2767,7 @@ jobs:
           : > "$LOG"
           exec > >(tee -a "$LOG") 2>&1
 
-          echo "========== V11 CUMULATIVE 4.19 HOTSPOT COMPILE GATE =========="
+          echo "========== V12 CUMULATIVE 4.19 HOTSPOT COMPILE GATE =========="
           echo "[RULE] No feature removal. No compiler-error skipping."
           echo "[RULE] Setup 27 is verification/compile-only. It performs NO source mutation."
           echo "[RULE] All compatibility fixes must already exist in the cumulative tree."
@@ -2862,7 +2868,7 @@ jobs:
               print("[PASS] V10: actual policydb.h requires the filename_trans_key branch and both 5.8/5.9 API paths are present.")
           else:
               raise SystemExit("[FAIL] V10: unrecognized filename transition representation in actual policydb.h.")
-          print("[PASS] V11: Setup 27 uses the same source-derived filename-transition contract as Setup 17.")
+          print("[PASS] V12: Setup 27 uses the same source-derived filename-transition contract as Setup 17.")
           names = ["remove_avtab_node", "add_filename_trans", "add_type", "add_typeattribute_raw"]
           counts = {}
           for name in names:
@@ -2914,8 +2920,28 @@ jobs:
 
           make V=1 "$KSU_BUILD_DIR/"
           test -s "$SEPOLICY_O"
-          test -s "$KSU_COMPOSITE_O"
-          echo "[PASS] V10: Linux 4.19 native directory target compiled kernelsu.o and its sepolicy.o member."
+
+          # V12 KBUILD CONTRACT:
+          # The actual V11 cumulative run compiled KernelSU successfully and
+          # Kbuild produced drivers/kernelsu/built-in.a. It did not produce a
+          # standalone drivers/kernelsu/kernelsu.o. Do not invent an output
+          # filename: verify the real archive and its required members.
+          KSU_ARCHIVE="$KSU_BUILD_DIR/built-in.a"
+          test -s "$KSU_ARCHIVE"
+
+          llvm-ar t "$KSU_ARCHIVE" > "$RUNNER_TEMP/12B-kernelsu-archive-members.log"
+          for required_member in             kpm/compact.o             kpm/kpm.o             core/init.o             selinux/selinux.o             selinux/rules.o             selinux/sepolicy.o             supercall/dispatch.o             supercall/perm.o             supercall/supercall.o             feature/selinux_hide.o             feature/cpu_spoof.o
+          do
+            grep -Fx "$required_member" "$RUNNER_TEMP/12B-kernelsu-archive-members.log" >/dev/null || {
+              echo "[FAIL] V12: required KernelSU archive member is missing: $required_member"
+              cat "$RUNNER_TEMP/12B-kernelsu-archive-members.log"
+              exit 1
+            }
+          done
+
+          echo "[PASS] V12: actual Kbuild output is drivers/kernelsu/built-in.a."
+          echo "[PASS] V12: required KernelSU objects are present in built-in.a."
+          echo "[PASS] V12: no standalone kernelsu.o is assumed."
 
           make -j2 V=1 drivers/usb/gadget/function/f_hid.o
           test -s drivers/kernelsu/feature/selinux_hide.o
@@ -2925,7 +2951,7 @@ jobs:
           cp -f "$SEPOLICY_C" "$RUNNER_TEMP/12B-sepolicy.c.locked"
 
           echo "[PASS] V10: targeted cumulative hotspot objects compiled."
-          echo "[PASS] V11: Setup 27 applied no fix and performed no source mutation."
+          echo "[PASS] V12: Setup 27 applied no fix and performed no source mutation."
           echo "=============================================================="
       - name: Setup 28 - Full Kernel Build HARD GATE
         shell: bash
@@ -3670,7 +3696,7 @@ jobs:
 
           {
             echo "========== V10 ALL SETUP STATUS =========="
-            echo "Workflow version: V11"
+            echo "Workflow version: V12"
             echo "Previous failed workflow: V8"
             echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 ..."
             echo "Setup numbers are independent from workflow version numbers."
@@ -3857,7 +3883,7 @@ jobs:
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
           # V10 Diagnostic Package Manifest
 
-          Workflow version: V11
+          Workflow version: V12
           Previous failed version: V9
           Diagnostic artifact policy: upload the directory directly; GitHub produces the single downloadable ZIP. No explicit ZIP is created inside the diagnostic directory.
           Current workflow: V10-CURRENT-WORKFLOW.yml
