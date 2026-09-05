@@ -35,6 +35,11 @@ permissions:
 # Kbuild output was drivers/kernelsu/built-in.a. V12 verifies the artifact
 # actually produced by Kbuild and inspects required members with llvm-ar.
 # No guessed output filename and no feature removal.
+# V13 ROOT-CAUSE NOTE
+# V12 runner evidence showed Kbuild produced drivers/kernelsu/built-in.a and
+# llvm-ar listed complete relative member paths beginning with drivers/kernelsu/.
+# V12's verifier searched for path-stripped names and falsely reported a
+# missing member. V13 matches the exact emitted paths. Verification only.
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -345,7 +350,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V10-LG-Velvet-G900-EARLY-CIP135-FAILURE-Diagnostics
+          name: V13-LG-Velvet-G900-EARLY-CIP135-FAILURE-Diagnostics
           path: |
             ci-logs/00-early-init.log
             ci-logs/02-cip135-update.log
@@ -2921,27 +2926,40 @@ jobs:
           make V=1 "$KSU_BUILD_DIR/"
           test -s "$SEPOLICY_O"
 
-          # V12 KBUILD CONTRACT:
-          # The actual V11 cumulative run compiled KernelSU successfully and
-          # Kbuild produced drivers/kernelsu/built-in.a. It did not produce a
-          # standalone drivers/kernelsu/kernelsu.o. Do not invent an output
-          # filename: verify the real archive and its required members.
+          # V13 KBUILD CONTRACT:
+          # The actual V12 runner proved that Kbuild creates
+          # drivers/kernelsu/built-in.a and that llvm-ar lists members using
+          # their complete relative paths from the kernel source root.
+          # This is a verification-only correction: match the exact names
+          # actually emitted by Kbuild; do not invent a shortened path.
           KSU_ARCHIVE="$KSU_BUILD_DIR/built-in.a"
           test -s "$KSU_ARCHIVE"
 
           llvm-ar t "$KSU_ARCHIVE" > "$RUNNER_TEMP/12B-kernelsu-archive-members.log"
-          for required_member in             kpm/compact.o             kpm/kpm.o             core/init.o             selinux/selinux.o             selinux/rules.o             selinux/sepolicy.o             supercall/dispatch.o             supercall/perm.o             supercall/supercall.o             feature/selinux_hide.o             feature/cpu_spoof.o
+          for required_member in \
+            drivers/kernelsu/kpm/compact.o \
+            drivers/kernelsu/kpm/kpm.o \
+            drivers/kernelsu/core/init.o \
+            drivers/kernelsu/selinux/selinux.o \
+            drivers/kernelsu/selinux/rules.o \
+            drivers/kernelsu/selinux/sepolicy.o \
+            drivers/kernelsu/supercall/dispatch.o \
+            drivers/kernelsu/supercall/perm.o \
+            drivers/kernelsu/supercall/supercall.o \
+            drivers/kernelsu/feature/selinux_hide.o \
+            drivers/kernelsu/feature/cpu_spoof.o
           do
             grep -Fx "$required_member" "$RUNNER_TEMP/12B-kernelsu-archive-members.log" >/dev/null || {
-              echo "[FAIL] V12: required KernelSU archive member is missing: $required_member"
+              echo "[FAIL] V13: required KernelSU archive member is missing: $required_member"
               cat "$RUNNER_TEMP/12B-kernelsu-archive-members.log"
               exit 1
             }
           done
 
-          echo "[PASS] V12: actual Kbuild output is drivers/kernelsu/built-in.a."
-          echo "[PASS] V12: required KernelSU objects are present in built-in.a."
-          echo "[PASS] V12: no standalone kernelsu.o is assumed."
+          echo "[PASS] V13: actual Kbuild output is drivers/kernelsu/built-in.a."
+          echo "[PASS] V13: required KernelSU objects are present in built-in.a."
+          echo "[PASS] V13: archive member paths match Kbuild's actual emitted paths."
+          echo "[PASS] V13: no standalone kernelsu.o is assumed."
 
           make -j2 V=1 drivers/usb/gadget/function/f_hid.o
           test -s drivers/kernelsu/feature/selinux_hide.o
@@ -3566,16 +3584,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V10-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V13-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V10-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V13-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V10-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V13-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3636,7 +3654,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
-          mkdir -p diagnostic-artifact/runner-state diagnostic-artifact/ci-logs
+          mkdir -p diagnostic-artifact/runner-state diagnostic-artifact/ci-logs \
+                   diagnostic-artifact/project-history/workflows
 
           {
             echo "========== UNIVERSAL FAILURE SNAPSHOT =========="
@@ -3661,7 +3680,8 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Shell: ${BASH_VERSION:-unknown}"
+            echo "Workflow version: V13"
+            echo "Previous workflow: V12"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
             echo "workflow_ref=$GITHUB_WORKFLOW_REF"
@@ -3677,28 +3697,25 @@ jobs:
           git status --short > diagnostic-artifact/git-status.txt 2>&1 || true
           git rev-parse HEAD > diagnostic-artifact/kernel-head.txt 2>&1 || true
 
-          if [ -s "$RUNNER_TEMP/v10-workflow-source/V10-CURRENT-WORKFLOW.yml" ]; then
-            cp -f "$RUNNER_TEMP/v10-workflow-source/V10-CURRENT-WORKFLOW.yml" diagnostic-artifact/V10-CURRENT-WORKFLOW.yml
-            echo "[PASS] Running V10 workflow source captured before checkout."
+          mkdir -p "$RUNNER_TEMP/v13-workflow-source"
+          WORKFLOW_REF_PART="${GITHUB_WORKFLOW_REF#${GITHUB_REPOSITORY}/}"
+          WORKFLOW_PATH="${WORKFLOW_REF_PART%@*}"
+          RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
+          if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
+            -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
+            > "$RUNNER_TEMP/v13-workflow-source/V13-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v13-workflow-source/V13-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V13-CURRENT-WORKFLOW.yml
           else
-            WORKFLOW_REF_PART="${GITHUB_WORKFLOW_REF#${GITHUB_REPOSITORY}/}"
-            WORKFLOW_PATH="${WORKFLOW_REF_PART%@*}"
-            RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
-            mkdir -p "$RUNNER_TEMP/v10-workflow-source"
-            if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" -H "Accept: application/vnd.github.raw+json" "$RAW_URL" > "$RUNNER_TEMP/v10-workflow-source/V10-CURRENT-WORKFLOW.yml"; then
-              cp -f "$RUNNER_TEMP/v10-workflow-source/V10-CURRENT-WORKFLOW.yml" diagnostic-artifact/V10-CURRENT-WORKFLOW.yml
-              echo "[PASS] Workflow source captured by diagnostic retry."
-            else
-              echo "[FAIL] Unable to capture the running V10 workflow source." > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
-              echo "workflow_ref=$GITHUB_WORKFLOW_REF" >> diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
-            fi
+            echo "[FAIL] Unable to capture the running V13 workflow source." \
+              > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
           fi
 
           {
-            echo "========== V10 ALL SETUP STATUS =========="
-            echo "Workflow version: V12"
-            echo "Previous failed workflow: V8"
-            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 ..."
+            echo "========== V13 ALL SETUP STATUS =========="
+            echo "Workflow version: V13"
+            echo "Previous workflow: V12"
+            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13"
             echo "Setup numbers are independent from workflow version numbers."
             date -u
             for f in "$DIAG_DIR"/*LIVE.log; do
@@ -3710,226 +3727,295 @@ jobs:
               else status="EXECUTED-NO-STATUS-MARKER"; fi
               printf '%-75s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/V10-ALL-SETUP-STATUS.log
+          } | tee diagnostic-artifact/V13-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V10-ERROR-AND-FIX-HISTORY.md <<'REPORT'
-          # LG Velvet LM-G900 / G900EMW Kernel Project — Full Error/Fix History
+          cat > diagnostic-artifact/V13-CURRENT-STATUS.md <<'REPORT'
+          # V13 Current Status
 
-          ## Locked project rule
-          V4 is the preserved feature baseline. No verified feature, setting, Kconfig behavior, SukiSU/KPM/SUSFS/Maphide/JIT-Zygote/Baseband-Guard/LTO integration, scheduler behavior, or hardware compatibility requirement is to be removed merely to solve an error. Only evidence-backed error fixes and genuine duplicate/redundant/broken CI cleanup are allowed.
+          ## V12 actual result
+          Setup 17 passed. Setup 27 compiled KernelSU and created:
+            drivers/kernelsu/built-in.a
 
-          ## Target
-          - Device: LG Velvet global LM-G900 / G900EMW
-          - Kernel: Linux 4.19.325-cip135
-          - Lineage branch: lineage-23.2
-          - Android target: Android 16-oriented kernel workflow
-          - SukiSU-Ultra: 4.2.0
-          - KPM, SUSFS kernel-4.19, Baseband-Guard v1.1, Maphide/JIT-Zygote, Full LTO and previously verified features remain preserved.
+          `llvm-ar t` showed complete member paths such as:
+            drivers/kernelsu/kpm/compact.o
+            drivers/kernelsu/core/init.o
+            drivers/kernelsu/selinux/sepolicy.o
 
-          ## V4 — original SELinux hashtab failure
-          ### Error
-          `struct hashtab_node **` was being passed through the flex_array iterator path.
+          V12's verifier incorrectly searched for path-stripped names such as
+          `kpm/compact.o`. Therefore V12 reported an existing archive member
+          as missing. This was a verifier-path bug, not a compiler failure.
 
-          ### Root cause
-          The actual LG 4.19 tree has SELinux `struct hashtab { struct hashtab_node **htable; ... }`, while its AVTAB uses `struct flex_array *htable`.
+          ## V13 correction
+          Setup 27 remains read-only and now checks the exact archive member
+          names emitted by Kbuild/llvm-ar.
 
-          ### Fix
-          Separate the two traversals:
-          - SELinux hashtab: native `htable[i]`
-          - AVTAB: `flex_array_get_ptr(...)`
+          ## Artifact identity
+          Current diagnostics artifact:
+            V13-LG-Velvet-G900-Diagnostics
 
-          No warning suppression or speculative compiler flag was used.
+          The previous V10 filename must not be reused for a V13 run.
 
-          ### Status
-          V4 remained the preserved feature baseline; later revisions only corrected compatibility/CI machinery.
-
-          ## V5 — duplicate/redundant CI cleanup
-          ### Changes
-          - Canonicalized the hashtab compatibility adapter.
-          - Removed redundant compile/copy operations.
-          - Cleaned duplicate diagnostic packaging.
-          - Strengthened Setup 27 checks.
-
-          ### Status
-          Intermediate revision; actual runner verification was still required.
-
-          ## V6 — false preflight, then real compiler failure
-          ### First failure
-          Setup 17 rejected a valid declaration because it searched for the exact text `struct filename_trans_key key;` while the generated declaration used a combined declaration.
-
-          ### Real compiler failure after that
-          The filename-transition compatibility code used newer SELinux `filename_trans_key`/`stypes`/`next`/new hashtab API assumptions against the actual LG 4.19 tree.
-
-          ### Research result
-          The actual LG 4.19 `policydb.h` defines:
-          - `struct filename_trans { stype, ttype, tclass, name }`
-          - `struct filename_trans_datum { otype }`
-          - `struct hashtab *filename_trans`
-
-          Its `hashtab.h` defines `struct hashtab_node **htable` and a 3-argument `hashtab_insert()`.
-
-          ### Status
-          V6 did not complete a successful build.
-
-          ## V7 — source transformation and diagnostics packaging failures
-          ### Setup 17 failure
-          The repair script produced two textual `add_filename_trans()` definitions inside an `#if/#else`. The compiler would select one, but the hard source-integrity audit counted textual definitions and rejected the file.
-
-          ### Diagnostic failure
-          The diagnostic collector searched the checked-out kernel workspace for `.github/workflows`. The kernel checkout replaces that workspace content, so the workflow source was unavailable there.
-
-          ### Fix direction
-          - Keep exactly one `add_filename_trans()` definition.
-          - Capture the running workflow before kernel checkout.
-          - Include the captured workflow in diagnostics.
-
-          ### Status
-          V7 was not build-verified.
-
-          ## V8 — Setup 17 script defect
-          ### Actual failure
-          The runner reached Setup 17 but the generated Python repair script crashed with:
-          `NameError: name 'add_filename_body' is not defined`
-
-          ### Root cause
-          The repair script contained an ordering/source-transformation defect while trying to make the filename-transition counter conditional.
-
-          ### Status
-          V8 never reached C compilation because Setup 17 failed first.
-
-          ## V9 — Setup 27 contract mismatch
-          ### Actual failure
-          Setup 27 failed with:
-          `V9: 4.19 filename-transition compatibility branch is missing.`
-
-          ### Root cause
-          This was a self-created conflict between Setup 17 and Setup 27:
-          - Setup 17 injected the legacy filename-transition branch using `< KERNEL_VERSION(5, 9, 0)`.
-          - Setup 27 independently demanded the text `< KERNEL_VERSION(5, 8, 0)`.
-          - Setup 17 also performed a post-fix check for newer `filename_trans_key` text.
-          - Setup 27 was therefore validating a different compatibility contract than Setup 17 had installed.
-
-          This is why fixing one setup appeared to make the other fail. They were not sharing one canonical source-derived contract.
-
-          ## V10 — source-derived single compatibility contract
-          ### Upstream/source research
-          The exact kernel sources were re-checked:
-          - LG `lineage-23.2` `security/selinux/ss/policydb.h` uses legacy `struct filename_trans` with `stype`, `ttype`, `tclass`, and `name`; `filename_trans` is a `struct hashtab *`. The same tree's `hashtab.h` uses `struct hashtab_node **htable` and a 3-argument `hashtab_insert()`.
-          - Linux v5.7 still has the legacy `struct filename_trans`.
-          - Linux v5.8 introduces `struct filename_trans_key`/`filename_trans_datum` with source-type bitmaps while retaining the 3-argument hashtab insertion.
-          - Linux v5.9 changes the hashtab API to key-parameter-aware operations.
-          - Therefore the correct filename-transition compatibility boundaries are:
-            * `< 5.8`: legacy `struct filename_trans`
-            * `>= 5.8`: `struct filename_trans_key`
-            * `>= 5.9`: newer key-parameter hashtab operations
-          - The LG 4.19 target is unambiguously in the legacy `< 5.8` branch.
-
-          ### V10 fix
-          1. Setup 17 now installs the filename-transition split at the source-derived `< 5.8` boundary.
-          2. The `>= 5.8` branch is retained for future compatibility, with the 5.8 three-argument and 5.9+ key-parameter hashtab calls separated correctly.
-          3. Setup 17's post-fix audit derives the expected representation from the actual checked-out `policydb.h` and `hashtab.h`.
-          4. Setup 27 uses the exact same source-derived contract instead of its own hard-coded API spelling.
-          5. Setup 27 remains verification/compile-only and performs no source mutation.
-          6. The old V4 hashtab/AVTAB distinction remains unchanged.
-          7. The canonical hashtab adapter remains exactly one conditional block.
-          8. Exactly one `add_filename_trans()` definition remains.
-          9. No feature is removed or disabled.
-
-          ### Why this eliminates the Setup 17 ↔ Setup 27 loop
-          Setup 17 is now the only mutation stage. Setup 27 reads the same actual headers and validates the resulting source against that same contract. Neither setup invents a separate version threshold or API spelling. If the LG source representation changes, both stages will detect that same change instead of disagreeing.
-
-          ## Verification policy
-          Static/source audits are not claimed as build success. The final proof is an actual GitHub Actions compile/build result. V10 has not yet been executed on GitHub Actions.
-
-          ## Research sources used
-          - LG kernel `policydb.h`: https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.h
-          - LG kernel `hashtab.h`: https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/hashtab.h
-          - LG kernel `policydb.c`: https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.c
-          - Linux v5.7 `policydb.h`: https://raw.githubusercontent.com/torvalds/linux/v5.7/security/selinux/ss/policydb.h
-          - Linux v5.8 `policydb.h`: https://raw.githubusercontent.com/torvalds/linux/v5.8/security/selinux/ss/policydb.h
-          - Linux v5.8 `policydb.c`: https://raw.githubusercontent.com/torvalds/linux/v5.8/security/selinux/ss/policydb.c
-          - Linux v5.9 `policydb.c`: https://raw.githubusercontent.com/torvalds/linux/v5.9/security/selinux/ss/policydb.c
-          - KernelSU current SELinux implementation: https://github.com/tiann/KernelSU/blob/main/kernel/selinux/sepolicy.c
+          ## Completion standard
+          Setup 27 passing proves the cumulative KernelSU archive verification.
+          It does not by itself prove the final kernel image. The full
+          compiler/linker/image stages must pass for final build success.
           REPORT
 
-          cat > diagnostic-artifact/V10-CURRENT-STATUS.md <<'REPORT'
-          # V10 Current Status
+          cat > diagnostic-artifact/PROJECT-CONTEXT-A-Z.md <<'REPORT'
+          # LG Velvet LM-G900 / G900EMW Kernel Project — Portable A→Z Context
 
-          ## Why V10 exists
-          V9 reached Setup 27, proving that Setup 17 and Setup 27 were using different filename-transition compatibility contracts.
+          Read this file first if this ZIP is moved to another ChatGPT account.
 
-          ## V10 fixes
-          - Source-derived filename-transition boundary: `< 5.8` legacy, `>= 5.8` filename_trans_key, `>= 5.9` key-parameter hashtab operations.
-          - Setup 17 and Setup 27 now validate the same actual header-derived contract.
-          - Setup 27 performs no source mutation.
-          - Exactly one canonical hashtab adapter and one add_filename_trans definition.
-          - V4 feature baseline remains locked.
-          - Diagnostics contain the complete version/error/fix history.
+          ## Device / target
+          Device: LG Velvet global LM-G900 / G900EMW
+          Kernel: Linux 4.19.325-cip135
+          Lineage target: lineage-23.2
+          Android target: Android 16-oriented / QPR2-compatible workflow
 
-          ## Current build state
-          V10 has not yet run on GitHub Actions. Static verification is not being represented as build success.
+          ## Locked rule
+          V4 is the protected feature baseline. Never remove or disable a
+          verified feature to solve a new error. Only evidence-backed
+          compatibility fixes and genuine duplicate/redundant/broken CI cleanup
+          are permitted. Do not guess APIs, structs, Kconfig values, compiler
+          flags, version thresholds, or output filenames.
+
+          Preserved feature families include the verified SukiSU-Ultra, KPM,
+          SUSFS, Full LTO, Maphide/JIT-Zygote, Baseband-Guard and the other
+          previously verified kernel/device compatibility work.
+
+          ## Version progression
+          V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13
+          If V13 fails, next version is V14.
+
+          ## Setup 17 vs Setup 27
+          Setup 17 is the researched mutation stage.
+          Setup 27 is a read-only cumulative compile/verification gate.
+          They must use one source-derived compatibility contract.
+
+          ## Old SELinux loop
+          The LG 4.19 source uses the legacy filename-transition contract.
+          Linux 5.8 introduced filename_trans_key and Linux 5.9 changed the
+          hashtab API. The researched compatibility boundaries are:
+            <5.8 legacy filename_trans
+            >=5.8 filename_trans_key
+            >=5.9 newer key-parameter hashtab operations
+
+          ## V12 -> V13 root cause
+          V12 successfully built the KernelSU objects into:
+            drivers/kernelsu/built-in.a
+
+          Actual `llvm-ar t` output used complete relative paths beginning with:
+            drivers/kernelsu/
+
+          V12's verifier incorrectly searched for suffix-only names.
+          V13 now checks the exact paths actually emitted by Kbuild.
+
+          ## Artifact naming
+          Version comes FIRST:
+            V13-LG-Velvet-G900-Diagnostics
+          Never use the old V10 name for V13 content.
+
+          ## One-ZIP rule
+          Diagnostic directory is uploaded directly. GitHub creates one ZIP.
+          No ZIP is created inside the diagnostic directory.
+
+          ## What must remain in every V
+          Current workflow source, complete setup logs, compiler/build output,
+          source/commit state, config, complete error/fix history, root cause,
+          exact fix, verification status, continuation instructions, and
+          research references.
+
+          ## Current next step
+          Run V13. Inspect Setup 17 first, then Setup 27. If Setup 27 passes,
+          continue to the next real compiler/linker failure without speculative
+          changes. If it fails, preserve the exact command and full archive
+          member list before changing anything.
+          REPORT
+
+          cat > diagnostic-artifact/V13-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          # Complete Error/Fix History V4 → V13
+
+          V4 — Protected baseline. Fixed LG 4.19 SELinux hashtab vs AVTAB
+          flex_array traversal. This is the feature baseline.
+
+          V5 — Cleaned duplicate/redundant CI logic and strengthened checks
+          without removing V4 features.
+
+          V6 — Found false declaration preflight and the real filename-
+          transition API mismatch against the actual LG 4.19 source.
+
+          V7 — Removed duplicate textual add_filename_trans definitions and
+          fixed workflow-source capture after kernel checkout.
+
+          V8 — Fixed Setup 17 Python repair ordering defect:
+          NameError: add_filename_body is not defined.
+
+          V9 — Identified the Setup 17 ↔ Setup 27 loop: the two setups were
+          validating different filename-transition contracts.
+
+          V10 — Replaced that with one source-derived contract. Setup 17
+          mutates; Setup 27 verifies/compiles and does not mutate.
+
+          V11 — Continued cumulative build/verification progression.
+
+          V12 — Setup 17 passed. KernelSU compilation reached the actual
+          Kbuild archive:
+            drivers/kernelsu/built-in.a
+          V12 then failed because its verifier expected `kpm/compact.o` while
+          `llvm-ar t` returned `drivers/kernelsu/kpm/compact.o`.
+          V12 also exposed a versioning defect: the run content was V12 while
+          the diagnostic artifact name still used V10.
+
+          V13 — Fixes only the V12 verifier-path defect and current artifact
+          identity. It does not remove or alter verified kernel features.
+          It also carries portable project context so the ZIP can be moved to
+          another account/session and still provide the continuation state.
+
+          ## Verification policy
+          Static audits are not final build proof. Setup 27 passing is not
+          final kernel success. The complete compiler/linker/image stages must
+          pass.
           REPORT
 
           cat > diagnostic-artifact/WORKFLOW-HISTORY-INDEX.md <<'REPORT'
-          # Workflow history included with V10
+          # Workflow History Index
 
-          Canonical progression:
-          V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10
-
-          The diagnostic package records the complete error/fix history. The separately supplied workflow-history archive should contain the canonical final workflow files from V6 through the current version.
-
+          V4: protected baseline
+          V5: duplicate/redundant CI cleanup
+          V6: researched 4.19 filename-transition compatibility
+          V7: source-integrity and workflow capture corrections
+          V8: Setup 17 repair-script correction
+          V9: Setup 17/27 contract mismatch discovery
+          V10: single source-derived compatibility contract
+          V11: cumulative build progression
+          V12: actual built-in.a reached; verifier path bug
+          V13: exact archive-member verification + portable A→Z context
           REPORT
+
+          cat > diagnostic-artifact/RESEARCH-SOURCES.md <<'REPORT'
+          # Research Sources
+
+          Kbuild:
+          https://www.kernel.org/doc/html/latest/kbuild/makefiles.html
+
+          llvm-ar:
+          https://llvm.org/docs/CommandGuide/llvm-ar.html
+
+          LG SM7250 lineage-23.2 SELinux:
+          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.h
+          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/hashtab.h
+          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.c
+
+          Linux comparison sources:
+          https://raw.githubusercontent.com/torvalds/linux/v5.7/security/selinux/ss/policydb.h
+          https://raw.githubusercontent.com/torvalds/linux/v5.8/security/selinux/ss/policydb.h
+          https://raw.githubusercontent.com/torvalds/linux/v5.8/security/selinux/ss/policydb.c
+          https://raw.githubusercontent.com/torvalds/linux/v5.9/security/selinux/ss/policydb.c
+
+          KernelSU:
+          https://github.com/tiann/KernelSU/blob/main/kernel/selinux/sepolicy.c
+          REPORT
+
+          {
+            echo "# Repository-side workflow history"
+            git log --all --format='%H %s' -- .github/workflows 2>/dev/null | head -100 || true
+          } > diagnostic-artifact/project-history/repository-workflow-history.log
+
+          found=0
+          while IFS= read -r commit; do
+            [ -n "$commit" ] || continue
+            for wf in $(git ls-tree -r --name-only "$commit" -- .github/workflows 2>/dev/null); do
+              case "$wf" in
+                *.yml|*.yaml)
+                  bn="$(basename "$wf")"
+                  dest="diagnostic-artifact/project-history/workflows/${commit}-${bn}"
+                  if [ ! -e "$dest" ]; then
+                    git show "$commit:$wf" > "$dest" 2>/dev/null || true
+                  fi
+                ;;
+              esac
+            done
+            found=1
+          done < <(git log --all --format='%H' -- .github/workflows 2>/dev/null | head -20)
+
+          if [ "$found" -eq 0 ]; then
+            echo "No committed historical workflow snapshots were available in this checkout. The companion ALL-WORKFLOWS history package contains the preserved V6-V12 workflow snapshots." \
+              > diagnostic-artifact/project-history/workflows/README.txt
+          fi
 
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
-          # V10 Diagnostic Package Manifest
+          # V13 Diagnostic Package Manifest
 
-          Workflow version: V12
-          Previous failed version: V9
-          Diagnostic artifact policy: upload the directory directly; GitHub produces the single downloadable ZIP. No explicit ZIP is created inside the diagnostic directory.
-          Current workflow: V10-CURRENT-WORKFLOW.yml
-          Full history: V10-ERROR-AND-FIX-HISTORY.md
-          Current status: V10-CURRENT-STATUS.md
-          Workflow history index: WORKFLOW-HISTORY-INDEX.md
-          Setup 17 role: source mutation only, using the source-derived compatibility contract.
-          Setup 27 role: read-only verification and compile gate using the same contract.
+          Workflow version: V13
+          Previous workflow: V12
+          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13
+
+          Current source:
+          - V13-CURRENT-WORKFLOW.yml
+
+          Current status/history:
+          - V13-CURRENT-STATUS.md
+          - V13-ERROR-AND-FIX-HISTORY.md
+          - PROJECT-CONTEXT-A-Z.md
+          - WORKFLOW-HISTORY-INDEX.md
+          - RESEARCH-SOURCES.md
+          - V13-ALL-SETUP-STATUS.log
+
+          Raw runner evidence:
+          - ci-logs/
+          - 12-build-full.log
+          - final.config
+          - git-status.txt
+          - kernel-head.txt
+          - runner-state/
+
+          Portable repository history:
+          - project-history/
+
+          Artifact naming:
+          V13-LG-Velvet-G900-Diagnostics
+
+          ZIP rule:
+          This directory is uploaded directly to GitHub Actions. GitHub creates
+          the single downloadable ZIP. No diagnostic ZIP is created inside it.
           REPORT
 
-          echo "[PASS] Diagnostic directory staged. No diagnostic ZIP is created here; the GitHub artifact itself is the single downloadable ZIP."
-      - name: Artifact - V10 Diagnostics
+          echo "[PASS] V13 diagnostic directory staged. No diagnostic ZIP is created here."
+      - name: Artifact - V13 Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V10-LG-Velvet-G900-Diagnostics
+          name: V13-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V10 AnyKernel3 OrangeFox Flashable
+      - name: Artifact - V13 AnyKernel3 OrangeFox Flashable
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V10-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V10-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          name: V13-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          path: artifacts/V13-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V10 Kernel Only ZIP
+      - name: Artifact - V13 Kernel Only ZIP
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V10-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V10-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V13-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V13-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V10 Raw Kernel Image
+      - name: Artifact - V13 Raw Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V10-LG-Velvet-G900-Raw-Kernel
+          name: V13-LG-Velvet-G900-Raw-Kernel
           path: arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 14
