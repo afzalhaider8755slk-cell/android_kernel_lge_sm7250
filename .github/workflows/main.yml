@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V16
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V17
 
 on:
   workflow_dispatch:
@@ -368,7 +368,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V13-LG-Velvet-G900-EARLY-CIP135-FAILURE-Diagnostics
+          name: V17-LG-Velvet-G900-EARLY-CIP135-FAILURE-Diagnostics
           path: |
             ci-logs/00-early-init.log
             ci-logs/02-cip135-update.log
@@ -1854,33 +1854,65 @@ jobs:
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
 
-          # V16 researched Kbuild fix: CIP135 4.19 built-in.a currently expands
+          # V17 researched Kbuild fix: CIP135 4.19 built-in.a currently expands
           # every $(obj)/ prefix into one AR command. V15 proved the real ARG_MAX
-          # failure in qcacld-3.0. Upstream fixes this exact rule with patsubst,
-          # sed and xargs. Apply only this exact source-backed rule; never guess.
+          # failure in qcacld-3.0. Upstream fixes this exact rule by shortening the object paths before xargs
+          # restores the $(obj)/ prefix. Apply only this exact source-backed rule; never guess.
           KBUILD_BUILD="scripts/Makefile.build"
           test -f "$KBUILD_BUILD"
           python3 - "$KBUILD_BUILD" <<'PY'
           from pathlib import Path
+          import re
           import sys
-          p=Path(sys.argv[1]); s=p.read_text()
-          old='cmd_ar_builtin = rm -f $@; $(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(real-prereqs)'
-          new="""cmd_ar_builtin = rm -f $@; \
-          \techo $(patsubst $(obj)/%,%,$(real-prereqs)) | \
-          \tsed -E 's:([^ ]+):$(obj)/\\1:g' | \
-          \txargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@"""
-          if s.count(old)==1:
-              p.write_text(s.replace(old,new,1)); print('[FIXED] V16: upstream-proven built-in.a ARG_MAX rule applied.')
-          elif s.count('xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@')==1 and 'patsubst $(obj)/%,%,$(real-prereqs)' in s:
-              print('[PASS] V16: built-in.a ARG_MAX rule already present; no duplicate.')
-          else:
-              raise SystemExit('[FAIL] V16: expected CIP135 built-in.a rule not found exactly once; refusing speculative edit.')
-          PY
-          grep -qF 'patsubst $(obj)/%,%,$(real-prereqs)' "$KBUILD_BUILD"
-          grep -qF 'xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@' "$KBUILD_BUILD"
-          test "$(grep -cF 'xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@' "$KBUILD_BUILD")" -eq 1
-          echo '[PASS] V16: exactly one researched built-in.a ARG_MAX adapter is present.'
 
+          p = Path(sys.argv[1])
+          s = p.read_text()
+
+          # Authoritative baseline: the actual CIP v4.19.325-cip135 source
+          # uses the legacy built-in.a rule with $(filter $(real-obj-y), $^).
+          # This exact rule was verified against the pinned CIP135 source
+          # before this mutation was written. Do not accept an unrelated rule.
+          baseline = re.compile(
+              r"(?m)^(?P<indent>[ \t]*)cmd_ar_builtin = rm -f \$@;[ \t]*\\\s*(?P=indent)?[ \t]*\$\(AR\) rcSTP\$\(KBUILD_ARFLAGS\) \$@ \$\(filter \$\(real-obj-y\), \$\^\)"
+          )
+
+          installed = re.compile(
+              r"(?m)^\s*cmd_ar_builtin = rm -f \$@;[ \t]*\\\s*"
+              r"\$\(if \$\(filter \$\(real-obj-y\), \$\^\), printf \"\$\(obj\)/%s \" \$\(patsubst \$\(obj\)/%,%,\$\(filter \$\(real-obj-y\), \$\^\)\) \| xargs\)[ \t]*\\\s*"
+              r"\$\(AR\) rcSTP\$\(KBUILD_ARFLAGS\) \$@"
+          )
+
+          matches = list(baseline.finditer(s))
+          installed_matches = list(installed.finditer(s))
+
+          if len(matches) == 1:
+              m = matches[0]
+              indent = m.group('indent')
+              replacement = (
+                  f"{indent}cmd_ar_builtin = rm -f $@; \\" + "\n" +
+                  f"{indent}\t$(if $(filter $(real-obj-y), $^), printf \"$(obj)/%s \" $(patsubst $(obj)/%,%,$(filter $(real-obj-y), $^)) | xargs) \\" + "\n" +
+                  f"{indent}\t$(AR) rcSTP$(KBUILD_ARFLAGS) $@"
+              )
+              p.write_text(s[:m.start()] + replacement + s[m.end():])
+              print('[FIXED] V17: applied the upstream-proven built-in.a ARG_MAX rule to the exact CIP135 baseline.')
+          elif len(matches) == 0 and len(installed_matches) == 1:
+              print('[PASS] V17: exact researched built-in.a ARG_MAX rule is already installed; no duplicate mutation.')
+          elif len(matches) == 0:
+              raise SystemExit(
+                  f'[FAIL] V17: authoritative CIP135 built-in.a baseline not found and installed rule count={len(installed_matches)}; refusing speculative edit.'
+              )
+          else:
+              raise SystemExit(f'[FAIL] V17: expected exactly one authoritative built-in.a baseline, found {len(matches)}; refusing mutation.')
+
+          final = p.read_text()
+          if final.count('printf "$(obj)/%s " $(patsubst $(obj)/%,%,$(filter $(real-obj-y), $^)) | xargs)') != 1:
+              raise SystemExit('[FAIL] V17: built-in.a adapter count is not exactly one.')
+          if final.count('$(AR) rcSTP$(KBUILD_ARFLAGS) $@') != 1:
+              raise SystemExit('[FAIL] V17: built-in.a xargs invocation count is not exactly one.')
+          if '$(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)' in final:
+              raise SystemExit('[FAIL] V17: original unsafe built-in.a command remains after mutation.')
+          print('[PASS] V17: exact built-in.a ARG_MAX adapter verified once; original unsafe rule absent.')
+          PY
           LOG="$DIAG_DIR/10A-manual-compatibility-fixes.log"
           : > "$LOG"
           exec > >(tee -a "$SETUP_LOG" | tee -a "$LOG") 2>&1
@@ -2996,16 +3028,16 @@ jobs:
             drivers/kernelsu/feature/cpu_spoof.o
           do
             grep -Fx "$required_member" "$RUNNER_TEMP/12B-kernelsu-archive-members.log" >/dev/null || {
-              echo "[FAIL] V13: required KernelSU archive member is missing: $required_member"
+              echo "[FAIL] current archive contract: required KernelSU archive member is missing: $required_member"
               cat "$RUNNER_TEMP/12B-kernelsu-archive-members.log"
               exit 1
             }
           done
 
-          echo "[PASS] V13: actual Kbuild output is drivers/kernelsu/built-in.a."
-          echo "[PASS] V13: required KernelSU objects are present in built-in.a."
-          echo "[PASS] V13: archive member paths match Kbuild's actual emitted paths."
-          echo "[PASS] V13: no standalone kernelsu.o is assumed."
+          echo "[PASS] current archive contract: actual Kbuild output is drivers/kernelsu/built-in.a."
+          echo "[PASS] current archive contract: required KernelSU objects are present in built-in.a."
+          echo "[PASS] current archive contract: member paths match Kbuild's actual emitted paths."
+          echo "[PASS] current archive contract: no standalone kernelsu.o is assumed."
 
           make -j2 V=1 drivers/usb/gadget/function/f_hid.o
           test -s drivers/kernelsu/feature/selinux_hide.o
@@ -3029,7 +3061,7 @@ jobs:
           echo "========== $SETUP_NAME =========="
           echo "[LIVE] Full step output is captured in $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
-          # V16: shell tracing disabled; detailed commands remain in artifacts.
+          # V17: shell tracing disabled; detailed commands remain in artifacts.
           set +x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
@@ -3466,7 +3498,7 @@ jobs:
           echo "[INFO] DTB/DTBO build disabled for V10 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
-          # V16 LIVE ACTIVITY MODE: full build output goes only to the artifact log.
+          # V17 LIVE ACTIVITY MODE: full build output goes only to the artifact log.
           : > "$FULL_LOG"
           set +e
           (
@@ -3499,7 +3531,7 @@ jobs:
           wait "$BUILD_PID"
           BUILD_STATUS=$?
           set -e
-          # V16 has no secondary cleanup monitor; preserve the real build exit code.
+          # V17 has no secondary cleanup monitor; preserve the real build exit code.
           END=$(date +%s)
           ELAPSED=$((END-START))
 
@@ -3526,17 +3558,16 @@ jobs:
 
           tail -300 "$FULL_LOG" > "$TAIL_LOG" || true
 
-          echo
-          echo "===== COMPACT BUILD ERROR SUMMARY ====="
+          # Keep detailed diagnostics out of the live GitHub console.
+          # They remain in artifact files: 12-build-full.log, 12-build-errors.log,
+          # and 12-build-tail.log. Live output is intentionally limited to
+          # concise build-file activity and the final status line.
           if [ -s "$ERROR_LOG" ]; then
-            tail -30 "$ERROR_LOG" || true
+            echo "[BUILD-DIAG] compiler/build diagnostics captured in artifact: 12-build-errors.log"
           else
-            echo "No compiler-error pattern found."
+            echo "[BUILD-DIAG] no compiler-error pattern captured; full output remains in artifact: 12-build-full.log"
           fi
-
-          echo
-          echo "===== LAST 40 BUILD LINES ====="
-          tail -40 "$FULL_LOG" || true
+          echo "[BUILD-DIAG] build tail captured in artifact: 12-build-tail.log"
 
           if [ "$BUILD_STATUS" -eq 0 ]; then
             KERNEL_IMAGE=""
@@ -3667,16 +3698,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V17-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V17-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V17-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3763,7 +3794,7 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V16"
+            echo "Workflow version: V17"
             echo "Previous workflow: V15"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
@@ -3780,25 +3811,25 @@ jobs:
           git status --short > diagnostic-artifact/git-status.txt 2>&1 || true
           git rev-parse HEAD > diagnostic-artifact/kernel-head.txt 2>&1 || true
 
-          mkdir -p "$RUNNER_TEMP/v16-workflow-source"
+          mkdir -p "$RUNNER_TEMP/v17-workflow-source"
           WORKFLOW_REF_PART="${GITHUB_WORKFLOW_REF#${GITHUB_REPOSITORY}/}"
           WORKFLOW_PATH="${WORKFLOW_REF_PART%@*}"
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v16-workflow-source/V16-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v16-workflow-source/V16-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V16-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v17-workflow-source/V17-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v17-workflow-source/V17-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V17-CURRENT-WORKFLOW.yml
           else
-            echo "[FAIL] Unable to capture the running V13 workflow source." \
+            echo "[FAIL] Unable to capture the running V17 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
           fi
 
           {
-            echo "========== V16 ALL SETUP STATUS =========="
-            echo "Workflow version: V16"
+            echo "========== V17 ALL SETUP STATUS =========="
+            echo "Workflow version: V17"
             echo "Previous workflow: V15"
-            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16"
+            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V17 -> V17 -> V15 -> V17"
             echo "Setup numbers are independent from workflow version numbers."
             date -u
             for f in "$DIAG_DIR"/*LIVE.log; do
@@ -3810,160 +3841,193 @@ jobs:
               else status="EXECUTED-NO-STATUS-MARKER"; fi
               printf '%-75s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/V16-ALL-SETUP-STATUS.log
+          } | tee diagnostic-artifact/V17-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V16-CURRENT-STATUS.md <<'REPORT'
-          # V16 Current Status
+          cat > diagnostic-artifact/V17-CURRENT-STATUS.md <<'REPORT'
+          # V17 Current Status
 
-          ## V12 actual result
-          Setup 17 passed. Setup 27 compiled KernelSU and created:
-            drivers/kernelsu/built-in.a
+          ## V16 actual result
+          V16 did NOT apply the researched built-in.a fix. Setup 17 stopped
+          before mutation because its guard expected the wrong source form.
+          Exact V16 failure:
+            [FAIL] V16: expected CIP135 built-in.a rule not found exactly once; refusing speculative edit.
+          Therefore V16 is a failed pre-build compatibility attempt, not a successful ARG_MAX fix.
 
-          `llvm-ar t` showed complete member paths such as:
-            drivers/kernelsu/kpm/compact.o
-            drivers/kernelsu/core/init.o
-            drivers/kernelsu/selinux/sepolicy.o
+          ## Root cause carried into V17
+          The actual pinned CIP v4.19.325-cip135 scripts/Makefile.build uses:
+            cmd_ar_builtin = rm -f $@; \
+              $(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)
+          This expands a long object list into one shell/AR command. V15 reached
+          drivers/staging/qcacld-3.0/built-in.a and failed with `/bin/sh: Argument list too long`.
 
-          V12's verifier incorrectly searched for path-stripped names such as
-          `kpm/compact.o`. Therefore V12 reported an existing archive member
-          as missing. This was a verifier-path bug, not a compiler failure.
+          ## V17 fix
+          Setup 17 now matches that exact CIP135 baseline and applies the
+          upstream-proven patsubst/printf/xargs built-in.a rule. It refuses
+          speculative edits if the source differs or the contract is duplicated.
 
-          ## V13 correction
-          Setup 27 remains read-only and now checks the exact archive member
-          names emitted by Kbuild/llvm-ar.
+          ## Live console policy
+          Setup 28 full compiler/linker output is artifact-only. The GitHub
+          console shows concise file/activity heartbeat and final status.
 
-          ## Artifact identity
-          Current diagnostics artifact:
-            V16-LG-Velvet-G900-Diagnostics
-
-          The previous V10 filename must not be reused for a V13 run.
+          ## Protected feature rule
+          V4 remains the protected baseline. No verified kernel feature is
+          removed or disabled for this fix.
 
           ## Completion standard
-          Setup 27 passing proves the cumulative KernelSU archive verification.
-          It does not by itself prove the final kernel image. The full
-          compiler/linker/image stages must pass for final build success.
-          REPORT
+          Setup 17 and Setup 27 passing are not final kernel success. The
+          complete compiler/linker/image stages must pass.
+
+          ## Continuation
+          If V17 reaches another failure, preserve the exact diagnostic, research
+          the actual source/toolchain contract, fix only the proven cause, and
+          carry the complete A-to-Z history into V18.
 
           cat > diagnostic-artifact/PROJECT-CONTEXT-A-Z.md <<'REPORT'
-          # LG Velvet LM-G900 / G900EMW Kernel Project — Portable A→Z Context
+          # LG Velvet LM-G900 / G900EMW Kernel Project - Portable A-to-Z Context
 
-          Read this file first if this ZIP is moved to another ChatGPT account.
+          Read this file first if this Diagnostics ZIP is moved to another ChatGPT
+          account. It is the continuation contract, not a claim that every stage
+          has already succeeded. Actual logs and exact failed commands remain in
+          ci-logs/ and runner-state/.
 
           ## Device / target
           Device: LG Velvet global LM-G900 / G900EMW
           Kernel: Linux 4.19.325-cip135
-          Lineage target: lineage-23.2
-          Android target: Android 16-oriented / QPR2-compatible workflow
+          Requested Lineage branch: lineage-23.2
+          Android target: Android 16 / QPR2-oriented compatibility
 
-          ## Locked rule
-          V4 is the protected feature baseline. Never remove or disable a
-          verified feature to solve a new error. Only evidence-backed
-          compatibility fixes and genuine duplicate/redundant/broken CI cleanup
-          are permitted. Do not guess APIs, structs, Kconfig values, compiler
-          flags, version thresholds, or output filenames.
+          ## Locked project rule
+          V4 is the protected feature baseline. Never remove or disable a verified
+          feature to solve a new error. Only evidence-backed compatibility fixes
+          and genuine duplicate/redundant/broken CI cleanup are permitted. Do not
+          guess APIs, structs, Kconfig values, compiler flags, version thresholds,
+          or output filenames.
 
-          Preserved feature families include the verified SukiSU-Ultra, KPM,
-          SUSFS, Full LTO, Maphide/JIT-Zygote, Baseband-Guard and the other
-          previously verified kernel/device compatibility work.
+          Preserved feature families include the verified SukiSU-Ultra, KPM, SUSFS,
+          Full Clang LTO, Maphide/JIT-Zygote, Baseband-Guard and the previously
+          verified LG device/kernel compatibility work, including Fingerprint,
+          Vibration, Dual-SIM/RIL, Audio, IMS and Wi-Fi Calling requirements.
 
           ## Version progression
-          V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16
-          If V15 fails, next version is V16.
+          V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17
+          Next version after a V17 failure is V18. Version number changes only
+          when the next workflow is actually created.
 
           ## Setup 17 vs Setup 27
-          Setup 17 is the researched mutation stage.
-          Setup 27 is a read-only cumulative compile/verification gate.
-          They must use one source-derived compatibility contract.
+          Setup 17 is the researched mutation stage. Setup 27 is the cumulative
+          read-only compile/verification gate. They must use one source-derived
+          contract and Setup 27 must never silently mutate source to hide a failure.
 
-          ## Old SELinux loop
-          The LG 4.19 source uses the legacy filename-transition contract.
-          Linux 5.8 introduced filename_trans_key and Linux 5.9 changed the
-          hashtab API. The researched compatibility boundaries are:
-            <5.8 legacy filename_trans
-            >=5.8 filename_trans_key
-            >=5.9 newer key-parameter hashtab operations
+          ## SELinux compatibility history
+          The LG 4.19 source uses the legacy filename-transition contract. The
+          researched boundaries are preserved from earlier versions: <5.8 legacy
+          filename_trans; >=5.8 filename_trans_key; >=5.9 newer hashtab key-parameter
+          operations. These historical fixes are not to be replaced for V17.
 
-          ## V12 -> V13 root cause
-          V12 successfully built the KernelSU objects into:
-            drivers/kernelsu/built-in.a
+          ## V12 archive-verifier history
+          V12 reached drivers/kernelsu/built-in.a. llvm-ar emitted complete relative
+          member paths such as drivers/kernelsu/kpm/compact.o. The old verifier looked
+          for suffix-only names. That verifier defect was corrected in later versions.
 
-          Actual `llvm-ar t` output used complete relative paths beginning with:
-            drivers/kernelsu/
+          ## V15 -> V16 -> V17 ARG_MAX history
+          V15 reached the real qcacld-3.0 built-in.a archive command and failed with
+          `/bin/sh: Argument list too long`. This is a Kbuild command-length problem,
+          not evidence that qcacld/Wi-Fi should be removed.
 
-          V12's verifier incorrectly searched for suffix-only names.
-          V13 now checks the exact paths actually emitted by Kbuild.
+          V16 attempted a source guard but searched for an incorrect rule form and
+          safely refused mutation. Therefore V16 did not fix the ARG_MAX problem.
 
-          ## Artifact naming
-          Version comes FIRST:
-            V16-LG-Velvet-G900-Diagnostics
-          Never use the old V10 name for V13 content.
+          V17 verifies the actual pinned CIP135 rule:
+            cmd_ar_builtin = rm -f $@; \
+              $(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)
+          and replaces only that exact rule with the upstream-proven patsubst/printf/xargs
+          adaptation. Any unexpected source layout causes a hard refusal, never a guess.
 
-          ## One-ZIP rule
-          Diagnostic directory is uploaded directly. GitHub creates one ZIP.
-          No ZIP is created inside the diagnostic directory.
+          ## Live console vs artifact logs
+          Setup 28 uses a background build with V=0 and captures complete stdout/stderr
+          into kernel-build-full.log. The console is intentionally limited to concise
+          `[BUILD-ACTIVITY]` / `[BUILD-FILE]` heartbeat lines and final status. Detailed
+          errors, command output and build tail remain in artifacts.
 
-          ## What must remain in every V
-          Current workflow source, complete setup logs, compiler/build output,
-          source/commit state, config, complete error/fix history, root cause,
-          exact fix, verification status, continuation instructions, and
-          research references.
+          ## Diagnostics ZIP rule
+          The artifact directory is uploaded directly. GitHub creates the single
+          downloadable ZIP. No ZIP is created inside the Diagnostics ZIP.
+          The name is always version-first, for example:
+            V17-LG-Velvet-G900-Diagnostics.zip
 
-          ## Current next step
-          Run V13. Inspect Setup 17 first, then Setup 27. If Setup 27 passes,
-          continue to the next real compiler/linker failure without speculative
-          changes. If it fails, preserve the exact command and full archive
-          member list before changing anything.
-          REPORT
+          ## What every future V must contain
+          Current workflow source; complete current setup logs; full compiler/build
+          output; source/commit/config state; complete error/fix history; root cause;
+          research evidence; exact fix; verification status; current state; and
+          explicit continuation instructions. Historical versions must remain historical.
 
-          cat > diagnostic-artifact/V16-ERROR-AND-FIX-HISTORY.md <<'REPORT'
-          # Complete Error/Fix History V4 → V13
+          ## Current continuation
+          First inspect V17 Setup 17, then Setup 27. If both pass, continue until the
+          next real compiler/linker/image result. If V17 fails, preserve the exact
+          diagnostic before any change and create V18 only after source-backed research.
 
-          V4 — Protected baseline. Fixed LG 4.19 SELinux hashtab vs AVTAB
-          flex_array traversal. This is the feature baseline.
+          cat > diagnostic-artifact/V17-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          # Complete Error/Fix History V4 -> V17
 
-          V5 — Cleaned duplicate/redundant CI logic and strengthened checks
-          without removing V4 features.
+          V4 - Protected feature baseline. Fixed the researched LG 4.19 SELinux
+          compatibility boundary. This is the protected feature baseline.
 
-          V6 — Found false declaration preflight and the real filename-
-          transition API mismatch against the actual LG 4.19 source.
+          V5 - Cleaned duplicate/redundant CI logic without removing V4 features.
 
-          V7 — Removed duplicate textual add_filename_trans definitions and
-          fixed workflow-source capture after kernel checkout.
+          V6 - Identified the real LG 4.19 filename-transition API mismatch
+          from actual source instead of using guessed compatibility values.
 
-          V8 — Fixed Setup 17 Python repair ordering defect:
-          NameError: add_filename_body is not defined.
+          V7 - Removed duplicate textual add_filename_trans definitions and
+          corrected workflow-source capture.
 
-          V9 — Identified the Setup 17 ↔ Setup 27 loop: the two setups were
-          validating different filename-transition contracts.
+          V8 - Fixed Setup 17 repair-script ordering / NameError defect.
 
-          V10 — Replaced that with one source-derived contract. Setup 17
-          mutates; Setup 27 verifies/compiles and does not mutate.
+          V9 - Identified the Setup 17 <-> Setup 27 contract loop.
 
-          V11 — Continued cumulative build/verification progression.
+          V10 - Replaced the loop with one source-derived compatibility contract:
+          Setup 17 mutates; Setup 27 verifies/compiles read-only.
 
-          V12 — Setup 17 passed. KernelSU compilation reached the actual
-          Kbuild archive:
-            drivers/kernelsu/built-in.a
-          V12 then failed because its verifier expected `kpm/compact.o` while
-          `llvm-ar t` returned `drivers/kernelsu/kpm/compact.o`.
-          V12 also exposed a versioning defect: the run content was V12 while
-          the diagnostic artifact name still used V10.
+          V11 - Continued cumulative build/verification progression.
 
-          V13 — Fixes only the V12 verifier-path defect and current artifact
-          identity. It does not remove or alter verified kernel features.
-          It also carries portable project context so the ZIP can be moved to
-          another account/session and still provide the continuation state.
+          V12 - Reached drivers/kernelsu/built-in.a. The verifier incorrectly
+          expected suffix-only archive names while llvm-ar emitted complete
+          relative paths. This was a verifier bug, not a compiler failure.
+
+          V13/V14 - Carried forward exact archive-member verification and the
+          portable project-history structure. Historical metadata from these
+          versions is preserved rather than rewritten as a new success.
+
+          V15 - Setup 28 reached the real full-kernel build. The qcacld-3.0
+          archive step failed with `/bin/sh: Argument list too long`. A secondary
+          MONITOR_PID cleanup error also appeared after the build failure.
+          The primary failure is the Kbuild built-in.a command-length problem.
+
+          V16 - Setup 17 stopped before making any source mutation because its
+          guard searched for the wrong built-in.a source form. Exact V16 log:
+            [FAIL] V16: expected CIP135 built-in.a rule not found exactly once; refusing speculative edit.
+          This was intentionally a safe refusal, but it meant the V15 root cause
+          remained unfixed in V16. V16 therefore must not be marked as a successful fix.
+
+          V17 - Correct the contract using the actual pinned CIP135 source form.
+          Apply only the upstream-proven built-in.a ARG_MAX adaptation. Remove
+          the secondary monitor-cleanup failure path and keep detailed build
+          diagnostics in artifacts rather than the live console.
+
+          ## Research basis for V17
+          The upstream Linux Kbuild patch `cd968b97c49214e6557381bddddacbd0e0fb696e`
+          explicitly addresses `Argument list too long` in built-in.a by trimming
+          the repeated object-directory prefix before xargs restores it. It was
+          reviewed and tested upstream.
 
           ## Verification policy
-          Static audits are not final build proof. Setup 27 passing is not
-          final kernel success. The complete compiler/linker/image stages must
-          pass.
-          REPORT
+          A static patch audit is not final build proof. Setup 27 passing is not
+          final kernel success. Only a successful complete compiler/linker/image
+          build may be recorded as final success.
 
           cat > diagnostic-artifact/WORKFLOW-HISTORY-INDEX.md <<'REPORT'
           # Workflow History Index
 
-          V4: protected baseline
+          V4: protected feature baseline
           V5: duplicate/redundant CI cleanup
           V6: researched 4.19 filename-transition compatibility
           V7: source-integrity and workflow capture corrections
@@ -3971,33 +4035,40 @@ jobs:
           V9: Setup 17/27 contract mismatch discovery
           V10: single source-derived compatibility contract
           V11: cumulative build progression
-          V12: actual built-in.a reached; verifier path bug
-          V13: exact archive-member verification + portable A→Z context
-          REPORT
+          V12: actual KernelSU built-in.a reached; archive-member verifier defect
+          V13: exact archive-member verification and portable context continuation
+          V14: cumulative workflow/history continuation
+          V15: real full-kernel qcacld-3.0 built-in.a ARG_MAX failure identified
+          V16: safe refusal due to incorrect CIP135 rule guard; no source mutation
+          V17: exact CIP135 built-in.a contract + upstream ARG_MAX fix; concise live build output
 
           cat > diagnostic-artifact/RESEARCH-SOURCES.md <<'REPORT'
-          # Research Sources
+          # Research Sources - V17
 
-          Kbuild:
+          ## Pinned CIP135 source
+          https://gitlab.com/cip-project/cip-kernel/linux-cip/-/raw/v4.19.325-cip135/scripts/Makefile.build
+          Authoritative lines 391-409 contain the exact built-in.a rule used by V17's guard.
+
+          ## Upstream Kbuild ARG_MAX fix
+          https://lkml.indiana.edu/hypermail/linux/kernel/2205.3/03975.html
+          Patch: kbuild: make built-in.a rule robust against too long argument error.
+          Commit: cd968b97c49214e6557381bddddacbd0e0fb696e
+
+          https://git.zx2c4.com/linux-dev/commit/scripts?id=cd968b97c49214e6557381bddddacbd0e0fb696e
+          Upstream patch diff and rationale.
+
+          ## Current Kbuild implementation reference
+          https://linux.googlesource.com/linux/kernel/git/torvalds/linux/%2B/refs/tags/v6.7-rc8/scripts/Makefile.build
+          Demonstrates the same built-in.a xargs-based strategy in a modern kernel.
+
+          ## Kbuild documentation
           https://www.kernel.org/doc/html/latest/kbuild/makefiles.html
 
-          llvm-ar:
-          https://llvm.org/docs/CommandGuide/llvm-ar.html
-
-          LG SM7250 lineage-23.2 SELinux:
+          ## Project source references retained from previous versions
           https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.h
           https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/hashtab.h
           https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.c
-
-          Linux comparison sources:
-          https://raw.githubusercontent.com/torvalds/linux/v5.7/security/selinux/ss/policydb.h
-          https://raw.githubusercontent.com/torvalds/linux/v5.8/security/selinux/ss/policydb.h
-          https://raw.githubusercontent.com/torvalds/linux/v5.8/security/selinux/ss/policydb.c
-          https://raw.githubusercontent.com/torvalds/linux/v5.9/security/selinux/ss/policydb.c
-
-          KernelSU:
           https://github.com/tiann/KernelSU/blob/main/kernel/selinux/sepolicy.c
-          REPORT
 
           {
             echo "# Repository-side workflow history"
@@ -4027,22 +4098,22 @@ jobs:
           fi
 
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
-          # V16 Diagnostic Package Manifest
+          # V17 Diagnostic Package Manifest
 
-          Workflow version: V13
-          Previous workflow: V15
-          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16
+          Workflow version: V17
+          Previous workflow: V16
+          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17
 
           Current source:
-          - V16-CURRENT-WORKFLOW.yml
+          - V17-CURRENT-WORKFLOW.yml
 
           Current status/history:
-          - V16-CURRENT-STATUS.md
-          - V16-ERROR-AND-FIX-HISTORY.md
+          - V17-CURRENT-STATUS.md
+          - V17-ERROR-AND-FIX-HISTORY.md
           - PROJECT-CONTEXT-A-Z.md
           - WORKFLOW-HISTORY-INDEX.md
           - RESEARCH-SOURCES.md
-          - V16-ALL-SETUP-STATUS.log
+          - V17-ALL-SETUP-STATUS.log
 
           Raw runner evidence:
           - ci-logs/
@@ -4052,53 +4123,52 @@ jobs:
           - kernel-head.txt
           - runner-state/
 
-          Portable repository history:
+          Historical workflow evidence:
           - project-history/
 
           Artifact naming:
-          V16-LG-Velvet-G900-Diagnostics
+          V17-LG-Velvet-G900-Diagnostics
 
           ZIP rule:
-          This directory is uploaded directly to GitHub Actions. GitHub creates
-          the single downloadable ZIP. No diagnostic ZIP is created inside it.
-          REPORT
+          This directory is uploaded directly to GitHub Actions. GitHub creates the
+          single downloadable ZIP. No diagnostic ZIP is created inside it.
 
-          echo "[PASS] V13 diagnostic directory staged. No diagnostic ZIP is created here."
-      - name: Artifact - V14 Diagnostics
+          echo "[PASS] V17 diagnostic directory staged. No diagnostic ZIP is created here."
+      - name: Artifact - V17 Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V16-LG-Velvet-G900-Diagnostics
+          name: V17-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V14 AnyKernel3 OrangeFox Flashable
+      - name: Artifact - V17 AnyKernel3 OrangeFox Flashable
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V13-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          name: V17-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          path: artifacts/V17-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V14 Kernel Only ZIP
+      - name: Artifact - V17 Kernel Only ZIP
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V16-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V16-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V17-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V17-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V14 Raw Kernel Image
+      - name: Artifact - V17 Raw Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V13-LG-Velvet-G900-Raw-Kernel
+          name: V17-LG-Velvet-G900-Raw-Kernel
           path: arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 14
