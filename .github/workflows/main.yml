@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V14
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V16
 
 on:
   workflow_dispatch:
@@ -48,14 +48,16 @@ permissions:
 # llvm-ar listed complete relative member paths beginning with drivers/kernelsu/.
 # V12's verifier searched for path-stripped names and falsely reported a
 # missing member. V13 matches the exact emitted paths. Verification only.
-# V15 ROOT-CAUSE / RESEARCH NOTE
-# V14 failed before the full build because Setup 28 used a single-line exact
-# grep for ksu_hashtab_for_each(). The actual compiler-tested sepolicy.c defines
-# that macro over multiple continuation lines. The required native 4.19
-# traversal itself is present: (htab)->htable[i] -> cur->next. The separate
-# AVTAB flex_array traversal is also present and is legitimate for that
-# storage representation. V15 verifies both semantic anchors without changing
-# sepolicy.c or removing any feature/fix.
+# V16 ROOT-CAUSE / RESEARCH NOTE
+# V15 reached the real full-kernel build and failed in Kbuild while creating
+# drivers/staging/qcacld-3.0/built-in.a with: /bin/sh: Argument list too long.
+# Upstream Kbuild fixed this exact scalability defect by shortening the $(obj)/
+# prefix before feeding prerequisites through sed/xargs. V16 backports only that
+# researched scripts/Makefile.build rule to the CIP 4.19 form actually present.
+# V16 also changes Setup 28 presentation only: full compiler output remains
+# captured in the artifact log, but the GitHub console shows only concise build
+# activity/heartbeat lines. No kernel feature is disabled or removed.
+# The V15 MONITOR_PID cleanup bug is also removed; build status remains authoritative.
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -1851,6 +1853,34 @@ jobs:
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
+
+          # V16 researched Kbuild fix: CIP135 4.19 built-in.a currently expands
+          # every $(obj)/ prefix into one AR command. V15 proved the real ARG_MAX
+          # failure in qcacld-3.0. Upstream fixes this exact rule with patsubst,
+          # sed and xargs. Apply only this exact source-backed rule; never guess.
+          KBUILD_BUILD="scripts/Makefile.build"
+          test -f "$KBUILD_BUILD"
+          python3 - "$KBUILD_BUILD" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text()
+          old='cmd_ar_builtin = rm -f $@; $(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(real-prereqs)'
+          new="""cmd_ar_builtin = rm -f $@; \
+          \techo $(patsubst $(obj)/%,%,$(real-prereqs)) | \
+          \tsed -E 's:([^ ]+):$(obj)/\\1:g' | \
+          \txargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@"""
+          if s.count(old)==1:
+              p.write_text(s.replace(old,new,1)); print('[FIXED] V16: upstream-proven built-in.a ARG_MAX rule applied.')
+          elif s.count('xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@')==1 and 'patsubst $(obj)/%,%,$(real-prereqs)' in s:
+              print('[PASS] V16: built-in.a ARG_MAX rule already present; no duplicate.')
+          else:
+              raise SystemExit('[FAIL] V16: expected CIP135 built-in.a rule not found exactly once; refusing speculative edit.')
+          PY
+          grep -qF 'patsubst $(obj)/%,%,$(real-prereqs)' "$KBUILD_BUILD"
+          grep -qF 'xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@' "$KBUILD_BUILD"
+          test "$(grep -cF 'xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@' "$KBUILD_BUILD")" -eq 1
+          echo '[PASS] V16: exactly one researched built-in.a ARG_MAX adapter is present.'
+
           LOG="$DIAG_DIR/10A-manual-compatibility-fixes.log"
           : > "$LOG"
           exec > >(tee -a "$SETUP_LOG" | tee -a "$LOG") 2>&1
@@ -2999,7 +3029,8 @@ jobs:
           echo "========== $SETUP_NAME =========="
           echo "[LIVE] Full step output is captured in $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
+          # V16: shell tracing disabled; detailed commands remain in artifacts.
+          set +x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           FULL_LOG="$GITHUB_WORKSPACE/kernel-build-full.log"
@@ -3412,7 +3443,8 @@ jobs:
           echo "Therefore this workflow does NOT modify net/xfrm. The next failure must be diagnosed from the full build log."
           echo "=========================================="
           echo "STARTING STOCK + SUKISU + KPM BUILD"
-          echo "Full V=1 stdout/stderr -> kernel-build-full.log"
+          echo "Full compiler/linker stdout/stderr -> kernel-build-full.log (artifact only)"
+          echo "Live console mode: concise file/activity heartbeat only"
           echo "=========================================="
           echo "clang=$(command -v clang)"
           echo "ld.lld=$(command -v ld.lld)"
@@ -3434,32 +3466,32 @@ jobs:
           echo "[INFO] DTB/DTBO build disabled for V10 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
-          # V10 LIVE BUILD OUTPUT: stream the complete V=1 compiler/linker output to the
-          # GitHub Actions console while simultaneously preserving the exact same stream
-          # in the diagnostic artifact. This is intentionally not a source fix.
+          # V16 LIVE ACTIVITY MODE: full build output goes only to the artifact log.
           : > "$FULL_LOG"
           set +e
           (
-            stdbuf -oL -eL make \
+            make \
               ARCH=arm64 \
               LLVM=1 \
               LLVM_IAS=1 \
               CROSS_COMPILE="$CROSS_COMPILE" \
               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
               -j"$(nproc)" \
-              V=1 \
+              V=0 \
               WERROR=0 \
-              Image.gz 2>&1 | tee -a "$FULL_LOG"
-            exit "${PIPESTATUS[0]}"
+              Image.gz > "$FULL_LOG" 2>&1
+            exit "$?"
           ) &
           BUILD_PID=$!
           set -e
 
           while kill -0 "$BUILD_PID" 2>/dev/null; do
-            sleep 30
+            sleep 15
             if kill -0 "$BUILD_PID" 2>/dev/null; then
-              echo "[BUILD-HEARTBEAT] $(date -u '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
-              echo "[BUILD-HEARTBEAT] live V=1 output is streaming above; captured=$(wc -c < "$FULL_LOG") bytes / $(wc -l < "$FULL_LOG") lines"
+              LAST_ACTIVITY="$(grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)[[:space:]]' "$FULL_LOG" | tail -1 || true)"
+              if [ -z "$LAST_ACTIVITY" ]; then LAST_ACTIVITY="build activity continues; detailed output is in the artifact log"; fi
+              echo "[BUILD-ACTIVITY] $(date -u '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
+              echo "[BUILD-FILE] ${LAST_ACTIVITY:-waiting for first build activity}"
             fi
           done
 
@@ -3467,9 +3499,7 @@ jobs:
           wait "$BUILD_PID"
           BUILD_STATUS=$?
           set -e
-          kill "$MONITOR_PID" 2>/dev/null || true
-          wait "$MONITOR_PID" 2>/dev/null || true
-
+          # V16 has no secondary cleanup monitor; preserve the real build exit code.
           END=$(date +%s)
           ELAPSED=$((END-START))
 
@@ -3480,6 +3510,8 @@ jobs:
             echo "BUILD_LOG_BYTES=$(wc -c < "$FULL_LOG")"
             echo "BUILD_LOG_LINES=$(wc -l < "$FULL_LOG")"
           } | tee "$SUMMARY_LOG"
+
+          echo "[BUILD-FINAL] status=$BUILD_STATUS elapsed=${ELAPSED}s log_bytes=$(wc -c < "$FULL_LOG") log_lines=$(wc -l < "$FULL_LOG")"
 
           if [ "$BUILD_STATUS" -eq 137 ] || [ "$BUILD_STATUS" -eq 143 ]; then
             echo "[DIAG] Build process was terminated by signal (status=$BUILD_STATUS); no compiler diagnostic was emitted in the captured log."
@@ -3635,16 +3667,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V15-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V15-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V15-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3731,8 +3763,8 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V15"
-            echo "Previous workflow: V12"
+            echo "Workflow version: V16"
+            echo "Previous workflow: V15"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
             echo "workflow_ref=$GITHUB_WORKFLOW_REF"
@@ -3748,25 +3780,25 @@ jobs:
           git status --short > diagnostic-artifact/git-status.txt 2>&1 || true
           git rev-parse HEAD > diagnostic-artifact/kernel-head.txt 2>&1 || true
 
-          mkdir -p "$RUNNER_TEMP/v14-workflow-source"
+          mkdir -p "$RUNNER_TEMP/v16-workflow-source"
           WORKFLOW_REF_PART="${GITHUB_WORKFLOW_REF#${GITHUB_REPOSITORY}/}"
           WORKFLOW_PATH="${WORKFLOW_REF_PART%@*}"
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v14-workflow-source/V15-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v14-workflow-source/V15-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V15-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v16-workflow-source/V16-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v16-workflow-source/V16-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V16-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V13 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
           fi
 
           {
-            echo "========== V13 ALL SETUP STATUS =========="
-            echo "Workflow version: V15"
-            echo "Previous workflow: V12"
-            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13"
+            echo "========== V16 ALL SETUP STATUS =========="
+            echo "Workflow version: V16"
+            echo "Previous workflow: V15"
+            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16"
             echo "Setup numbers are independent from workflow version numbers."
             date -u
             for f in "$DIAG_DIR"/*LIVE.log; do
@@ -3778,10 +3810,10 @@ jobs:
               else status="EXECUTED-NO-STATUS-MARKER"; fi
               printf '%-75s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/V15-ALL-SETUP-STATUS.log
+          } | tee diagnostic-artifact/V16-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V15-CURRENT-STATUS.md <<'REPORT'
-          # V13 Current Status
+          cat > diagnostic-artifact/V16-CURRENT-STATUS.md <<'REPORT'
+          # V16 Current Status
 
           ## V12 actual result
           Setup 17 passed. Setup 27 compiled KernelSU and created:
@@ -3802,7 +3834,7 @@ jobs:
 
           ## Artifact identity
           Current diagnostics artifact:
-            V15-LG-Velvet-G900-Diagnostics
+            V16-LG-Velvet-G900-Diagnostics
 
           The previous V10 filename must not be reused for a V13 run.
 
@@ -3835,8 +3867,8 @@ jobs:
           previously verified kernel/device compatibility work.
 
           ## Version progression
-          V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13
-          If V13 fails, next version is V14.
+          V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16
+          If V15 fails, next version is V16.
 
           ## Setup 17 vs Setup 27
           Setup 17 is the researched mutation stage.
@@ -3863,7 +3895,7 @@ jobs:
 
           ## Artifact naming
           Version comes FIRST:
-            V15-LG-Velvet-G900-Diagnostics
+            V16-LG-Velvet-G900-Diagnostics
           Never use the old V10 name for V13 content.
 
           ## One-ZIP rule
@@ -3883,7 +3915,7 @@ jobs:
           member list before changing anything.
           REPORT
 
-          cat > diagnostic-artifact/V15-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          cat > diagnostic-artifact/V16-ERROR-AND-FIX-HISTORY.md <<'REPORT'
           # Complete Error/Fix History V4 → V13
 
           V4 — Protected baseline. Fixed LG 4.19 SELinux hashtab vs AVTAB
@@ -3995,22 +4027,22 @@ jobs:
           fi
 
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
-          # V13 Diagnostic Package Manifest
+          # V16 Diagnostic Package Manifest
 
           Workflow version: V13
-          Previous workflow: V12
-          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13
+          Previous workflow: V15
+          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16
 
           Current source:
-          - V15-CURRENT-WORKFLOW.yml
+          - V16-CURRENT-WORKFLOW.yml
 
           Current status/history:
-          - V15-CURRENT-STATUS.md
-          - V15-ERROR-AND-FIX-HISTORY.md
+          - V16-CURRENT-STATUS.md
+          - V16-ERROR-AND-FIX-HISTORY.md
           - PROJECT-CONTEXT-A-Z.md
           - WORKFLOW-HISTORY-INDEX.md
           - RESEARCH-SOURCES.md
-          - V15-ALL-SETUP-STATUS.log
+          - V16-ALL-SETUP-STATUS.log
 
           Raw runner evidence:
           - ci-logs/
@@ -4024,7 +4056,7 @@ jobs:
           - project-history/
 
           Artifact naming:
-          V15-LG-Velvet-G900-Diagnostics
+          V16-LG-Velvet-G900-Diagnostics
 
           ZIP rule:
           This directory is uploaded directly to GitHub Actions. GitHub creates
@@ -4036,7 +4068,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V15-LG-Velvet-G900-Diagnostics
+          name: V16-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
@@ -4047,7 +4079,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: V13-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V15-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          path: artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
@@ -4056,8 +4088,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V15-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V15-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V16-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V16-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
