@@ -2756,6 +2756,27 @@ jobs:
           # modification is performed.
           test "$(grep -cF '#include <linux/sched/signal.h>' "$DISPATCH_C")" -eq 1
           grep -qF '#include <linux/sched/signal.h>' "$DISPATCH_C"
+          # SETUP 19 — Linux 4.19 task_work API boundary
+          # The actual Kbuild source is drivers/kernelsu/supercall/supercall.c.
+          # Linux 4.19 declares task_work_add(..., bool), not the newer
+          # enum task_work_notify_mode/TWA_RESUME API. The current compiler
+          # failure is exactly supercall.c:98: undeclared TWA_RESUME.
+          # This change is limited to the actual compiled file. Setup 10A
+          # is not reopened, rewritten, or otherwise modified.
+          # ------------------------------------------------------------
+          SUPERCALL_C="drivers/kernelsu/supercall/supercall.c"
+          test -f "$SUPERCALL_C"
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQpiYWQgPSAidGFza193b3JrX2FkZChjdXJyZW50LCAmdHctPmNiLCBUV0FfUkVTVU1FKSIKZ29vZCA9ICJ0YXNrX3dvcmtfYWRkKGN1cnJlbnQsICZ0dy0+Y2IsIHRydWUpIgpjb3VudCA9IHMuY291bnQoYmFkKQppZiBjb3VudCAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdChmIltGQUlMXSBTZXR1cCAxOTogZXhwZWN0ZWQgZXhhY3RseSBvbmUgVFdBX1JFU1VNRSB0YXNrX3dvcmtfYWRkIGNhbGwsIGZvdW5kIHtjb3VudH0iKQpzID0gcy5yZXBsYWNlKGJhZCwgZ29vZCwgMSkKaWYgYmFkIGluIHM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gU2V0dXAgMTk6IFRXQV9SRVNVTUUgcmVtYWlucyBpbiBhY3R1YWwgc3VwZXJjYWxsLmMiKQppZiBzLmNvdW50KGdvb2QpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gU2V0dXAgMTk6IGV4cGVjdGVkIGV4YWN0bHkgb25lIExpbnV4IDQuMTkgYm9vbCB0YXNrX3dvcmtfYWRkIGZvcm0iKQpwLndyaXRlX3RleHQocykKcHJpbnQoIltGSVhFRF0gU2V0dXAgMTk6IGFjdHVhbCBkcml2ZXJzL2tlcm5lbHN1L3N1cGVyY2FsbC9zdXBlcmNhbGwuYyBUV0FfUkVTVU1FIC0+IHRydWUiKQo=' | base64 -d > "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
+          chmod 700 "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
+          python3 -m py_compile "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
+          python3 "$RUNNER_TEMP/setup19_taskwork_419_fix.py" "$SUPERCALL_C"
+          test "$(grep -cF 'task_work_add(current, &tw->cb, true)' "$SUPERCALL_C")" -eq 1
+          if grep -qF 'task_work_add(current, &tw->cb, TWA_RESUME)' "$SUPERCALL_C"; then
+            echo '[FAIL] Setup 19: obsolete TWA_RESUME task_work API remains'
+            exit 1
+          fi
+          echo '[PASS] Setup 19 Linux 4.19 task_work bool API verified in actual Kbuild supercall.c.'
+
           make V=1 "$KSU_BUILD_DIR/"
           test -s "$SEPOLICY_O"
           test -s "$KSU_COMPOSITE_O"
@@ -2819,27 +2840,6 @@ jobs:
           echo "[PASS] V1: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
 
           # ------------------------------------------------------------
-          # SETUP 19 — Linux 4.19 task_work API boundary
-          # The actual Kbuild source is drivers/kernelsu/supercall/supercall.c.
-          # Linux 4.19 declares task_work_add(..., bool), not the newer
-          # enum task_work_notify_mode/TWA_RESUME API. The current compiler
-          # failure is exactly supercall.c:98: undeclared TWA_RESUME.
-          # This change is limited to the actual compiled file. Setup 10A
-          # is not reopened, rewritten, or otherwise modified.
-          # ------------------------------------------------------------
-          SUPERCALL_C="drivers/kernelsu/supercall/supercall.c"
-          test -f "$SUPERCALL_C"
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQpiYWQgPSAidGFza193b3JrX2FkZChjdXJyZW50LCAmdHctPmNiLCBUV0FfUkVTVU1FKSIKZ29vZCA9ICJ0YXNrX3dvcmtfYWRkKGN1cnJlbnQsICZ0dy0+Y2IsIHRydWUpIgpjb3VudCA9IHMuY291bnQoYmFkKQppZiBjb3VudCAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdChmIltGQUlMXSBTZXR1cCAxOTogZXhwZWN0ZWQgZXhhY3RseSBvbmUgVFdBX1JFU1VNRSB0YXNrX3dvcmtfYWRkIGNhbGwsIGZvdW5kIHtjb3VudH0iKQpzID0gcy5yZXBsYWNlKGJhZCwgZ29vZCwgMSkKaWYgYmFkIGluIHM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gU2V0dXAgMTk6IFRXQV9SRVNVTUUgcmVtYWlucyBpbiBhY3R1YWwgc3VwZXJjYWxsLmMiKQppZiBzLmNvdW50KGdvb2QpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gU2V0dXAgMTk6IGV4cGVjdGVkIGV4YWN0bHkgb25lIExpbnV4IDQuMTkgYm9vbCB0YXNrX3dvcmtfYWRkIGZvcm0iKQpwLndyaXRlX3RleHQocykKcHJpbnQoIltGSVhFRF0gU2V0dXAgMTk6IGFjdHVhbCBkcml2ZXJzL2tlcm5lbHN1L3N1cGVyY2FsbC9zdXBlcmNhbGwuYyBUV0FfUkVTVU1FIC0+IHRydWUiKQo=' | base64 -d > "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
-          chmod 700 "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
-          python3 -m py_compile "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
-          python3 "$RUNNER_TEMP/setup19_taskwork_419_fix.py" "$SUPERCALL_C"
-          test "$(grep -cF 'task_work_add(current, &tw->cb, true)' "$SUPERCALL_C")" -eq 1
-          if grep -qF 'task_work_add(current, &tw->cb, TWA_RESUME)' "$SUPERCALL_C"; then
-            echo '[FAIL] Setup 19: obsolete TWA_RESUME task_work API remains'
-            exit 1
-          fi
-          echo '[PASS] Setup 19 Linux 4.19 task_work bool API verified in actual Kbuild supercall.c.'
-
           export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
 
