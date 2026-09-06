@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V22
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V23
 
 on:
   workflow_dispatch:
@@ -2206,52 +2206,95 @@ jobs:
           echo "========== $SETUP_NAME =========="
           echo "[LIVE] Full step output is captured in $SETUP_LOG"
           set -Eeuo pipefail
+
           CPU_C="drivers/kernelsu/feature/cpu_spoof.c"
           CS_H="include/linux/clocksource.h"
           test -f "$CPU_C"
           test -f "$CS_H"
 
           echo "[EVIDENCE] Clang 20 reported three Linux-4.19 errors for cs->vdso_clock_mode."
-          echo "[RESEARCH] The older ARM/ARM64 clocksource model stores vDSO suitability in archdata.vdso_direct; newer kernels moved to a common vdso_clock_mode field."
+          echo "[RESEARCH] The actual LG 4.19 tree exposes archdata through include/linux/clocksource.h -> asm/clocksource.h -> asm/vdso/clocksource.h."
+          echo "[RESEARCH] Native struct arch_clocksource_data contains bool vdso_direct."
           echo "[FIX POLICY] Preserve CPU-spoof vDSO-mode behavior through the native 4.19 storage model; do not remove the feature or invent a new core ABI."
 
           COUNT="$(grep -cF 'cs->vdso_clock_mode' "$CPU_C" || true)"
           echo "[AUDIT] cpu_spoof.c vdso_clock_mode references before compatibility port: $COUNT"
-          test "$COUNT" -eq 3 || { echo "[FAIL] Expected exactly 3 evidenced references; got $COUNT"; exit 1; }
+          test "$COUNT" -eq 3 || {
+            echo "[FAIL] Expected exactly 3 evidenced references; got $COUNT"
+            exit 1
+          }
 
-          if ! grep -qF 'vdso_direct' "$CS_H"; then
-            echo "[FAIL] Native 4.19 archdata.vdso_direct was not found."
+          # Do not assume vdso_direct lives in include/linux/clocksource.h.
+          # In the actual LG 4.19 tree it is defined by the arch-specific
+          # clocksource data header included from clocksource.h.
+          ARCH_CS_H="$(
+            grep -RIlF --include='*.h' \
+              'struct arch_clocksource_data' arch/arm64/include 2>/dev/null |
+              while read -r f; do
+                if grep -qF 'vdso_direct' "$f"; then
+                  printf '%s\n' "$f"
+                  break
+                fi
+              done
+          )"
+
+          if [ -z "$ARCH_CS_H" ]; then
+            echo "[FAIL] Native 4.19 struct arch_clocksource_data/vdso_direct definition was not found under arch/arm64/include."
             echo "[FAIL] Refusing to invent a clocksource ABI or remove CPU-spoof functionality."
             exit 1
           fi
 
-          python3 - "$CPU_C" <<'PY'
+          echo "[PASS] Native ARM64 clocksource data definition found: $ARCH_CS_H"
+          grep -nE 'struct arch_clocksource_data|vdso_direct' "$ARCH_CS_H"
+
+          # Verify that the discovered architecture header is actually reachable
+          # from the kernel clocksource header, rather than merely containing a
+          # coincidental field with the same name.
+          grep -qF '#include <asm/clocksource.h>' "$CS_H"
+          test -f "arch/arm64/include/asm/clocksource.h"
+          grep -qF '#include <asm/vdso/clocksource.h>' arch/arm64/include/asm/clocksource.h
+          test "$(grep -cF 'struct arch_clocksource_data' "$ARCH_CS_H")" -eq 1
+          test "$(grep -cF 'bool vdso_direct' "$ARCH_CS_H")" -eq 1
+
+          python3 - "$CPU_C" "$ARCH_CS_H" <<'PY'
           from pathlib import Path
           import sys
-          p = Path(sys.argv[1])
-          s = p.read_text()
+
+          cpu_path = Path(sys.argv[1])
+          arch_header = Path(sys.argv[2])
+
+          s = cpu_path.read_text()
           token = 'cs->vdso_clock_mode'
           if s.count(token) != 3:
-              raise SystemExit(f'[FAIL] expected 3 vdso_clock_mode references, found {s.count(token)}')
+              raise SystemExit(
+                  f'[FAIL] expected 3 vdso_clock_mode references, found {s.count(token)}'
+              )
+
+          header = arch_header.read_text()
+          if header.count('bool vdso_direct') != 1:
+              raise SystemExit('[FAIL] native arch_clocksource_data.vdso_direct definition is not unique')
 
           macro = """
           /* Linux 4.19 compatibility: preserve CPU-spoof vDSO mode state
-           * through the native ARM/ARM64 clocksource archdata storage.
+           * through the native ARM64 clocksource archdata storage.
            * Later kernels expose the same concept as clocksource.vdso_clock_mode.
+           * This does not alter the core clocksource ABI or remove CPU spoofing.
            */
           #ifndef KSU_CPU_SPOOF_VDSO_MODE
           #define KSU_CPU_SPOOF_VDSO_MODE(cs) ((cs)->archdata.vdso_direct)
           #endif
           """
+
           lines = s.splitlines(True)
-          insert = 0
-          for i, line in enumerate(lines):
-              if line.startswith('#include '):
-                  insert = i + 1
           if 'KSU_CPU_SPOOF_VDSO_MODE' not in s:
+              insert = 0
+              for i, line in enumerate(lines):
+                  if line.startswith('#include '):
+                      insert = i + 1
               s = ''.join(lines[:insert]) + macro + ''.join(lines[insert:])
+
           s = s.replace(token, 'KSU_CPU_SPOOF_VDSO_MODE(cs)')
-          p.write_text(s)
+          cpu_path.write_text(s)
           print('[FIXED] Ported all three clocksource member accesses to native 4.19 archdata.vdso_direct.')
           PY
 
@@ -2259,10 +2302,17 @@ jobs:
           ALIAS="$(grep -cF 'KSU_CPU_SPOOF_VDSO_MODE(cs)' "$CPU_C" || true)"
           echo "[AUDIT] obsolete vdso_clock_mode references after fix: $AFTER"
           echo "[AUDIT] native 4.19 compatibility references: $ALIAS"
-          test "$AFTER" -eq 0 || { echo "[FAIL] obsolete vdso_clock_mode references remain"; exit 1; }
-          test "$ALIAS" -ge 3 || { echo "[FAIL] compatibility alias did not preserve all three accesses"; exit 1; }
+          test "$AFTER" -eq 0 || {
+            echo "[FAIL] obsolete vdso_clock_mode references remain"
+            exit 1
+          }
+          test "$ALIAS" -ge 3 || {
+            echo "[FAIL] compatibility alias did not preserve all three accesses"
+            exit 1
+          }
           grep -qF '#define KSU_CPU_SPOOF_VDSO_MODE(cs) ((cs)->archdata.vdso_direct)' "$CPU_C"
-          echo "[PASS] CPU-spoof vDSO-mode functionality preserved through native 4.19 storage."
+
+          echo "[PASS] CPU-spoof vDSO-mode functionality preserved through the actual native 4.19 ARM64 storage definition."
           echo "[PASS] No CPU-spoof feature was removed or disabled."
           echo "==================================================================="
 
