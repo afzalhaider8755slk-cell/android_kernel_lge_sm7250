@@ -9,7 +9,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V23
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V28
 
 on:
   workflow_dispatch:
@@ -62,7 +62,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 240
 
     env:
       ARCH: arm64
@@ -108,6 +108,7 @@ jobs:
           SETUP_LOG="$DIAG_DIR/01-setup-01-initialize-diagnostics-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
+          exec 3>&1
           exec > >(tee -a "$SETUP_LOG") 2>&1
           echo "========== $SETUP_NAME =========="
           echo "[LIVE] Full step output is captured in $SETUP_LOG"
@@ -2930,10 +2931,11 @@ jobs:
         shell: bash
         run: |
           SETUP_NO="27"
-          SETUP_NAME="Setup 27 - Cumulative 4.19 Hotspot Compile Gate"
+          SETUP_NAME="Setup 27 - Cumulative 4.19 Hotspot Compile Gate (Parallel)"
           SETUP_LOG="$DIAG_DIR/27-setup-27-cumulative-4-19-hotspot-compile-gate-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
+          exec 3>&1
           exec > >(tee -a "$SETUP_LOG") 2>&1
           echo "========== $SETUP_NAME =========="
           echo "[LIVE] Full step output is captured in $SETUP_LOG"
@@ -3107,7 +3109,39 @@ jobs:
           grep -F "$SEPOLICY_O" "$RUNNER_TEMP/12B-sepolicy-make-command.log" >/dev/null
           cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
 
-          make V=1 "$KSU_BUILD_DIR/"
+          # V28 ROOT-CAUSE FIX: the previous run entered the native KernelSU
+          # directory target without -j. That made Setup 27 effectively serial;
+          # the GitHub run spent ~1h46m in this gate and the 120-minute job timeout
+          # cancelled the job before Setup 28 could start. Keep the exact same
+          # native Kbuild target and source contract, but use the runner's workers.
+          KSU_JOBS="${KSU_JOBS:-$(nproc)}"
+          test "$KSU_JOBS" -ge 2
+          echo "[INFO] Setup 27 parallel Kbuild jobs: $KSU_JOBS"
+
+          # V28 LIVE ACTIVITY POLICY: detailed compiler output stays in the
+          # diagnostic artifact log. The GitHub console receives only the latest
+          # file/target being built; no compiler log is streamed to the console.
+          : > "$RUNNER_TEMP/12B-kernelsu-build-status"
+          set +e
+          ( make -j"$KSU_JOBS" V=1 "$KSU_BUILD_DIR/" >"$LOG" 2>&1; printf '%s\n' "$?" > "$RUNNER_TEMP/12B-kernelsu-build-status" ) &
+          KSU_BUILD_PID=$!
+          set -e
+
+          LAST_LIVE_FILE=""
+          while kill -0 "$KSU_BUILD_PID" 2>/dev/null; do
+            sleep 10
+            CURRENT_FILE="$(grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)([[:space:]]|\[)' "$LOG" | tail -1 | grep -oE '([[:alnum:]_./+@-]+)\.(c|cc|cpp|S|o|a|dtb|dtbo)' | tail -1 || true)"
+            if [ -n "$CURRENT_FILE" ] && [ "$CURRENT_FILE" != "$LAST_LIVE_FILE" ]; then
+              printf '[V28 LIVE] %s\n' "$CURRENT_FILE" >&3
+              LAST_LIVE_FILE="$CURRENT_FILE"
+            fi
+          done
+          wait "$KSU_BUILD_PID" || true
+          KSU_BUILD_STATUS="$(cat "$RUNNER_TEMP/12B-kernelsu-build-status" 2>/dev/null || echo 1)"
+          if [ "$KSU_BUILD_STATUS" -ne 0 ]; then
+            echo "[FAIL] Setup 27 KernelSU Kbuild exited with status $KSU_BUILD_STATUS. Full compiler output is in the artifact log."
+            exit "$KSU_BUILD_STATUS"
+          fi
           test -s "$SEPOLICY_O"
 
           # V13 KBUILD CONTRACT:
@@ -3784,16 +3818,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V28-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V28-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V28-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3845,6 +3879,13 @@ jobs:
             tail -40 "$DIAG_DIR/12-build-tail.log" 2>/dev/null || true
           } 2>&1 | tee -a "$LOG"
           cat "$LOG"
+          if [ ! -s arch/arm64/boot/Image.gz ]; then
+            echo "[FAIL] V28 final image gate: arch/arm64/boot/Image.gz was not produced."
+            echo "[FAIL] A configuration-only PASS is never accepted as a kernel build success."
+            exit 1
+          fi
+          sha256sum arch/arm64/boot/Image.gz | tee -a "$LOG"
+          echo "[PASS] V28 final image gate: arch/arm64/boot/Image.gz exists and is non-empty."
           exit 0
 
       - name: Support - Stage Complete Diagnostics
@@ -3880,8 +3921,8 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V19"
-            echo "Previous workflow: V18"
+            echo "Workflow version: V28"
+            echo "Previous workflow: V27"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
             echo "workflow_ref=$GITHUB_WORKFLOW_REF"
@@ -3903,9 +3944,9 @@ jobs:
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v17-workflow-source/V19-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v17-workflow-source/V19-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V19-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v17-workflow-source/V28-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v17-workflow-source/V28-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V28-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V17 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
@@ -3913,8 +3954,8 @@ jobs:
 
           {
             echo "========== V17 ALL SETUP STATUS =========="
-            echo "Workflow version: V19"
-            echo "Previous workflow: V18"
+            echo "Workflow version: V28"
+            echo "Previous workflow: V27"
             echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18"
             echo "Setup numbers are independent from workflow version numbers."
             date -u
@@ -3929,7 +3970,7 @@ jobs:
             done
           } | tee diagnostic-artifact/V18-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V19-CURRENT-STATUS.md <<'REPORT'
+          cat > diagnostic-artifact/V28-CURRENT-STATUS.md <<'REPORT'
           # V19 Current Status
 
           ## V18 actual result
@@ -4023,7 +4064,7 @@ jobs:
           ## Diagnostics contract
           Every V-version diagnostics artifact must contain the A→Z context, complete error/fix history, current workflow, research references, setup logs, build output, source/commit/config state, current verification status, and next steps. No ZIP inside the diagnostics directory; GitHub uploads the directory as the single artifact ZIP.
           REPORT
-          cat > diagnostic-artifact/V19-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          cat > diagnostic-artifact/V28-ERROR-AND-FIX-HISTORY.md <<'REPORT'
           # Complete Error and Fix History V4 -> V19
 
           V4 — Protected Linux 4.19 SELinux compatibility baseline.
@@ -4107,22 +4148,22 @@ jobs:
           fi
 
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
-          # V19 Diagnostic Package Manifest
+          # V28 Diagnostic Package Manifest
 
           Workflow version: V19
           Previous workflow: V18
           Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19
 
           Current source:
-          - V19-CURRENT-WORKFLOW.yml
+          - V28-CURRENT-WORKFLOW.yml
 
           Current status/history:
-          - V19-CURRENT-STATUS.md
-          - V19-ERROR-AND-FIX-HISTORY.md
+          - V28-CURRENT-STATUS.md
+          - V28-ERROR-AND-FIX-HISTORY.md
           - PROJECT-CONTEXT-A-Z.md
           - WORKFLOW-HISTORY-INDEX.md
           - RESEARCH-SOURCES.md
-          - V19-ALL-SETUP-STATUS.log
+          - V28-ALL-SETUP-STATUS.log
 
           Raw runner evidence:
           - ci-logs/
@@ -4142,42 +4183,42 @@ jobs:
           This directory is uploaded directly to GitHub Actions. GitHub creates the
           single downloadable ZIP. No diagnostic ZIP is created inside it.
 
-          echo "[PASS] V19 diagnostic directory staged. No diagnostic ZIP is created here."
-      - name: Artifact - V19 Diagnostics
+          echo "[PASS] V28 diagnostic directory staged. No diagnostic ZIP is created here."
+      - name: Artifact - V28 Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V19-LG-Velvet-G900-Diagnostics
+          name: V28-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V19 AnyKernel3 OrangeFox Flashable
+      - name: Artifact - V28 AnyKernel3 OrangeFox Flashable
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V19-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          name: V28-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          path: artifacts/V28-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V19 Kernel Only ZIP
+      - name: Artifact - V28 Kernel Only ZIP
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V19-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V19-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V28-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V28-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V19 Raw Kernel Image
+      - name: Artifact - V28 Raw Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V19-LG-Velvet-G900-Raw-Kernel
+          name: V28-LG-Velvet-G900-Raw-Kernel
           path: arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 14
