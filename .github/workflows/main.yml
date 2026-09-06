@@ -1890,7 +1890,7 @@ jobs:
                   raise SystemExit("[FAIL] V19: Kbuild.include insertion anchor not found; refusing speculative edit.")
               ins = ins.replace(marker, marker + "\n\n###\n# real prerequisites without phony targets\n" + HELPER, 1)
               include.write_text(ins)
-              print("[FIXED] V19: added the upstream Kbuild real-prereqs helper exactly once.")
+              print("[FIXED] V20: inherited V19 upstream Kbuild real-prereqs helper exactly once.")
           else:
               print("[PASS] V19: upstream real-prereqs helper already exists exactly once.")
 
@@ -1954,7 +1954,7 @@ jobs:
               ]
               lines[start:end] = replacement
               build.write_text("\n".join(lines) + "\n")
-              print("[FIXED] V19: applied upstream built-in.a ARG_MAX transport while preserving update_lto_symversions and rcSTP flags.")
+              print("[FIXED] V20: inherited V19 upstream built-in.a ARG_MAX transport while preserving update_lto_symversions and rcSTP flags.")
           elif len(baseline) == 0 and len(installed) == 1:
               print("[PASS] V19: protected LTO-wrapped ARG_MAX rule is already installed exactly once.")
           elif len(baseline) == 0 and len(installed) == 0:
@@ -2058,30 +2058,40 @@ jobs:
           done
 
           echo "--- Actual SukiSU 4.19 private policy wrapper ---"
-          # V20: the previous validator failed on the *diagnostic grep pipeline* itself.
-          # With `set -e -o pipefail`, a display-only grep returning 1 aborts Setup 18
-          # before the authoritative contract checks run. Do not treat presentation
-          # grep as source validation.
-          grep -n -A16 -B3 -E 'struct[[:space:]]+selinux_policy[[:space:]]*\{' "$SEPOL_H" | head -30 || true
+          # IMPORTANT: the private wrapper is not required to be declared in
+          # drivers/kernelsu/selinux/sepolicy.h. That header may only forward-declare
+          # struct selinux_policy, while the concrete compatibility definition lives
+          # in another integrated SukiSU/SELinux header. Search the actual checked-out
+          # tree and validate the definition where it really exists.
+          WRAPPER_DEF="$(grep -RIlE --include='*.h' --include='*.c' \
+            'struct[[:space:]]+selinux_policy[[:space:]]*\{' \
+            drivers/kernelsu security/selinux 2>/dev/null | head -1 || true)"
+          if [ -z "$WRAPPER_DEF" ]; then
+            echo "[FAIL] No concrete struct selinux_policy definition exists in the integrated 4.19 source tree."
+            echo "[INFO] sepolicy.h may legally be only a forward declaration; the concrete type is required somewhere in the included source."
+            exit 1
+          fi
+          echo "[INFO] selinux_policy definition found in: $WRAPPER_DEF"
+          grep -n -A18 -B3 -E 'struct[[:space:]]+selinux_policy[[:space:]]*\{' "$WRAPPER_DEF" | head -35 || true
 
-          python3 - "$SEPOL_H" <<'PYSEPOL'
+          python3 - "$WRAPPER_DEF" "$SEPOL_H" <<'PYSEPOL'
           from pathlib import Path
           import re, sys
-          p = Path(sys.argv[1])
-          s = p.read_text()
-
-          # Accept normal C whitespace/layout around the private wrapper declaration;
-          # do not require the `{` to share the exact line/spacing used by one source
-          # snapshot. This is a read-only source-contract check.
-          m = re.search(r'\bstruct\s+selinux_policy\s*\{(?P<body>.*?)\}', s, re.S)
+          def load(path):
+              return Path(path).read_text()
+          definition = load(sys.argv[1])
+          sepolicy_h = load(sys.argv[2])
+          m = re.search(r'\bstruct\s+selinux_policy\s*\{(?P<body>.*?)\}', definition, re.S)
           if not m:
-              raise SystemExit('[FAIL] Local SukiSU policy wrapper declaration was not found in the actual 4.19 source.')
+              raise SystemExit('[FAIL] Located selinux_policy file but could not parse its concrete struct body.')
           body = m.group('body')
           if not re.search(r'\bstruct\s+policydb\s+policydb\s*;', body):
-              raise SystemExit('[FAIL] Local SukiSU policy wrapper does not expose policydb.')
+              raise SystemExit('[FAIL] Concrete selinux_policy wrapper does not expose policydb.')
           if re.search(r'\bstruct\s+selinux_map\s+map\s*;|\bu32\s+latest_granting\s*;|\bstruct\s+sidtab\s*\*\s*sidtab\s*;', body):
               raise SystemExit('[FAIL] backup_sepolicy wrapper unexpectedly exposes ss-owned fields.')
-          print('[PASS] backup_sepolicy is policydb-only; ss-owned state remains in selinux_state.ss.')
+          if 'struct selinux_policy *' not in sepolicy_h and 'struct selinux_policy' not in sepolicy_h:
+              raise SystemExit('[FAIL] sepolicy.h does not reference the integrated selinux_policy type.')
+          print('[PASS] Concrete backup_sepolicy wrapper is policydb-only; ss-owned state remains in selinux_state.ss.')
           PYSEPOL
 
           echo "--- Actual sidtab API ---"
@@ -2149,11 +2159,25 @@ jobs:
           echo "[INFO] Integrated v4.2.0 selinux_hide.c SHA256=$LOCAL_SHA256"
           test "$LOCAL_SHA256" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5"
 
-          grep -qF 'struct policydb policydb;' "$SEPOL_H"
-          if grep -A8 -F 'struct selinux_policy {' "$SEPOL_H" | grep -Eq 'struct selinux_map map;|latest_granting|struct sidtab'; then
-            echo "[FAIL] backup_sepolicy unexpectedly exposes ss-owned fields."
-            exit 1
-          fi
+          WRAPPER_DEF="$(grep -RIlE --include='*.h' --include='*.c' \
+            'struct[[:space:]]+selinux_policy[[:space:]]*\{' \
+            drivers/kernelsu security/selinux 2>/dev/null | head -1 || true)"
+          test -n "$WRAPPER_DEF" || { echo "[FAIL] Setup 19: concrete selinux_policy definition not found in actual source tree."; exit 1; }
+          echo "[INFO] Setup 19 using selinux_policy definition: $WRAPPER_DEF"
+          python3 - "$WRAPPER_DEF" <<'PYWRAP'
+          from pathlib import Path
+          import re,sys
+          s=Path(sys.argv[1]).read_text()
+          m=re.search(r'\bstruct\s+selinux_policy\s*\{(?P<body>.*?)\}',s,re.S)
+          if not m:
+              raise SystemExit('[FAIL] Setup 19: cannot parse selinux_policy definition.')
+          body=m.group('body')
+          if not re.search(r'\bstruct\s+policydb\s+policydb\s*;',body):
+              raise SystemExit('[FAIL] Setup 19: selinux_policy wrapper does not expose policydb.')
+          if re.search(r'\bstruct\s+selinux_map\s+map\s*;|\bu32\s+latest_granting\s*;|\bstruct\s+sidtab\s*\*\s*sidtab\s*;',body):
+              raise SystemExit('[FAIL] Setup 19: backup_sepolicy wrapper unexpectedly exposes ss-owned fields.')
+          print('[PASS] Setup 19: backup_sepolicy wrapper is policydb-only.')
+          PYWRAP
           for token in 'struct sidtab *sidtab;' 'struct selinux_map map;' 'u32 latest_granting;' 'struct page *status_page;' 'struct mutex status_lock;'; do
             grep -qF "$token" "$SS_H" || { echo "[FAIL] Actual selinux_ss member missing: $token"; exit 1; }
           done
@@ -3909,7 +3933,7 @@ jobs:
           before the rcSTP AR invocation.
           V18's guard treated the plain CIP135 form as authoritative and therefore refused to mutate. That refusal was safe, but the V18 proposed replacement would also have been unsafe because it would have dropped the protected LTO wrapper.
 
-          ## V19 source-backed correction
+          ## V20 source-backed correction
           V19 matches the actual protected LG LTO-wrapped rule, preserves:
           - $(update_lto_symversions)
           - rcSTP$(KBUILD_ARFLAGS)
