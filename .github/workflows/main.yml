@@ -9,7 +9,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V35
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V29
 
 on:
   workflow_dispatch:
@@ -2931,152 +2931,239 @@ jobs:
         shell: bash
         run: |
           SETUP_NO="27"
-          SETUP_NAME="Setup 27 - Cumulative 4.19 Hotspot Compile Gate"
+          SETUP_NAME="Setup 27 - Cumulative 4.19 Hotspot Compile Gate (Parallel)"
           SETUP_LOG="$DIAG_DIR/27-setup-27-cumulative-4-19-hotspot-compile-gate-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-
-          # V35: console and diagnostics are deliberately separated.
-          # FD 3 remains the GitHub Live Activity channel; stdout/stderr go
-          # only to the per-setup log. Live Activity prints only the current
-          # Kbuild target/file.
-          exec 3>&1 4>&2
-          exec >"$SETUP_LOG" 2>&1
-          export PS4="+ [SETUP-${SETUP_NO}] "
-          set +x
-          set -Eeuo pipefail
-          trap 'rc=$?; if [ "$rc" -eq 0 ]; then printf "[SETUP-%s][PASS] %s completed with exit code 0.\n" "$SETUP_NO" "$SETUP_NAME" >&3; else printf "[SETUP-%s][FAIL] %s exited with code %s.\n" "$SETUP_NO" "$SETUP_NAME" "$rc" >&3; fi' EXIT
-
-          printf '%s\n' "========== $SETUP_NAME ==========" >&3
+          exec 3>&1
+          exec > >(tee -a "$SETUP_LOG") 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[INFO] Detailed stdout/stderr is captured only in $SETUP_LOG."
-          echo "[INFO] GitHub Live Activity emits only the current Kbuild file/target."
-
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          export PS4="+ [SETUP-${SETUP_NO}] "
+          set -x
+          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
+          set -Eeuo pipefail
           LOG="$DIAG_DIR/12B-targeted-419-compile-smoke.log"
           : > "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
 
-          echo "========== V35 SETUP 27 — PROVEN NATIVE KBUILD GATE =========="
-          echo "[RULE] No source mutation in Setup 27."
-          echo "[RULE] Do not re-run Setup 17 fixes or introduce a new SELinux value."
-          echo "[RULE] Setup 27 must validate the cumulative source already produced by Setup 17-19/25-26."
-          echo "[RULE] On PASS, the workflow proceeds directly to Setup 28."
+          echo "========== V12 CUMULATIVE 4.19 HOTSPOT COMPILE GATE =========="
+          echo "[RULE] No feature removal. No compiler-error skipping."
+          echo "[RULE] Setup 27 is verification/compile-only. It performs NO source mutation."
+          echo "[RULE] All compatibility fixes must already exist in the cumulative tree."
 
           SEPOLICY_C="drivers/kernelsu/selinux/sepolicy.c"
-          AVTAB_H="security/selinux/ss/avtab.h"
-          HASHTAB_H="security/selinux/ss/hashtab.h"
-          POLICYDB_H="security/selinux/ss/policydb.h"
-          for f in "$SEPOLICY_C" "$AVTAB_H" "$HASHTAB_H" "$POLICYDB_H"; do
-            test -s "$f"
-          done
+          test -s "$SEPOLICY_C"
 
-          # V35 ROOT-CAUSE FIX:
-          # V33/V32 rejected the already-correct cumulative source because the
-          # validator demanded an extra direct AVTAB traversal expression:
-          #   flex_array_get_ptr(db->te_avtab.htable, i)
-          # That expression is NOT required by the actual adapter contract.
-          # Setup 17 already installed the dedicated AVTAB iterator and routes
-          # avtab_for_each() through it. Requiring an unrelated direct traversal
-          # was a validator regression that stopped Setup 27 before Kbuild.
-          python3 - "$SEPOLICY_C" "$AVTAB_H" "$HASHTAB_H" "$POLICYDB_H" <<'PY'
+          echo "----- CURRENT CUMULATIVE sepolicy.c -----"
+          sed -n '50,115p' "$SEPOLICY_C"
+
+          echo "----- V10 ITERATOR ARCHITECTURE AUDIT -----"
+          python3 - "$SEPOLICY_C" <<'PY'
           from pathlib import Path
           import re, sys
-          c = Path(sys.argv[1])
-          avtab_h = Path(sys.argv[2])
-          hashtab_h = Path(sys.argv[3])
-          policydb_h = Path(sys.argv[4])
-          s = c.read_text()
-          ah = avtab_h.read_text()
-          hh = hashtab_h.read_text()
-          ph = policydb_h.read_text()
 
-          if "struct flex_array *htable" not in ah:
-              raise SystemExit("[FAIL] V35: LG 4.19 AVTAB flex_array storage is missing.")
-          if "struct hashtab_node **htable" not in hh:
-              raise SystemExit("[FAIL] V35: LG 4.19 native hashtab pointer-array storage is missing.")
+          p = Path(sys.argv[1])
+          s = p.read_text()
 
-          # Native hashtab contract installed by the cumulative Setup 17 state.
-          if "#define ksu_hash_for_each(node_ptr, n_slot, cur)" not in s:
-              raise SystemExit("[FAIL] V35: cumulative native hashtab iterator definition is missing.")
-          if not re.search(r"for\s*\(\s*cur\s*=\s*node_ptr\s*\[\s*i\s*\]\s*;\s*cur\s*;\s*cur\s*=\s*cur->next\s*\)", s):
-              raise SystemExit("[FAIL] V35: native hashtab pointer-array traversal is missing.")
+          # V26: actual LG 4.19 AVTAB is flex_array; hashtab is native array.
+          avtab_h = Path("security/selinux/ss/avtab.h").read_text()
+          if "struct flex_array *htable" not in avtab_h:
+              raise SystemExit("[FAIL] V26: expected LG 4.19 AVTAB flex_array storage is absent.")
+          avtab_iterator = "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)"
+          avtab_direct = "flex_array_get_ptr(db->te_avtab.htable, i)"
+          avtab_mode = "flex_array"
+          if avtab_iterator not in s or "#define ksu_avtab_for_each(" not in s:
+              raise SystemExit("[FAIL] V26: dedicated AVTAB flex_array iterator is missing.")
+          if "#define avtab_for_each(avtab, cur) ksu_avtab_for_each(avtab.htable, avtab.nslot, cur);" not in s:
+              raise SystemExit("[FAIL] V26: AVTAB traversal is not routed through dedicated iterator.")
 
-          # Dedicated AVTAB contract installed by Setup 17. Accept the macro
-          # exactly as implemented; do not demand a second direct db->te_avtab
-          # traversal that was never part of the proven V15 gate.
-          if "#define ksu_avtab_for_each(" not in s:
-              raise SystemExit("[FAIL] V35: dedicated AVTAB iterator definition is missing.")
-          if "flex_array_get_ptr(node_ptr, i)" not in s:
-              raise SystemExit("[FAIL] V35: AVTAB flex_array traversal body is missing.")
-          if "avtab_for_each(avtab, cur)" not in s or "ksu_avtab_for_each(avtab.htable, avtab.nslot, cur)" not in s:
-              raise SystemExit("[FAIL] V35: avtab_for_each() is not routed through the dedicated AVTAB iterator.")
+          # Linux 4.19 hashtab uses a native pointer array. The shared helper
+          # receives that array as node_ptr, so its traversal is node_ptr[i].
+          # Do not require a brittle literal such as (htab)->htable[i].
+          hashtab_iterator = re.search(
+              r"#define\s+ksu_hash_for_each\s*\([^\n]*\n(?:.*\n){0,6}?for\s*\(i\s*=\s*0;\s*i\s*<\s*n_slot;\s*\+\+i\)\s*\n\s*for\s*\(cur\s*=\s*node_ptr\s*\[i\]",
+              s, re.S)
+          if not hashtab_iterator:
+              raise SystemExit("[FAIL] V27: dedicated 4.19 hashtab iterator is missing native node_ptr[i] traversal.")
+          hashtab_blocks = re.findall(r"(?ms)^#if LINUX_VERSION_CODE >= KERNEL_VERSION\(5, 8, 0\)\n#define ksu_hashtab_for_each\(htab, cur\).*?^#endif", s)
+          if len(hashtab_blocks) != 1:
+              raise SystemExit(f"[FAIL] V10: expected exactly one conditional ksu_hashtab_for_each block, found {len(hashtab_blocks)}")
+          if len(re.findall(r"(?m)^#define ksu_hashtab_for_each\(", s)) != 2:
+              raise SystemExit("[FAIL] V10: canonical hashtab iterator must have exactly two version branches.")
+          hashtab_match = re.search(
+              r"(?ms)^#if LINUX_VERSION_CODE >= KERNEL_VERSION\(5, 8, 0\)\n"
+              r"#define ksu_hashtab_for_each\(htab, cur\).*?^#else\n"
+              r"(?P<legacy>.*?)^#endif",
+              s,
+          )
+          if not hashtab_match:
+              raise SystemExit("[FAIL] V10: canonical hashtab version split is missing.")
+          legacy_hashtab = hashtab_match.group("legacy")
+          # Inspect preprocessor code, not comments: the researched comment
+          # intentionally names ksu_hash_for_each() while documenting why the
+          # 4.19 hashtab adapter is separate from the avtab flex_array iterator.
+          legacy_code = re.sub(r"/\*.*?\*/|//[^\n]*", "", legacy_hashtab, flags=re.S)
+          if re.search(r"\bksu_hash_for_each\s*\(", legacy_code):
+              raise SystemExit("[FAIL] V10: Linux 4.19 hashtab branch still invokes the flex_array iterator.")
+          if not re.search(r"for\s*\(cur\s*=\s*node_ptr\s*\[i\]", legacy_code) and not re.search(r"for\s*\(cur\s*=\s*\(htab\)->htable\s*\[i\]", legacy_code):
+              raise SystemExit("[FAIL] V27: Linux 4.19 hashtab branch lacks native pointer-array traversal.")
 
-          # Preserve the native 4.19 policy boundary; this is a verification,
-          # not a request to mutate Setup 17.
-          if "struct filename_trans {" in ph and "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)" not in s:
-              raise SystemExit("[FAIL] V35: researched legacy filename_trans branch is missing.")
+          if s.count("#define ksu_avtab_for_each(") != 1:
+              raise SystemExit("[FAIL] V26: dedicated AVTAB iterator count is not exactly one.")
 
-          for name in ("remove_avtab_node", "add_filename_trans", "add_type", "add_typeattribute_raw"):
-              pat = r'(?ms)^static\s+(?:bool|void|struct\s+avtab_node\s*\*)\s+' + re.escape(name) + r'\s*\([^;{}]*\)\s*\{'
-              if len(re.findall(pat, s)) != 1:
-                  raise SystemExit(f"[FAIL] V35: {name} definition count is not exactly one.")
+          # Setup 17's researched AVTAB traversal must match the actual header.
+          if avtab_direct not in s:
+              raise SystemExit(f"[FAIL] V10: researched AVTAB {avtab_mode} traversal is missing.")
 
-          # Explicitly reject the old validator regression, not the source.
-          if "direct AVTAB flex_array traversal missing" in s:
-              raise SystemExit("[FAIL] V35: obsolete validator text leaked into source.")
-          print("[PASS] V35: cumulative 4.19 hashtab/native-pointer-array contract verified.")
-          print("[PASS] V35: cumulative AVTAB/flex_array contract verified.")
-          print("[PASS] V35: no direct db->te_avtab traversal requirement imposed.")
-          print("[PASS] V35: Setup 27 performs no source mutation.")
+          # The exact bad Linux-4.19 hashtab mapping from the failed V4 build must
+          # never be regenerated: it routes struct hashtab_node ** into the
+          # flex_array iterator and was the direct cause of -Wincompatible-pointer-types.
+          bad_hashtab = "#define ksu_hashtab_for_each(htab, cur) ksu_hash_for_each(htab->htable, htab->size, cur)"
+          if bad_hashtab in s:
+              raise SystemExit("[FAIL] V10: obsolete flex_array hashtab adapter was regenerated.")
+
+          # Linux 4.19 hashtab must have native pointer-array traversal.
+          if not re.search(r"for\s*\(cur\s*=\s*node_ptr\s*\[i\]", s):
+              raise SystemExit("[FAIL] V27: native Linux 4.19 hashtab traversal is missing.")
+
+          # Filename-transition compatibility is validated from the actual checked-out
+          # LG 4.19 headers. Setup 27 must consume the same source-derived contract as
+          # Setup 17; it must never invent a different version boundary or API spelling.
+          policydb_h = Path("security/selinux/ss/policydb.h").read_text()
+          hashtab_h = Path("security/selinux/ss/hashtab.h").read_text()
+          assert "struct hashtab_node **htable" in hashtab_h
+          assert "int hashtab_insert(struct hashtab *h, void *k, void *d);" in hashtab_h
+
+          if "struct filename_trans {" in policydb_h:
+              legacy_marker = "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)"
+              if legacy_marker not in s:
+                  raise SystemExit("[FAIL] V10: source-derived legacy filename_trans branch is missing.")
+              legacy = s.split("#else /* Linux 5.8+ filename_trans_key; 5.9+ uses key-params hashtab API */", 1)[0]
+              if "struct filename_trans ft;" not in legacy:
+                  raise SystemExit("[FAIL] V10: legacy filename_trans declaration is missing.")
+              if "hashtab_insert(db->filename_trans, new_key, datum)" not in legacy:
+                  raise SystemExit("[FAIL] V10: legacy 3-argument hashtab_insert path is missing.")
+              if "struct filename_trans_key key;" in legacy:
+                  raise SystemExit("[FAIL] V10: newer filename_trans_key leaked into legacy branch.")
+              print("[PASS] V10: actual LG policydb.h requires and receives the legacy filename_trans branch.")
+          elif "struct filename_trans_key {" in policydb_h:
+              if "struct filename_trans_key key;" not in s:
+                  raise SystemExit("[FAIL] V10: filename_trans_key branch is missing.")
+              if "hashtab_search(&db->filename_trans, &key)" not in s:
+                  raise SystemExit("[FAIL] V10: 5.8 filename_trans search path is missing.")
+              if "hashtab_insert(&db->filename_trans, new_key, trans);" not in s:
+                  raise SystemExit("[FAIL] V10: 5.8 3-argument filename_trans insertion path is missing.")
+              if "hashtab_insert(&db->filename_trans, new_key, trans, filenametr_key_params)" not in s:
+                  raise SystemExit("[FAIL] V10: 5.9+ key-params filename_trans insertion path is missing.")
+              print("[PASS] V10: actual policydb.h requires the filename_trans_key branch and both 5.8/5.9 API paths are present.")
+          else:
+              raise SystemExit("[FAIL] V10: unrecognized filename transition representation in actual policydb.h.")
+          print("[PASS] V12: Setup 27 uses the same source-derived filename-transition contract as Setup 17.")
+          names = ["remove_avtab_node", "add_filename_trans", "add_type", "add_typeattribute_raw"]
+          counts = {}
+          for name in names:
+              pat = re.compile(
+                  r'(?ms)^static\s+(?:bool|void|struct\s+avtab_node\s*\*)\s+'
+                  + re.escape(name) + r'\s*\([^;{}]*\)\s*\{'
+              )
+              counts[name] = len(pat.findall(s))
+          if counts != {n: 1 for n in names}:
+              raise SystemExit("[FAIL] V10: duplicate/missing researched function definitions: " + repr(counts))
+
+          print("[PASS] V10: avtab keeps Linux 4.19 flex_array traversal.")
+          print("[PASS] V10: hashtab has its separate native pointer-array traversal.")
+          print("[PASS] V10: duplicate Setup-27 AVTAB injection is absent.")
+          print("[PASS] V10: researched functions occur exactly once.")
           PY
 
-          echo "----- V35 AUTHORITATIVE NATIVE KBUILD -----"
+          echo "----- REAL KBUILD GATES (NO AUTOFIX) -----"
+          # Research correction: Linux 4.19 Kbuild's supported directory
+          # traversal is "make -f scripts/Makefile.build obj=<dir>".  The
+          # SukiSU Kbuild declares kernelsu.o as a composite object and
+          # sepolicy.o as one of kernelsu-objs.  Calling the top-level Make
+          # target "drivers/kernelsu/kernelsu.o" directly bypasses that
+          # directory traversal and, in this tree, returns "No rule to make
+          # target".  Do not alter the Kbuild/source; invoke the same
+          # scripts/Makefile.build path used by normal kernel recursion.
           KSU_BUILD_DIR="drivers/kernelsu"
           SEPOLICY_O="$KSU_BUILD_DIR/selinux/sepolicy.o"
+          KSU_COMPOSITE_O="$KSU_BUILD_DIR/kernelsu.o"
           KSU_KBUILD="$KSU_BUILD_DIR/Kbuild"
-          KSU_ARCHIVE="$KSU_BUILD_DIR/built-in.a"
           test -f "$KSU_KBUILD"
-          test -d "$KSU_BUILD_DIR"
+          test -L "$KSU_BUILD_DIR" || test -d "$KSU_BUILD_DIR"
+          : > "$RUNNER_TEMP/12B-sepolicy-make-command.log"
 
-          # One and only one native directory-level Kbuild pass, matching the
-          # proven V15 Setup 27 behavior. It is asynchronous only so Live
-          # Activity can show the current target without dumping the compiler log.
-          RC_FILE="$RUNNER_TEMP/setup27.make.rc"
-          rm -f "$RC_FILE"
-          (
-            set +e
-            make V=1 "$KSU_BUILD_DIR/" >>"$LOG" 2>&1
-            rc=$?
-            printf '%s\n' "$rc" > "$RC_FILE"
-            exit "$rc"
-          ) &
-          MAKE_PID=$!
-
-          LAST_FILE=""
-          while [ ! -s "$RC_FILE" ]; do
-            CURRENT="$(grep -E '(^|[[:space:]])(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)[[:space:]]' "$LOG" 2>/dev/null \
-              | tail -1 \
-              | sed -E 's/^[[:space:]]*[^:]*:[[:space:]]*//' \
-              | grep -Eo '[[:alnum:]_./+@-]+\.(c|cc|cpp|S|o|a|dtb|dtbo)([[:space:]]|$)' \
-              | head -1 \
-              | tr -d '[:space:]' || true)"
-            if [ -n "$CURRENT" ] && [ "$CURRENT" != "$LAST_FILE" ]; then
-              printf '%s\n' "$CURRENT" >&3
-              LAST_FILE="$CURRENT"
-            fi
-            sleep 2
-          done
-
-          wait "$MAKE_PID" || true
-          MAKE_STATUS="$(cat "$RC_FILE")"
-
-          if [ "$MAKE_STATUS" -ne 0 ]; then
-            echo "[FAIL] V35: native drivers/kernelsu/ Kbuild returned status $MAKE_STATUS."
-            echo "[FAIL] Last 120 lines:"
-            tail -120 "$LOG"
-            exit "$MAKE_STATUS"
+          # Linux 4.19's top-level Makefile documents the directory target form
+          # '%/: ... $(MAKE) $(build)=$(build-dir)'.  Calling 'make dir/' is
+          # therefore the native single-directory Kbuild entry point.  Do not
+          # bypass it with a direct scripts/Makefile.build invocation: that
+          # invocation produced the '/drivers/kernelsu/Makefile' lookup in V3.
+          if ! make -n V=1 "$KSU_BUILD_DIR/" > "$RUNNER_TEMP/12B-sepolicy-make-command.log" 2>&1; then
+            echo "[FAIL] V10: Linux 4.19 native directory target $KSU_BUILD_DIR/ failed."
+            echo "[FAIL] This is a real Kbuild failure; no compiler error is being skipped."
+            cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
+            exit 2
           fi
+          test -s "$RUNNER_TEMP/12B-sepolicy-make-command.log"
+          grep -F "$SEPOLICY_O" "$RUNNER_TEMP/12B-sepolicy-make-command.log" >/dev/null
+          cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
 
+          # V28 ROOT-CAUSE FIX: the previous run entered the native KernelSU
+          # directory target without -j. That made Setup 27 effectively serial;
+          # the GitHub run spent ~1h46m in this gate and the 120-minute job timeout
+          # cancelled the job before Setup 28 could start. Keep the exact same
+          # native Kbuild target and source contract, but use the runner's workers.
+          KSU_JOBS="${KSU_JOBS:-$(nproc)}"
+          test "$KSU_JOBS" -ge 2
+          echo "[INFO] Setup 27 parallel Kbuild jobs: $KSU_JOBS"
+
+          # V28 LIVE ACTIVITY POLICY: detailed compiler output stays in the
+          # diagnostic artifact log. The GitHub console receives only the latest
+          # file/target being built; no compiler log is streamed to the console.
+          : > "$RUNNER_TEMP/12B-kernelsu-build-status"
+          : > "$RUNNER_TEMP/12B-kernelsu-build-done"
+          LAST_LIVE_FILE=""
+
+          # The previous monitor polled kill -0 on a child process. A completed
+          # child can remain a zombie until wait(), so kill -0 may stay true
+          # forever. The monitor now follows an explicit completion sentinel,
+          # while the parent waits on make directly and preserves its real exit code.
+          (
+            while [ ! -s "$RUNNER_TEMP/12B-kernelsu-build-done" ]; do
+              sleep 10
+              CURRENT_FILE="$(grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)([[:space:]]|\[)' "$LOG" | tail -1 | grep -oE '([[:alnum:]_./+@-]+)\.(c|cc|cpp|S|o|a|dtb|dtbo)' | tail -1 || true)"
+              if [ -n "$CURRENT_FILE" ] && [ "$CURRENT_FILE" != "$LAST_LIVE_FILE" ]; then
+                printf '[V29 LIVE] %s\n' "$CURRENT_FILE" >&3
+                LAST_LIVE_FILE="$CURRENT_FILE"
+              fi
+            done
+          ) &
+          KSU_MONITOR_PID=$!
+
+          set +e
+          timeout --foreground "${KSU_GATE_TIMEOUT:-105m}"             make -j"$KSU_JOBS" V=1 "$KSU_BUILD_DIR/" >>"$LOG" 2>&1
+          KSU_BUILD_STATUS=$?
+          set -e
+
+          printf '%s\n' "$KSU_BUILD_STATUS" > "$RUNNER_TEMP/12B-kernelsu-build-status"
+          : > "$RUNNER_TEMP/12B-kernelsu-build-done"
+          kill "$KSU_MONITOR_PID" 2>/dev/null || true
+          wait "$KSU_MONITOR_PID" 2>/dev/null || true
+          KSU_BUILD_STATUS="$(cat "$RUNNER_TEMP/12B-kernelsu-build-status")"
+          if [ "$KSU_BUILD_STATUS" -ne 0 ]; then
+            echo "[FAIL] Setup 27 KernelSU Kbuild exited with status $KSU_BUILD_STATUS. Full compiler output is in the artifact log."
+            exit "$KSU_BUILD_STATUS"
+          fi
           test -s "$SEPOLICY_O"
+
+          # V13 KBUILD CONTRACT:
+          # The actual V12 runner proved that Kbuild creates
+          # drivers/kernelsu/built-in.a and that llvm-ar lists members using
+          # their complete relative paths from the kernel source root.
+          # This is a verification-only correction: match the exact names
+          # actually emitted by Kbuild; do not invent a shortened path.
+          KSU_ARCHIVE="$KSU_BUILD_DIR/built-in.a"
           test -s "$KSU_ARCHIVE"
 
           llvm-ar t "$KSU_ARCHIVE" > "$RUNNER_TEMP/12B-kernelsu-archive-members.log"
@@ -3094,21 +3181,27 @@ jobs:
             drivers/kernelsu/feature/cpu_spoof.o
           do
             grep -Fx "$required_member" "$RUNNER_TEMP/12B-kernelsu-archive-members.log" >/dev/null || {
-              echo "[FAIL] V35: required KernelSU archive member is missing: $required_member"
+              echo "[FAIL] current archive contract: required KernelSU archive member is missing: $required_member"
               cat "$RUNNER_TEMP/12B-kernelsu-archive-members.log"
               exit 1
             }
           done
 
-          cp -f "$SEPOLICY_C" "$RUNNER_TEMP/12B-sepolicy.c.locked"
+          echo "[PASS] current archive contract: actual Kbuild output is drivers/kernelsu/built-in.a."
+          echo "[PASS] current archive contract: required KernelSU objects are present in built-in.a."
+          echo "[PASS] current archive contract: member paths match Kbuild's actual emitted paths."
+          echo "[PASS] current archive contract: no standalone kernelsu.o is assumed."
+
+          make -j2 V=1 drivers/usb/gadget/function/f_hid.o
+          test -s drivers/kernelsu/feature/selinux_hide.o
+          test -s drivers/kernelsu/feature/cpu_spoof.o
+
           sha256sum "$SEPOLICY_C" | tee "$RUNNER_TEMP/12B-sepolicy.sha256"
+          cp -f "$SEPOLICY_C" "$RUNNER_TEMP/12B-sepolicy.c.locked"
 
-          echo "[PASS] V35: native drivers/kernelsu/ Kbuild completed."
-          echo "[PASS] V35: drivers/kernelsu/built-in.a exists with all required members."
-          echo "[PASS] V35: Setup 27 is complete; Setup 28 is the next build stage."
-          printf '%s\n' "Setup 27 COMPLETE — proceeding to Setup 28" >&3
+          echo "[PASS] V10: targeted cumulative hotspot objects compiled."
+          echo "[PASS] V12: Setup 27 applied no fix and performed no source mutation."
           echo "=============================================================="
-
       - name: Setup 28 - Full Kernel Build HARD GATE
         shell: bash
         run: |
@@ -3120,6 +3213,8 @@ jobs:
           exec 3>&1
           exec >>"$SETUP_LOG" 2>&1
           echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Detailed output is captured in $SETUP_LOG" >&3
+          echo "[LIVE] Console shows build-file activity only." >&3
           export PS4="+ [SETUP-${SETUP_NO}] "
           set +x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -3148,20 +3243,26 @@ jobs:
             exit 1
           }
           sha256sum -c "$RUNNER_TEMP/12B-sepolicy.sha256"
-          # V33: Setup 28 verifies the same cumulative source semantics as Setup 27.
-          # Do not reinterpret the source or require a helper name that Setup 17
-          # never needed. Setup 28 must proceed to the real Image.gz build.
-          grep -qF 'for (cur = node_ptr[i]; cur; cur = cur->next)' "$SEPOLICY_C"
-          grep -qF 'for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)' "$SEPOLICY_C"
-          grep -qF 'flex_array_get_ptr(db->te_avtab.htable, i)' "$SEPOLICY_C"
-          grep -qF '#define avtab_for_each(avtab, cur) ksu_avtab_for_each(avtab.htable, avtab.nslot, cur);' "$SEPOLICY_C"
-          grep -qF 'struct hashtab_node **htable' security/selinux/ss/hashtab.h
-          grep -qF 'struct flex_array *htable' security/selinux/ss/avtab.h
-          if grep -qF '#define ksu_hashtab_for_each(htab, cur) ksu_hash_for_each(htab->htable, htab->size, cur)' "$SEPOLICY_C"; then
-            echo "[FAIL] V33: obsolete flex_array hashtab adapter is present."
-            exit 1
-          fi
-          echo "[PASS] V33: Setup 28 source-contract audit passed; proceeding to full kernel build."
+          # V14 validator correction:
+          # Linux 4.19 has two different iterator contracts in this file.
+          # V26 SOURCE-CONTRACT VERIFICATION: verify the two 4.19 table layouts separately.
+          python3 - "$SEPOLICY_C" <<'PY'
+          from pathlib import Path
+          import sys
+          c=Path(sys.argv[1]).read_text()
+          h=Path("security/selinux/ss/avtab.h").read_text()
+          if "struct flex_array *htable" not in h:
+              raise SystemExit("[FAIL] V26: actual avtab.h is not the expected LG 4.19 flex_array layout.")
+          if "#define ksu_avtab_for_each(" not in c or "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)" not in c:
+              raise SystemExit("[FAIL] V26: dedicated AVTAB flex_array iterator is missing.")
+          if "flex_array_get_ptr(db->te_avtab.htable, i)" not in c:
+              raise SystemExit("[FAIL] V26: AVTAB flex_array traversal is missing.")
+          if "#define ksu_hash_for_each(" not in c or not __import__("re").search(r"for\s*\(cur\s*=\s*node_ptr\s*\[i\]", c):
+              raise SystemExit("[FAIL] V27: native 4.19 hashtab traversal is missing.")
+          print("[PASS] V27: separate AVTAB flex_array and hashtab pointer-array contracts verified semantically.")
+          PY
+          echo "[PASS] V26: Setup 28 verifies separate 4.19 AVTAB/hashtab source contracts."
+          echo "[PASS] V15: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
 
           export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
@@ -3505,6 +3606,11 @@ jobs:
           echo "CURRENT ERROR POLICY: NO SPECULATIVE XFRM FIX"
           echo "The latest reported failure is in net/xfrm, but no exact compiler diagnostic is embedded here."
           echo "Therefore this workflow does NOT modify net/xfrm. The next failure must be diagnosed from the full build log."
+          echo "=========================================="
+          echo "STARTING STOCK + SUKISU + KPM BUILD"
+          echo "Full compiler/linker stdout/stderr -> kernel-build-full.log (artifact only)"
+          echo "Live console mode: concise file/activity heartbeat only"
+          echo "=========================================="
           echo "clang=$(command -v clang)"
           echo "ld.lld=$(command -v ld.lld)"
           clang --version | sed -n '1,2p'
@@ -3525,49 +3631,36 @@ jobs:
           echo "[INFO] DTB/DTBO build disabled for V10 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
-          # V17 LIVE ACTIVITY MODE: full build output goes only to the artifact log.
+          # V29 LIVE ACTIVITY MODE: make runs in the foreground so wait()
+          # always reaps the real build process. A separate monitor uses a
+          # completion sentinel instead of kill -0, eliminating zombie polling.
           : > "$FULL_LOG"
-          # V32 PROCESS-MONITOR ROOT-CAUSE FIX: the previous kill -0 polling
-          # loop could wait forever on a zombie child because kill(pid, 0) may
-          # still succeed until wait() reaps the child. Run make directly, use
-          # wait() as the authoritative completion primitive, and monitor the
-          # PID state only to stop the live-file polling loop.
-          timeout --signal=TERM --kill-after=60s 180m \
-            make \
-              ARCH=arm64 \
-              LLVM=1 \
-              LLVM_IAS=1 \
-              CROSS_COMPILE="$CROSS_COMPILE" \
-              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              -j"$(nproc)" \
-              V=0 \
-              WERROR=0 \
-              Image.gz > "$FULL_LOG" 2>&1 &
-          BUILD_PID=$!
+          : > "$RUNNER_TEMP/full-kernel-build-done"
 
-          LAST_LIVE_FILE=""
-          while :; do
-            state="$(ps -o stat= -p "$BUILD_PID" 2>/dev/null | tr -d '[:space:]' || true)"
-            if [ -z "$state" ] || [[ "$state" == Z* ]]; then
-              break
-            fi
-            sleep 10
-            CURRENT_FILE="$(tail -n 500 "$FULL_LOG" 2>/dev/null \
-              | grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)([[:space:]]|\[)' \
-              | grep -oE '([[:alnum:]_./+@-]+)\.(c|cc|cpp|S|o|a|dtb|dtbo)' \
-              | tail -1 || true)"
-            if [ -n "$CURRENT_FILE" ] && [ "$CURRENT_FILE" != "$LAST_LIVE_FILE" ]; then
-              printf '%s\n' "$CURRENT_FILE" >&3
-              LAST_LIVE_FILE="$CURRENT_FILE"
-            fi
-          done
+          (
+            while [ ! -s "$RUNNER_TEMP/full-kernel-build-done" ]; do
+              sleep 15
+              LAST_ACTIVITY="$(grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)[[:space:]]' "$FULL_LOG" | tail -1 || true)"
+              if [ -z "$LAST_ACTIVITY" ]; then
+                LAST_ACTIVITY="build activity continues; detailed output is in the artifact log"
+              fi
+              echo "[BUILD-ACTIVITY] $(date -u '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s" >&3
+              echo "[BUILD-FILE] $LAST_ACTIVITY" >&3
+            done
+          ) &
+          BUILD_MONITOR_PID=$!
 
           set +e
-          wait "$BUILD_PID"
+          make             ARCH=arm64             LLVM=1             LLVM_IAS=1             CROSS_COMPILE="$CROSS_COMPILE"             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"             -j"$(nproc)"             V=0             WERROR=0             Image.gz > "$FULL_LOG" 2>&1
           BUILD_STATUS=$?
           set -e
-          # V17 has no secondary cleanup monitor; preserve the real build exit code.
-          END=$(date +%s)
+
+          printf '%s\n' "$BUILD_STATUS" > "$RUNNER_TEMP/full-kernel-build-status"
+          : > "$RUNNER_TEMP/full-kernel-build-done"
+          kill "$BUILD_MONITOR_PID" 2>/dev/null || true
+          wait "$BUILD_MONITOR_PID" 2>/dev/null || true
+          # V29: BUILD_STATUS is captured directly from the foreground make.
+                    END=$(date +%s)
           ELAPSED=$((END-START))
 
           {
@@ -3605,34 +3698,6 @@ jobs:
           echo "[BUILD-DIAG] build tail captured in artifact: 12-build-tail.log" >&3
 
           if [ "$BUILD_STATUS" -eq 0 ]; then
-            # V30 archive gate: Setup 28 is the first stage allowed to require
-            # the complete KernelSU built-in.a because Setup 27 is object-only.
-            KSU_ARCHIVE="drivers/kernelsu/built-in.a"
-            test -s "$KSU_ARCHIVE" || {
-              echo "[FAIL] KernelSU built-in.a was not produced by the full kernel build." >&3
-              exit 1
-            }
-            llvm-ar t "$KSU_ARCHIVE" > "$RUNNER_TEMP/v31-kernelsu-archive-members.log"
-            for required_member in \
-              drivers/kernelsu/kpm/compact.o \
-              drivers/kernelsu/kpm/kpm.o \
-              drivers/kernelsu/core/init.o \
-              drivers/kernelsu/selinux/selinux.o \
-              drivers/kernelsu/selinux/rules.o \
-              drivers/kernelsu/selinux/sepolicy.o \
-              drivers/kernelsu/supercall/dispatch.o \
-              drivers/kernelsu/supercall/perm.o \
-              drivers/kernelsu/supercall/supercall.o \
-              drivers/kernelsu/feature/selinux_hide.o \
-              drivers/kernelsu/feature/cpu_spoof.o
-            do
-              grep -Fx "$required_member" "$RUNNER_TEMP/v31-kernelsu-archive-members.log" >/dev/null || {
-                echo "[FAIL] Required KernelSU archive member missing: $required_member" >&3
-                exit 1
-              }
-            done
-            echo "[PASS] KernelSU built-in.a contains all required cumulative objects." >&3
-
             KERNEL_IMAGE=""
             for candidate in               arch/arm64/boot/Image.gz; do
               if [ -s "$candidate" ]; then
@@ -3761,16 +3826,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V35-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V28-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V35-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V28-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V35-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V28-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3823,12 +3888,12 @@ jobs:
           } 2>&1 | tee -a "$LOG"
           cat "$LOG"
           if [ ! -s arch/arm64/boot/Image.gz ]; then
-            echo "[FAIL] V30 final image gate: arch/arm64/boot/Image.gz was not produced."
+            echo "[FAIL] V28 final image gate: arch/arm64/boot/Image.gz was not produced."
             echo "[FAIL] A configuration-only PASS is never accepted as a kernel build success."
             exit 1
           fi
           sha256sum arch/arm64/boot/Image.gz | tee -a "$LOG"
-          echo "[PASS] V30 final image gate: arch/arm64/boot/Image.gz exists and is non-empty."
+          echo "[PASS] V28 final image gate: arch/arm64/boot/Image.gz exists and is non-empty."
           exit 0
 
       - name: Support - Stage Complete Diagnostics
@@ -3864,7 +3929,7 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V35"
+            echo "Workflow version: V28"
             echo "Previous workflow: V27"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
@@ -3887,19 +3952,19 @@ jobs:
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v17-workflow-source/V35-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v17-workflow-source/V35-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V35-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v17-workflow-source/V28-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v17-workflow-source/V28-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V28-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V17 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
           fi
 
           {
-            echo "========== V33 ALL SETUP STATUS =========="
-            echo "Workflow version: V35"
-            echo "Previous workflow: V30"
-            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V20 -> V21 -> V22 -> V23 -> V24 -> V25 -> V26 -> V27 -> V28 -> V29 -> V30 -> V31 -> V32 -> V33 -> V34 -> V35"
+            echo "========== V17 ALL SETUP STATUS =========="
+            echo "Workflow version: V28"
+            echo "Previous workflow: V27"
+            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18"
             echo "Setup numbers are independent from workflow version numbers."
             date -u
             for f in "$DIAG_DIR"/*LIVE.log; do
@@ -3909,266 +3974,158 @@ jobs:
               if [[ "$last_marker" == *"[FAIL]"* ]]; then status="ERROR"
               elif [[ "$last_marker" == *"[PASS]"* ]]; then status="PASS"
               else status="EXECUTED-NO-STATUS-MARKER"; fi
-              printf '%-85s %s\n' "$base" "$status"
+              printf '%-75s %s\n' "$base" "$status"
             done
-          } > diagnostic-artifact/V35-ALL-SETUP-STATUS.log
+          } | tee diagnostic-artifact/V18-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V35-CURRENT-STATUS.md <<'REPORT'
-          # V32 active status is documented below. V32 remains historical context.
-          # V33 Current Status
+          cat > diagnostic-artifact/V28-CURRENT-STATUS.md <<'REPORT'
+          # V19 Current Status
 
-          ## Current objective
-          Build the LG Velvet global LM-G900/G900EMW kernel from the lineage-23.2 tree with Linux 4.19.325-cip135, preserving all verified existing and future feature work.
+          ## V18 actual result
+          V18 did not reach Setup 27 or Setup 28. Setup 17 failed before any source mutation:
+            [FAIL] V18: authoritative CIP135 baseline and installed rule both absent; refusing speculative edit.
 
-          ## V32 root-cause fix
-          Previous Setup 27 invoked the native `make drivers/kernelsu/` directory target. That target can rebuild the complete KernelSU subtree instead of acting as a small hotspot gate. The previous run spent about 1h46m in Setup 27 and the overall GitHub job was cancelled before Setup 28.
+          The V18 diagnostic artifact therefore contains no V18 full-kernel build result. Setup 30 PASS was only a final configuration/artifact check; it did not produce a kernel image.
 
-          V32 changes Setup 27 to compile only the audited cumulative KernelSU hotspot objects in parallel. It does not remove, disable, or bypass any KernelSU/SukiSU/SUSFS functionality.
+          ## Verified underlying root cause
+          V15 reached the real qcacld-3.0 built-in.a archive command and failed with:
+            /bin/sh: Argument list too long
+          This is a Kbuild built-in.a command-length scalability failure, not a Wi-Fi/qcacld feature incompatibility.
 
-          ## Setup 27 contract
-          Setup 27 is now object-level compilation only. The complete `drivers/kernelsu/built-in.a` archive is intentionally verified after the authoritative full kernel build in Setup 28.
+          ## V18 guard failure root cause
+          The actual checked-out LG kernel tree at HEAD 90f583e83d4b766222b96c84bd16af8583fbfd68 does not use the plain CIP135 built-in.a rule. It wraps the archive command with:
+            $(update_lto_symversions) \
+          before the rcSTP AR invocation.
+          V18's guard treated the plain CIP135 form as authoritative and therefore refused to mutate. That refusal was safe, but the V18 proposed replacement would also have been unsafe because it would have dropped the protected LTO wrapper.
 
-          ## Timeout protection
-          Setup 27 has a 45-minute hard timeout. A timeout is a real failure and is preserved in diagnostics; it is never converted to PASS.
+          ## V20 source-backed correction
+          V19 matches the actual protected LG LTO-wrapped rule, preserves:
+          - $(update_lto_symversions)
+          - rcSTP$(KBUILD_ARFLAGS)
+          - all qcacld/Wi-Fi objects and compiler flags
+          and applies only the upstream patsubst -> sed -> xargs argument-length transport.
 
-          ## Live activity contract
-          The GitHub console receives only the current source/object filename while compilation runs. Detailed compiler stdout/stderr remains in the diagnostics artifact.
+          The current LG scripts/Kbuild.include lacks the upstream `real-prereqs` helper required by that upstream rule. V19 adds only that exact helper:
+            real-prereqs = $(filter-out $(PHONY), $^)
+          before applying the archive-rule change.
 
-          ## What has been completed
-          - Linux 4.19.325-cip135 baseline and cumulative compatibility work retained.
-          - Protected LTO-wrapped built-in.a ARG_MAX transport retained.
-          - SELinux 4.19 AVTAB `flex_array` and hashtab native pointer-array contracts separated.
-          - Existing KernelSU/SukiSU/KPM/SUSFS and feature compatibility work retained.
-          - V32 targeted Setup 27 architecture prepared.
+          ## Setup 17 / 27 / 28 contract
+          - Setup 17: mutation + exact source contract audit.
+          - Setup 27: read-only cumulative hotspot compile gate.
+          - Setup 28: authoritative full kernel build.
+          Setup 27/28 must not be considered successful unless their actual logs exist and contain PASS markers. V18 has no 27/28 execution evidence.
 
-          ## What is in progress
-          The GitHub run must execute V32 Setup 27 and then the authoritative Setup 28 full kernel build.
+          ## Protected features
+          No verified feature is removed or disabled for this fix. SukiSU-Ultra, KPM, SUSFS, Full Clang LTO, Maphide/JIT-Zygote, Baseband-Guard, WALT/SchedTune/ZRAM work, and the required LG hardware/vendor compatibility goals remain protected.
 
-          ## What remains
-          1. Setup 27 targeted hotspot compile PASS.
-          2. Setup 28 full `Image.gz` kernel build PASS.
-          3. Verify `drivers/kernelsu/built-in.a` members after the full build.
-          4. Package AnyKernel3/OrangeFox flashable kernel ZIP.
-          5. Run final configuration/artifact verification.
-          6. Upload the complete V32 diagnostics and successful kernel artifacts.
+          ## Version progression
+          V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19
 
-          ## Final success rule
-          A workflow is not a kernel-build success merely because static validators pass. Setup 27, Setup 28, the real `Image.gz`, the required KernelSU archive members, packaging, and final artifact checks must all pass in the same run.
+          ## Completion standard
+          V19 is not a claimed build success until Setup 17, Setup 27, Setup 28, and the final image/artifact checks actually pass in the same run.
           REPORT
 
           cat > diagnostic-artifact/PROJECT-CONTEXT-A-Z.md <<'REPORT'
-          # LG Velvet LM-G900 / G900EMW Kernel Project — A→Z Context
+          # LG Velvet LM-G900 / G900EMW Kernel Project — Portable A→Z Context
 
           ## Target
           Device: LG Velvet global LM-G900 / G900EMW
           Kernel: Linux 4.19.325-cip135
-          Android target: Android 16 / QPR2 and newer compatible releases
+          Android target: Android 16 / QPR2
           Lineage branch: lineage-23.2
 
-          ## Mandatory protected hardware/vendor goals
-          Fingerprint, vibration/haptics, Dual-SIM/RIL, audio/sound, IMS and Wi-Fi Calling/VoWiFi must remain protected and verified. No future feature may be removed to solve a build error.
+          ## Protected rules
+          Never remove a verified feature/fix to solve a new error. Never guess APIs, structs, Kconfig values, compiler flags, version boundaries, or output names. Use actual checked-out source, pinned CIP135 source, relevant upstream source, and actual compiler diagnostics.
 
-          ## Mandatory protected kernel features
-          SukiSU-Ultra, KPM, SUSFS, Full Clang LTO, Maphide/JIT-Zygote, Baseband-Guard, WALT, SchedTune and ZRAM remain protected. New future features are additive unless their source explicitly proves a non-removable compatibility boundary.
+          Protected feature families include SukiSU-Ultra, KPM, SUSFS, Full Clang LTO, Maphide/JIT-Zygote, Baseband-Guard, WALT, SchedTune, ZRAM, and required fingerprint, vibration/haptics, Dual-SIM/RIL, audio, IMS, and Wi-Fi Calling/VoWiFi compatibility work.
 
-          ## Version history
-          V4: protected Linux 4.19 SELinux compatibility baseline.
-          V5: CI cleanup without removing verified features.
+          ## History V4 -> V19
+          V4: protected baseline; researched Linux 4.19 SELinux hashtab/AVTAB boundary.
+          V5: duplicate/redundant CI cleanup without feature removal.
           V6: actual-source filename-transition API mismatch identified.
-          V7: duplicate filename-transition handling and workflow-source capture corrected.
+          V7: duplicate textual add_filename_trans and workflow-source capture corrected.
           V8: Setup 17 repair-script ordering/NameError defect fixed.
-          V9: Setup 17 ↔ Setup 27 contract loop identified.
-          V10: one source-derived compatibility contract established.
-          V11: cumulative ordering/build progression continued.
-          V12: actual KernelSU built-in.a reached; verifier expected wrong archive path.
+          V9: Setup 17 <-> Setup 27 contract loop identified.
+          V10: one source-derived contract established; Setup 17 mutates, Setup 27 verifies/compiles.
+          V11: cumulative ordering/build progression.
+          V12: actual KernelSU built-in.a reached; verifier expected the wrong archive filename form.
           V13: exact llvm-ar archive-member paths verified.
           V14: SELinux hashtab vs AVTAB flex_array validator corrected.
-          V15: real qcacld-3.0 built-in.a build failed with Argument list too long.
-          V16: safe refusal of incorrect source guard; no mutation.
-          V17: safe refusal of indentation-sensitive guard; no mutation.
-          V18: safe refusal of plain CIP135 guard that did not recognize the LG LTO wrapper.
-          V19: protected LTO wrapper retained and upstream ARG_MAX transport applied.
-          V20: SELinux 4.19 policy-state compatibility corrected.
-          V21: source-integrity whitespace/compatibility validation corrected.
-          V22: CPU clocksource compatibility handling corrected.
-          V23: CPU-spoof source contract refined against the actual 4.19 architecture layout.
-          V24: SELinux sidtab backup contract corrected.
-          V25: AVTAB and hashtab iterator responsibilities separated.
-          V26: dedicated AVTAB flex_array iterator and native hashtab iterator verified.
-          V27: semantic iterator validation corrected.
-          V28: parallel Setup 27 introduced after the previous 1h46m serial bottleneck.
-          V30: Setup 27 narrowed from a full KernelSU directory build to the audited hotspot object set, with a hard timeout and file-only live activity.
+          V15: real full build reached qcacld-3.0/built-in.a and failed with Argument list too long.
+          V16: safe refusal; wrong source guard, no mutation.
+          V17: safe refusal; indentation-sensitive guard, no mutation.
+          V18: safe refusal; plain CIP135 guard did not recognize the actual LG LTO-wrapped rule.
+          V19: source-derived correction preserves the LTO wrapper and applies the upstream ARG_MAX transport.
 
-          ## Root cause chain relevant to V30
-          The earlier qcacld failure was a Kbuild built-in.a command-length scalability problem. The fix preserves the LG LTO wrapper and uses the upstream-style `patsubst` → `sed` → `xargs` transport.
+          ## ARG_MAX root cause
+          The qcacld-3.0 built-in.a rule expands many long `$(obj)/...` paths into a single AR command. The command exceeds the shell argument limit. Upstream Linux solved this by stripping the repeated object-directory prefix with `patsubst`, restoring it in a shell pipeline with sed, and feeding AR through xargs. This changes command-length scaling from O(D*N) toward O(D+N).
 
-          The later Setup 27 delay was a separate CI design problem: a directory-level Kbuild invocation was used as a hotspot gate. V30 corrects that by compiling only the audited objects; Setup 28 remains the full build.
+          ## Actual LG source boundary
+          The checked-out LG tree adds `$(update_lto_symversions) \` before the rcSTP archive command. That wrapper is part of the LTO implementation and must remain intact.
+          The checked-out `scripts/Kbuild.include` lacks `real-prereqs`; V19 adds the upstream helper exactly once because the upstream ARG_MAX rule depends on it.
 
-          ## Diagnostics rule
-          Every V-version package must document what was completed, what is currently in progress, what failed, the root cause, exact fixes, research sources, source state, setup results, build logs, artifact results, regression status, and next steps. Detailed logs belong in the artifact; live console output remains concise.
+          ## Verification contract
+          Setup 17 must prove the exact protected baseline or exact installed rule and fail closed on ambiguity.
+          Setup 27 is read-only and must compile the cumulative hotspots.
+          Setup 28 is the real full-kernel build. Static verification alone is never final build proof.
+
+          ## Diagnostics contract
+          Every V-version diagnostics artifact must contain the A→Z context, complete error/fix history, current workflow, research references, setup logs, build output, source/commit/config state, current verification status, and next steps. No ZIP inside the diagnostics directory; GitHub uploads the directory as the single artifact ZIP.
+          REPORT
+          cat > diagnostic-artifact/V28-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          # Complete Error and Fix History V4 -> V19
+
+          V4 — Protected Linux 4.19 SELinux compatibility baseline.
+          V5 — CI cleanup without removing verified features.
+          V6 — Actual-source filename-transition API mismatch identified.
+          V7 — Duplicate add_filename_trans handling and workflow-source capture corrected.
+          V8 — Setup 17 repair-script ordering/NameError defect fixed.
+          V9 — Setup 17/27 contract loop identified.
+          V10 — One source-derived compatibility contract established.
+          V11 — Cumulative ordering/build progression continued.
+          V12 — KernelSU built-in.a reached; verifier expected wrong archive member path.
+          V13 — Archive-member verification corrected to actual llvm-ar output.
+          V14 — SELinux hashtab/AVTAB validator corrected.
+          V15 — Real full build reached qcacld-3.0 built-in.a and failed with `/bin/sh: Argument list too long`.
+          V16 — Safe refusal because the guard expected the wrong CIP135 source form; no mutation.
+          V17 — Safe refusal because the guard was indentation-sensitive; no mutation.
+          V18 — Safe refusal because the actual LG tree wraps cmd_ar_builtin with `$(update_lto_symversions)`; no mutation.
+          V19 — Corrected source contract: preserve the LTO wrapper, provide the upstream `real-prereqs` helper if absent, and apply only the upstream patsubst/sed/xargs ARG_MAX transport.
+
+          ## V15 primary root cause
+          Kbuild's built-in.a archive command expanded a long list of full object paths into one AR invocation. The failure is command-length scalability, not a qcacld/Wi-Fi incompatibility.
+
+          ## V18 root cause
+          The V18 guard was keyed to the plain pinned CIP135 rule. The actual project tree has a protected LTO wrapper around the same AR operation. The V18 guard correctly refused to mutate unexpected source, preventing accidental removal of LTO behavior.
+
+          ## V19 exact fix
+          Preserve `$(update_lto_symversions)` and `rcSTP$(KBUILD_ARFLAGS)`.
+          Add only the upstream `real-prereqs = $(filter-out $(PHONY), $^)` helper when missing.
+          Replace only the long prerequisite expansion with:
+          `echo $(patsubst $(obj)/%,%,$(real-prereqs)) | sed -E 's:([^ ]+):$(obj)/\1:g' | xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@`
+
+          ## Verification status
+          V19 workflow creation is source/research verified. Actual Setup 17/27/28 results are pending the next GitHub run.
           REPORT
 
-          cat > diagnostic-artifact/V32-ERROR-AND-FIX-HISTORY.md <<'REPORT'
-          ## V33 — Setup 27/28 contract validator correction
+          cat > diagnostic-artifact/RESEARCH-SOURCES.md <<'REPORT'
+          # Research Sources - V19
 
-          V32 fixes a CI orchestration bug, not a kernel feature bug. Setup 27 and Setup 28 previously polled a background child with `kill -0` before calling `wait()`. On Linux a terminated child can remain a zombie until it is reaped, and `kill(pid, 0)` may still report the PID as existing. That can leave the polling loop alive after `make` has already completed, preventing the workflow from advancing to the next setup. V32 replaces that pattern with direct background `timeout/make`, explicit PID-state polling, and mandatory `wait()` for authoritative completion. V32 also removes `timeout --foreground`, because coreutils documents that in foreground mode children are not timed out.
+          ## Pinned CIP135 source
+          https://gitlab.com/cip-project/cip-kernel/linux-cip/-/raw/v4.19.325-cip135/scripts/Makefile.build
 
-          Setup 28 had the same polling defect and is fixed at the same time.
+          ## Upstream Kbuild ARG_MAX fix
+          https://git.zx2c4.com/linux-dev/commit/scripts?id=cd968b97c49214e6557381bddddacbd0e0fb696e
+          https://lkml.indiana.edu/hypermail/linux/kernel/2205.3/03975.html
 
-          # V32 Error and Fix History
+          ## Kbuild documentation
+          https://www.kernel.org/doc/html/latest/kbuild/makefiles.html
 
-          ## V15 — qcacld ARG_MAX
-          Real qcacld-3.0 built-in.a creation failed with `/bin/sh: Argument list too long`.
-          Root cause: too many expanded object paths in one archive command.
-          Fix: upstream-style `patsubst`/`sed`/`xargs` transport while preserving the LG LTO wrapper and rcSTP flags.
-
-          ## V18/V19 — LTO-wrapped Kbuild rule
-          The LG tree wrapped the archive command with `$(update_lto_symversions)`. The correction preserved that wrapper rather than applying a plain CIP135 rule.
-
-          ## V20–V27 — SELinux/source-contract corrections
-          The workflow progressively corrected 4.19 policy-state, sidtab, AVTAB/flex_array, hashtab/native-array, CPU clocksource, and validator contracts from actual source evidence. No feature-removal workaround was used.
-
-          ## V28 — Setup 27 runtime bottleneck
-          Setup 27 used `make -j... drivers/kernelsu/`, a directory-level target. Despite parallel jobs, it could rebuild the entire KernelSU subtree. The previous run reached approximately 1h46m and the GitHub job was cancelled before Setup 28.
-
-          ## V30 — exact fix
-          Setup 27 is now a targeted hotspot gate over the audited cumulative KernelSU object list. The full `drivers/kernelsu/` build is no longer executed in Setup 27. Setup 28 remains the authoritative full kernel build and archive gate.
-
-          ## V30 safety rules
-          - No feature removal.
-          - No compiler-error skipping.
-          - No speculative source mutation in Setup 27.
-          - Timeout is reported as failure, never success.
-          - Full compiler logs are preserved in artifacts.
-          REPORT
-
-          cat > diagnostic-artifact/V32-RESEARCH-SOURCES.md <<'REPORT'
-          # V32 Research / Source References
-
-          - Pinned CIP135 source: https://gitlab.com/cip-project/cip-kernel/linux-cip/-/raw/v4.19.325-cip135/scripts/Makefile.build
-          - Upstream Kbuild ARG_MAX fix: https://git.zx2c4.com/linux-dev/commit/scripts?id=cd968b97c49214e6557381bddddacbd0e0fb696e
-          - Kbuild documentation: https://www.kernel.org/doc/html/latest/kbuild/makefiles.html
-          - LG kernel source: https://github.com/lge-qcom-dev/android_kernel_lge_sm7250/tree/lineage-23.2
-          - KernelSU SELinux reference: https://github.com/tiann/KernelSU/tree/main/kernel/selinux
-          - SukiSU-Ultra reference: https://github.com/SukiSU-Ultra/SukiSU-Ultra
-          REPORT
-
-          cat > diagnostic-artifact/V32-COMPLETED.md <<'REPORT'
-          # V33 Completed Work
-
-          - Replaced Setup 27 directory-level build with targeted cumulative KernelSU object compilation.
-          - Added parallel object compilation using runner workers.
-          - Added 45-minute Setup 27 hard timeout.
-          - Kept detailed compiler output artifact-only.
-          - Kept live console activity filename-only.
-          - Moved complete KernelSU built-in.a verification to Setup 28 after the real full kernel build.
-          - Kept V32 artifact naming throughout.
-          REPORT
-
-          cat > diagnostic-artifact/V32-IN-PROGRESS.md <<'REPORT'
-          # V33 In Progress
-
-          The next GitHub run must prove that the targeted Setup 27 object set compiles successfully, then execute the full kernel build in Setup 28.
-          REPORT
-
-          cat > diagnostic-artifact/V32-NEXT-STEPS.md <<'REPORT'
-          # V33 Next Steps
-
-          1. Run V32.
-          2. Confirm Setup 27 targeted hotspot compilation completes well below the previous ~1h46m bottleneck.
-          3. Confirm Setup 28 creates a real non-empty `arch/arm64/boot/Image.gz`.
-          4. Confirm `drivers/kernelsu/built-in.a` contains every required KernelSU object.
-          5. Package and verify the AnyKernel3/OrangeFox flashable ZIP.
-          6. Complete final artifact/configuration checks.
-          7. Preserve the complete A→Z V32 diagnostics artifact.
-          REPORT
-
-          cat > diagnostic-artifact/V32-FEATURE-MATRIX.md <<'REPORT'
-          # V32 Feature Matrix
-
-          | Feature | Policy | Status |
-          |---|---|---|
-          | SukiSU-Ultra | Never remove | Protected / verify in build |
-          | KPM | Never remove | Protected / verify in build |
-          | SUSFS | Never remove | Protected / verify in build |
-          | Full Clang LTO | Never remove | Protected / verify in build |
-          | Maphide/JIT-Zygote | Never remove | Protected |
-          | Baseband-Guard | Never remove | Protected |
-          | WALT | Never remove | Protected |
-          | SchedTune | Never remove | Protected |
-          | ZRAM | Never remove | Protected |
-          | Fingerprint | Never remove | Protected hardware goal |
-          | Vibration/Haptics | Never remove | Protected hardware goal |
-          | Dual-SIM/RIL | Never remove | Protected hardware goal |
-          | Audio | Never remove | Protected hardware goal |
-          | IMS | Never remove | Protected hardware goal |
-          | Wi-Fi Calling/VoWiFi | Never remove | Protected hardware goal |
-          REPORT
-
-          cat > diagnostic-artifact/V32-SOURCE-CHANGES.md <<'REPORT'
-          # V32 Source / Workflow Changes
-
-          V32 changes the CI workflow only for Setup 27 execution strategy and diagnostics behavior. Setup 27 itself performs no kernel source mutation.
-
-          The targeted object list is:
-          - drivers/kernelsu/kpm/compact.o
-          - drivers/kernelsu/kpm/kpm.o
-          - drivers/kernelsu/core/init.o
-          - drivers/kernelsu/selinux/selinux.o
-          - drivers/kernelsu/selinux/rules.o
-          - drivers/kernelsu/selinux/sepolicy.o
-          - drivers/kernelsu/supercall/dispatch.o
-          - drivers/kernelsu/supercall/perm.o
-          - drivers/kernelsu/supercall/supercall.o
-          - drivers/kernelsu/feature/selinux_hide.o
-          - drivers/kernelsu/feature/cpu_spoof.o
-          REPORT
-
-          cat > diagnostic-artifact/V32-BUILD-STATUS.md <<'REPORT'
-          # V32 Build Status
-
-          Setup 27: targeted cumulative KernelSU hotspot compilation — must be proven by the actual run.
-          Setup 28: authoritative full kernel `Image.gz` build — must be proven by the actual run.
-          Setup 29: AnyKernel3/OrangeFox packaging — only after Setup 28 success.
-          Setup 30: final configuration/artifact verification.
-          REPORT
-
-          cat > diagnostic-artifact/V32-ARTIFACT-MANIFEST.md <<'REPORT'
-          # V32 Artifact Manifest
-
-          Expected successful artifacts:
-          - V35-LG-Velvet-G900-Diagnostics
-          - V35-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          - V35-LG-Velvet-G900-Kernel-Only
-          - V35-LG-Velvet-G900-Raw-Kernel
-
-          Diagnostics package contains complete logs, source/workflow state, A→Z documentation, research references, setup results, and regression evidence.
-          REPORT
-
-          cat > diagnostic-artifact/V32-VALIDATION-RESULTS.md <<'REPORT'
-          # V32 Validation Results
-
-          Results are generated from the actual run. No static PASS is treated as build proof.
-
-          Setup 27: pending actual run.
-          Setup 28: pending actual run.
-          Setup 29: pending actual run.
-          Setup 30: pending actual run.
-          Final Image.gz: pending actual run.
-          KernelSU built-in.a members: pending actual run.
-          REPORT
-
-          cat > diagnostic-artifact/V32-REGRESSION-CHECK.md <<'REPORT'
-          # V32 Regression Check
-
-          Required invariant: no existing or future feature is removed to fix CI/build errors.
-
-          Required source invariants:
-          - LG LTO wrapper remains intact.
-          - ARG_MAX transport remains intact.
-          - AVTAB remains on 4.19 flex_array traversal.
-          - hashtab remains on native pointer-array traversal.
-          - SukiSU/KPM/SUSFS and protected feature work remains present.
+          ## Project/kernel source references retained
+          https://github.com/tiann/KernelSU/blob/main/kernel/selinux/sepolicy.c
+          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/hashtab.h
+          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.h
+          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.c
           REPORT
 
           {
@@ -4194,81 +4151,82 @@ jobs:
           done < <(git log --all --format='%H' -- .github/workflows 2>/dev/null | head -20)
 
           if [ "$found" -eq 0 ]; then
-            echo "No committed historical workflow snapshots were available in this checkout." > diagnostic-artifact/project-history/workflows/README.txt
+            echo "No committed historical workflow snapshots were available in this checkout. The companion ALL-WORKFLOWS history package contains the preserved V6-V12 workflow snapshots." \
+              > diagnostic-artifact/project-history/workflows/README.txt
           fi
 
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
-          # V32 Diagnostic Package Manifest
+          # V28 Diagnostic Package Manifest
 
-          Workflow version: V35
-          Previous workflow: V30
-          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V20 -> V21 -> V22 -> V23 -> V24 -> V25 -> V26 -> V27 -> V28 -> V29 -> V30 -> V32
+          Workflow version: V29
+          Previous workflow: V28
+          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V28 -> V29
 
-          Core documentation:
+          Current source:
+          - V28-CURRENT-WORKFLOW.yml
+
+          Current status/history:
+          - V28-CURRENT-STATUS.md
+          - V28-ERROR-AND-FIX-HISTORY.md
           - PROJECT-CONTEXT-A-Z.md
-          - V35-CURRENT-STATUS.md
-          - V32-ERROR-AND-FIX-HISTORY.md
-          - V32-RESEARCH-SOURCES.md
-          - V32-COMPLETED.md
-          - V32-IN-PROGRESS.md
-          - V32-NEXT-STEPS.md
-          - V32-FEATURE-MATRIX.md
-          - V32-SOURCE-CHANGES.md
-          - V32-BUILD-STATUS.md
-          - V32-ARTIFACT-MANIFEST.md
-          - V32-VALIDATION-RESULTS.md
-          - V32-REGRESSION-CHECK.md
-          - V35-ALL-SETUP-STATUS.log
+          - WORKFLOW-HISTORY-INDEX.md
+          - RESEARCH-SOURCES.md
+          - V28-ALL-SETUP-STATUS.log
 
-          Raw evidence:
+          Raw runner evidence:
           - ci-logs/
           - 12-build-full.log
           - final.config
           - git-status.txt
           - kernel-head.txt
           - runner-state/
+
+          Historical workflow evidence:
           - project-history/
 
           Artifact naming:
-          V35-LG-Velvet-G900-Diagnostics
-          REPORT
+          V19-LG-Velvet-G900-Diagnostics
 
-          echo "[PASS] V30 diagnostic directory staged."
-      - name: Artifact - V30 Diagnostics
+          ZIP rule:
+          This directory is uploaded directly to GitHub Actions. GitHub creates the
+          single downloadable ZIP. No diagnostic ZIP is created inside it.
+
+          echo "[PASS] V28 diagnostic directory staged. No diagnostic ZIP is created here."
+      - name: Artifact - V28 Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V35-LG-Velvet-G900-Diagnostics
+          name: V28-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V30 AnyKernel3 OrangeFox Flashable
+      - name: Artifact - V28 AnyKernel3 OrangeFox Flashable
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V35-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V35-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          name: V28-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          path: artifacts/V28-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V30 Kernel Only ZIP
+      - name: Artifact - V28 Kernel Only ZIP
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V35-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V35-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V28-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V28-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V30 Raw Kernel Image
+      - name: Artifact - V28 Raw Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V35-LG-Velvet-G900-Raw-Kernel
+          name: V28-LG-Velvet-G900-Raw-Kernel
           path: arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 14
