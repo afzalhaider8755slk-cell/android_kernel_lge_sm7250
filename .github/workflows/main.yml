@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V17
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V18
 
 on:
   workflow_dispatch:
@@ -1848,141 +1848,125 @@ jobs:
           : > "$SETUP_LOG"
           exec > >(tee -a "$SETUP_LOG") 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
-          export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
-          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
+          echo "[LIVE] Detailed output is captured in $SETUP_LOG"
+          set +x
           set -Eeuo pipefail
 
-          # V17 researched Kbuild fix: CIP135 4.19 built-in.a currently expands
-          # every $(obj)/ prefix into one AR command. V15 proved the real ARG_MAX
-          # failure in qcacld-3.0. Upstream fixes this exact rule by shortening the object paths before xargs
-          # restores the $(obj)/ prefix. Apply only this exact source-backed rule; never guess.
+          # V18: V17's guard was too strict about indentation across a Make
+          # continuation line. Verify the pinned CIP135 rule by tokens/structure,
+          # not whitespace. Never mutate an unexpected source.
           KBUILD_BUILD="scripts/Makefile.build"
           test -f "$KBUILD_BUILD"
+
           python3 - "$KBUILD_BUILD" <<'PY'
           from pathlib import Path
-          import re
           import sys
 
           p = Path(sys.argv[1])
-          s = p.read_text()
+          lines = p.read_text().splitlines()
 
-          # Authoritative baseline: the actual CIP v4.19.325-cip135 source
-          # uses the legacy built-in.a rule with $(filter $(real-obj-y), $^).
-          # This exact rule was verified against the pinned CIP135 source
-          # before this mutation was written. Do not accept an unrelated rule.
-          baseline = re.compile(
-              r"(?m)^(?P<indent>[ \t]*)cmd_ar_builtin = rm -f \$@;[ \t]*\\\s*(?P=indent)?[ \t]*\$\(AR\) rcSTP\$\(KBUILD_ARFLAGS\) \$@ \$\(filter \$\(real-obj-y\), \$\^\)"
-          )
+          def cmd_blocks():
+              out = []
+              i = 0
+              while i < len(lines):
+                  if lines[i].lstrip().startswith("cmd_ar_builtin") and "=" in lines[i]:
+                      start = i
+                      block = [lines[i]]
+                      while block[-1].rstrip().endswith("\\") and i + 1 < len(lines):
+                          i += 1
+                          block.append(lines[i])
+                      out.append("\n".join(block))
+                  i += 1
+              return out
 
-          installed = re.compile(
-              r"(?m)^\s*cmd_ar_builtin = rm -f \$@;[ \t]*\\\s*"
-              r"\$\(if \$\(filter \$\(real-obj-y\), \$\^\), printf \"\$\(obj\)/%s \" \$\(patsubst \$\(obj\)/%,%,\$\(filter \$\(real-obj-y\), \$\^\)\) \| xargs\)[ \t]*\\\s*"
-              r"\$\(AR\) rcSTP\$\(KBUILD_ARFLAGS\) \$@"
-          )
+          blocks = cmd_blocks()
 
-          matches = list(baseline.finditer(s))
-          installed_matches = list(installed.finditer(s))
-
-          if len(matches) == 1:
-              m = matches[0]
-              indent = m.group('indent')
-              replacement = (
-                  f"{indent}cmd_ar_builtin = rm -f $@; \\" + "\n" +
-                  f"{indent}\t$(if $(filter $(real-obj-y), $^), printf \"$(obj)/%s \" $(patsubst $(obj)/%,%,$(filter $(real-obj-y), $^)) | xargs) \\" + "\n" +
-                  f"{indent}\t$(AR) rcSTP$(KBUILD_ARFLAGS) $@"
+          def is_baseline(b):
+              flat = " ".join(x.strip() for x in b.splitlines())
+              return (
+                  "cmd_ar_builtin = rm -f $@;" in flat and
+                  "$(AR) rcSTP$(KBUILD_ARFLAGS) $@" in flat and
+                  "$(filter $(real-obj-y), $^)" in flat and
+                  "patsubst" not in flat and
+                  "xargs" not in flat
               )
-              p.write_text(s[:m.start()] + replacement + s[m.end():])
-              print('[FIXED] V17: applied the upstream-proven built-in.a ARG_MAX rule to the exact CIP135 baseline.')
-          elif len(matches) == 0 and len(installed_matches) == 1:
-              print('[PASS] V17: exact researched built-in.a ARG_MAX rule is already installed; no duplicate mutation.')
-          elif len(matches) == 0:
-              raise SystemExit(
-                  f'[FAIL] V17: authoritative CIP135 built-in.a baseline not found and installed rule count={len(installed_matches)}; refusing speculative edit.'
+
+          def is_installed(b):
+              flat = " ".join(x.strip() for x in b.splitlines())
+              return (
+                  "cmd_ar_builtin = rm -f $@;" in flat and
+                  "$(patsubst $(obj)/%,%,$(real-prereqs))" in flat and
+                  "sed -E 's:([^ ]+):$(obj)/\\1:g'" in flat and
+                  "xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@" in flat
               )
+
+          base = [b for b in blocks if is_baseline(b)]
+          inst = [b for b in blocks if is_installed(b)]
+
+          if len(base) == 1 and len(inst) == 0:
+              old = base[0]
+              start = None
+              end = None
+              for i, line in enumerate(lines):
+                  if "\n".join(lines[i:i+len(old.splitlines())]) == old:
+                      start, end = i, i + len(old.splitlines())
+                      break
+              if start is None:
+                  raise SystemExit("[FAIL] V18: baseline block was detected but could not be located for safe replacement.")
+              indent = lines[start][:len(lines[start]) - len(lines[start].lstrip())]
+              replacement = [
+                  indent + '# To make this rule robust against "Argument list too long" error,',
+                  indent + '# remove $(obj)/ prefix, and restore it by a shell command.',
+                  indent + 'cmd_ar_builtin = rm -f $@; \\',
+                  indent + '\techo $(patsubst $(obj)/%,%,$(real-prereqs)) | \\',
+                  indent + "\tsed -E 's:([^ ]+):$(obj)/\\1:g' | \\",
+                  indent + '\txargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@',
+              ]
+              lines[start:end] = replacement
+              p.write_text("\n".join(lines) + "\n")
+              print("[FIXED] V18: upstream built-in.a ARG_MAX rule applied to exact CIP135 baseline.")
+          elif len(base) == 0 and len(inst) == 1:
+              print("[PASS] V18: upstream built-in.a ARG_MAX rule already installed exactly once.")
+          elif len(base) == 0 and len(inst) == 0:
+              raise SystemExit("[FAIL] V18: authoritative CIP135 baseline and installed rule both absent; refusing speculative edit.")
           else:
-              raise SystemExit(f'[FAIL] V17: expected exactly one authoritative built-in.a baseline, found {len(matches)}; refusing mutation.')
+              raise SystemExit(f"[FAIL] V18: ambiguous built-in.a source state baseline={len(base)} installed={len(inst)}; refusing mutation.")
 
-          final = p.read_text()
-          if final.count('printf "$(obj)/%s " $(patsubst $(obj)/%,%,$(filter $(real-obj-y), $^)) | xargs)') != 1:
-              raise SystemExit('[FAIL] V17: built-in.a adapter count is not exactly one.')
-          if final.count('$(AR) rcSTP$(KBUILD_ARFLAGS) $@') != 1:
-              raise SystemExit('[FAIL] V17: built-in.a xargs invocation count is not exactly one.')
-          if '$(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)' in final:
-              raise SystemExit('[FAIL] V17: original unsafe built-in.a command remains after mutation.')
-          print('[PASS] V17: exact built-in.a ARG_MAX adapter verified once; original unsafe rule absent.')
+          final_lines = p.read_text().splitlines()
+          final_blocks = []
+          i = 0
+          while i < len(final_lines):
+              if final_lines[i].lstrip().startswith("cmd_ar_builtin") and "=" in final_lines[i]:
+                  block = [final_lines[i]]
+                  while block[-1].rstrip().endswith("\\") and i + 1 < len(final_lines):
+                      i += 1
+                      block.append(final_lines[i])
+                  final_blocks.append(" ".join(x.strip() for x in block))
+              i += 1
+
+          final_inst = [
+              b for b in final_blocks
+              if "$(patsubst $(obj)/%,%,$(real-prereqs))" in b
+              and "sed -E 's:([^ ]+):$(obj)/\\1:g'" in b
+              and "xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@" in b
+          ]
+          final_base = [
+              b for b in final_blocks
+              if "$(AR) rcSTP$(KBUILD_ARFLAGS) $@" in b
+              and "$(filter $(real-obj-y), $^)" in b
+              and "$(patsubst" not in b
+              and "xargs" not in b
+          ]
+
+          if len(final_inst) != 1:
+              raise SystemExit(f"[FAIL] V18: installed built-in.a rule count={len(final_inst)}; expected exactly 1.")
+          if len(final_base) != 0:
+              raise SystemExit(f"[FAIL] V18: original unsafe built-in.a rule remains count={len(final_base)}.")
+          print("[PASS] V18: whitespace-independent CIP135 contract verified.")
+          print("[PASS] V18: upstream ARG_MAX adapter installed exactly once; original rule absent.")
+
           PY
-          LOG="$DIAG_DIR/10A-manual-compatibility-fixes.log"
-          : > "$LOG"
-          exec > >(tee -a "$SETUP_LOG" | tee -a "$LOG") 2>&1
-          trap 'rc=$?; echo "[FAIL] 10A manual compatibility step failed: rc=$rc line=$LINENO cmd=$BASH_COMMAND"; exit $rc' ERR
-          echo "========== MANUAL 4.19 COMPATIBILITY FIXES =========="
-          echo "Auto-Fix: DISABLED"
-          echo "Scope: previously verified compatibility fixes + exact researched SELinux 4.19 adaptation (sepolicy.c legacy flex_array/filename/type-map compatibility)"
-          echo "Execution mode: external temporary Python scripts; NO heredoc parser dependency"
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKcCA9IFBhdGgoc3lzLmFyZ3ZbMV0pOyBzID0gcC5yZWFkX3RleHQoKQpzID0gcy5yZXBsYWNlKCcjZGVmaW5lIFNFTElOVVhfUE9MSUNZX0lOU1RFQURfU0VMSU5VWF9TU1xuJywgJycsIDEpCmRlZiBmaW5kX2Z1bmModGV4dCwgc2lnbmF0dXJlKToKICAgIHBvcyA9IHRleHQuaW5kZXgoc2lnbmF0dXJlKTsgYnJhY2U9dGV4dC5pbmRleCgneycscG9zKTsgZGVwdGg9MAogICAgZm9yIGkgaW4gcmFuZ2UoYnJhY2UsbGVuKHRleHQpKToKICAgICAgICBpZiB0ZXh0W2ldPT0neyc6IGRlcHRoKz0xCiAgICAgICAgZWxpZiB0ZXh0W2ldPT0nfSc6CiAgICAgICAgICAgIGRlcHRoLT0xCiAgICAgICAgICAgIGlmIGRlcHRoPT0wOnJldHVybiBwb3MsaSsxCiAgICByYWlzZSBTeXN0ZW1FeGl0KCdmdW5jdGlvbiBicmFjZSBtaXNtYXRjaDogJytzaWduYXR1cmUpCmEsYWU9ZmluZF9mdW5jKHMsJ3ZvaWQgYXBwbHlfa2VybmVsc3VfcnVsZXMoKScpCmgsaGU9ZmluZF9mdW5jKHMsJ2ludCBoYW5kbGVfc2Vwb2xpY3kodm9pZCBfX3VzZXIgKnVzZXJfZGF0YSwgdTY0IGRhdGFfbGVuKScpCmFwcGx5PXInJyd2b2lkIGFwcGx5X2tlcm5lbHN1X3J1bGVzKCkKewogICAgc3RydWN0IHNlbGludXhfc3MgKnNzID0gc2VsaW51eF9zdGF0ZS5zczsKICAgIHN0cnVjdCBzZWxpbnV4X3BvbGljeSBsaXZlID0geyAwIH07CiAgICBzdHJ1Y3Qgc2VsaW51eF9wb2xpY3kgKnBvbDsKICAgIHN0cnVjdCBwb2xpY3lkYiBvbGRfcG9saWN5ZGI7CgogICAgaWYgKCFzcykgewogICAgICAgIHByX2VycigiU0VMaW51eCBzcyBpcyB1bmF2YWlsYWJsZSwgY2Fubm90IGFwcGx5IEtlcm5lbFNVIHJ1bGVzIVxuIik7CiAgICAgICAgcmV0dXJuOwogICAgfQogICAgaWYgKCFnZXRlbmZvcmNlKCkpCiAgICAgICAgcHJfaW5mbygiU0VMaW51eCBwZXJtaXNzaXZlIG9yIGRpc2FibGVkLCBhcHBseSBydWxlcyFcbiIpOwoKICAgIGxpdmUucG9saWN5ZGIgPSBzcy0+cG9saWN5ZGI7CiAgICB3cml0ZV9sb2NrKCZzcy0+cG9saWN5X3J3bG9jayk7CgogICAgYmFja3VwX3NlcG9saWN5ID0ga3N1X2R1cF9zZXBvbGljeSgmbGl2ZSk7CiAgICBpZiAoSVNfRVJSKGJhY2t1cF9zZXBvbGljeSkpIHsKICAgICAgICBwcl9lcnIoImZhaWxlZCB0byBjcmVhdGUgYmFja3VwIHNlcG9saWN5OiAlbGRcbiIsIFBUUl9FUlIoYmFja3VwX3NlcG9saWN5KSk7CiAgICAgICAgYmFja3VwX3NlcG9saWN5ID0gTlVMTDsKICAgIH0KCiAgICBwb2wgPSBrc3VfZHVwX3NlcG9saWN5KCZsaXZlKTsKICAgIGlmIChJU19FUlIocG9sKSkgewogICAgICAgIHByX2VycigiZmFpbGVkIHRvIGR1cCBzZWxpbnV4IHBvbGljeTogJWxkXG4iLCBQVFJfRVJSKHBvbCkpOwogICAgICAgIHdyaXRlX3VubG9jaygmc3MtPnBvbGljeV9yd2xvY2spOwogICAgICAgIHJldHVybjsKICAgIH0KCiAgICBrc3VfdHlwZSgmcG9sLT5wb2xpY3lkYiwgS0VSTkVMX1NVX0RPTUFJTiwgImRvbWFpbiIpOwogICAga3N1X3Blcm1pc3NpdmUoJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4pOwogICAga3N1X3R5cGVhdHRyaWJ1dGUoJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4sICJtbHN0cnVzdGVkc3ViamVjdCIpOwogICAga3N1X3R5cGVhdHRyaWJ1dGUoJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4sICJuZXRkb21haW4iKTsKICAgIGtzdV90eXBlYXR0cmlidXRlKCZwb2wtPnBvbGljeWRiLCBLRVJORUxfU1VfRE9NQUlOLCAiYmx1ZXRvb3RoZG9tYWluIik7CiAgICBrc3VfdHlwZSgmcG9sLT5wb2xpY3lkYiwgS0VSTkVMX1NVX0ZJTEUsICJmaWxlX3R5cGUiKTsKICAgIGtzdV90eXBlYXR0cmlidXRlKCZwb2wtPnBvbGljeWRiLCBLRVJORUxfU1VfRklMRSwgIm1sc3RydXN0ZWRvYmplY3QiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImRvbWFpbiIsIEtFUk5FTF9TVV9GSUxFLCBBTEwsIEFMTCk7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4sIEFMTCwgQUxMLCBBTEwpOwogICAgaWYgKHBvbC0+cG9saWN5ZGIucG9saWN5dmVycyA+PSBQT0xJQ1lEQl9WRVJTSU9OX1hQRVJNU19JT0NUTCkgewogICAgICAgIGtzdV9hbGxvd3hwZXJtKCZwb2wtPnBvbGljeWRiLCBLRVJORUxfU1VfRE9NQUlOLCBBTEwsICJibGtfZmlsZSIsIEFMTCk7CiAgICAgICAga3N1X2FsbG93eHBlcm0oJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4sIEFMTCwgImZpZm9fZmlsZSIsIEFMTCk7CiAgICAgICAga3N1X2FsbG93eHBlcm0oJnBvbC0+cG9saWN5ZGIsIEtFUk5FTF9TVV9ET01BSU4sIEFMTCwgImNocl9maWxlIiwgQUxMKTsKICAgICAgICBrc3VfYWxsb3d4cGVybSgmcG9sLT5wb2xpY3lkYiwgS0VSTkVMX1NVX0RPTUFJTiwgQUxMLCAiZmlsZSIsIEFMTCk7CiAgICB9CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJpbml0IiwgS0VSTkVMX1NVX0RPTUFJTiwgQUxMLCBBTEwpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAic2VydmljZW1hbmFnZXIiLCBLRVJORUxfU1VfRE9NQUlOLCAiZGlyIiwgInNlYXJjaCIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAic2VydmljZW1hbmFnZXIiLCBLRVJORUxfU1VfRE9NQUlOLCAiZGlyIiwgInJlYWQiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgInNlcnZpY2VtYW5hZ2VyIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZpbGUiLCAib3BlbiIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAic2VydmljZW1hbmFnZXIiLCBLRVJORUxfU1VfRE9NQUlOLCAiZmlsZSIsICJyZWFkIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJzZXJ2aWNlbWFuYWdlciIsIEtFUk5FTF9TVV9ET01BSU4sICJwcm9jZXNzIiwgImdldGF0dHIiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImRvbWFpbiIsIEtFUk5FTF9TVV9ET01BSU4sICJwcm9jZXNzIiwgInNpZ2NobGQiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImxvZ2QiLCBLRVJORUxfU1VfRE9NQUlOLCAiZGlyIiwgInNlYXJjaCIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAibG9nZCIsIEtFUk5FTF9TVV9ET01BSU4sICJmaWxlIiwgInJlYWQiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImxvZ2QiLCBLRVJORUxfU1VfRE9NQUlOLCAiZmlsZSIsICJvcGVuIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJsb2dkIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZpbGUiLCAiZ2V0YXR0ciIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZkIiwgInVzZSIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZpZm9fZmlsZSIsICJ3cml0ZSIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZpZm9fZmlsZSIsICJyZWFkIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAiZmlmb19maWxlIiwgIm9wZW4iKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImRvbWFpbiIsIEtFUk5FTF9TVV9ET01BSU4sICJmaWZvX2ZpbGUiLCAiZ2V0YXR0ciIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgInVuaXhfc3RyZWFtX3NvY2tldCIsICJyZWFkIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAidW5peF9zdHJlYW1fc29ja2V0IiwgIndyaXRlIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAidW5peF9zdHJlYW1fc29ja2V0IiwgImNvbm5lY3R0byIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgInVuaXhfc3RyZWFtX3NvY2tldCIsICJnZXRvcHQiKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImRvbWFpbiIsIEtFUk5FTF9TVV9ET01BSU4sICJ1bml4X3N0cmVhbV9zb2NrZXQiLCAiZ2V0YXR0ciIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgIm1lbWZkX2ZpbGUiLCAiZXhlY3V0ZSIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgIm1lbWZkX2ZpbGUiLCAiZ2V0YXR0ciIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiZG9tYWluIiwgS0VSTkVMX1NVX0RPTUFJTiwgIm1lbWZkX2ZpbGUiLCAibWFwIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAibWVtZmRfZmlsZSIsICJyZWFkIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAibWVtZmRfZmlsZSIsICJ3cml0ZSIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiaHdzZXJ2aWNlbWFuYWdlciIsIEtFUk5FTF9TVV9ET01BSU4sICJkaXIiLCAic2VhcmNoIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJod3NlcnZpY2VtYW5hZ2VyIiwgS0VSTkVMX1NVX0RPTUFJTiwgImZpbGUiLCAicmVhZCIpOwogICAga3N1X2FsbG93KCZwb2wtPnBvbGljeWRiLCAiaHdzZXJ2aWNlbWFuYWdlciIsIEtFUk5FTF9TVV9ET01BSU4sICJmaWxlIiwgIm9wZW4iKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgImh3c2VydmljZW1hbmFnZXIiLCBLRVJORUxfU1VfRE9NQUlOLCAicHJvY2VzcyIsICJnZXRhdHRyIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJkb21haW4iLCBLRVJORUxfU1VfRE9NQUlOLCAiYmluZGVyIiwgQUxMKTsKICAgIGtzdV9hbGxvdygmcG9sLT5wb2xpY3lkYiwgInN5c3RlbV9zZXJ2ZXIiLCBLRVJORUxfU1VfRE9NQUlOLCAicHJvY2VzcyIsICJnZXRwZ2lkIik7CiAgICBrc3VfYWxsb3coJnBvbC0+cG9saWN5ZGIsICJzeXN0ZW1fc2VydmVyIiwgS0VSTkVMX1NVX0RPTUFJTiwgInByb2Nlc3MiLCAic2lna2lsbCIpOwoKICAgIG9sZF9wb2xpY3lkYiA9IHNzLT5wb2xpY3lkYjsKICAgIHNzLT5wb2xpY3lkYiA9IHBvbC0+cG9saWN5ZGI7CiAgICBtZW1zZXQoJnBvbC0+cG9saWN5ZGIsIDAsIHNpemVvZihwb2wtPnBvbGljeWRiKSk7CiAgICBzcy0+bGF0ZXN0X2dyYW50aW5nKys7CiAgICB3cml0ZV91bmxvY2soJnNzLT5wb2xpY3lfcndsb2NrKTsKCiAgICBwb2xpY3lkYl9kZXN0cm95KCZvbGRfcG9saWN5ZGIpOwogICAga2ZyZWUocG9sKTsKICAgIHJlc2V0X2F2Y19jYWNoZSgpOwp9CicnJwpoYW5kbGU9cicnJ2ludCBoYW5kbGVfc2Vwb2xpY3kodm9pZCBfX3VzZXIgKnVzZXJfZGF0YSwgdTY0IGRhdGFfbGVuKQp7CiAgICBzdHJ1Y3Qgc2VsaW51eF9zcyAqc3MgPSBzZWxpbnV4X3N0YXRlLnNzOwogICAgc3RydWN0IHNlbGludXhfcG9saWN5IGxpdmUgPSB7IDAgfTsKICAgIHN0cnVjdCBzZWxpbnV4X3BvbGljeSAqcG9sOwogICAgc3RydWN0IHBvbGljeWRiIG9sZF9wb2xpY3lkYjsKICAgIHN0cnVjdCBzZXBvbF9iYXRjaF9jdXJzb3IgY3Vyc29yOwogICAgdTggKnBheWxvYWQ7CiAgICBpbnQgcmV0OwogICAgaW50IHN1Y2Nlc3NfY21kX2NvdW50OwogICAgdTMyIGNtZF9pbmRleDsKCiAgICBpZiAoIXNzIHx8ICF1c2VyX2RhdGEgfHwgIWRhdGFfbGVuKSByZXR1cm4gLUVJTlZBTDsKICAgIGlmIChkYXRhX2xlbiA+IEtTVV9TRVBPTElDWV9NQVhfQkFUQ0hfU0laRSkgcmV0dXJuIC1FMkJJRzsKICAgIHBheWxvYWQgPSBrdm1hbGxvYygoc2l6ZV90KWRhdGFfbGVuLCBHRlBfS0VSTkVMKTsKICAgIGlmICghcGF5bG9hZCkgcmV0dXJuIC1FTk9NRU07CiAgICBpZiAoY29weV9mcm9tX3VzZXIocGF5bG9hZCwgdXNlcl9kYXRhLCAoc2l6ZV90KWRhdGFfbGVuKSkgewogICAgICAgIGt2ZnJlZShwYXlsb2FkKTsgcmV0dXJuIC1FRkFVTFQ7CiAgICB9CiAgICBpZiAoIWdldGVuZm9yY2UoKSkKICAgICAgICBwcl9pbmZvKCJTRUxpbnV4IHBlcm1pc3NpdmUgb3IgZGlzYWJsZWQgd2hlbiBoYW5kbGUgcG9saWN5IVxuIik7CgogICAgbGl2ZS5wb2xpY3lkYiA9IHNzLT5wb2xpY3lkYjsKICAgIHdyaXRlX2xvY2soJnNzLT5wb2xpY3lfcndsb2NrKTsKICAgIHBvbCA9IGtzdV9kdXBfc2Vwb2xpY3koJmxpdmUpOwogICAgaWYgKElTX0VSUihwb2wpKSB7CiAgICAgICAgcmV0ID0gUFRSX0VSUihwb2wpOwogICAgICAgIHdyaXRlX3VubG9jaygmc3MtPnBvbGljeV9yd2xvY2spOwogICAgICAgIGt2ZnJlZShwYXlsb2FkKTsKICAgICAgICByZXR1cm4gcmV0OwogICAgfQoKICAgIGN1cnNvci5jdXIgPSBwYXlsb2FkOwogICAgY3Vyc29yLmVuZCA9IHBheWxvYWQgKyAoc2l6ZV90KWRhdGFfbGVuOwogICAgcmV0ID0gMDsKICAgIHN1Y2Nlc3NfY21kX2NvdW50ID0gMDsKICAgIGNtZF9pbmRleCA9IDA7CiAgICB3aGlsZSAoY3Vyc29yLmN1ciA8IGN1cnNvci5lbmQpIHsKICAgICAgICBzdHJ1Y3Qgc2Vwb2xfZGF0YSBoZWFkZXI7CiAgICAgICAgY29uc3QgY2hhciAqYXJnc1tLU1VfU0VQT0xJQ1lfTUFYX0FSR1NdID0geyAwIH07CiAgICAgICAgaW50IGV4cGVjdGVkX2FyZ2M7CiAgICAgICAgdTMyIGFyZ19pbmRleDsKICAgICAgICByZXQgPSBzZXBvbF9yZWFkX2NtZF9oZWFkZXIoJmN1cnNvciwgJmhlYWRlcik7CiAgICAgICAgaWYgKHJldCA8IDApIGdvdG8gb3V0X2Ryb3BfbmV3X3BvbGljeTsKICAgICAgICBleHBlY3RlZF9hcmdjID0gc2Vwb2xfZXhwZWN0ZWRfYXJnYyhoZWFkZXIuY21kKTsKICAgICAgICBpZiAoZXhwZWN0ZWRfYXJnYyA8IDAgfHwgZXhwZWN0ZWRfYXJnYyA+IEtTVV9TRVBPTElDWV9NQVhfQVJHUykgewogICAgICAgICAgICByZXQgPSAtRUlOVkFMOyBnb3RvIG91dF9kcm9wX25ld19wb2xpY3k7CiAgICAgICAgfQogICAgICAgIGZvciAoYXJnX2luZGV4ID0gMDsgYXJnX2luZGV4IDwgKHUzMilleHBlY3RlZF9hcmdjOyBhcmdfaW5kZXgrKykgewogICAgICAgICAgICByZXQgPSBzZXBvbF9yZWFkX3N0cmluZygmY3Vyc29yLCAmYXJnc1thcmdfaW5kZXhdKTsKICAgICAgICAgICAgaWYgKHJldCA8IDApIGdvdG8gb3V0X2Ryb3BfbmV3X3BvbGljeTsKICAgICAgICB9CiAgICAgICAgcmV0ID0gYXBwbHlfb25lX3NlcG9saWN5X2NtZCgmcG9sLT5wb2xpY3lkYiwgJmhlYWRlciwgYXJncyk7CiAgICAgICAgaWYgKHJldCA8IDApCiAgICAgICAgICAgIHByX2Vycigic2Vwb2w6IGNtZCAjJXUgZmFpbGVkLCBjbWQ9JXUgc3ViY21kPSV1LlxuIiwgY21kX2luZGV4LCBoZWFkZXIuY21kLCBoZWFkZXIuc3ViY21kKTsKICAgICAgICBlbHNlCiAgICAgICAgICAgIHN1Y2Nlc3NfY21kX2NvdW50Kys7CiAgICAgICAgY21kX2luZGV4Kys7CiAgICB9CgogICAgb2xkX3BvbGljeWRiID0gc3MtPnBvbGljeWRiOwogICAgc3MtPnBvbGljeWRiID0gcG9sLT5wb2xpY3lkYjsKICAgIG1lbXNldCgmcG9sLT5wb2xpY3lkYiwgMCwgc2l6ZW9mKHBvbC0+cG9saWN5ZGIpKTsKICAgIHNzLT5sYXRlc3RfZ3JhbnRpbmcrKzsKICAgIHdyaXRlX3VubG9jaygmc3MtPnBvbGljeV9yd2xvY2spOwogICAgcG9saWN5ZGJfZGVzdHJveSgmb2xkX3BvbGljeWRiKTsKICAgIGtmcmVlKHBvbCk7CiAgICByZXNldF9hdmNfY2FjaGUoKTsKICAgIGt2ZnJlZShwYXlsb2FkKTsKICAgIHJldHVybiBzdWNjZXNzX2NtZF9jb3VudDsKCm91dF9kcm9wX25ld19wb2xpY3k6CiAgICBrc3VfZGVzdHJveV9zZXBvbGljeShwb2wpOwogICAgd3JpdGVfdW5sb2NrKCZzcy0+cG9saWN5X3J3bG9jayk7CiAgICBrdmZyZWUocGF5bG9hZCk7CiAgICByZXR1cm4gcmV0Owp9CicnJwpzPXNbOmFdK2FwcGx5K3NbYWU6XQpoLGhlPWZpbmRfZnVuYyhzLCdpbnQgaGFuZGxlX3NlcG9saWN5KHZvaWQgX191c2VyICp1c2VyX2RhdGEsIHU2NCBkYXRhX2xlbiknKQpzPXNbOmhdK2hhbmRsZStzW2hlOl0KcC53cml0ZV90ZXh0KHMpCg==' | base64 -d > "$RUNNER_TEMP/ksu_rules_fix.py"
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCByZSwgc3VicHJvY2Vzcywgc3lzCnJvb3QgPSBQYXRoLmN3ZCgpCgpkZWYgbXVzdChwKToKICAgIGlmIG5vdCBwLmlzX2ZpbGUoKTogcmFpc2UgU3lzdGVtRXhpdChmJ01JU1NJTkcgRklMRToge3B9JykKCmRlZiB3cml0ZV9pZihwYXRoLCBvbGQsIG5ldywgZGVzYyk6CiAgICBtdXN0KHBhdGgpOyBzPXBhdGgucmVhZF90ZXh0KCkKICAgIGlmIG9sZCBpbiBzOgogICAgICAgIGlmIHMuY291bnQob2xkKSE9MTogcmFpc2UgU3lzdGVtRXhpdChmJ3tkZXNjfTogZXhwZWN0ZWQgZXhhY3RseSBvbmUgbWF0Y2gsIGdvdCB7cy5jb3VudChvbGQpfScpCiAgICAgICAgcGF0aC53cml0ZV90ZXh0KHMucmVwbGFjZShvbGQsbmV3LDEpKTsgcHJpbnQoJ1tGSVhFRF0nLGRlc2MpCiAgICBlbGlmIG5ldyBpbiBzOgogICAgICAgIHByaW50KCdbUEFTU10nLGRlc2MpCiAgICBlbHNlOiByYWlzZSBTeXN0ZW1FeGl0KGYne2Rlc2N9OiBleHBlY3RlZCBzb3VyY2UgcGF0dGVybiBub3QgZm91bmQnKQoKIyAxIHZlcmlmaWVkIHRhc2tfd29yayBjb21wYXRpYmlsaXR5CmY9cm9vdC8nZHJpdmVycy9rZXJuZWxzdS9wb2xpY3kvYWxsb3dsaXN0LmMnOyBtdXN0KGYpOyBzPWYucmVhZF90ZXh0KCkKb2xkPSd0YXNrX3dvcmtfYWRkKHRzaywgY2IsIFRXQV9SRVNVTUUpJzsgbmV3PSd0YXNrX3dvcmtfYWRkKHRzaywgY2IsIHRydWUpJwppZiBvbGQgaW4gczoKICAgIGlmIHMuY291bnQob2xkKSE9MTogcmFpc2UgU3lzdGVtRXhpdCgnVFdBX1JFU1VNRSBvY2N1cnMgbW9yZSB0aGFuIG9uY2U7IHJlZnVzaW5nIGJyb2FkIGVkaXQnKQogICAgcz1zLnJlcGxhY2Uob2xkLG5ldywxKQppZiBuZXcgbm90IGluIHM6IHJhaXNlIFN5c3RlbUV4aXQoJ1ZlcmlmaWVkIFRXQV9SRVNVTUUgLT4gdHJ1ZSBmb3JtIG5vdCBwcmVzZW50JykKaWYgJyNpbmNsdWRlIDxsaW51eC9zY2hlZC90YXNrLmg+JyBub3QgaW4gczogcz0nI2luY2x1ZGUgPGxpbnV4L3NjaGVkL3Rhc2suaD5cbicrcwpmLndyaXRlX3RleHQocyk7IHByaW50KCdbUEFTU10gVFdBX1JFU1VNRSAtPiB0cnVlICsgc2NoZWQvdGFzay5oJykKCiMgMiB2ZXJpZmllZCBzZWNjb21wIGNvbXBhdGliaWxpdHkKc2VjPXJvb3QvJ2luY2x1ZGUvbGludXgvc2VjY29tcC5oJzsgYXBwPXJvb3QvJ2RyaXZlcnMva2VybmVsc3UvcG9saWN5L2FwcF9wcm9maWxlLmMnOyBtdXN0KHNlYyk7IG11c3QoYXBwKQppZiAnYXRvbWljX3NldCgmY3VycmVudC0+c2VjY29tcC5maWx0ZXJfY291bnQsIDApJyBub3QgaW4gYXBwLnJlYWRfdGV4dCgpOiByYWlzZSBTeXN0ZW1FeGl0KCdFeHBlY3RlZCBTdWtpU1UgZmlsdGVyX2NvdW50IHVzZSBub3QgZm91bmQnKQpzPXNlYy5yZWFkX3RleHQoKQppZiAnYXRvbWljX3QgZmlsdGVyX2NvdW50Oycgbm90IGluIHM6CiAgICBwYXQ9cicoXlxzKmludFxzK21vZGVccyo7XG4pJwogICAgaWYgbm90IHJlLnNlYXJjaChwYXQscyxyZS5NKTogcmFpc2UgU3lzdGVtRXhpdCgnc2VjY29tcCBzdHJ1Y3QgbW9kZSBmaWVsZCBub3QgZm91bmQnKQogICAgcz1yZS5zdWIocGF0LHInXDFcdGF0b21pY190IGZpbHRlcl9jb3VudDtcbicscyxjb3VudD0xLGZsYWdzPXJlLk0pOyBzZWMud3JpdGVfdGV4dChzKTsgcHJpbnQoJ1tGSVhFRF0gc2VjY29tcC5maWx0ZXJfY291bnQgY29tcGF0aWJpbGl0eScpCmVsc2U6IHByaW50KCdbUEFTU10gc2VjY29tcC5maWx0ZXJfY291bnQgY29tcGF0aWJpbGl0eScpCgojIDMgdmVyaWZpZWQgbWluX3QgaW5jbHVkZSBjb21wYXRpYmlsaXR5CnN1bG9nPXJvb3QvJ2RyaXZlcnMva2VybmVsc3Uvc3Vsb2cvZXZlbnQuYyc7IG11c3Qoc3Vsb2cpOyBzPXN1bG9nLnJlYWRfdGV4dCgpCmlmICcjaW5jbHVkZSA8bGludXgvbWlubWF4Lmg+JyBpbiBzOgogICAgc3Vsb2cud3JpdGVfdGV4dChzLnJlcGxhY2UoJyNpbmNsdWRlIDxsaW51eC9taW5tYXguaD4nLCcjaW5jbHVkZSA8bGludXgva2VybmVsLmg+JywxKSk7IHByaW50KCdbRklYRURdIHN1bG9nIG1pbl90IGluY2x1ZGUgY29tcGF0aWJpbGl0eScpCmVsaWYgJ21pbl90JyBpbiBzIGFuZCAnI2luY2x1ZGUgPGxpbnV4L2tlcm5lbC5oPicgaW4gczogcHJpbnQoJ1tQQVNTXSBzdWxvZyBtaW5fdCBpbmNsdWRlIGNvbXBhdGliaWxpdHknKQplbHNlOiByYWlzZSBTeXN0ZW1FeGl0KCdVbmV4cGVjdGVkIHN1bG9nIG1pbl90IGluY2x1ZGUgc3RhdGUnKQoKIyA0IENlbnRyYWwgNC4xOSBzZWxpbnV4X3BvbGljeSBjb21wYXRpYmlsaXR5IGRlZmluaXRpb246IHNlcG9saWN5LmMgYW5kIHJ1bGVzLmMKc2VoPXJvb3QvJ2RyaXZlcnMva2VybmVsc3Uvc2VsaW51eC9zZXBvbGljeS5oJzsgbXVzdChzZWgpOyBzPXNlaC5yZWFkX3RleHQoKQppZiAnc3RydWN0IHNlbGludXhfcG9saWN5IHsnIG5vdCBpbiBzOgogICAgbWFya2VyPScjaW5jbHVkZSAic3MvcG9saWN5ZGIuaCJcbicKICAgIGlmIG1hcmtlciBub3QgaW4gczogcmFpc2UgU3lzdGVtRXhpdCgnc2Vwb2xpY3kuaCBwb2xpY3lkYiBpbmNsdWRlIGFuY2hvciBtaXNzaW5nJykKICAgIGlucz1tYXJrZXIrJ1xuLyogTEcgTGludXggNC4xOTogU0VMaW51eCBwb2xpY3kgaXMgb3duZWQgYnkgc2VsaW51eF9zdGF0ZS5zcy5cbiAqIFN1a2lTVSBwb2xpY3kgaGVscGVycyBzdGlsbCB1c2UgdGhpcyBwcml2YXRlIHdyYXBwZXIgZm9yIHBvbGljeWRiIGNsb25pbmcuICovXG5zdHJ1Y3Qgc2VsaW51eF9wb2xpY3kge1xuICAgIHN0cnVjdCBwb2xpY3lkYiBwb2xpY3lkYjtcbn07XG4nCiAgICBzPXMucmVwbGFjZShtYXJrZXIsaW5zLDEpOyBzZWgud3JpdGVfdGV4dChzKTsgcHJpbnQoJ1tGSVhFRF0gY2VudHJhbCBzdHJ1Y3Qgc2VsaW51eF9wb2xpY3kgd3JhcHBlciBhZGRlZCB0byBzZXBvbGljeS5oJykKZWxzZTogcHJpbnQoJ1tQQVNTXSBjZW50cmFsIHN0cnVjdCBzZWxpbnV4X3BvbGljeSB3cmFwcGVyIGFscmVhZHkgcHJlc2VudCcpCgojIDUgZXhhY3QgU0VMaW51eCBiYWNrZW5kIGFkYXB0YXRpb24gaW4gcnVsZXMuYwpydWxlcz1yb290Lydkcml2ZXJzL2tlcm5lbHN1L3NlbGludXgvcnVsZXMuYyc7IG11c3QocnVsZXMpOyBzPXJ1bGVzLnJlYWRfdGV4dCgpCmlmICdzZWxpbnV4X3N0YXRlLnBvbGljeScgaW4gcyBvciAnc2VsaW51eF9zdGF0ZS5wb2xpY3lfbXV0ZXgnIGluIHM6CiAgICAjIFRoZSBkZWRpY2F0ZWQgcnVsZXMgdHJhbnNmb3JtZXIgcGVyZm9ybXMgb25seSB0aGUgdHdvIHBvbGljeSBmdW5jdGlvbnMuCiAgICBzdWJwcm9jZXNzLmNoZWNrX2NhbGwoW3N5cy5leGVjdXRhYmxlLCBzdHIoUGF0aCgnL3RtcC9rc3VfcnVsZXNfZml4LnB5JykpLCBzdHIocnVsZXMpXSkKICAgIHM9cnVsZXMucmVhZF90ZXh0KCkKZWxzZToKICAgIHByaW50KCdbUEFTU10gcnVsZXMuYyBoYXMgbm8gbW9kZXJuIHNlbGludXhfc3RhdGUucG9saWN5IHJlZmVyZW5jZXMnKQoKIyBBdWRpdCB0aGUgZXhhY3QgbGVnYWN5IGJhY2tlbmQgbWFya2Vycy4Kcz1ydWxlcy5yZWFkX3RleHQoKQppZiAnc2VsaW51eF9zdGF0ZS5wb2xpY3knIGluIHMgb3IgJ3NlbGludXhfc3RhdGUucG9saWN5X211dGV4JyBpbiBzOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnQVVESVQgRkFJTEVEOiBtb2Rlcm4gc2VsaW51eF9zdGF0ZS5wb2xpY3kvcG9saWN5X211dGV4IHJlZmVyZW5jZXMgcmVtYWluJykKZm9yIG1hcmtlciBpbiAoJ3N0cnVjdCBzZWxpbnV4X3NzICpzcyA9IHNlbGludXhfc3RhdGUuc3M7JywgJ3dyaXRlX2xvY2soJnNzLT5wb2xpY3lfcndsb2NrKTsnLCAnc3MtPnBvbGljeWRiID0gcG9sLT5wb2xpY3lkYjsnKToKICAgIGlmIG1hcmtlciBub3QgaW4gczogcmFpc2UgU3lzdGVtRXhpdCgnQVVESVQgRkFJTEVEOiBtaXNzaW5nICcrbWFya2VyKQpwcmludCgnW1BBU1NdIHJ1bGVzLmMgdXNlcyBMRyA0LjE5IHNzLT5wb2xpY3lkYiArIHBvbGljeV9yd2xvY2sgYmFja2VuZCcpCnByaW50KCdbUEFTU10gTWFudWFsIGNvbXBhdGliaWxpdHkgc2V0IGNvbXBsZXRlOyBubyBBdXRvLUZpeCBlbmdpbmUgb3Igc3BlY3VsYXRpdmUgZ2xvYmFsIGZsYWdzIHVzZWQnKQo=' | base64 -d > "$RUNNER_TEMP/manual_compat.py"
-          chmod 700 "$RUNNER_TEMP/ksu_rules_fix.py" "$RUNNER_TEMP/manual_compat.py"
-          cp -f "$RUNNER_TEMP/ksu_rules_fix.py" /tmp/ksu_rules_fix.py
-          python3 "$RUNNER_TEMP/manual_compat.py"
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMscmUKcD1QYXRoKHN5cy5hcmd2WzFdKTsgcz1wLnJlYWRfdGV4dCgpCgpkZWYgZmluZF9mdW5jKHRleHQsbmFtZSk6CiAgICBwYXQ9cmUuY29tcGlsZShyJyg/bXMpXnN0YXRpY1xzKyg/OmJvb2x8dm9pZHxzdHJ1Y3RccythdnRhYl9ub2RlXHMqXCopXHMrJytyZS5lc2NhcGUobmFtZSkrcidccypcKFteO10qP1wpXHMqXHsnKQogICAgbT1wYXQuc2VhcmNoKHRleHQpCiAgICBpZiBub3QgbTogcmFpc2UgU3lzdGVtRXhpdCgnZnVuY3Rpb24gYm9keSBub3QgZm91bmQ6ICcrbmFtZSkKICAgIGJyYWNlPXRleHQuZmluZCgneycsbS5zdGFydCgpLG0uZW5kKCkpOyBkZXB0aD0wCiAgICBmb3IgaSBpbiByYW5nZShicmFjZSxsZW4odGV4dCkpOgogICAgICAgIGlmIHRleHRbaV09PSd7JzogZGVwdGgrPTEKICAgICAgICBlbGlmIHRleHRbaV09PSd9JzoKICAgICAgICAgICAgZGVwdGgtPTEKICAgICAgICAgICAgaWYgZGVwdGg9PTA6IHJldHVybiBtLnN0YXJ0KCksaSsxCiAgICByYWlzZSBTeXN0ZW1FeGl0KCdicmFjZSBtaXNtYXRjaDogJytuYW1lKQoKZGVmIHJlcGxhY2VfZnVuYyh0ZXh0LG5hbWUsYm9keSk6CiAgICBhLGI9ZmluZF9mdW5jKHRleHQsbmFtZSkKICAgIHJldHVybiB0ZXh0WzphXStib2R5K3RleHRbYjpdCgojIExpbnV4IDQuMTkgU0VMaW51eCBhdnRhYi9oYXNoIGJ1Y2tldHMgdXNlIGZsZXhfYXJyYXkuIEtlZXAgdGhlIG1vZGVybiBwYXRoCiMgaW50YWN0IGZvciBuZXdlciBrZXJuZWxzLCBidXQgbWFrZSB0aGUgNC4xOSBicmFuY2ggZGVyZWZlcmVuY2UgZmxleF9hcnJheS4KbWFjcm9fcGF0PXJlLmNvbXBpbGUocicjZGVmaW5lIGtzdV9oYXNoX2Zvcl9lYWNoXChub2RlX3B0ciwgbl9zbG90LCBjdXJcKS4qP2ZvciBcKGN1ciA9IG5vZGVfcHRyXFtpXF07IGN1cjsgY3VyID0gY3VyLT5uZXh0XCknLHJlLlMpCm1hY3JvX25ldyA9ICdcbicuam9pbihbCiAgICAnI2lmIExJTlVYX1ZFUlNJT05fQ09ERSA+PSBLRVJORUxfVkVSU0lPTig1LCA4LCAwKScsCiAgICAnI2RlZmluZSBrc3VfaGFzaF9mb3JfZWFjaChub2RlX3B0ciwgbl9zbG90LCBjdXIpIFxcJywKICAgICcgICAgaW50IGk7IFxcJywKICAgICcgICAgZm9yIChpID0gMDsgaSA8IG5fc2xvdDsgKytpKSBcXCcsCiAgICAnICAgICAgICBmb3IgKGN1ciA9IG5vZGVfcHRyW2ldOyBjdXI7IGN1ciA9IGN1ci0+bmV4dCknLAogICAgJyNlbHNlJywKICAgICcjZGVmaW5lIGtzdV9oYXNoX2Zvcl9lYWNoKG5vZGVfcHRyLCBuX3Nsb3QsIGN1cikgXFwnLAogICAgJyAgICBpbnQgaTsgXFwnLAogICAgJyAgICBmb3IgKGkgPSAwOyBpIDwgbl9zbG90OyArK2kpIFxcJywKICAgICcgICAgICAgIGZvciAoY3VyID0gZmxleF9hcnJheV9nZXRfcHRyKG5vZGVfcHRyLCBpKTsgY3VyOyBjdXIgPSBjdXItPm5leHQpJywKICAgICcjZW5kaWYnCl0pCmlmIG5vdCBtYWNyb19wYXQuc2VhcmNoKHMpOiByYWlzZSBTeXN0ZW1FeGl0KCdoYXNoIG1hY3JvIHRhcmdldCBub3QgZm91bmQnKQpzPW1hY3JvX3BhdC5zdWIobWFjcm9fbmV3LHMsY291bnQ9MSkKCiMgSU1QT1JUQU5UOiByZXBsYWNlIGVhY2ggb3JpZ2luYWwgZnVuY3Rpb24gZXhhY3RseSBvbmNlLiBEbyBub3Qgd3JhcCBhbiBvbGQKIyBkZWZpbml0aW9uIGluIGFub3RoZXIgI2lmLyNlbHNlIGRlZmluaXRpb247IHRoYXQgY3JlYXRlZCBmYWxzZSBkdXBsaWNhdGUKIyBkZWZpbml0aW9ucyBpbiBWNjQgYW5kIHByZXZlbnRlZCB0aGUgYnVpbGQgZnJvbSByZWFjaGluZyBjb21waWxhdGlvbi4Kcz1yZXBsYWNlX2Z1bmMocywncmVtb3ZlX2F2dGFiX25vZGUnLHInJydzdGF0aWMgYm9vbCByZW1vdmVfYXZ0YWJfbm9kZShzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBzdHJ1Y3QgYXZ0YWJfbm9kZSAqbm9kZSkKewogICAgaW50IGk7CiAgICBpbnQgcmV0OwogICAgaW50IHNocmlua19zaXplID0gc2l6ZW9mKHN0cnVjdCBhdnRhYl9rZXkpICsgc2l6ZW9mKHN0cnVjdCBhdnRhYl9kYXR1bSk7CiAgICBzdHJ1Y3QgYXZ0YWIgcmVtb3ZlZCA9IHt9OwogICAgc3RydWN0IGF2dGFiX25vZGUgKm47CiAgICBzdHJ1Y3QgYXZ0YWJfbm9kZSAqcHJldjsKCiAgICByZXQgPSBhdnRhYl9hbGxvYygmcmVtb3ZlZCwgMSk7CiAgICBpZiAocmV0IDwgMCkKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICBmb3IgKGkgPSAwOyBpIDwgZGItPnRlX2F2dGFiLm5zbG90OyBpKyspIHsKICAgICAgICBwcmV2ID0gTlVMTDsKICAgICAgICBmb3IgKG4gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnRlX2F2dGFiLmh0YWJsZSwgaSk7IG47IHByZXYgPSBuLCBuID0gbi0+bmV4dCkgewogICAgICAgICAgICBpZiAobiAhPSBub2RlKQogICAgICAgICAgICAgICAgY29udGludWU7CiAgICAgICAgICAgIGlmIChwcmV2KQogICAgICAgICAgICAgICAgcHJldi0+bmV4dCA9IG4tPm5leHQ7CiAgICAgICAgICAgIGVsc2UgaWYgKGZsZXhfYXJyYXlfcHV0X3B0cihkYi0+dGVfYXZ0YWIuaHRhYmxlLCBpLCBuLT5uZXh0LCBHRlBfS0VSTkVMIHwgX19HRlBfWkVSTykpIHsKICAgICAgICAgICAgICAgIGF2dGFiX2Rlc3Ryb3koJnJlbW92ZWQpOwogICAgICAgICAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgICAgICAgICB9CiAgICAgICAgICAgIGlmIChkYi0+dGVfYXZ0YWIubmVsID4gMCkKICAgICAgICAgICAgICAgIGRiLT50ZV9hdnRhYi5uZWwtLTsKICAgICAgICAgICAgaWYgKChuLT5rZXkuc3BlY2lmaWVkICYgQVZUQUJfWFBFUk1TKSAmJiBuLT5kYXR1bS51LnhwZXJtcykKICAgICAgICAgICAgICAgIHNocmlua19zaXplICs9IHNpemVvZih1OCkgKyBzaXplb2YodTgpICsgc2l6ZW9mKHUzMikgKiBBUlJBWV9TSVpFKG4tPmRhdHVtLnUueHBlcm1zLT5wZXJtcy5wKTsKICAgICAgICAgICAgbi0+bmV4dCA9IE5VTEw7CiAgICAgICAgICAgIGlmIChmbGV4X2FycmF5X3B1dF9wdHIocmVtb3ZlZC5odGFibGUsIDAsIG4sIEdGUF9LRVJORUwgfCBfX0dGUF9aRVJPKSkgewogICAgICAgICAgICAgICAgYXZ0YWJfZGVzdHJveSgmcmVtb3ZlZCk7CiAgICAgICAgICAgICAgICByZXR1cm4gZmFsc2U7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgcmVtb3ZlZC5uZWwgPSAxOwogICAgICAgICAgICBhdnRhYl9kZXN0cm95KCZyZW1vdmVkKTsKICAgICAgICAgICAgaWYgKGRiLT5sZW4gPj0gc2hyaW5rX3NpemUpCiAgICAgICAgICAgICAgICBkYi0+bGVuIC09IHNocmlua19zaXplOwogICAgICAgICAgICByZXR1cm4gdHJ1ZTsKICAgICAgICB9CiAgICB9CiAgICBhdnRhYl9kZXN0cm95KCZyZW1vdmVkKTsKICAgIHJldHVybiBmYWxzZTsKfScnJykKYWRkX2ZpbGVuYW1lX2JvZHkgPSByJycnc3RhdGljIGJvb2wgYWRkX2ZpbGVuYW1lX3RyYW5zKHN0cnVjdCBwb2xpY3lkYiAqZGIsIGNvbnN0IGNoYXIgKnMsIGNvbnN0IGNoYXIgKnQsCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBjb25zdCBjaGFyICpjLCBjb25zdCBjaGFyICpkLCBjb25zdCBjaGFyICpvKQp7CiAgICBzdHJ1Y3QgdHlwZV9kYXR1bSAqc3JjLCAqdGd0LCAqZGVmOwogICAgc3RydWN0IGNsYXNzX2RhdHVtICpjbHM7CiAgICBpbnQgcmM7CgojaWYgTElOVVhfVkVSU0lPTl9DT0RFIDwgS0VSTkVMX1ZFUlNJT04oNSwgOCwgMCkKICAgIHN0cnVjdCBmaWxlbmFtZV90cmFucyBmdDsKICAgIHN0cnVjdCBmaWxlbmFtZV90cmFucyAqbmV3X2tleSA9IE5VTEw7CiAgICBzdHJ1Y3QgZmlsZW5hbWVfdHJhbnNfZGF0dW0gKmRhdHVtOwoKICAgIHNyYyA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX3R5cGVzLCBzKTsKICAgIHRndCA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX3R5cGVzLCB0KTsKICAgIGNscyA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX2NsYXNzZXMsIGMpOwogICAgZGVmID0gc3ltdGFiX3NlYXJjaCgmZGItPnBfdHlwZXMsIGQpOwogICAgaWYgKCFzcmMgfHwgIXRndCB8fCAhY2xzIHx8ICFkZWYpCiAgICAgICAgcmV0dXJuIGZhbHNlOwoKICAgIGZ0LnN0eXBlID0gc3JjLT52YWx1ZTsKICAgIGZ0LnR0eXBlID0gdGd0LT52YWx1ZTsKICAgIGZ0LnRjbGFzcyA9IGNscy0+dmFsdWU7CiAgICBmdC5uYW1lID0gbzsKCiAgICBkYXR1bSA9IGt6YWxsb2Moc2l6ZW9mKCpkYXR1bSksIEdGUF9LRVJORUwpOwogICAgaWYgKCFkYXR1bSkKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICBkYXR1bS0+b3R5cGUgPSBkZWYtPnZhbHVlOwoKICAgIG5ld19rZXkgPSBrbWVtZHVwKCZmdCwgc2l6ZW9mKGZ0KSwgR0ZQX0tFUk5FTCk7CiAgICBpZiAoIW5ld19rZXkpCiAgICAgICAgZ290byBsZWdhY3lfZnJlZV9kYXR1bTsKICAgIG5ld19rZXktPm5hbWUgPSBrc3RyZHVwKGZ0Lm5hbWUsIEdGUF9LRVJORUwpOwogICAgaWYgKCFuZXdfa2V5LT5uYW1lKQogICAgICAgIGdvdG8gbGVnYWN5X2ZyZWVfa2V5OwoKICAgIHJjID0gaGFzaHRhYl9pbnNlcnQoZGItPmZpbGVuYW1lX3RyYW5zLCBuZXdfa2V5LCBkYXR1bSk7CiAgICBpZiAocmMpCiAgICAgICAgZ290byBsZWdhY3lfZnJlZV9uYW1lOwoKICAgIGlmIChlYml0bWFwX3NldF9iaXQoJmRiLT5maWxlbmFtZV90cmFuc190dHlwZXMsIGZ0LnR0eXBlLCAxKSkKICAgICAgICByZXR1cm4gZmFsc2U7CgpyZXR1cm4gdHJ1ZTsKCmxlZ2FjeV9mcmVlX25hbWU6CiAgICBrZnJlZSgoY2hhciAqKW5ld19rZXktPm5hbWUpOwpsZWdhY3lfZnJlZV9rZXk6CiAgICBrZnJlZShuZXdfa2V5KTsKbGVnYWN5X2ZyZWVfZGF0dW06CiAgICBrZnJlZShkYXR1bSk7CiAgICByZXR1cm4gZmFsc2U7CiNlbHNlIC8qIExpbnV4IDUuOCsgZmlsZW5hbWVfdHJhbnNfa2V5OyA1LjkrIHVzZXMga2V5LXBhcmFtcyBoYXNodGFiIEFQSSAqLwogICAgc3RydWN0IGZpbGVuYW1lX3RyYW5zX2tleSBrZXk7CiAgICBzdHJ1Y3QgZmlsZW5hbWVfdHJhbnNfZGF0dW0gKmxhc3QgPSBOVUxMLCAqdHJhbnM7CiAgICBzdHJ1Y3QgZmlsZW5hbWVfdHJhbnNfa2V5ICpuZXdfa2V5ID0gTlVMTDsKCiAgICBzcmMgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgcyk7CiAgICB0Z3QgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgdCk7CiAgICBjbHMgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF9jbGFzc2VzLCBjKTsKICAgIGRlZiA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX3R5cGVzLCBkKTsKICAgIGlmICghc3JjIHx8ICF0Z3QgfHwgIWNscyB8fCAhZGVmKQogICAgICAgIHJldHVybiBmYWxzZTsKCiAgICBrZXkudHR5cGUgPSB0Z3QtPnZhbHVlOwogICAga2V5LnRjbGFzcyA9IGNscy0+dmFsdWU7CiAgICBrZXkubmFtZSA9IG87CgojaWYgTElOVVhfVkVSU0lPTl9DT0RFID49IEtFUk5FTF9WRVJTSU9OKDUsIDksIDApCiAgICB0cmFucyA9IHBvbGljeWRiX2ZpbGVuYW1ldHJfc2VhcmNoKGRiLCAma2V5KTsKI2Vsc2UKICAgIHRyYW5zID0gaGFzaHRhYl9zZWFyY2goJmRiLT5maWxlbmFtZV90cmFucywgJmtleSk7CiNlbmRpZgogICAgd2hpbGUgKHRyYW5zKSB7CiAgICAgICAgaWYgKGViaXRtYXBfZ2V0X2JpdCgmdHJhbnMtPnN0eXBlcywgc3JjLT52YWx1ZSAtIDEpKSB7CiAgICAgICAgICAgIHRyYW5zLT5vdHlwZSA9IGRlZi0+dmFsdWU7CiAgICAgICAgICAgIHJldHVybiB0cnVlOwogICAgICAgIH0KICAgICAgICBpZiAodHJhbnMtPm90eXBlID09IGRlZi0+dmFsdWUpCiAgICAgICAgICAgIGJyZWFrOwogICAgICAgIGxhc3QgPSB0cmFuczsKICAgICAgICB0cmFucyA9IHRyYW5zLT5uZXh0OwogICAgfQoKICAgIGlmICghdHJhbnMpIHsKICAgICAgICB0cmFucyA9IGtjYWxsb2MoMSwgc2l6ZW9mKCp0cmFucyksIEdGUF9LRVJORUwpOwogICAgICAgIGlmICghdHJhbnMpCiAgICAgICAgICAgIHJldHVybiBmYWxzZTsKICAgICAgICBlYml0bWFwX2luaXQoJnRyYW5zLT5zdHlwZXMpOwogICAgICAgIHRyYW5zLT5vdHlwZSA9IGRlZi0+dmFsdWU7CiAgICAgICAgdHJhbnMtPm5leHQgPSBsYXN0OwogICAgICAgIGlmICghbGFzdCkgewogICAgICAgICAgICBuZXdfa2V5ID0ga3phbGxvYyhzaXplb2YoKm5ld19rZXkpLCBHRlBfS0VSTkVMKTsKICAgICAgICAgICAgaWYgKCFuZXdfa2V5KQogICAgICAgICAgICAgICAgZ290byBtb2Rlcm5fZnJlZV90cmFuczsKICAgICAgICAgICAgKm5ld19rZXkgPSBrZXk7CiAgICAgICAgICAgIG5ld19rZXktPm5hbWUgPSBrc3RyZHVwKGtleS5uYW1lLCBHRlBfS0VSTkVMKTsKICAgICAgICAgICAgaWYgKCFuZXdfa2V5LT5uYW1lKQogICAgICAgICAgICAgICAgZ290byBtb2Rlcm5fZnJlZV9rZXk7CiNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPj0gS0VSTkVMX1ZFUlNJT04oNSwgOSwgMCkKICAgICAgICAgICAgcmMgPSBoYXNodGFiX2luc2VydCgmZGItPmZpbGVuYW1lX3RyYW5zLCBuZXdfa2V5LCB0cmFucywgZmlsZW5hbWV0cl9rZXlfcGFyYW1zKTsKI2Vsc2UKICAgICAgICAgICAgcmMgPSBoYXNodGFiX2luc2VydCgmZGItPmZpbGVuYW1lX3RyYW5zLCBuZXdfa2V5LCB0cmFucyk7CiNlbmRpZgogICAgICAgICAgICBpZiAocmMpCiAgICAgICAgICAgICAgICBnb3RvIG1vZGVybl9mcmVlX25hbWU7CiAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAgbGFzdC0+bmV4dCA9IHRyYW5zOwogICAgICAgIH0KICAgIH0KICAgIHJldHVybiBlYml0bWFwX3NldF9iaXQoJnRyYW5zLT5zdHlwZXMsIHNyYy0+dmFsdWUgLSAxLCAxKSA9PSAwOwoKbW9kZXJuX2ZyZWVfbmFtZToKICAgIGtmcmVlKG5ld19rZXktPm5hbWUpOwptb2Rlcm5fZnJlZV9rZXk6CiAgICBrZnJlZShuZXdfa2V5KTsKbW9kZXJuX2ZyZWVfdHJhbnM6CiAgICBlYml0bWFwX2Rlc3Ryb3koJnRyYW5zLT5zdHlwZXMpOwogICAga2ZyZWUodHJhbnMpOwogICAgcmV0dXJuIGZhbHNlOwojZW5kaWYKfScnJwpzPXJlcGxhY2VfZnVuYyhzLCdhZGRfZmlsZW5hbWVfdHJhbnMnLGFkZF9maWxlbmFtZV9ib2R5KQoKcz1yZXBsYWNlX2Z1bmMocywnYWRkX3R5cGUnLHInJydzdGF0aWMgYm9vbCBhZGRfdHlwZShzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBjb25zdCBjaGFyICp0eXBlX25hbWUsIGJvb2wgYXR0cikKewogICAgc3RydWN0IHR5cGVfZGF0dW0gKnR5cGUgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgdHlwZV9uYW1lKTsKICAgIHUzMiB2YWx1ZTsKICAgIGNoYXIgKmtleTsKICAgIHN0cnVjdCBmbGV4X2FycmF5ICpuZXdfdHlwZV9hdHRyX21hcF9hcnJheTsKICAgIHN0cnVjdCBmbGV4X2FycmF5ICpuZXdfdHlwZV92YWxfdG9fc3RydWN0OwogICAgc3RydWN0IGZsZXhfYXJyYXkgKm5ld192YWxfdG9fbmFtZV90eXBlczsKICAgIGludCBpLCBqOwogICAgdm9pZCAqb2xkX2VsZW07CiAgICBzdHJ1Y3QgZmxleF9hcnJheSAqb2xkX2ZhOwoKICAgIGlmICh0eXBlKSByZXR1cm4gdHJ1ZTsKICAgIHZhbHVlID0gKytkYi0+cF90eXBlcy5ucHJpbTsKICAgIHR5cGUgPSAoc3RydWN0IHR5cGVfZGF0dW0gKilremFsbG9jKHNpemVvZigqdHlwZSksIEdGUF9BVE9NSUMpOwogICAgaWYgKCF0eXBlKSByZXR1cm4gZmFsc2U7CiAgICB0eXBlLT5wcmltYXJ5ID0gMTsgdHlwZS0+dmFsdWUgPSB2YWx1ZTsgdHlwZS0+YXR0cmlidXRlID0gYXR0cjsKICAgIGtleSA9IGtzdHJkdXAodHlwZV9uYW1lLCBHRlBfQVRPTUlDKTsKICAgIGlmICgha2V5KSB7IGtmcmVlKHR5cGUpOyByZXR1cm4gZmFsc2U7IH0KICAgIGlmIChzeW10YWJfaW5zZXJ0KCZkYi0+cF90eXBlcywga2V5LCB0eXBlKSkgeyBrZnJlZShrZXkpOyBrZnJlZSh0eXBlKTsgcmV0dXJuIGZhbHNlOyB9CgogICAgbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXkgPSBmbGV4X2FycmF5X2FsbG9jKHNpemVvZihzdHJ1Y3QgZWJpdG1hcCksIGRiLT5wX3R5cGVzLm5wcmltLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTyk7CiAgICBuZXdfdHlwZV92YWxfdG9fc3RydWN0ID0gZmxleF9hcnJheV9hbGxvYyhzaXplb2Yoc3RydWN0IHR5cGVfZGF0dW0gKiksIGRiLT5wX3R5cGVzLm5wcmltLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTyk7CiAgICBuZXdfdmFsX3RvX25hbWVfdHlwZXMgPSBmbGV4X2FycmF5X2FsbG9jKHNpemVvZihjaGFyICopLCBkYi0+c3ltdGFiW1NZTV9UWVBFU10ubnByaW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKTsKICAgIGlmICghbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXkgfHwgIW5ld190eXBlX3ZhbF90b19zdHJ1Y3QgfHwgIW5ld192YWxfdG9fbmFtZV90eXBlcykgcmV0dXJuIGZhbHNlOwoKICAgIGlmIChmbGV4X2FycmF5X3ByZWFsbG9jKG5ld190eXBlX2F0dHJfbWFwX2FycmF5LCAwLCBkYi0+cF90eXBlcy5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pIHx8CiAgICAgICAgZmxleF9hcnJheV9wcmVhbGxvYyhuZXdfdHlwZV92YWxfdG9fc3RydWN0LCAwLCBkYi0+cF90eXBlcy5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pIHx8CiAgICAgICAgZmxleF9hcnJheV9wcmVhbGxvYyhuZXdfdmFsX3RvX25hbWVfdHlwZXMsIDAsIGRiLT5zeW10YWJbU1lNX1RZUEVTXS5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pKQogICAgICAgIHJldHVybiBmYWxzZTsKCiAgICBpZiAoZGItPnR5cGVfYXR0cl9tYXBfYXJyYXkpIHsKICAgICAgICBmb3IgKGogPSAwOyBqIDwgZGItPnR5cGVfYXR0cl9tYXBfYXJyYXktPnRvdGFsX25yX2VsZW1lbnRzOyBqKyspIHsKICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldChkYi0+dHlwZV9hdHRyX21hcF9hcnJheSwgaik7CiAgICAgICAgICAgIGlmIChvbGRfZWxlbSAmJiBmbGV4X2FycmF5X3B1dChuZXdfdHlwZV9hdHRyX21hcF9hcnJheSwgaiwgb2xkX2VsZW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSkgcmV0dXJuIGZhbHNlOwogICAgICAgIH0KICAgIH0KICAgIGlmIChkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5KSB7CiAgICAgICAgZm9yIChqID0gMDsgaiA8IGRiLT50eXBlX3ZhbF90b19zdHJ1Y3RfYXJyYXktPnRvdGFsX25yX2VsZW1lbnRzOyBqKyspIHsKICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheSwgaik7CiAgICAgICAgICAgIGlmIChvbGRfZWxlbSAmJiBmbGV4X2FycmF5X3B1dF9wdHIobmV3X3R5cGVfdmFsX3RvX3N0cnVjdCwgaiwgb2xkX2VsZW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSkgcmV0dXJuIGZhbHNlOwogICAgICAgIH0KICAgIH0KICAgIGlmIChkYi0+c3ltX3ZhbF90b19uYW1lW1NZTV9UWVBFU10pIHsKICAgICAgICBmb3IgKGogPSAwOyBqIDwgZGItPnN5bXRhYltTWU1fVFlQRVNdLm5wcmltOyBqKyspIHsKICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdLCBqKTsKICAgICAgICAgICAgaWYgKG9sZF9lbGVtICYmIGZsZXhfYXJyYXlfcHV0X3B0cihuZXdfdmFsX3RvX25hbWVfdHlwZXMsIGosIG9sZF9lbGVtLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykpIHJldHVybiBmYWxzZTsKICAgICAgICB9CiAgICB9CgogICAgb2xkX2ZhID0gZGItPnR5cGVfYXR0cl9tYXBfYXJyYXk7IGRiLT50eXBlX2F0dHJfbWFwX2FycmF5ID0gbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXk7IGlmIChvbGRfZmEpIGZsZXhfYXJyYXlfZnJlZShvbGRfZmEpOwogICAgZWJpdG1hcF9pbml0KGZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB2YWx1ZSAtIDEpKTsKICAgIGlmIChlYml0bWFwX3NldF9iaXQoZmxleF9hcnJheV9nZXQoZGItPnR5cGVfYXR0cl9tYXBfYXJyYXksIHZhbHVlIC0gMSksIHZhbHVlIC0gMSwgMSkpIHJldHVybiBmYWxzZTsKCiAgICBvbGRfZmEgPSBkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5OyBkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5ID0gbmV3X3R5cGVfdmFsX3RvX3N0cnVjdDsgaWYgKG9sZF9mYSkgZmxleF9hcnJheV9mcmVlKG9sZF9mYSk7CiAgICBpZiAoZmxleF9hcnJheV9wdXRfcHRyKGRiLT50eXBlX3ZhbF90b19zdHJ1Y3RfYXJyYXksIHZhbHVlIC0gMSwgdHlwZSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pKSByZXR1cm4gZmFsc2U7CgogICAgb2xkX2ZhID0gZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdOyBkYi0+c3ltX3ZhbF90b19uYW1lW1NZTV9UWVBFU10gPSBuZXdfdmFsX3RvX25hbWVfdHlwZXM7IGlmIChvbGRfZmEpIGZsZXhfYXJyYXlfZnJlZShvbGRfZmEpOwogICAgaWYgKGZsZXhfYXJyYXlfcHV0X3B0cihkYi0+c3ltX3ZhbF90b19uYW1lW1NZTV9UWVBFU10sIHZhbHVlIC0gMSwga2V5LCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykpIHJldHVybiBmYWxzZTsKCiAgICBmb3IgKGkgPSAwOyBpIDwgZGItPnBfcm9sZXMubnByaW07ICsraSkKICAgICAgICBlYml0bWFwX3NldF9iaXQoJmRiLT5yb2xlX3ZhbF90b19zdHJ1Y3RbaV0tPnR5cGVzLCB2YWx1ZSAtIDEsIDEpOwogICAgcmV0dXJuIHRydWU7Cn0nJycpCnM9cmVwbGFjZV9mdW5jKHMsJ2FkZF90eXBlYXR0cmlidXRlX3JhdycscicnJ3N0YXRpYyB2b2lkIGFkZF90eXBlYXR0cmlidXRlX3JhdyhzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBzdHJ1Y3QgdHlwZV9kYXR1bSAqdHlwZSwgc3RydWN0IHR5cGVfZGF0dW0gKmF0dHIpCnsKICAgIHN0cnVjdCBlYml0bWFwICpzYXR0ciA9IGZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB0eXBlLT52YWx1ZSAtIDEpOwogICAgc3RydWN0IGhhc2h0YWJfbm9kZSAqbm9kZTsKICAgIHN0cnVjdCBjb25zdHJhaW50X25vZGUgKm47CiAgICBzdHJ1Y3QgY29uc3RyYWludF9leHByICplOwogICAgaWYgKCFzYXR0cikgcmV0dXJuOwogICAgZWJpdG1hcF9zZXRfYml0KHNhdHRyLCBhdHRyLT52YWx1ZSAtIDEsIDEpOwogICAga3N1X2hhc2h0YWJfZm9yX2VhY2goZGItPnBfY2xhc3Nlcy50YWJsZSwgbm9kZSkKICAgIHsKICAgICAgICBzdHJ1Y3QgY2xhc3NfZGF0dW0gKmNscyA9IChzdHJ1Y3QgY2xhc3NfZGF0dW0gKikobm9kZS0+ZGF0dW0pOwogICAgICAgIGZvciAobiA9IGNscy0+Y29uc3RyYWludHM7IG47IG4gPSBuLT5uZXh0KQogICAgICAgICAgICBmb3IgKGUgPSBuLT5leHByOyBlOyBlID0gZS0+bmV4dCkKICAgICAgICAgICAgICAgIGlmIChlLT5leHByX3R5cGUgPT0gQ0VYUFJfTkFNRVMgJiYgZWJpdG1hcF9nZXRfYml0KCZlLT50eXBlX25hbWVzLT50eXBlcywgYXR0ci0+dmFsdWUgLSAxKSkKICAgICAgICAgICAgICAgICAgICBlYml0bWFwX3NldF9iaXQoJmUtPm5hbWVzLCB0eXBlLT52YWx1ZSAtIDEsIDEpOwogICAgfTsKfScnJykKCm1hcmtlcj0nI2RlZmluZSBzdHJpcF9hdihlZmZlY3QsIGludmVydCkgKChlZmZlY3QgPT0gQVZUQUJfQVVESVRERU5ZKSA9PSAhaW52ZXJ0KVxuJwpjb21wYXQ9IiNkZWZpbmUgc3RyaXBfYXYoZWZmZWN0LCBpbnZlcnQpICgoZWZmZWN0ID09IEFWVEFCX0FVRElUREVOWSkgPT0gIWludmVydClcbiNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPCBLRVJORUxfVkVSU0lPTig1LCA5LCAwKVxuI2lmbmRlZiBzeW10YWJfc2VhcmNoXG4jZGVmaW5lIHN5bXRhYl9zZWFyY2gocywgbmFtZSkgaGFzaHRhYl9zZWFyY2goKHMpLT50YWJsZSwgbmFtZSlcbiNlbmRpZlxuI2lmbmRlZiBzeW10YWJfaW5zZXJ0XG4jZGVmaW5lIHN5bXRhYl9pbnNlcnQocywgbmFtZSwgZGF0dW0pIGhhc2h0YWJfaW5zZXJ0KChzKS0+dGFibGUsIG5hbWUsIGRhdHVtKVxuI2VuZGlmXG4jZW5kaWZcbiIKaWYgbWFya2VyIG5vdCBpbiBzOiByYWlzZSBTeXN0ZW1FeGl0KCdzdHJpcF9hdiBtYXJrZXIgbWlzc2luZycpCnM9cy5yZXBsYWNlKG1hcmtlcixjb21wYXQsMSkKCmhhc2h0YWJfYmxvY2sgPSByIiIiI2lmIExJTlVYX1ZFUlNJT05fQ09ERSA+PSBLRVJORUxfVkVSU0lPTig1LCA4LCAwKQojZGVmaW5lIGtzdV9oYXNodGFiX2Zvcl9lYWNoKGh0YWIsIGN1cikga3N1X2hhc2hfZm9yX2VhY2goaHRhYi5odGFibGUsIGh0YWIuc2l6ZSwgY3VyKQojZWxzZQovKiBMaW51eCA0LjE5IFNFTGludXggaGFzaHRhYjo6aHRhYmxlIGlzIHN0cnVjdCBoYXNodGFiX25vZGUgKiouCiAqIERlbGliZXJhdGVseSBzZXBhcmF0ZSBmcm9tIGtzdV9oYXNoX2Zvcl9lYWNoKCksIHdob3NlIDQuMTkgYnJhbmNoIGlzCiAqIHJlc2VydmVkIGZvciBhdnRhYidzIGZsZXhfYXJyYXkgc3RvcmFnZS4gKi8KI2RlZmluZSBrc3VfaGFzaHRhYl9mb3JfZWFjaChodGFiLCBjdXIpIFwKICAgIGludCBpOyBcCiAgICBmb3IgKGkgPSAwOyBpIDwgKGh0YWIpLT5zaXplOyArK2kpIFwKICAgICAgICBmb3IgKGN1ciA9IChodGFiKS0+aHRhYmxlW2ldOyBjdXI7IGN1ciA9IGN1ci0+bmV4dCkKI2VuZGlmIiIiCiMgUmVtb3ZlIGV2ZXJ5IHByZS1leGlzdGluZyBrc3VfaGFzaHRhYl9mb3JfZWFjaCBjb25kaXRpb25hbCBibG9jaywgdGhlbiBpbnN0YWxsIGV4YWN0bHkgb25lLgpibG9ja19yZSA9IHJlLmNvbXBpbGUociIjaWYgTElOVVhfVkVSU0lPTl9DT0RFID49IEtFUk5FTF9WRVJTSU9OXCg1LCA4LCAwXClcbiNkZWZpbmUga3N1X2hhc2h0YWJfZm9yX2VhY2hcKGh0YWIsIGN1clwpLio/XiNlbmRpZiIsIHJlLlMgfCByZS5NKQpzLCByZW1vdmVkID0gYmxvY2tfcmUuc3VibignJywgcykKaWYgcmVtb3ZlZCA9PSAwOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnTm8gZXhpc3Rpbmcga3N1X2hhc2h0YWJfZm9yX2VhY2ggYmxvY2sgZm91bmQ7IHJlZnVzaW5nIHNwZWN1bGF0aXZlIGluc2VydGlvbicpCmFuY2hvciA9ICcjZGVmaW5lIHN0cmlwX2F2KGVmZmVjdCwgaW52ZXJ0KSAoKGVmZmVjdCA9PSBBVlRBQl9BVURJVERFTlkpID09ICFpbnZlcnQpXG4nCmlmIGFuY2hvciBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ3N0cmlwX2F2IG1hcmtlciBtaXNzaW5nIGZvciBjYW5vbmljYWwgaGFzaHRhYiBhZGFwdGVyJykKcyA9IHMucmVwbGFjZShhbmNob3IsIGFuY2hvciArIGhhc2h0YWJfYmxvY2sgKyAnXG4nLCAxKQppZiBsZW4ocmUuZmluZGFsbChyJyg/bSleI2RlZmluZSBrc3VfaGFzaHRhYl9mb3JfZWFjaFwoJywgcykpICE9IDI6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCdjYW5vbmljYWwgaGFzaHRhYiBjb25kaXRpb25hbCBibG9jayBkb2VzIG5vdCBjb250YWluIGV4YWN0bHkgdHdvIGJyYW5jaCBkZWZpbml0aW9ucycpCmlmIHMuY291bnQoJ0RlbGliZXJhdGVseSBzZXBhcmF0ZSBmcm9tIGtzdV9oYXNoX2Zvcl9lYWNoKCknKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnY2Fub25pY2FsIGhhc2h0YWIgYWRhcHRlciB3YXMgbm90IGluc3RhbGxlZCBleGFjdGx5IG9uY2UnKQoKZGVmIGNvdW50X2RlZihuYW1lKToKICAgIHBhdD1yZS5jb21waWxlKHInKD9tcylec3RhdGljXHMrKD86Ym9vbHx2b2lkKVxzKycrcmUuZXNjYXBlKG5hbWUpK3InXHMqXChbXjt7fV0qXClccypceycpCiAgICByZXR1cm4gbGVuKHBhdC5maW5kYWxsKHMpKQpjb3VudHM9e246Y291bnRfZGVmKG4pIGZvciBuIGluIFsncmVtb3ZlX2F2dGFiX25vZGUnLCdhZGRfZmlsZW5hbWVfdHJhbnMnLCdhZGRfdHlwZScsJ2FkZF90eXBlYXR0cmlidXRlX3JhdyddfQppZiBjb3VudHMgIT0geydyZW1vdmVfYXZ0YWJfbm9kZSc6MSwnYWRkX2ZpbGVuYW1lX3RyYW5zJzoxLCdhZGRfdHlwZSc6MSwnYWRkX3R5cGVhdHRyaWJ1dGVfcmF3JzoxfToKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ3VuZXhwZWN0ZWQgYWN0dWFsIGZ1bmN0aW9uIGRlZmluaXRpb24gY291bnRzOiAnK3JlcHIoY291bnRzKSkKZm9yIG5lZWRsZSBpbiBbJyNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPCBLRVJORUxfVkVSU0lPTig1LCA4LCAwKScsCiAgICAgICAgICAgICAgJ3N0cnVjdCBmaWxlbmFtZV90cmFucyBmdDsnLAogICAgICAgICAgICAgICdoYXNodGFiX2luc2VydChkYi0+ZmlsZW5hbWVfdHJhbnMsIG5ld19rZXksIGRhdHVtKScsCiAgICAgICAgICAgICAgJ2ZsZXhfYXJyYXlfZ2V0X3B0cihkYi0+dGVfYXZ0YWIuaHRhYmxlLCBpKScsCiAgICAgICAgICAgICAgJ3N0cnVjdCBmaWxlbmFtZV90cmFuc19rZXkga2V5JywKICAgICAgICAgICAgICAnZmxleF9hcnJheV9nZXQoZGItPnR5cGVfYXR0cl9tYXBfYXJyYXksIHR5cGUtPnZhbHVlIC0gMSknLAogICAgICAgICAgICAgICdmbGV4X2FycmF5X3B1dF9wdHIoZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheSwgdmFsdWUgLSAxLCB0eXBlLCddOgogICAgaWYgbmVlZGxlIG5vdCBpbiBzOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ3JlcXVpcmVkIHNvdXJjZS1kZXJpdmVkIGNvbXBhdGliaWxpdHkgY29uc3RydWN0IG1pc3Npbmc6ICcrbmVlZGxlKQpsZWdhY3lfcGFydCA9IHMuc3BsaXQoJyNlbHNlIC8qIExpbnV4IDUuOCsgZmlsZW5hbWVfdHJhbnNfa2V5OyA1LjkrIHVzZXMga2V5LXBhcmFtcyBoYXNodGFiIEFQSSAqLycsIDEpWzBdCmlmICdjb21wYXRfZmlsZW5hbWVfdHJhbnNfY291bnQnIGluIGxlZ2FjeV9wYXJ0OgogICAgcmFpc2UgU3lzdGVtRXhpdCgnbGVnYWN5IExHIDQuMTkgZmlsZW5hbWVfdHJhbnMgYnJhbmNoIHJlZmVyZW5jZXMgbmV3ZXIgY29tcGF0X2ZpbGVuYW1lX3RyYW5zX2NvdW50JykKaWYgJ3BvbGljeWRiX2ZpbGVuYW1ldHJfc2VhcmNoKGRiLCAma2V5KScgbm90IGluIHM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCduZXdlciBmaWxlbmFtZV90cmFucyBzZWFyY2ggcGF0aCBtaXNzaW5nJykKaWYgJ2hhc2h0YWJfc2VhcmNoKCZkYi0+ZmlsZW5hbWVfdHJhbnMsICZrZXkpJyBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ0xpbnV4IDUuOCBmaWxlbmFtZV90cmFucyBzZWFyY2ggcGF0aCBtaXNzaW5nJykKaWYgJ2hhc2h0YWJfaW5zZXJ0KCZkYi0+ZmlsZW5hbWVfdHJhbnMsIG5ld19rZXksIHRyYW5zLCBmaWxlbmFtZXRyX2tleV9wYXJhbXMpJyBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ0xpbnV4IDUuOSsgZmlsZW5hbWVfdHJhbnMgaW5zZXJ0aW9uIHBhdGggbWlzc2luZycpCmlmICdoYXNodGFiX2luc2VydCgmZGItPmZpbGVuYW1lX3RyYW5zLCBuZXdfa2V5LCB0cmFucyk7JyBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ0xpbnV4IDUuOCBmaWxlbmFtZV90cmFucyBpbnNlcnRpb24gcGF0aCBtaXNzaW5nJykKcC53cml0ZV90ZXh0KHMpCnByaW50KCdbRklYRURdIEV4YWN0IHJlc2VhcmNoZWQgU0VMaW51eCBjb21wYXRpYmlsaXR5IHNvdXJjZSB0cmFuc2Zvcm1hdGlvbiBhcHBsaWVkIG9uY2UgcGVyIGZ1bmN0aW9uLicpCnByaW50KCdbQVVESVRdIGFjdHVhbCBmdW5jdGlvbiBkZWZpbml0aW9uczonLGNvdW50cykK' | base64 -d > "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
-          chmod 700 "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
-          python3 -m py_compile "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
-          python3 "$RUNNER_TEMP/ksu_sepolicy_419_fix.py" drivers/kernelsu/selinux/sepolicy.c
-          echo "========== POST-FIX AUDIT =========="
-          test -s "$LOG"
-          test -f drivers/kernelsu/selinux/sepolicy.h
-          test -f drivers/kernelsu/selinux/rules.c
-          if grep -nE 'selinux_state\.policy($|[^a-zA-Z_])|selinux_state\.policy_mutex' drivers/kernelsu/selinux/rules.c; then
-            echo "[FAIL] Modern SELinux policy backend references remain in rules.c"
-            exit 1
-          fi
-          grep -qF 'struct selinux_ss *ss = selinux_state.ss;' drivers/kernelsu/selinux/rules.c
-          grep -qF 'write_lock(&ss->policy_rwlock);' drivers/kernelsu/selinux/rules.c
-          grep -qF 'struct selinux_policy {' drivers/kernelsu/selinux/sepolicy.h
-          # Source-derived post-fix contract: validate against the actual LG 4.19 headers,
-          # not against a hard-coded newer-kernel API spelling.
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          c = Path("drivers/kernelsu/selinux/sepolicy.c").read_text()
-          h = Path("security/selinux/ss/policydb.h").read_text()
-          ht = Path("security/selinux/ss/hashtab.h").read_text()
 
-          assert "struct hashtab_node **htable" in ht, "LG 4.19 hashtab layout changed unexpectedly"
-          assert "int hashtab_insert(struct hashtab *h, void *k, void *d);" in ht, "LG 4.19 hashtab_insert API changed unexpectedly"
-
-          if "struct filename_trans {" in h:
-              assert "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)" in c, "legacy filename_trans branch missing"
-              legacy = c.split("#else /* Linux 5.8+ filename_trans_key; 5.9+ uses key-params hashtab API */", 1)[0]
-              assert "struct filename_trans ft;" in legacy
-              assert "hashtab_insert(db->filename_trans, new_key, datum)" in legacy
-              assert "struct filename_trans_key key;" not in legacy
-              print("[PASS] Actual LG header exposes legacy filename_trans; legacy 4.19 branch matches it.")
-          elif "struct filename_trans_key {" in h:
-              assert "#else /* Linux 5.8+ filename_trans_key; 5.9+ uses key-params hashtab API */" in c
-              assert "struct filename_trans_key key;" in c
-              assert "hashtab_search(&db->filename_trans, &key)" in c
-              print("[PASS] Actual LG header exposes filename_trans_key; modern branch matches it.")
-          else:
-              raise SystemExit("unrecognized filename transition representation in actual policydb.h")
-
-          assert "flex_array_get_ptr(db->te_avtab.htable, i)" in c
-          assert "for (cur = (htab)->htable[i]; cur; cur = cur->next)" in c
-          assert "compat_filename_trans_count" not in c.split("#else /* Linux 5.8+ filename_trans_key; 5.9+ uses key-params hashtab API */", 1)[0]
-          names = ["remove_avtab_node", "add_filename_trans", "add_type", "add_typeattribute_raw"]
-          counts = {n: len(re.findall(r'(?ms)^static\s+(?:bool|void|struct\s+avtab_node\s*\*)\s+'+re.escape(n)+r'\s*\([^;{}]*\)\s*\{', c)) for n in names}
-          assert counts == {n:1 for n in names}, counts
-          print("[PASS] Setup 17 post-fix contract is source-derived and idempotent.")
-          print("[AUDIT] actual function definitions:", counts)
-          PY
-          echo "[PASS] SELinux 4.19 source audit complete."
-          echo "[UNCHANGED] SukiSU-Ultra 4.2.0 / KPM / SUSFS / Baseband-Guard / Maphide / Full LTO"
-          echo "[UNCHANGED] Fingerprint / vibration / Dual-SIM-RIL / audio / IMS / VoWiFi requirements"
-          echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
-          echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
-          echo "[PASS] Manual compatibility patch set complete." 
       - name: Setup 18 - SELinux 4.19 Preflight
         shell: bash
         run: |
@@ -3057,11 +3041,12 @@ jobs:
           SETUP_LOG="$DIAG_DIR/28-setup-28-full-kernel-build-hard-gate-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec 3>&1
+          exec >>"$SETUP_LOG" 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] Detailed output is captured in $SETUP_LOG" >&3
+          echo "[LIVE] Console shows build-file activity only." >&3
           export PS4="+ [SETUP-${SETUP_NO}] "
-          # V17: shell tracing disabled; detailed commands remain in artifacts.
           set +x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
@@ -3522,8 +3507,8 @@ jobs:
             if kill -0 "$BUILD_PID" 2>/dev/null; then
               LAST_ACTIVITY="$(grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)[[:space:]]' "$FULL_LOG" | tail -1 || true)"
               if [ -z "$LAST_ACTIVITY" ]; then LAST_ACTIVITY="build activity continues; detailed output is in the artifact log"; fi
-              echo "[BUILD-ACTIVITY] $(date -u '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
-              echo "[BUILD-FILE] ${LAST_ACTIVITY:-waiting for first build activity}"
+              echo "[BUILD-ACTIVITY] $(date -u >&3 '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
+              echo "[BUILD-FILE] ${LAST_ACTIVITY:-waiting for first build activity}" >&3
             fi
           done
 
@@ -3543,7 +3528,7 @@ jobs:
             echo "BUILD_LOG_LINES=$(wc -l < "$FULL_LOG")"
           } | tee "$SUMMARY_LOG"
 
-          echo "[BUILD-FINAL] status=$BUILD_STATUS elapsed=${ELAPSED}s log_bytes=$(wc -c < "$FULL_LOG") log_lines=$(wc -l < "$FULL_LOG")"
+          echo "[BUILD-FINAL] status=$BUILD_STATUS elapsed=${ELAPSED}s log_bytes=$(wc -c < "$FULL_LOG") log_lines=$(wc -l < "$FULL_LOG")" >&3
 
           if [ "$BUILD_STATUS" -eq 137 ] || [ "$BUILD_STATUS" -eq 143 ]; then
             echo "[DIAG] Build process was terminated by signal (status=$BUILD_STATUS); no compiler diagnostic was emitted in the captured log."
@@ -3563,11 +3548,11 @@ jobs:
           # and 12-build-tail.log. Live output is intentionally limited to
           # concise build-file activity and the final status line.
           if [ -s "$ERROR_LOG" ]; then
-            echo "[BUILD-DIAG] compiler/build diagnostics captured in artifact: 12-build-errors.log"
+            echo "[BUILD-DIAG] compiler/build diagnostics captured in artifact: 12-build-errors.log" >&3
           else
-            echo "[BUILD-DIAG] no compiler-error pattern captured; full output remains in artifact: 12-build-full.log"
+            echo "[BUILD-DIAG] no compiler-error pattern captured; full output remains in artifact: 12-build-full.log" >&3
           fi
-          echo "[BUILD-DIAG] build tail captured in artifact: 12-build-tail.log"
+          echo "[BUILD-DIAG] build tail captured in artifact: 12-build-tail.log" >&3
 
           if [ "$BUILD_STATUS" -eq 0 ]; then
             KERNEL_IMAGE=""
@@ -3578,10 +3563,10 @@ jobs:
               fi
             done
             test -n "$KERNEL_IMAGE"
-            echo "KERNEL_IMAGE=$KERNEL_IMAGE"
-            echo "KERNEL BUILD SUCCESSFUL"
+            echo "KERNEL_IMAGE=$KERNEL_IMAGE" >&3
+            echo "KERNEL BUILD SUCCESSFUL" >&3
           else
-            echo "KERNEL BUILD FAILED - FULL LOG SAVED AS ARTIFACT"
+            echo "KERNEL BUILD FAILED - FULL LOG SAVED AS ARTIFACT" >&3
           fi
 
           exit "$BUILD_STATUS"
@@ -3698,16 +3683,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V17-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V18-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V17-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V18-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V17-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V18-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3794,8 +3779,8 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V17"
-            echo "Previous workflow: V15"
+            echo "Workflow version: V18"
+            echo "Previous workflow: V17"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
             echo "workflow_ref=$GITHUB_WORKFLOW_REF"
@@ -3817,9 +3802,9 @@ jobs:
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v17-workflow-source/V17-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v17-workflow-source/V17-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V17-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v17-workflow-source/V18-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v17-workflow-source/V18-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V18-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V17 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
@@ -3827,9 +3812,9 @@ jobs:
 
           {
             echo "========== V17 ALL SETUP STATUS =========="
-            echo "Workflow version: V17"
-            echo "Previous workflow: V15"
-            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V17 -> V17 -> V15 -> V17"
+            echo "Workflow version: V18"
+            echo "Previous workflow: V17"
+            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18"
             echo "Setup numbers are independent from workflow version numbers."
             date -u
             for f in "$DIAG_DIR"/*LIVE.log; do
@@ -3841,9 +3826,9 @@ jobs:
               else status="EXECUTED-NO-STATUS-MARKER"; fi
               printf '%-75s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/V17-ALL-SETUP-STATUS.log
+          } | tee diagnostic-artifact/V18-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V17-CURRENT-STATUS.md <<'REPORT'
+          cat > diagnostic-artifact/V18-CURRENT-STATUS.md <<'REPORT'
           # V17 Current Status
 
           ## V16 actual result
@@ -3883,192 +3868,142 @@ jobs:
           carry the complete A-to-Z history into V18.
 
           cat > diagnostic-artifact/PROJECT-CONTEXT-A-Z.md <<'REPORT'
-          # LG Velvet LM-G900 / G900EMW Kernel Project - Portable A-to-Z Context
+          # LG Velvet LM-G900/G900EMW Kernel Project — A→Z Portable Context
 
-          Read this file first if this Diagnostics ZIP is moved to another ChatGPT
-          account. It is the continuation contract, not a claim that every stage
-          has already succeeded. Actual logs and exact failed commands remain in
-          ci-logs/ and runner-state/.
+          ## Purpose
+          This is the portable continuation record. A future session/account should be able to read this Diagnostics ZIP alone and understand the project, protected features, complete version history, verified failures/fixes, current state, and next step.
 
-          ## Device / target
-          Device: LG Velvet global LM-G900 / G900EMW
-          Kernel: Linux 4.19.325-cip135
-          Requested Lineage branch: lineage-23.2
-          Android target: Android 16 / QPR2-oriented compatibility
+          ## Device / source / targets
+          - Device: LG Velvet global LM-G900 / G900EMW
+          - Kernel tree: lge-qcom-dev/android_kernel_lge_sm7250
+          - Kernel baseline: Linux 4.19.325-cip135
+          - Android target: Android 16 / QPR2
+          - Lineage branch: lineage-23.2
+          - Protected hardware goals: fingerprint, vibration/haptics, Dual-SIM/RIL, audio, IMS, Wi-Fi Calling/VoWiFi.
 
-          ## Locked project rule
-          V4 is the protected feature baseline. Never remove or disable a verified
-          feature to solve a new error. Only evidence-backed compatibility fixes
-          and genuine duplicate/redundant/broken CI cleanup are permitted. Do not
-          guess APIs, structs, Kconfig values, compiler flags, version thresholds,
-          or output filenames.
+          ## Non-negotiable rule
+          Preserve every previously verified feature and fix. Never remove a feature merely to solve an error. Remove only a genuine duplicate/unnecessary item, or fix an actual incompatibility after source/upstream research and verification. Never guess APIs, structs, Kconfig values, flags, or compatibility values.
 
-          Preserved feature families include the verified SukiSU-Ultra, KPM, SUSFS,
-          Full Clang LTO, Maphide/JIT-Zygote, Baseband-Guard and the previously
-          verified LG device/kernel compatibility work, including Fingerprint,
-          Vibration, Dual-SIM/RIL, Audio, IMS and Wi-Fi Calling requirements.
+          ## Protected feature baseline
+          SukiSU-Ultra, KPM, SUSFS, LTO, WALT, SchedTune, ZRAM, Baseband-Guard, Maphide/JIT-Zygote work, and previously verified device/vendor requirements remain protected.
 
           ## Version progression
-          V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17
-          Next version after a V17 failure is V18. Version number changes only
-          when the next workflow is actually created.
+          V4 → V5 → V6 → V7 → V8 → V9 → V10 → V11 → V12 → V13 → V14 → V15 → V16 → V17 → V18
 
-          ## Setup 17 vs Setup 27
-          Setup 17 is the researched mutation stage. Setup 27 is the cumulative
-          read-only compile/verification gate. They must use one source-derived
-          contract and Setup 27 must never silently mutate source to hide a failure.
+          ## Version-by-version history
+          - V4: protected feature baseline.
+          - V5–V8: compatibility and cleanup progression; verified features/fixes preserved.
+          - V9: identified the Setup 17 ↔ Setup 27 contract loop.
+          - V10: consolidated compatibility ownership: Setup 17 mutates; Setup 27 verifies/compiles.
+          - V11: moved required source-derived fixes before Setup 27 to correct ordering.
+          - V12: corrected KernelSU built-in.a artifact verification.
+          - V13: corrected archive-member path verification.
+          - V14: corrected SELinux native hashtab vs AVTAB flex_array validator semantics.
+          - V15: reached the real full-kernel build; qcacld-3.0/built-in.a failed with `/bin/sh: Argument list too long`; MONITOR_PID produced a secondary cleanup error.
+          - V16: safely refused mutation because the guard expected the wrong CIP135 source form; ARG_MAX fix was not applied.
+          - V17: still refused mutation because its baseline regex incorrectly required matching indentation across the Make continuation; no source mutation occurred.
+          - V18: current attempt. Uses whitespace-independent, token/structure-specific verification and the exact upstream Kbuild ARG_MAX strategy while preserving CIP135's existing AR flags.
 
-          ## SELinux compatibility history
-          The LG 4.19 source uses the legacy filename-transition contract. The
-          researched boundaries are preserved from earlier versions: <5.8 legacy
-          filename_trans; >=5.8 filename_trans_key; >=5.9 newer hashtab key-parameter
-          operations. These historical fixes are not to be replaced for V17.
+          ## Root cause proven by V15
+          The 4.19 Kbuild `built-in.a` command expands a long list of full `$(obj)/...` paths into one AR command. In `drivers/staging/qcacld-3.0` the command exceeded the shell argument limit. This is a Kbuild scalability issue, not a Wi-Fi feature incompatibility.
 
-          ## V12 archive-verifier history
-          V12 reached drivers/kernelsu/built-in.a. llvm-ar emitted complete relative
-          member paths such as drivers/kernelsu/kpm/compact.o. The old verifier looked
-          for suffix-only names. That verifier defect was corrected in later versions.
+          ## Research-backed fix
+          Upstream Linux commit `cd968b97c49214e6557381bddddacbd0e0fb696e` fixes this exact problem by removing the repeated `$(obj)/` prefix with `patsubst`, restoring the prefix through a shell pipeline, and invoking AR through `xargs`. The upstream rationale changes command-length growth from O(D*N) toward O(D+N). V18 applies this mechanism to the exact CIP135 rule while preserving `rcSTP$(KBUILD_ARFLAGS)`.
 
-          ## V15 -> V16 -> V17 ARG_MAX history
-          V15 reached the real qcacld-3.0 built-in.a archive command and failed with
-          `/bin/sh: Argument list too long`. This is a Kbuild command-length problem,
-          not evidence that qcacld/Wi-Fi should be removed.
+          ## V18 safety gates
+          - Exact pinned CIP135 baseline must be found exactly once, OR the exact installed upstream-style rule must already exist exactly once.
+          - Unexpected/ambiguous source state => hard fail, no speculative edit.
+          - New rule exactly once.
+          - Old unsafe rule absent.
+          - `patsubst` and `xargs` contracts exactly once.
+          - No qcacld/Wi-Fi feature removal.
+          - No SukiSU/KPM/SUSFS/LTO feature removal.
 
-          V16 attempted a source guard but searched for an incorrect rule form and
-          safely refused mutation. Therefore V16 did not fix the ARG_MAX problem.
+          ## Live console policy
+          Setup 28 detailed compiler/build output is artifact-only. The console receives only concise build-file activity, elapsed time, artifact-diagnostic notices, and final status. Full output remains in `12-build-full.log`.
 
-          V17 verifies the actual pinned CIP135 rule:
-            cmd_ar_builtin = rm -f $@; \
-              $(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)
-          and replaces only that exact rule with the upstream-proven patsubst/printf/xargs
-          adaptation. Any unexpected source layout causes a hard refusal, never a guess.
+          ## Portable Diagnostics requirement
+          Every V-version Diagnostics ZIP must include: this A→Z context, complete error/fix history, current status, current workflow, research sources, setup status, raw logs/evidence, and historical workflow snapshots where available. No ZIP is nested inside the Diagnostics artifact.
 
-          ## Live console vs artifact logs
-          Setup 28 uses a background build with V=0 and captures complete stdout/stderr
-          into kernel-build-full.log. The console is intentionally limited to concise
-          `[BUILD-ACTIVITY]` / `[BUILD-FILE]` heartbeat lines and final status. Detailed
-          errors, command output and build tail remain in artifacts.
+          ## Current state
+          V18 is source/static verified only. Actual GitHub build success is not known until V18 runs. Setup 17 must pass first; then Setup 27 and Setup 28 must be allowed to reach the real build.
 
-          ## Diagnostics ZIP rule
-          The artifact directory is uploaded directly. GitHub creates the single
-          downloadable ZIP. No ZIP is created inside the Diagnostics ZIP.
-          The name is always version-first, for example:
-            V17-LG-Velvet-G900-Diagnostics.zip
+          ## Next step
+          Run V18 and upload `V18-LG-Velvet-G900-Diagnostics`. The next investigation must use the actual V18 logs rather than assumptions.
+          REPORT
 
-          ## What every future V must contain
-          Current workflow source; complete current setup logs; full compiler/build
-          output; source/commit/config state; complete error/fix history; root cause;
-          research evidence; exact fix; verification status; current state; and
-          explicit continuation instructions. Historical versions must remain historical.
+          cat > diagnostic-artifact/V18-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          # V18 Error and Fix History
 
-          ## Current continuation
-          First inspect V17 Setup 17, then Setup 27. If both pass, continue until the
-          next real compiler/linker/image result. If V17 fails, preserve the exact
-          diagnostic before any change and create V18 only after source-backed research.
+          ## V15 — Primary build failure
+          - Stage: Setup 28 / real full-kernel build.
+          - Error: `/bin/sh: Argument list too long` while creating `drivers/staging/qcacld-3.0/built-in.a`.
+          - Root cause: legacy Kbuild built-in.a rule expanded repeated long object-directory prefixes into one AR command.
+          - Secondary error: MONITOR_PID cleanup obscured the primary failure.
+          - Result: primary root cause established; no feature removal justified.
 
-          cat > diagnostic-artifact/V17-ERROR-AND-FIX-HISTORY.md <<'REPORT'
-          # Complete Error/Fix History V4 -> V17
+          ## V16 — Safe refusal
+          - Stage: Setup 17.
+          - Error: guard did not recognize the actual CIP135 `cmd_ar_builtin` source form.
+          - Result: no mutation was performed. This was correctly treated as an unverified source state, but it meant the ARG_MAX fix remained unapplied.
 
-          V4 - Protected feature baseline. Fixed the researched LG 4.19 SELinux
-          compatibility boundary. This is the protected feature baseline.
+          ## V17 — Guard formatting defect
+          - Stage: Setup 17.
+          - Error: `authoritative CIP135 built-in.a baseline not found`.
+          - Root cause: regex required the second continuation line to use the same indentation as the first line.
+          - Result: no source mutation. The kernel tree was not changed by this failed guard.
 
-          V5 - Cleaned duplicate/redundant CI logic without removing V4 features.
+          ## V18 — Current fix
+          - Verification: match the CIP135 rule by semantic tokens and continuation structure while ignoring indentation.
+          - Mutation: apply only the upstream `patsubst -> sed -> xargs` built-in.a ARG_MAX rule, preserving CIP135 `rcSTP$(KBUILD_ARFLAGS)`.
+          - Safety: exact baseline/installed counts, old-rule absence, new-rule count, patsubst count, and xargs count.
+          - Build result: pending actual V18 run.
 
-          V6 - Identified the real LG 4.19 filename-transition API mismatch
-          from actual source instead of using guessed compatibility values.
-
-          V7 - Removed duplicate textual add_filename_trans definitions and
-          corrected workflow-source capture.
-
-          V8 - Fixed Setup 17 repair-script ordering / NameError defect.
-
-          V9 - Identified the Setup 17 <-> Setup 27 contract loop.
-
-          V10 - Replaced the loop with one source-derived compatibility contract:
-          Setup 17 mutates; Setup 27 verifies/compiles read-only.
-
-          V11 - Continued cumulative build/verification progression.
-
-          V12 - Reached drivers/kernelsu/built-in.a. The verifier incorrectly
-          expected suffix-only archive names while llvm-ar emitted complete
-          relative paths. This was a verifier bug, not a compiler failure.
-
-          V13/V14 - Carried forward exact archive-member verification and the
-          portable project-history structure. Historical metadata from these
-          versions is preserved rather than rewritten as a new success.
-
-          V15 - Setup 28 reached the real full-kernel build. The qcacld-3.0
-          archive step failed with `/bin/sh: Argument list too long`. A secondary
-          MONITOR_PID cleanup error also appeared after the build failure.
-          The primary failure is the Kbuild built-in.a command-length problem.
-
-          V16 - Setup 17 stopped before making any source mutation because its
-          guard searched for the wrong built-in.a source form. Exact V16 log:
-            [FAIL] V16: expected CIP135 built-in.a rule not found exactly once; refusing speculative edit.
-          This was intentionally a safe refusal, but it meant the V15 root cause
-          remained unfixed in V16. V16 therefore must not be marked as a successful fix.
-
-          V17 - Correct the contract using the actual pinned CIP135 source form.
-          Apply only the upstream-proven built-in.a ARG_MAX adaptation. Remove
-          the secondary monitor-cleanup failure path and keep detailed build
-          diagnostics in artifacts rather than the live console.
-
-          ## Research basis for V17
-          The upstream Linux Kbuild patch `cd968b97c49214e6557381bddddacbd0e0fb696e`
-          explicitly addresses `Argument list too long` in built-in.a by trimming
-          the repeated object-directory prefix before xargs restores it. It was
-          reviewed and tested upstream.
-
-          ## Verification policy
-          A static patch audit is not final build proof. Setup 27 passing is not
-          final kernel success. Only a successful complete compiler/linker/image
-          build may be recorded as final success.
+          ## Research sources
+          - CIP v4.19.325-cip135 `scripts/Makefile.build`
+          - Linux Kbuild commit `cd968b97c49214e6557381bddddacbd0e0fb696e`
+          - Linux Kernel Mailing List v7 patch discussion and testing evidence
+          - Kbuild Makefiles documentation
+          REPORT
 
           cat > diagnostic-artifact/WORKFLOW-HISTORY-INDEX.md <<'REPORT'
           # Workflow History Index
-
           V4: protected feature baseline
           V5: duplicate/redundant CI cleanup
-          V6: researched 4.19 filename-transition compatibility
-          V7: source-integrity and workflow capture corrections
-          V8: Setup 17 repair-script correction
+          V6: researched 4.19 compatibility corrections
+          V7: source-integrity/workflow capture corrections
+          V8: Setup 17 repair correction
           V9: Setup 17/27 contract mismatch discovery
           V10: single source-derived compatibility contract
-          V11: cumulative build progression
-          V12: actual KernelSU built-in.a reached; archive-member verifier defect
-          V13: exact archive-member verification and portable context continuation
-          V14: cumulative workflow/history continuation
-          V15: real full-kernel qcacld-3.0 built-in.a ARG_MAX failure identified
-          V16: safe refusal due to incorrect CIP135 rule guard; no source mutation
-          V17: exact CIP135 built-in.a contract + upstream ARG_MAX fix; concise live build output
+          V11: cumulative build progression/order correction
+          V12: actual KernelSU built-in.a archive verification
+          V13: exact archive-member verification
+          V14: SELinux hashtab/AVTAB validator correction
+          V15: real qcacld-3.0 built-in.a ARG_MAX failure identified
+          V16: safe refusal due to wrong CIP135 source guard
+          V17: safe refusal due to indentation-sensitive guard
+          V18: whitespace-independent CIP135 contract verification + upstream ARG_MAX fix
+          REPORT
 
           cat > diagnostic-artifact/RESEARCH-SOURCES.md <<'REPORT'
-          # Research Sources - V17
+          # Research Sources - V18
 
           ## Pinned CIP135 source
           https://gitlab.com/cip-project/cip-kernel/linux-cip/-/raw/v4.19.325-cip135/scripts/Makefile.build
-          Authoritative lines 391-409 contain the exact built-in.a rule used by V17's guard.
 
           ## Upstream Kbuild ARG_MAX fix
-          https://lkml.indiana.edu/hypermail/linux/kernel/2205.3/03975.html
-          Patch: kbuild: make built-in.a rule robust against too long argument error.
-          Commit: cd968b97c49214e6557381bddddacbd0e0fb696e
-
           https://git.zx2c4.com/linux-dev/commit/scripts?id=cd968b97c49214e6557381bddddacbd0e0fb696e
-          Upstream patch diff and rationale.
-
-          ## Current Kbuild implementation reference
-          https://linux.googlesource.com/linux/kernel/git/torvalds/linux/%2B/refs/tags/v6.7-rc8/scripts/Makefile.build
-          Demonstrates the same built-in.a xargs-based strategy in a modern kernel.
+          https://lkml.indiana.edu/hypermail/linux/kernel/2205.3/03975.html
 
           ## Kbuild documentation
           https://www.kernel.org/doc/html/latest/kbuild/makefiles.html
 
-          ## Project source references retained from previous versions
-          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.h
-          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/hashtab.h
-          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.c
+          ## Project/kernel source references retained
           https://github.com/tiann/KernelSU/blob/main/kernel/selinux/sepolicy.c
+          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/hashtab.h
+          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.h
+          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.c
+          REPORT
 
           {
             echo "# Repository-side workflow history"
@@ -4098,22 +4033,22 @@ jobs:
           fi
 
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
-          # V17 Diagnostic Package Manifest
+          # V18 Diagnostic Package Manifest
 
-          Workflow version: V17
-          Previous workflow: V16
-          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17
+          Workflow version: V18
+          Previous workflow: V17
+          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V18
 
           Current source:
-          - V17-CURRENT-WORKFLOW.yml
+          - V18-CURRENT-WORKFLOW.yml
 
           Current status/history:
-          - V17-CURRENT-STATUS.md
-          - V17-ERROR-AND-FIX-HISTORY.md
+          - V18-CURRENT-STATUS.md
+          - V18-ERROR-AND-FIX-HISTORY.md
           - PROJECT-CONTEXT-A-Z.md
           - WORKFLOW-HISTORY-INDEX.md
           - RESEARCH-SOURCES.md
-          - V17-ALL-SETUP-STATUS.log
+          - V18-ALL-SETUP-STATUS.log
 
           Raw runner evidence:
           - ci-logs/
@@ -4127,44 +4062,44 @@ jobs:
           - project-history/
 
           Artifact naming:
-          V17-LG-Velvet-G900-Diagnostics
+          V18-LG-Velvet-G900-Diagnostics
 
           ZIP rule:
           This directory is uploaded directly to GitHub Actions. GitHub creates the
           single downloadable ZIP. No diagnostic ZIP is created inside it.
 
           echo "[PASS] V17 diagnostic directory staged. No diagnostic ZIP is created here."
-      - name: Artifact - V17 Diagnostics
+      - name: Artifact - V18 Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V17-LG-Velvet-G900-Diagnostics
+          name: V18-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V17 AnyKernel3 OrangeFox Flashable
+      - name: Artifact - V18 AnyKernel3 OrangeFox Flashable
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: V17-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V17-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          path: artifacts/V18-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V17 Kernel Only ZIP
+      - name: Artifact - V18 Kernel Only ZIP
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: V17-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V17-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          path: artifacts/V18-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V17 Raw Kernel Image
+      - name: Artifact - V18 Raw Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
