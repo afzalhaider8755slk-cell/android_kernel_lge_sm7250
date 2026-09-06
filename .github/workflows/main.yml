@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V19
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V20
 
 on:
   workflow_dispatch:
@@ -2058,15 +2058,31 @@ jobs:
           done
 
           echo "--- Actual SukiSU 4.19 private policy wrapper ---"
-          grep -n -A12 -B2 'struct selinux_policy[[:space:]]*{' "$SEPOL_H" | head -30
-          grep -qF 'struct selinux_policy {' "$SEPOL_H" || { echo "[FAIL] Local SukiSU policy wrapper is missing."; exit 1; }
-          grep -qF 'struct policydb policydb;' "$SEPOL_H" || { echo "[FAIL] Local SukiSU policy wrapper does not expose policydb."; exit 1; }
+          # V20: the previous validator failed on the *diagnostic grep pipeline* itself.
+          # With `set -e -o pipefail`, a display-only grep returning 1 aborts Setup 18
+          # before the authoritative contract checks run. Do not treat presentation
+          # grep as source validation.
+          grep -n -A16 -B3 -E 'struct[[:space:]]+selinux_policy[[:space:]]*\{' "$SEPOL_H" | head -30 || true
 
-          if grep -A8 -F 'struct selinux_policy {' "$SEPOL_H" | grep -Eq 'struct selinux_map map;|latest_granting|struct sidtab'; then
-            echo "[FAIL] backup_sepolicy wrapper unexpectedly exposes ss-owned fields."
-            exit 1
-          fi
-          echo "[PASS] backup_sepolicy is policydb-only; ss-owned state remains in selinux_state.ss."
+          python3 - "$SEPOL_H" <<'PYSEPOL'
+          from pathlib import Path
+          import re, sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+
+          # Accept normal C whitespace/layout around the private wrapper declaration;
+          # do not require the `{` to share the exact line/spacing used by one source
+          # snapshot. This is a read-only source-contract check.
+          m = re.search(r'\bstruct\s+selinux_policy\s*\{(?P<body>.*?)\}', s, re.S)
+          if not m:
+              raise SystemExit('[FAIL] Local SukiSU policy wrapper declaration was not found in the actual 4.19 source.')
+          body = m.group('body')
+          if not re.search(r'\bstruct\s+policydb\s+policydb\s*;', body):
+              raise SystemExit('[FAIL] Local SukiSU policy wrapper does not expose policydb.')
+          if re.search(r'\bstruct\s+selinux_map\s+map\s*;|\bu32\s+latest_granting\s*;|\bstruct\s+sidtab\s*\*\s*sidtab\s*;', body):
+              raise SystemExit('[FAIL] backup_sepolicy wrapper unexpectedly exposes ss-owned fields.')
+          print('[PASS] backup_sepolicy is policydb-only; ss-owned state remains in selinux_state.ss.')
+          PYSEPOL
 
           echo "--- Actual sidtab API ---"
           grep -qF 'struct sidtab {' "$SID_H" || { echo "[FAIL] struct sidtab definition is missing."; exit 1; }
