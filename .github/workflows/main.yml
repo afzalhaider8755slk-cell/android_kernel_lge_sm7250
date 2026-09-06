@@ -9,7 +9,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V30
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V31
 
 on:
   workflow_dispatch:
@@ -3029,19 +3029,27 @@ jobs:
           # V=0 is intentional: Kbuild's normal short form emits CC/AR/etc with the
           # current target, which lets the GitHub console show ONLY the current file.
           # Full stdout/stderr remains in the artifact log.
-          (
-            set +e
-            timeout --foreground 20m stdbuf -oL -eL \
-              make -j"$KSU_JOBS" V=0 "${HOTSPOT_OBJECTS[@]}" \
-              >"$BUILD_LOG" 2>&1
-            rc=$?
-            printf '%s\n' "$rc" > "$RUNNER_TEMP/v30-hotspot-build-status"
-            exit 0
-          ) &
+          # V31 PROCESS-MONITOR ROOT-CAUSE FIX:
+          # Do not wrap make in an extra background subshell and then poll that
+          # subshell with kill -0. A terminated child can remain a zombie until
+          # wait(), and kill(pid, 0) can still report that PID as existing. That
+          # can leave Setup 27 polling forever even though make has already
+          # completed, preventing Setup 28 from ever starting.
+          # Start timeout/make directly as the background child and use wait()
+          # for authoritative completion/status. Also do NOT use --foreground:
+          # coreutils documents that --foreground leaves children outside the
+          # timeout, which is unsafe for recursive Kbuild.
+          timeout --signal=TERM --kill-after=30s 20m stdbuf -oL -eL \
+            make -j"$KSU_JOBS" V=0 "${HOTSPOT_OBJECTS[@]}" \
+            >"$BUILD_LOG" 2>&1 &
           KSU_BUILD_PID=$!
 
           LAST_LIVE_FILE=""
-          while kill -0 "$KSU_BUILD_PID" 2>/dev/null; do
+          while :; do
+            state="$(ps -o stat= -p "$KSU_BUILD_PID" 2>/dev/null | tr -d '[:space:]' || true)"
+            if [ -z "$state" ] || [[ "$state" == Z* ]]; then
+              break
+            fi
             sleep 3
             CURRENT_FILE="$(tail -n 300 "$BUILD_LOG" 2>/dev/null \
               | grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)([[:space:]]|\[)' \
@@ -3052,8 +3060,10 @@ jobs:
               LAST_LIVE_FILE="$CURRENT_FILE"
             fi
           done
-          wait "$KSU_BUILD_PID" || true
-          KSU_BUILD_STATUS="$(cat "$RUNNER_TEMP/v30-hotspot-build-status" 2>/dev/null || echo 1)"
+          set +e
+          wait "$KSU_BUILD_PID"
+          KSU_BUILD_STATUS=$?
+          set -e
 
           if [ "$KSU_BUILD_STATUS" -ne 0 ]; then
             echo "[FAIL] Setup 27 targeted KernelSU compilation failed with status $KSU_BUILD_STATUS." >&3
@@ -3501,8 +3511,12 @@ jobs:
 
           # V17 LIVE ACTIVITY MODE: full build output goes only to the artifact log.
           : > "$FULL_LOG"
-          set +e
-          (
+          # V31 PROCESS-MONITOR ROOT-CAUSE FIX: the previous kill -0 polling
+          # loop could wait forever on a zombie child because kill(pid, 0) may
+          # still succeed until wait() reaps the child. Run make directly, use
+          # wait() as the authoritative completion primitive, and monitor the
+          # PID state only to stop the live-file polling loop.
+          timeout --signal=TERM --kill-after=60s 180m \
             make \
               ARCH=arm64 \
               LLVM=1 \
@@ -3512,14 +3526,15 @@ jobs:
               -j"$(nproc)" \
               V=0 \
               WERROR=0 \
-              Image.gz > "$FULL_LOG" 2>&1
-            exit "$?"
-          ) &
+              Image.gz > "$FULL_LOG" 2>&1 &
           BUILD_PID=$!
-          set -e
 
           LAST_LIVE_FILE=""
-          while kill -0 "$BUILD_PID" 2>/dev/null; do
+          while :; do
+            state="$(ps -o stat= -p "$BUILD_PID" 2>/dev/null | tr -d '[:space:]' || true)"
+            if [ -z "$state" ] || [[ "$state" == Z* ]]; then
+              break
+            fi
             sleep 10
             CURRENT_FILE="$(tail -n 500 "$FULL_LOG" 2>/dev/null \
               | grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)([[:space:]]|\[)' \
@@ -3581,7 +3596,7 @@ jobs:
               echo "[FAIL] KernelSU built-in.a was not produced by the full kernel build." >&3
               exit 1
             }
-            llvm-ar t "$KSU_ARCHIVE" > "$RUNNER_TEMP/v29-kernelsu-archive-members.log"
+            llvm-ar t "$KSU_ARCHIVE" > "$RUNNER_TEMP/v31-kernelsu-archive-members.log"
             for required_member in \
               drivers/kernelsu/kpm/compact.o \
               drivers/kernelsu/kpm/kpm.o \
@@ -3595,7 +3610,7 @@ jobs:
               drivers/kernelsu/feature/selinux_hide.o \
               drivers/kernelsu/feature/cpu_spoof.o
             do
-              grep -Fx "$required_member" "$RUNNER_TEMP/v29-kernelsu-archive-members.log" >/dev/null || {
+              grep -Fx "$required_member" "$RUNNER_TEMP/v31-kernelsu-archive-members.log" >/dev/null || {
                 echo "[FAIL] Required KernelSU archive member missing: $required_member" >&3
                 exit 1
               }
@@ -3730,16 +3745,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V30-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V31-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V30-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V31-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V30-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V31-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3833,7 +3848,7 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V30"
+            echo "Workflow version: V31"
             echo "Previous workflow: V27"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
@@ -3856,19 +3871,19 @@ jobs:
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v17-workflow-source/V30-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v17-workflow-source/V30-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V30-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v17-workflow-source/V31-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v17-workflow-source/V31-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V31-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V17 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
           fi
 
           {
-            echo "========== V30 ALL SETUP STATUS =========="
-            echo "Workflow version: V30"
-            echo "Previous workflow: V28"
-            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V20 -> V21 -> V22 -> V23 -> V24 -> V25 -> V26 -> V27 -> V28 -> V30"
+            echo "========== V31 ALL SETUP STATUS =========="
+            echo "Workflow version: V31"
+            echo "Previous workflow: V30"
+            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V20 -> V21 -> V22 -> V23 -> V24 -> V25 -> V26 -> V27 -> V28 -> V29 -> V30 -> V31"
             echo "Setup numbers are independent from workflow version numbers."
             date -u
             for f in "$DIAG_DIR"/*LIVE.log; do
@@ -3880,18 +3895,19 @@ jobs:
               else status="EXECUTED-NO-STATUS-MARKER"; fi
               printf '%-85s %s\n' "$base" "$status"
             done
-          } > diagnostic-artifact/V30-ALL-SETUP-STATUS.log
+          } > diagnostic-artifact/V31-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V30-CURRENT-STATUS.md <<'REPORT'
-          # V30 Current Status
+          cat > diagnostic-artifact/V31-CURRENT-STATUS.md <<'REPORT'
+          # V31 active status is documented below. V31 remains historical context.
+          # V31 Current Status
 
           ## Current objective
           Build the LG Velvet global LM-G900/G900EMW kernel from the lineage-23.2 tree with Linux 4.19.325-cip135, preserving all verified existing and future feature work.
 
-          ## V30 root-cause fix
+          ## V31 root-cause fix
           Previous Setup 27 invoked the native `make drivers/kernelsu/` directory target. That target can rebuild the complete KernelSU subtree instead of acting as a small hotspot gate. The previous run spent about 1h46m in Setup 27 and the overall GitHub job was cancelled before Setup 28.
 
-          V30 changes Setup 27 to compile only the audited cumulative KernelSU hotspot objects in parallel. It does not remove, disable, or bypass any KernelSU/SukiSU/SUSFS functionality.
+          V31 changes Setup 27 to compile only the audited cumulative KernelSU hotspot objects in parallel. It does not remove, disable, or bypass any KernelSU/SukiSU/SUSFS functionality.
 
           ## Setup 27 contract
           Setup 27 is now object-level compilation only. The complete `drivers/kernelsu/built-in.a` archive is intentionally verified after the authoritative full kernel build in Setup 28.
@@ -3907,10 +3923,10 @@ jobs:
           - Protected LTO-wrapped built-in.a ARG_MAX transport retained.
           - SELinux 4.19 AVTAB `flex_array` and hashtab native pointer-array contracts separated.
           - Existing KernelSU/SukiSU/KPM/SUSFS and feature compatibility work retained.
-          - V30 targeted Setup 27 architecture prepared.
+          - V31 targeted Setup 27 architecture prepared.
 
           ## What is in progress
-          The GitHub run must execute V30 Setup 27 and then the authoritative Setup 28 full kernel build.
+          The GitHub run must execute V31 Setup 27 and then the authoritative Setup 28 full kernel build.
 
           ## What remains
           1. Setup 27 targeted hotspot compile PASS.
@@ -3918,7 +3934,7 @@ jobs:
           3. Verify `drivers/kernelsu/built-in.a` members after the full build.
           4. Package AnyKernel3/OrangeFox flashable kernel ZIP.
           5. Run final configuration/artifact verification.
-          6. Upload the complete V30 diagnostics and successful kernel artifacts.
+          6. Upload the complete V31 diagnostics and successful kernel artifacts.
 
           ## Final success rule
           A workflow is not a kernel-build success merely because static validators pass. Setup 27, Setup 28, the real `Image.gz`, the required KernelSU archive members, packaging, and final artifact checks must all pass in the same run.
@@ -3976,8 +3992,14 @@ jobs:
           Every V-version package must document what was completed, what is currently in progress, what failed, the root cause, exact fixes, research sources, source state, setup results, build logs, artifact results, regression status, and next steps. Detailed logs belong in the artifact; live console output remains concise.
           REPORT
 
-          cat > diagnostic-artifact/V30-ERROR-AND-FIX-HISTORY.md <<'REPORT'
-          # V30 Error and Fix History
+          cat > diagnostic-artifact/V31-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          ## V31 — Setup 27/28 process-monitor root cause
+
+          V31 fixes a CI orchestration bug, not a kernel feature bug. Setup 27 and Setup 28 previously polled a background child with `kill -0` before calling `wait()`. On Linux a terminated child can remain a zombie until it is reaped, and `kill(pid, 0)` may still report the PID as existing. That can leave the polling loop alive after `make` has already completed, preventing the workflow from advancing to the next setup. V31 replaces that pattern with direct background `timeout/make`, explicit PID-state polling, and mandatory `wait()` for authoritative completion. V31 also removes `timeout --foreground`, because coreutils documents that in foreground mode children are not timed out.
+
+          Setup 28 had the same polling defect and is fixed at the same time.
+
+          # V31 Error and Fix History
 
           ## V15 — qcacld ARG_MAX
           Real qcacld-3.0 built-in.a creation failed with `/bin/sh: Argument list too long`.
@@ -4004,8 +4026,8 @@ jobs:
           - Full compiler logs are preserved in artifacts.
           REPORT
 
-          cat > diagnostic-artifact/V30-RESEARCH-SOURCES.md <<'REPORT'
-          # V30 Research / Source References
+          cat > diagnostic-artifact/V31-RESEARCH-SOURCES.md <<'REPORT'
+          # V31 Research / Source References
 
           - Pinned CIP135 source: https://gitlab.com/cip-project/cip-kernel/linux-cip/-/raw/v4.19.325-cip135/scripts/Makefile.build
           - Upstream Kbuild ARG_MAX fix: https://git.zx2c4.com/linux-dev/commit/scripts?id=cd968b97c49214e6557381bddddacbd0e0fb696e
@@ -4015,8 +4037,8 @@ jobs:
           - SukiSU-Ultra reference: https://github.com/SukiSU-Ultra/SukiSU-Ultra
           REPORT
 
-          cat > diagnostic-artifact/V30-COMPLETED.md <<'REPORT'
-          # V30 Completed Work
+          cat > diagnostic-artifact/V31-COMPLETED.md <<'REPORT'
+          # V31 Completed Work
 
           - Replaced Setup 27 directory-level build with targeted cumulative KernelSU object compilation.
           - Added parallel object compilation using runner workers.
@@ -4024,29 +4046,29 @@ jobs:
           - Kept detailed compiler output artifact-only.
           - Kept live console activity filename-only.
           - Moved complete KernelSU built-in.a verification to Setup 28 after the real full kernel build.
-          - Kept V30 artifact naming throughout.
+          - Kept V31 artifact naming throughout.
           REPORT
 
-          cat > diagnostic-artifact/V30-IN-PROGRESS.md <<'REPORT'
-          # V30 In Progress
+          cat > diagnostic-artifact/V31-IN-PROGRESS.md <<'REPORT'
+          # V31 In Progress
 
           The next GitHub run must prove that the targeted Setup 27 object set compiles successfully, then execute the full kernel build in Setup 28.
           REPORT
 
-          cat > diagnostic-artifact/V30-NEXT-STEPS.md <<'REPORT'
-          # V30 Next Steps
+          cat > diagnostic-artifact/V31-NEXT-STEPS.md <<'REPORT'
+          # V31 Next Steps
 
-          1. Run V30.
+          1. Run V31.
           2. Confirm Setup 27 targeted hotspot compilation completes well below the previous ~1h46m bottleneck.
           3. Confirm Setup 28 creates a real non-empty `arch/arm64/boot/Image.gz`.
           4. Confirm `drivers/kernelsu/built-in.a` contains every required KernelSU object.
           5. Package and verify the AnyKernel3/OrangeFox flashable ZIP.
           6. Complete final artifact/configuration checks.
-          7. Preserve the complete A→Z V30 diagnostics artifact.
+          7. Preserve the complete A→Z V31 diagnostics artifact.
           REPORT
 
-          cat > diagnostic-artifact/V30-FEATURE-MATRIX.md <<'REPORT'
-          # V30 Feature Matrix
+          cat > diagnostic-artifact/V31-FEATURE-MATRIX.md <<'REPORT'
+          # V31 Feature Matrix
 
           | Feature | Policy | Status |
           |---|---|---|
@@ -4067,10 +4089,10 @@ jobs:
           | Wi-Fi Calling/VoWiFi | Never remove | Protected hardware goal |
           REPORT
 
-          cat > diagnostic-artifact/V30-SOURCE-CHANGES.md <<'REPORT'
-          # V30 Source / Workflow Changes
+          cat > diagnostic-artifact/V31-SOURCE-CHANGES.md <<'REPORT'
+          # V31 Source / Workflow Changes
 
-          V30 changes the CI workflow only for Setup 27 execution strategy and diagnostics behavior. Setup 27 itself performs no kernel source mutation.
+          V31 changes the CI workflow only for Setup 27 execution strategy and diagnostics behavior. Setup 27 itself performs no kernel source mutation.
 
           The targeted object list is:
           - drivers/kernelsu/kpm/compact.o
@@ -4086,8 +4108,8 @@ jobs:
           - drivers/kernelsu/feature/cpu_spoof.o
           REPORT
 
-          cat > diagnostic-artifact/V30-BUILD-STATUS.md <<'REPORT'
-          # V30 Build Status
+          cat > diagnostic-artifact/V31-BUILD-STATUS.md <<'REPORT'
+          # V31 Build Status
 
           Setup 27: targeted cumulative KernelSU hotspot compilation — must be proven by the actual run.
           Setup 28: authoritative full kernel `Image.gz` build — must be proven by the actual run.
@@ -4095,20 +4117,20 @@ jobs:
           Setup 30: final configuration/artifact verification.
           REPORT
 
-          cat > diagnostic-artifact/V30-ARTIFACT-MANIFEST.md <<'REPORT'
-          # V30 Artifact Manifest
+          cat > diagnostic-artifact/V31-ARTIFACT-MANIFEST.md <<'REPORT'
+          # V31 Artifact Manifest
 
           Expected successful artifacts:
-          - V30-LG-Velvet-G900-Diagnostics
-          - V30-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          - V30-LG-Velvet-G900-Kernel-Only
-          - V30-LG-Velvet-G900-Raw-Kernel
+          - V31-LG-Velvet-G900-Diagnostics
+          - V31-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          - V31-LG-Velvet-G900-Kernel-Only
+          - V31-LG-Velvet-G900-Raw-Kernel
 
           Diagnostics package contains complete logs, source/workflow state, A→Z documentation, research references, setup results, and regression evidence.
           REPORT
 
-          cat > diagnostic-artifact/V30-VALIDATION-RESULTS.md <<'REPORT'
-          # V30 Validation Results
+          cat > diagnostic-artifact/V31-VALIDATION-RESULTS.md <<'REPORT'
+          # V31 Validation Results
 
           Results are generated from the actual run. No static PASS is treated as build proof.
 
@@ -4120,8 +4142,8 @@ jobs:
           KernelSU built-in.a members: pending actual run.
           REPORT
 
-          cat > diagnostic-artifact/V30-REGRESSION-CHECK.md <<'REPORT'
-          # V30 Regression Check
+          cat > diagnostic-artifact/V31-REGRESSION-CHECK.md <<'REPORT'
+          # V31 Regression Check
 
           Required invariant: no existing or future feature is removed to fix CI/build errors.
 
@@ -4160,27 +4182,27 @@ jobs:
           fi
 
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
-          # V30 Diagnostic Package Manifest
+          # V31 Diagnostic Package Manifest
 
-          Workflow version: V30
-          Previous workflow: V28
-          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V20 -> V21 -> V22 -> V23 -> V24 -> V25 -> V26 -> V27 -> V28 -> V30
+          Workflow version: V31
+          Previous workflow: V30
+          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V20 -> V21 -> V22 -> V23 -> V24 -> V25 -> V26 -> V27 -> V28 -> V29 -> V30 -> V31
 
           Core documentation:
           - PROJECT-CONTEXT-A-Z.md
-          - V30-CURRENT-STATUS.md
-          - V30-ERROR-AND-FIX-HISTORY.md
-          - V30-RESEARCH-SOURCES.md
-          - V30-COMPLETED.md
-          - V30-IN-PROGRESS.md
-          - V30-NEXT-STEPS.md
-          - V30-FEATURE-MATRIX.md
-          - V30-SOURCE-CHANGES.md
-          - V30-BUILD-STATUS.md
-          - V30-ARTIFACT-MANIFEST.md
-          - V30-VALIDATION-RESULTS.md
-          - V30-REGRESSION-CHECK.md
-          - V30-ALL-SETUP-STATUS.log
+          - V31-CURRENT-STATUS.md
+          - V31-ERROR-AND-FIX-HISTORY.md
+          - V31-RESEARCH-SOURCES.md
+          - V31-COMPLETED.md
+          - V31-IN-PROGRESS.md
+          - V31-NEXT-STEPS.md
+          - V31-FEATURE-MATRIX.md
+          - V31-SOURCE-CHANGES.md
+          - V31-BUILD-STATUS.md
+          - V31-ARTIFACT-MANIFEST.md
+          - V31-VALIDATION-RESULTS.md
+          - V31-REGRESSION-CHECK.md
+          - V31-ALL-SETUP-STATUS.log
 
           Raw evidence:
           - ci-logs/
@@ -4192,7 +4214,7 @@ jobs:
           - project-history/
 
           Artifact naming:
-          V30-LG-Velvet-G900-Diagnostics
+          V31-LG-Velvet-G900-Diagnostics
           REPORT
 
           echo "[PASS] V30 diagnostic directory staged."
@@ -4200,7 +4222,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V30-LG-Velvet-G900-Diagnostics
+          name: V31-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
@@ -4210,8 +4232,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V30-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V30-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          name: V31-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          path: artifacts/V31-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
@@ -4220,8 +4242,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V30-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V30-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V31-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V31-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
@@ -4230,7 +4252,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V30-LG-Velvet-G900-Raw-Kernel
+          name: V31-LG-Velvet-G900-Raw-Kernel
           path: arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 14
