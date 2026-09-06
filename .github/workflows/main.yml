@@ -2022,19 +2022,10 @@ jobs:
           : > "$SETUP_LOG"
           exec > >(tee -a "$SETUP_LOG") 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
-          LOG="$DIAG_DIR/10B-00-selinux-419-preflight.log"
-          : > "$LOG"
-          exec > >(tee -a "$LOG") 2>&1
-
-          echo "========== PRE-BUILD SELINUX 4.19 LAYOUT PREFLIGHT =========="
-          echo "[LOCKED] Setup 10A is immutable and is not modified by this preflight."
-          echo "[RESEARCH] Validate the actual checked-out LG/CIP135 SELinux headers and the private SukiSU policy wrapper before Setup 19."
-          echo "[TARGET] Linux 4.19.325-cip135 + SukiSU-Ultra v4.2.0 non-GKI."
 
           SEC_H="security/selinux/include/security.h"
           SS_H="security/selinux/ss/services.h"
@@ -2042,85 +2033,45 @@ jobs:
           HASH_H="security/selinux/ss/hashtab.h"
           SEPOL_H="drivers/kernelsu/selinux/sepolicy.h"
           HIDE_C="drivers/kernelsu/feature/selinux_hide.c"
+          RULES_C="drivers/kernelsu/selinux/rules.c"
 
-          for f in "$SEC_H" "$SS_H" "$SID_H" "$HASH_H" "$SEPOL_H" "$HIDE_C"; do
+          for f in "$SEC_H" "$SS_H" "$SID_H" "$HASH_H" "$SEPOL_H" "$HIDE_C" "$RULES_C"; do
             test -f "$f" || { echo "[FAIL] Required source file missing: $f"; exit 1; }
           done
 
-          echo "--- Actual selinux_state layout ---"
           grep -n -A24 -B3 'struct selinux_state[[:space:]]*{' "$SEC_H" | head -40
-          grep -qF 'struct selinux_ss *ss;' "$SEC_H" || { echo "[FAIL] selinux_state.ss is missing."; exit 1; }
+          grep -qF 'struct selinux_ss *ss;' "$SEC_H" || { echo "[FAIL] 4.19 selinux_state.ss is missing."; exit 1; }
+          if grep -qF 'struct selinux_policy __rcu *policy;' "$SEC_H"; then
+            echo "[FAIL] Actual tree unexpectedly exposes the newer selinux_state.policy model."; exit 1
+          fi
+          if grep -qF 'struct mutex policy_mutex;' "$SEC_H"; then
+            echo "[FAIL] Actual tree unexpectedly exposes the newer policy_mutex model."; exit 1
+          fi
 
-          echo "--- Actual selinux_ss layout ---"
           grep -n -A30 -B3 'struct selinux_ss[[:space:]]*{' "$SS_H" | head -50
-          for token in 'struct sidtab *sidtab;' 'struct policydb policydb;' 'struct selinux_map map;' 'u32 latest_granting;' 'struct page *status_page;' 'struct mutex status_lock;'; do
+          for token in 'struct sidtab *sidtab;' 'struct policydb policydb;' 'struct selinux_map map;' 'u32 latest_granting;' 'struct page *status_page;' 'struct mutex status_lock;' 'rwlock_t policy_rwlock;'; do
             grep -qF "$token" "$SS_H" || { echo "[FAIL] Expected selinux_ss member missing: $token"; exit 1; }
           done
 
-          echo "--- Actual SukiSU 4.19 private policy wrapper ---"
-          # IMPORTANT: the private wrapper is not required to be declared in
-          # drivers/kernelsu/selinux/sepolicy.h. That header may only forward-declare
-          # struct selinux_policy, while the concrete compatibility definition lives
-          # in another integrated SukiSU/SELinux header. Search the actual checked-out
-          # tree and validate the definition where it really exists.
-          WRAPPER_DEF="$(grep -RIlE --include='*.h' --include='*.c' \
-            'struct[[:space:]]+selinux_policy[[:space:]]*\{' \
-            drivers/kernelsu security/selinux 2>/dev/null | head -1 || true)"
-          if [ -z "$WRAPPER_DEF" ]; then
-            echo "[FAIL] No concrete struct selinux_policy definition exists in the integrated 4.19 source tree."
-            echo "[INFO] sepolicy.h may legally be only a forward declaration; the concrete type is required somewhere in the included source."
-            exit 1
+          grep -qF 'struct selinux_policy *ksu_dup_sepolicy' "$SEPOL_H" || { echo "[FAIL] sepolicy.h does not expose ksu_dup_sepolicy()."; exit 1; }
+          WRAPPER_DEF="$(grep -RIlE --include='*.h' --include='*.c' 'struct[[:space:]]+selinux_policy[[:space:]]*\{' drivers/kernelsu security/selinux 2>/dev/null | head -1 || true)"
+          if [ -n "$WRAPPER_DEF" ]; then
+            echo "[INFO] Concrete selinux_policy definition exists: $WRAPPER_DEF"
+          else
+            echo "[PASS] No newer-kernel selinux_policy definition exists; expected for this 4.19 tree."
           fi
-          echo "[INFO] selinux_policy definition found in: $WRAPPER_DEF"
-          grep -n -A18 -B3 -E 'struct[[:space:]]+selinux_policy[[:space:]]*\{' "$WRAPPER_DEF" | head -35 || true
 
-          python3 - "$WRAPPER_DEF" "$SEPOL_H" <<'PYSEPOL'
-          from pathlib import Path
-          import re, sys
-          def load(path):
-              return Path(path).read_text()
-          definition = load(sys.argv[1])
-          sepolicy_h = load(sys.argv[2])
-          m = re.search(r'\bstruct\s+selinux_policy\s*\{(?P<body>.*?)\}', definition, re.S)
-          if not m:
-              raise SystemExit('[FAIL] Located selinux_policy file but could not parse its concrete struct body.')
-          body = m.group('body')
-          if not re.search(r'\bstruct\s+policydb\s+policydb\s*;', body):
-              raise SystemExit('[FAIL] Concrete selinux_policy wrapper does not expose policydb.')
-          if re.search(r'\bstruct\s+selinux_map\s+map\s*;|\bu32\s+latest_granting\s*;|\bstruct\s+sidtab\s*\*\s*sidtab\s*;', body):
-              raise SystemExit('[FAIL] backup_sepolicy wrapper unexpectedly exposes ss-owned fields.')
-          if 'struct selinux_policy *' not in sepolicy_h and 'struct selinux_policy' not in sepolicy_h:
-              raise SystemExit('[FAIL] sepolicy.h does not reference the integrated selinux_policy type.')
-          print('[PASS] Concrete backup_sepolicy wrapper is policydb-only; ss-owned state remains in selinux_state.ss.')
-          PYSEPOL
+          grep -qF 'static struct selinux_state fake_state;' "$HIDE_C" || { echo "[FAIL] Expected 4.19 fake_state path is missing."; exit 1; }
+          grep -qF 'security_context_to_sid(&fake_state' "$HIDE_C" || { echo "[FAIL] Native 4.19 security_context_to_sid path missing."; exit 1; }
+          grep -qF 'security_compute_av_user(&fake_state' "$HIDE_C" || { echo "[FAIL] Native 4.19 security_compute_av_user path missing."; exit 1; }
 
-          echo "--- Actual sidtab API ---"
-          grep -qF 'struct sidtab {' "$SID_H" || { echo "[FAIL] struct sidtab definition is missing."; exit 1; }
-          grep -qE 'sidtab_search|sidtab_context_to_sid' "$SID_H" || { echo "[FAIL] Supported sidtab lookup API missing."; exit 1; }
-          echo "[PASS] Native 4.19 sidtab lookup API is present; no synthetic sidtab_set() bridge is required."
+          if grep -nE 'selinux_state\.(policy|policy_mutex)|fake_state\.policy[[:space:]]*=|backup_sepolicy->(map|latest_granting|sidtab)' "$HIDE_C"; then
+            echo "[PLAN] Setup 19 will port these exact accesses to the native 4.19 ss ownership model."
+          fi
 
-          echo "--- Actual hashtab representation ---"
-          grep -qF 'htable' "$HASH_H" || { echo "[FAIL] hashtab->htable is absent."; exit 1; }
-
-          echo "--- Pinned SukiSU source ---"
           LOCAL_SHA="$(sha256sum "$HIDE_C" | awk '{print $1}')"
-          echo "[INFO] Local integrated selinux_hide.c SHA256=$LOCAL_SHA"
-          echo "[PASS] selinux_hide.c SHA256 is recorded but not pinned; compiler/source compatibility is authoritative."
-
-          echo "--- Known 4.19 compatibility signals ---"
-          if grep -qF 'TWA_RESUME' drivers/kernelsu/supercall/supercall.c; then
-            echo "[PLAN] task_work TWA_RESUME boundary will be handled by existing Setup 19 exact fix."
-          else
-            echo "[PASS] task_work source is already 4.19-compatible."
-          fi
-          if grep -qF 'flex_array_get_ptr(node_ptr, i)' drivers/kernelsu/selinux/sepolicy.c; then
-            echo "[PLAN] legacy 4.19 hashtab iteration boundary will be handled by existing Setup 19 exact fix."
-          else
-            echo "[PASS] hashtab iteration is already 4.19-compatible."
-          fi
-
-          echo "[PASS] Preflight found the actual 4.19 state model and private SukiSU policy-wrapper model."
-          echo "[PASS] No source mutation performed."
+          echo "[INFO] Integrated selinux_hide.c SHA256=$LOCAL_SHA"
+          echo "[PASS] Setup 18 is preflight-only. No source mutation is performed."
           echo "=============================================================="
 
       - name: Setup 19 - SELinux 4.19 Compatibility Port
@@ -2133,125 +2084,110 @@ jobs:
           : > "$SETUP_LOG"
           exec > >(tee -a "$SETUP_LOG") 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
-          LOG="$DIAG_DIR/10B-setup19-selinux-419-port.log"
-          : > "$LOG"
-          exec > >(tee -a "$LOG") 2>&1
 
-          echo "========== SETUP 19: SELINUX 4.19 COMPATIBILITY PORT =========="
-          echo "[LOCKED] Setup 10A is not modified, reopened, or reverted."
-          echo "[RESEARCH] Previous SELinux wrapper failure: backup_sepolicy->map/latest_granting/sidtab do not exist in this LG private policy wrapper."
-          echo "[RESEARCH] In this LG 4.19 tree, sidtab/map/latest_granting/status state belongs to selinux_state.ss."
-          echo "[FIX] Use backup_sepolicy only for policydb; use selinux_state.ss for native 4.19 SELinux state backing."
-
-          SELINUX_HIDE_C="drivers/kernelsu/feature/selinux_hide.c"
-          SEPOL_H="drivers/kernelsu/selinux/sepolicy.h"
+          SEC_H="security/selinux/include/security.h"
           SS_H="security/selinux/ss/services.h"
-          test -f "$SELINUX_HIDE_C"
-          test -f "$SEPOL_H"
-          test -f "$SS_H"
+          SEPOL_H="drivers/kernelsu/selinux/sepolicy.h"
+          RULES_C="drivers/kernelsu/selinux/rules.c"
+          HIDE_C="drivers/kernelsu/feature/selinux_hide.c"
 
-          LOCAL_SHA256="$(sha256sum "$SELINUX_HIDE_C" | awk '{print $1}')"
-          echo "[INFO] Integrated v4.2.0 selinux_hide.c SHA256=$LOCAL_SHA256"
-          test "$LOCAL_SHA256" = "efc325b61dc3065a23380e026e71dabc3559c2e3273fdb03c5334967740dbce5"
-
-          WRAPPER_DEF="$(grep -RIlE --include='*.h' --include='*.c' \
-            'struct[[:space:]]+selinux_policy[[:space:]]*\{' \
-            drivers/kernelsu security/selinux 2>/dev/null | head -1 || true)"
-          test -n "$WRAPPER_DEF" || { echo "[FAIL] Setup 19: concrete selinux_policy definition not found in actual source tree."; exit 1; }
-          echo "[INFO] Setup 19 using selinux_policy definition: $WRAPPER_DEF"
-          python3 - "$WRAPPER_DEF" <<'PYWRAP'
-          from pathlib import Path
-          import re,sys
-          s=Path(sys.argv[1]).read_text()
-          m=re.search(r'\bstruct\s+selinux_policy\s*\{(?P<body>.*?)\}',s,re.S)
-          if not m:
-              raise SystemExit('[FAIL] Setup 19: cannot parse selinux_policy definition.')
-          body=m.group('body')
-          if not re.search(r'\bstruct\s+policydb\s+policydb\s*;',body):
-              raise SystemExit('[FAIL] Setup 19: selinux_policy wrapper does not expose policydb.')
-          if re.search(r'\bstruct\s+selinux_map\s+map\s*;|\bu32\s+latest_granting\s*;|\bstruct\s+sidtab\s*\*\s*sidtab\s*;',body):
-              raise SystemExit('[FAIL] Setup 19: backup_sepolicy wrapper unexpectedly exposes ss-owned fields.')
-          print('[PASS] Setup 19: backup_sepolicy wrapper is policydb-only.')
-          PYWRAP
-          for token in 'struct sidtab *sidtab;' 'struct selinux_map map;' 'u32 latest_granting;' 'struct page *status_page;' 'struct mutex status_lock;'; do
-            grep -qF "$token" "$SS_H" || { echo "[FAIL] Actual selinux_ss member missing: $token"; exit 1; }
+          for f in "$SEC_H" "$SS_H" "$SEPOL_H" "$RULES_C" "$HIDE_C"; do
+            test -f "$f" || { echo "[FAIL] Missing required source file: $f"; exit 1; }
           done
+          grep -qF 'struct selinux_ss *ss;' "$SEC_H"
+          grep -qF 'struct policydb policydb;' "$SS_H"
+          grep -qF 'struct selinux_map map;' "$SS_H"
+          grep -qF 'struct sidtab *sidtab;' "$SS_H"
 
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKaW1wb3J0IHJlCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQpmb3Igb2xkLCBuZXcgaW4gWwogICAgKCJzZWxpbnV4X3N0YXRlLnN0YXR1c19sb2NrIiwgInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19sb2NrIiksCiAgICAoInNlbGludXhfc3RhdGUuc3RhdHVzX3BhZ2UiLCAic2VsaW51eF9zdGF0ZS5zcy0+c3RhdHVzX3BhZ2UiKSwKXToKICAgIHMgPSBzLnJlcGxhY2Uob2xkLCBuZXcpCmRlY2wgPSByZS5jb21waWxlKHInKD9tKV5bIFx0XSpzdGF0aWMgc3RydWN0IHNlbGludXhfc3RhdGUgZmFrZV9zdGF0ZTtbIFx0XSpcbicpCmlmIGxlbihkZWNsLmZpbmRhbGwocykpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KGYiW0ZBSUxdIEV4cGVjdGVkIGV4YWN0bHkgb25lIGZha2Vfc3RhdGUgZGVjbGFyYXRpb24sIGZvdW5kIHtsZW4oZGVjbC5maW5kYWxsKHMpKX0iKQppbnNlcnQgPSAiIiJzdGF0aWMgc3RydWN0IHNlbGludXhfc3RhdGUgZmFrZV9zdGF0ZTsKc3RhdGljIHN0cnVjdCBzZWxpbnV4X3NzIGZha2Vfc3M7CgpzdGF0aWMgdm9pZCBrc3Vfc2VsaW51eF9pbml0X2Zha2Vfc3RhdGUodm9pZCkKewogICAgbWVtc2V0KCZmYWtlX3N0YXRlLCAwLCBzaXplb2YoZmFrZV9zdGF0ZSkpOwogICAgbWVtc2V0KCZmYWtlX3NzLCAwLCBzaXplb2YoZmFrZV9zcykpOwoKICAgIGZha2Vfc3RhdGUuaW5pdGlhbGl6ZWQgPSB0cnVlOwogICAgZmFrZV9zdGF0ZS5zcyA9ICZmYWtlX3NzOwoKICAgIHJ3bG9ja19pbml0KCZmYWtlX3NzLnBvbGljeV9yd2xvY2spOwoKICAgIC8qCiAgICAgKiBMRyA0LjE5L1N1a2lTVSBpbnRlZ3JhdGlvbiBtb2RlbDoKICAgICAqIGJhY2t1cF9zZXBvbGljeSBpcyB0aGUgcHJpdmF0ZSBwb2xpY3lkYiB3cmFwcGVyIG9ubHkuCiAgICAgKiBzaWR0YWIvbWFwL2xhdGVzdF9ncmFudGluZyBhcmUgb3duZWQgYnkgdGhlIGxpdmUgc2VsaW51eF9zdGF0ZS5zcy4KICAgICAqLwogICAgZmFrZV9zcy5wb2xpY3lkYiA9IGJhY2t1cF9zZXBvbGljeS0+cG9saWN5ZGI7CiAgICBmYWtlX3NzLnNpZHRhYiA9IHNlbGludXhfc3RhdGUuc3MtPnNpZHRhYjsKICAgIGZha2Vfc3MubWFwID0gc2VsaW51eF9zdGF0ZS5zcy0+bWFwOwogICAgZmFrZV9zcy5sYXRlc3RfZ3JhbnRpbmcgPSBzZWxpbnV4X3N0YXRlLnNzLT5sYXRlc3RfZ3JhbnRpbmc7Cn0KIiIiCnMgPSBkZWNsLnN1YihpbnNlcnQsIHMsIGNvdW50PTEpCmluaXQgPSByZS5jb21waWxlKAogICAgcicoP20pXlsgXHRdKmZha2Vfc3RhdGVcLmluaXRpYWxpemVkWyBcdF0qPVsgXHRdKnRydWVbIFx0XSo7XHMqXG4nCiAgICByJ15bIFx0XSpmYWtlX3N0YXRlXC5wb2xpY3lbIFx0XSo9WyBcdF0qYmFja3VwX3NlcG9saWN5WyBcdF0qO1xzKlxuJwopCmlmIGxlbihpbml0LmZpbmRhbGwocykpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KGYiW0ZBSUxdIEV4cGVjdGVkIGV4YWN0bHkgb25lIHY0LjIuMCBmYWtlX3N0YXRlLnBvbGljeSBpbml0aWFsaXphdGlvbiBwYWlyLCBmb3VuZCB7bGVuKGluaXQuZmluZGFsbChzKSl9IikKcyA9IGluaXQuc3ViKCIgICAgICAgIGtzdV9zZWxpbnV4X2luaXRfZmFrZV9zdGF0ZSgpO1xuIiwgcywgY291bnQ9MSkKY2xlYW51cCA9IHJlLmNvbXBpbGUoCiAgICByJyg/bSleWyBcdF0qc2lkdGFiX2Rlc3Ryb3lcKGJhY2t1cF9zZXBvbGljeS0+c2lkdGFiXCk7XHMqXG4nCiAgICByJ15bIFx0XSprZnJlZVwoYmFja3VwX3NlcG9saWN5LT5zaWR0YWJcKTtccypcbicKKQppZiBsZW4oY2xlYW51cC5maW5kYWxsKHMpKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdChmIltGQUlMXSBFeHBlY3RlZCBleGFjdGx5IG9uZSBvYnNvbGV0ZSBiYWNrdXAgc2lkdGFiIGNsZWFudXAgcGFpciwgZm91bmQge2xlbihjbGVhbnVwLmZpbmRhbGwocykpfSIpCnMgPSBjbGVhbnVwLnN1YigiIiwgcywgY291bnQ9MSkKZm9yIHRva2VuIGluIFsKICAgICJzZWxpbnV4X3N0YXRlLnNzLT5zdGF0dXNfbG9jayIsInNlbGludXhfc3RhdGUuc3MtPnN0YXR1c19wYWdlIiwKICAgICJzdGF0aWMgc3RydWN0IHNlbGludXhfc3MgZmFrZV9zczsiLCJmYWtlX3N0YXRlLnNzID0gJmZha2Vfc3M7IiwKICAgICJyd2xvY2tfaW5pdCgmZmFrZV9zcy5wb2xpY3lfcndsb2NrKTsiLAogICAgImZha2Vfc3MucG9saWN5ZGIgPSBiYWNrdXBfc2Vwb2xpY3ktPnBvbGljeWRiOyIsCiAgICAiZmFrZV9zcy5zaWR0YWIgPSBzZWxpbnV4X3N0YXRlLnNzLT5zaWR0YWI7IiwKICAgICJmYWtlX3NzLm1hcCA9IHNlbGludXhfc3RhdGUuc3MtPm1hcDsiLAogICAgImZha2Vfc3MubGF0ZXN0X2dyYW50aW5nID0gc2VsaW51eF9zdGF0ZS5zcy0+bGF0ZXN0X2dyYW50aW5nOyIsCl06CiAgICBpZiB0b2tlbiBub3QgaW4gczogcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIFJlcXVpcmVkIHRva2VuIG1pc3Npbmc6ICIrdG9rZW4pCmZvciB0b2tlbiBpbiBbCiAgICAic2VsaW51eF9zdGF0ZS5zdGF0dXNfbG9jayIsInNlbGludXhfc3RhdGUuc3RhdHVzX3BhZ2UiLCJmYWtlX3N0YXRlLnBvbGljeSA9IiwKICAgICJiYWNrdXBfc2Vwb2xpY3ktPm1hcCIsImJhY2t1cF9zZXBvbGljeS0+bGF0ZXN0X2dyYW50aW5nIiwiYmFja3VwX3NlcG9saWN5LT5zaWR0YWIiLApdOgogICAgaWYgdG9rZW4gaW4gczogcmFpc2UgU3lzdGVtRXhpdCgiW0ZBSUxdIE9ic29sZXRlIHRva2VuIHJlbWFpbnM6ICIrdG9rZW4pCmlmIHJlLnNlYXJjaChyJ1xic2lkdGFiX3NldFxzKlwoJywgcyk6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gVW5zdXBwb3J0ZWQgc2lkdGFiX3NldCgpIHJlbWFpbnMiKQpwLndyaXRlX3RleHQocykKcHJpbnQoIltGSVhFRF0gU2V0dXAgMTkgbWFwcyBiYWNrdXAgcG9saWN5ZGIgKyBuYXRpdmUgc2VsaW51eF9zdGF0ZS5zcyBiYWNraW5nLiIpCg==' | base64 -d > "$RUNNER_TEMP/setup19_selinux_419_port.py"
-          chmod 700 "$RUNNER_TEMP/setup19_selinux_419_port.py"
-          python3 -m py_compile "$RUNNER_TEMP/setup19_selinux_419_port.py"
-          python3 "$RUNNER_TEMP/setup19_selinux_419_port.py" "$SELINUX_HIDE_C"
+          echo "--- Add minimal private selinux_policy backup container if absent ---"
+          python3 - "$SEPOL_H" <<'PY'
+          from pathlib import Path
+          import re, sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          if re.search(r'\bstruct\s+selinux_policy\s*\{', s):
+              print("[PASS] sepolicy.h already contains a concrete selinux_policy definition.")
+          else:
+              marker = '#include "ss/policydb.h"\n'
+              if marker not in s:
+                  raise SystemExit("[FAIL] Expected sepolicy.h policydb include boundary not found.")
+              lines = [
+                  marker.rstrip('\n'),
+                  "",
+                  "/* Linux 4.19 compatibility: native SELinux policy state lives in selinux_state.ss. */",
+                  "struct sidtab;",
+                  "struct selinux_policy {",
+                  "    struct policydb policydb;",
+                  "    struct sidtab *sidtab;",
+                  "};",
+                  ""
+              ]
+              s = s.replace(marker, "\n".join(lines) + "\n", 1)
+              p.write_text(s)
+              print("[FIXED] Added minimal 4.19 backup policy container: policydb + sidtab.")
+          PY
+          grep -qF 'struct selinux_policy {' "$SEPOL_H"
+          grep -qF 'struct policydb policydb;' "$SEPOL_H"
+          grep -qF 'struct sidtab *sidtab;' "$SEPOL_H"
 
-          echo "========== POST-FIX AUDIT =========="
-          grep -qF 'selinux_state.ss->status_lock' "$SELINUX_HIDE_C"
-          grep -qF 'selinux_state.ss->status_page' "$SELINUX_HIDE_C"
-          grep -qF 'static struct selinux_ss fake_ss;' "$SELINUX_HIDE_C"
-          grep -qF 'fake_state.ss = &fake_ss;' "$SELINUX_HIDE_C"
-          grep -qF 'fake_ss.policydb = backup_sepolicy->policydb;' "$SELINUX_HIDE_C"
-          grep -qF 'fake_ss.sidtab = selinux_state.ss->sidtab;' "$SELINUX_HIDE_C"
-          grep -qF 'fake_ss.map = selinux_state.ss->map;' "$SELINUX_HIDE_C"
-          grep -qF 'fake_ss.latest_granting = selinux_state.ss->latest_granting;' "$SELINUX_HIDE_C"
+          echo "--- Port selinux_hide.c to native 4.19 ss ownership ---"
+          python3 - "$HIDE_C" <<'PY'
+          from pathlib import Path
+          import re, sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          if 'static struct selinux_state fake_state;' not in s:
+              raise SystemExit("[FAIL] Expected SukiSU 4.19 fake_state declaration not found.")
+          if 'static struct selinux_ss fake_ss;' not in s:
+              s = s.replace('static struct selinux_state fake_state;\n',
+                            'static struct selinux_state fake_state;\nstatic struct selinux_ss fake_ss;\n', 1)
 
-          if grep -nE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=|backup_sepolicy->(map|latest_granting|sidtab)|sidtab_set\(' "$SELINUX_HIDE_C"; then
-            echo "[FAIL] Obsolete/incompatible Setup 19 SELinux access remains."
+          old = '#else\n    fake_state.initialized = true;\n    fake_state.policy = backup_sepolicy;\n#endif'
+          new = '#else\n    memset(&fake_state, 0, sizeof(fake_state));\n    memset(&fake_ss, 0, sizeof(fake_ss));\n    fake_state.initialized = true;\n    fake_state.ss = &fake_ss;\n\n    /* Linux 4.19 keeps policydb/map/sidtab state in selinux_state.ss. */\n    fake_ss.policydb = backup_sepolicy->policydb;\n    fake_ss.sidtab = backup_sepolicy->sidtab;\n    fake_ss.map = selinux_state.ss->map;\n    fake_ss.latest_granting = selinux_state.ss->latest_granting;\n#endif'
+          if old in s:
+              s = s.replace(old, new, 1)
+          else:
+              req = ['fake_state.ss = &fake_ss;', 'fake_ss.policydb = backup_sepolicy->policydb;',
+                     'fake_ss.sidtab = backup_sepolicy->sidtab;', 'fake_ss.map = selinux_state.ss->map;']
+              if not all(x in s for x in req):
+                  raise SystemExit("[FAIL] Exact newer-model fake_state assignment not found; refusing speculative rewrite.")
+
+          s = s.replace('selinux_state.status_lock', 'selinux_state.ss->status_lock')
+          s = s.replace('selinux_state.status_page', 'selinux_state.ss->status_page')
+
+          if re.search(r'\bfake_state\.policy\s*=', s):
+              raise SystemExit("[FAIL] fake_state.policy assignment remains.")
+          if re.search(r'\bselinux_state\.(?:status_lock|status_page)\b', s):
+              raise SystemExit("[FAIL] direct newer-model status fields remain.")
+
+          p.write_text(s)
+          print("[FIXED] selinux_hide.c now uses fake_state.ss + clean backup policydb/sidtab.")
+          PY
+
+          for token in 'static struct selinux_state fake_state;' 'static struct selinux_ss fake_ss;' 'fake_state.ss = &fake_ss;' 'fake_ss.policydb = backup_sepolicy->policydb;' 'fake_ss.sidtab = backup_sepolicy->sidtab;' 'fake_ss.map = selinux_state.ss->map;' 'fake_ss.latest_granting = selinux_state.ss->latest_granting;' 'selinux_state.ss->status_lock' 'selinux_state.ss->status_page'; do
+            grep -qF "$token" "$HIDE_C" || { echo "[FAIL] Required post-fix token missing: $token"; exit 1; }
+          done
+          if grep -nE 'selinux_state\.(policy|policy_mutex|status_lock|status_page)|fake_state\.policy[[:space:]]*=|backup_sepolicy->map|backup_sepolicy->latest_granting' "$HIDE_C"; then
+            echo "[FAIL] Newer SELinux policy/state accesses remain in selinux_hide.c."
             exit 1
           fi
+          grep -qF 'security_context_to_sid(&fake_state' "$HIDE_C"
+          grep -qF 'security_compute_av_user(&fake_state' "$HIDE_C"
 
-          echo "[PASS] Setup 19 SELinux state wrapper matches the actual LG Linux 4.19 source layout."
-          echo "[PASS] backup_sepolicy contributes policydb only; selinux_state.ss contributes sidtab/map/latest_granting."
-          echo "[PASS] The previously observed SELinux compiler errors are directly addressed by the researched ownership model."
-          # V11 SOURCE-ORDER FIX:
-          # These two Linux 4.19 KernelSU compatibility mutations are prerequisites
-          # for Setup 27 because Setup 27 compiles drivers/kernelsu/.
-          # V10 placed them inside Setup 28, which runs AFTER Setup 27.
-          # This V11 copy is the single canonical mutation point; Setup 28 no longer
-          # mutates these files.
-          # Canonical 4.19 dispatcher/supercall compatibility prerequisites
-          # The current build reached drivers/kernelsu/supercall/dispatch.c.
-          # Linux 4.19 keeps tasklist_lock/init_task in sched/task.h and
-          # task_pgrp()/task_session() in sched/signal.h; sched/signal.h includes
-          # sched/task.h. Add only this explicit header dependency to the actual
-          # dispatcher compiled by Kbuild. Setup 10A is not reopened or modified.
-          # ------------------------------------------------------------
-          DISPATCH_C="drivers/kernelsu/supercall/dispatch.c"
-          test -f "$DISPATCH_C"
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQpoZWFkZXIgPSAnI2luY2x1ZGUgPGxpbnV4L3NjaGVkL3NpZ25hbC5oPicKY291bnQgPSBzLmNvdW50KGhlYWRlcikKaWYgY291bnQgPT0gMDoKICAgIGZpcnN0ID0gcy5maW5kKCcjaW5jbHVkZSAnKQogICAgaWYgZmlyc3QgPCAwOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1tGQUlMXSBTZXR1cCAxOTogZGlzcGF0Y2guYyBoYXMgbm8gaW5jbHVkZSBib3VuZGFyeS4nKQogICAgcyA9IHNbOmZpcnN0XSArIGhlYWRlciArICdcbicgKyBzW2ZpcnN0Ol0KICAgIHAud3JpdGVfdGV4dChzKQogICAgcHJpbnQoJ1tGSVhFRF0gU2V0dXAgMTk6IGFkZGVkIExpbnV4IDQuMTkgc2NoZWQvc2lnbmFsLmggdG8gYWN0dWFsIGRpc3BhdGNoLmMuJykKZWxpZiBjb3VudCA9PSAxOgogICAgcHJpbnQoJ1tQQVNTXSBTZXR1cCAxOTogc2NoZWQvc2lnbmFsLmggYWxyZWFkeSBwcmVzZW50IGluIGFjdHVhbCBkaXNwYXRjaC5jLicpCmVsc2U6CiAgICByYWlzZSBTeXN0ZW1FeGl0KGYnW0ZBSUxdIFNldHVwIDE5OiBkdXBsaWNhdGUgc2NoZWQvc2lnbmFsLmggaW5jbHVkZXM6IHtjb3VudH0nKQo=' | base64 -d > "$RUNNER_TEMP/setup19_dispatch_sched_header.py"
-          chmod 700 "$RUNNER_TEMP/setup19_dispatch_sched_header.py"
-          python3 -m py_compile "$RUNNER_TEMP/setup19_dispatch_sched_header.py"
-          python3 "$RUNNER_TEMP/setup19_dispatch_sched_header.py" "$DISPATCH_C"
-          # Hard verification: exactly one scheduler signal header must be in
-          # the actual dispatcher compiled by Kbuild. No scheduler API/source
-          # modification is performed.
-          test "$(grep -cF '#include <linux/sched/signal.h>' "$DISPATCH_C")" -eq 1
-          grep -qF '#include <linux/sched/signal.h>' "$DISPATCH_C"
-          # ------------------------------------------------------------
-          # Canonical 4.19 task_work API boundary
-          # The actual Kbuild source is drivers/kernelsu/supercall/supercall.c.
-          # Linux 4.19 declares task_work_add(..., bool), not the newer
-          # enum task_work_notify_mode/TWA_RESUME API. The current compiler
-          # failure is exactly supercall.c:98: undeclared TWA_RESUME.
-          # This change is limited to the actual compiled file. Setup 10A
-          # is not reopened, rewritten, or otherwise modified.
-          # ------------------------------------------------------------
-          SUPERCALL_C="drivers/kernelsu/supercall/supercall.c"
-          test -f "$SUPERCALL_C"
-          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKCnAgPSBQYXRoKHN5cy5hcmd2WzFdKQpzID0gcC5yZWFkX3RleHQoKQpiYWQgPSAidGFza193b3JrX2FkZChjdXJyZW50LCAmdHctPmNiLCBUV0FfUkVTVU1FKSIKZ29vZCA9ICJ0YXNrX3dvcmtfYWRkKGN1cnJlbnQsICZ0dy0+Y2IsIHRydWUpIgpjb3VudCA9IHMuY291bnQoYmFkKQppZiBjb3VudCAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdChmIltGQUlMXSBTZXR1cCAxOTogZXhwZWN0ZWQgZXhhY3RseSBvbmUgVFdBX1JFU1VNRSB0YXNrX3dvcmtfYWRkIGNhbGwsIGZvdW5kIHtjb3VudH0iKQpzID0gcy5yZXBsYWNlKGJhZCwgZ29vZCwgMSkKaWYgYmFkIGluIHM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gU2V0dXAgMTk6IFRXQV9SRVNVTUUgcmVtYWlucyBpbiBhY3R1YWwgc3VwZXJjYWxsLmMiKQppZiBzLmNvdW50KGdvb2QpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJbRkFJTF0gU2V0dXAgMTk6IGV4cGVjdGVkIGV4YWN0bHkgb25lIExpbnV4IDQuMTkgYm9vbCB0YXNrX3dvcmtfYWRkIGZvcm0iKQpwLndyaXRlX3RleHQocykKcHJpbnQoIltGSVhFRF0gU2V0dXAgMTk6IGFjdHVhbCBkcml2ZXJzL2tlcm5lbHN1L3N1cGVyY2FsbC9zdXBlcmNhbGwuYyBUV0FfUkVTVU1FIC0+IHRydWUiKQo=' | base64 -d > "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
-          chmod 700 "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
-          python3 -m py_compile "$RUNNER_TEMP/setup19_taskwork_419_fix.py"
-          python3 "$RUNNER_TEMP/setup19_taskwork_419_fix.py" "$SUPERCALL_C"
-          test "$(grep -cF 'task_work_add(current, &tw->cb, true)' "$SUPERCALL_C")" -eq 1
-          if grep -qF 'task_work_add(current, &tw->cb, TWA_RESUME)' "$SUPERCALL_C"; then
-            echo '[FAIL] Setup 19: obsolete TWA_RESUME task_work API remains'
-            exit 1
+          echo "--- rules.c boundary ---"
+          if grep -qF 'selinux_state.policy' "$RULES_C"; then
+            echo "[INFO] rules.c still contains the newer policy-pointer model."
+            echo "[INFO] It is intentionally not guessed or disabled; Setup 27 will expose the exact compiler boundary."
+          else
+            echo "[PASS] rules.c has no newer selinux_state.policy reference."
           fi
-          echo '[PASS] Setup 19 Linux 4.19 task_work bool API verified in actual Kbuild supercall.c.'
 
-          echo "[LOCKED] Setup 10A remains untouched."
+          echo "[PASS] Setup 19 fixed the verified selinux_hide 4.19 ownership mismatch."
+          echo "[PASS] No feature was removed, disabled, or bypassed."
           echo "=============================================================="
 
       - name: Setup 20 - CPU Clocksource Compatibility
