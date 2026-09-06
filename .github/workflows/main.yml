@@ -9,7 +9,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V33
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V34
 
 on:
   workflow_dispatch:
@@ -3005,42 +3005,24 @@ jobs:
           PY
 
           echo "----- REAL KBUILD GATES (NO AUTOFIX) -----"
-          # Research correction: Linux 4.19 Kbuild's supported directory
-          # traversal is "make -f scripts/Makefile.build obj=<dir>".  The
-          # SukiSU Kbuild declares kernelsu.o as a composite object and
-          # sepolicy.o as one of kernelsu-objs.  Calling the top-level Make
-          # target "drivers/kernelsu/kernelsu.o" directly bypasses that
-          # directory traversal and, in this tree, returns "No rule to make
-          # target".  Do not alter the Kbuild/source; invoke the same
-          # scripts/Makefile.build path used by normal kernel recursion.
+          # V34 ROOT-CAUSE FIX:
+          # Do NOT run a separate `make -n drivers/kernelsu/` dry-run here.
+          # V15 proved that the authoritative operation is the native directory
+          # Kbuild itself. The V33 run produced no output after entering this
+          # gate, so the redundant dry-run is removed. Setup 27 now performs
+          # exactly one real native Kbuild pass, then verifies its real outputs.
           KSU_BUILD_DIR="drivers/kernelsu"
           SEPOLICY_O="$KSU_BUILD_DIR/selinux/sepolicy.o"
-          KSU_COMPOSITE_O="$KSU_BUILD_DIR/kernelsu.o"
           KSU_KBUILD="$KSU_BUILD_DIR/Kbuild"
           test -f "$KSU_KBUILD"
           test -L "$KSU_BUILD_DIR" || test -d "$KSU_BUILD_DIR"
-          : > "$RUNNER_TEMP/12B-sepolicy-make-command.log"
 
-          # Linux 4.19's top-level Makefile documents the directory target form
-          # '%/: ... $(MAKE) $(build)=$(build-dir)'.  Calling 'make dir/' is
-          # therefore the native single-directory Kbuild entry point.  Do not
-          # bypass it with a direct scripts/Makefile.build invocation: that
-          # invocation produced the '/drivers/kernelsu/Makefile' lookup in V3.
-          if ! make -n V=1 "$KSU_BUILD_DIR/" > "$RUNNER_TEMP/12B-sepolicy-make-command.log" 2>&1; then
-            echo "[FAIL] V10: Linux 4.19 native directory target $KSU_BUILD_DIR/ failed."
-            echo "[FAIL] This is a real Kbuild failure; no compiler error is being skipped."
-            cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
-            exit 2
-          fi
-          test -s "$RUNNER_TEMP/12B-sepolicy-make-command.log"
-          grep -F "$SEPOLICY_O" "$RUNNER_TEMP/12B-sepolicy-make-command.log" >/dev/null
-          # Dry-run evidence remains in Diagnostics; it is intentionally not streamed live.
-
-          # V32 LIVE ACTIVITY: execute the proven native directory Kbuild path,
-          # but expose only the current target while retaining the full log.
+          # Preserve the complete build log in Diagnostics, but expose only
+          # the current file/target on the GitHub live console.
+          exec 3>&1
           set +e
           set -o pipefail
-          make V=0 "$KSU_BUILD_DIR/" 2>&1 \
+          make V=1 "$KSU_BUILD_DIR/" 2>&1 \
             | tee -a "$LOG" \
             | awk '
                 /(^|[[:space:]])(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)([[:space:]]|\[)/ {
@@ -3053,18 +3035,14 @@ jobs:
           MAKE_STATUS=${PIPESTATUS[0]}
           set +o pipefail
           set -e
+
           if [ "$MAKE_STATUS" -ne 0 ]; then
-            echo "[FAIL] V32: native drivers/kernelsu/ Kbuild returned status $MAKE_STATUS."
+            echo "[FAIL] V34: native drivers/kernelsu/ Kbuild returned status $MAKE_STATUS."
             exit "$MAKE_STATUS"
           fi
+
           test -s "$SEPOLICY_O"
 
-          # V13 KBUILD CONTRACT:
-          # The actual V12 runner proved that Kbuild creates
-          # drivers/kernelsu/built-in.a and that llvm-ar lists members using
-          # their complete relative paths from the kernel source root.
-          # This is a verification-only correction: match the exact names
-          # actually emitted by Kbuild; do not invent a shortened path.
           KSU_ARCHIVE="$KSU_BUILD_DIR/built-in.a"
           test -s "$KSU_ARCHIVE"
 
@@ -3083,17 +3061,16 @@ jobs:
             drivers/kernelsu/feature/cpu_spoof.o
           do
             grep -Fx "$required_member" "$RUNNER_TEMP/12B-kernelsu-archive-members.log" >/dev/null || {
-              echo "[FAIL] V13: required KernelSU archive member is missing: $required_member"
+              echo "[FAIL] V34: required KernelSU archive member is missing: $required_member"
               cat "$RUNNER_TEMP/12B-kernelsu-archive-members.log"
               exit 1
             }
           done
 
-          echo "[PASS] V13: actual Kbuild output is drivers/kernelsu/built-in.a."
-          echo "[PASS] V13: required KernelSU objects are present in built-in.a."
-          echo "[PASS] V13: archive member paths match Kbuild's actual emitted paths."
-          echo "[PASS] V13: no standalone kernelsu.o is assumed."
-
+          echo "[PASS] V34: native drivers/kernelsu/ Kbuild completed."
+          echo "[PASS] V34: drivers/kernelsu/built-in.a exists with all required members."
+          echo "[PASS] V34: Setup 27 performs no source mutation."
+          echo "=============================================================="
           make -j2 V=1 drivers/usb/gadget/function/f_hid.o
           test -s drivers/kernelsu/feature/selinux_hide.o
           test -s drivers/kernelsu/feature/cpu_spoof.o
