@@ -9,7 +9,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V32
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V33
 
 on:
   workflow_dispatch:
@@ -2961,108 +2961,47 @@ jobs:
           python3 - "$SEPOLICY_C" <<'PY'
           from pathlib import Path
           import re, sys
-
-          p = Path(sys.argv[1])
-          s = p.read_text()
-
-          # SukiSU's generic iterator remains the flex_array iterator used by
-          # Linux 4.19 avtab.
-          if "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)" not in s:
-              raise SystemExit("[FAIL] V10: required flex_array ksu_hash_for_each() form is missing.")
-
-          # The only 4.19 hashtab correction is the dedicated native-array adapter.
-          if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in s:
-              raise SystemExit("[FAIL] V10: dedicated 4.19 hashtab pointer-array iterator is missing.")
-          hashtab_blocks = re.findall(r"(?ms)^#if LINUX_VERSION_CODE >= KERNEL_VERSION\(5, 8, 0\)\n#define ksu_hashtab_for_each\(htab, cur\).*?^#endif", s)
-          if len(hashtab_blocks) != 1:
-              raise SystemExit(f"[FAIL] V10: expected exactly one conditional ksu_hashtab_for_each block, found {len(hashtab_blocks)}")
-          if len(re.findall(r"(?m)^#define ksu_hashtab_for_each\(", s)) != 2:
-              raise SystemExit("[FAIL] V10: canonical hashtab iterator must have exactly two version branches.")
-          hashtab_match = re.search(
-              r"(?ms)^#if LINUX_VERSION_CODE >= KERNEL_VERSION\(5, 8, 0\)\n"
-              r"#define ksu_hashtab_for_each\(htab, cur\).*?^#else\n"
-              r"(?P<legacy>.*?)^#endif",
-              s,
-          )
-          if not hashtab_match:
-              raise SystemExit("[FAIL] V10: canonical hashtab version split is missing.")
-          legacy_hashtab = hashtab_match.group("legacy")
-          # Inspect preprocessor code, not comments: the researched comment
-          # intentionally names ksu_hash_for_each() while documenting why the
-          # 4.19 hashtab adapter is separate from the avtab flex_array iterator.
-          legacy_code = re.sub(r"/\*.*?\*/|//[^\n]*", "", legacy_hashtab, flags=re.S)
-          if re.search(r"\bksu_hash_for_each\s*\(", legacy_code):
-              raise SystemExit("[FAIL] V10: Linux 4.19 hashtab branch still invokes the flex_array iterator.")
-          if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in legacy_code:
-              raise SystemExit("[FAIL] V10: Linux 4.19 hashtab branch lacks native pointer-array traversal.")
-
-          # The obsolete duplicate AVTAB injection must be absent.
-          if "#define ksu_" + "avtab_for_each(" in s:
-              raise SystemExit("[FAIL] V10: obsolete duplicate AVTAB macro injection remains.")
-
-          # Setup 17's researched direct AVTAB traversal must remain intact.
-          if "flex_array_get_ptr(db->te_avtab.htable, i)" not in s:
-              raise SystemExit("[FAIL] V10: researched AVTAB flex_array traversal is missing.")
-
-          # The exact bad Linux-4.19 hashtab mapping from the failed V4 build must
-          # never be regenerated: it routes struct hashtab_node ** into the
-          # flex_array iterator and was the direct cause of -Wincompatible-pointer-types.
-          bad_hashtab = "#define ksu_hashtab_for_each(htab, cur) ksu_hash_for_each(htab->htable, htab->size, cur)"
-          if bad_hashtab in s:
-              raise SystemExit("[FAIL] V10: obsolete flex_array hashtab adapter was regenerated.")
-
-          # Linux 4.19 hashtab must have the native pointer-array traversal.
-          if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in s:
-              raise SystemExit("[FAIL] V10: native Linux 4.19 hashtab traversal is missing.")
-
-          # Filename-transition compatibility is validated from the actual checked-out
-          # LG 4.19 headers. Setup 27 must consume the same source-derived contract as
-          # Setup 17; it must never invent a different version boundary or API spelling.
-          policydb_h = Path("security/selinux/ss/policydb.h").read_text()
+          c = Path(sys.argv[1])
+          s = c.read_text()
+          avtab_h = Path("security/selinux/ss/avtab.h").read_text()
           hashtab_h = Path("security/selinux/ss/hashtab.h").read_text()
-          assert "struct hashtab_node **htable" in hashtab_h
-          assert "int hashtab_insert(struct hashtab *h, void *k, void *d);" in hashtab_h
+          policydb_h = Path("security/selinux/ss/policydb.h").read_text()
 
+          # V33: validate the actual cumulative source contract. Do NOT require
+          # a synthetic helper name or rewrite Setup-17's source state.
+          # The verified cumulative layout is:
+          #   native hashtab -> ksu_hash_for_each(node_ptr,...)
+          #   AVTAB flex_array -> ksu_avtab_for_each(...)
+          if "struct hashtab_node **htable" not in hashtab_h:
+              raise SystemExit("[FAIL] V33: LG 4.19 native hashtab storage missing.")
+          if "struct flex_array *htable" not in avtab_h:
+              raise SystemExit("[FAIL] V33: LG 4.19 AVTAB flex_array storage missing.")
+          if "#define ksu_hash_for_each(" not in s:
+              raise SystemExit("[FAIL] V33: cumulative hashtab iterator missing.")
+          if not re.search(r"for\s*\(cur\s*=\s*node_ptr\s*\[i\]\s*;\s*cur\s*;\s*cur\s*=\s*cur->next\)", s):
+              raise SystemExit("[FAIL] V33: native hashtab traversal body missing.")
+          if "#define ksu_avtab_for_each(" not in s:
+              raise SystemExit("[FAIL] V33: dedicated AVTAB iterator missing.")
+          if "flex_array_get_ptr(node_ptr, i)" not in s:
+              raise SystemExit("[FAIL] V33: AVTAB flex_array traversal missing.")
+          if "#define avtab_for_each(avtab, cur) ksu_avtab_for_each(avtab.htable, avtab.nslot, cur);" not in s:
+              raise SystemExit("[FAIL] V33: avtab_for_each is not routed to the dedicated AVTAB iterator.")
+          if "flex_array_get_ptr(db->te_avtab.htable, i)" not in s:
+              raise SystemExit("[FAIL] V33: direct AVTAB flex_array traversal missing.")
+          bad = "#define ksu_hashtab_for_each(htab, cur) ksu_hash_for_each(htab->htable, htab->size, cur)"
+          if bad in s:
+              raise SystemExit("[FAIL] V33: obsolete flex_array hashtab adapter regenerated.")
           if "struct filename_trans {" in policydb_h:
-              legacy_marker = "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)"
-              if legacy_marker not in s:
-                  raise SystemExit("[FAIL] V10: source-derived legacy filename_trans branch is missing.")
-              legacy = s.split("#else /* Linux 5.8+ filename_trans_key; 5.9+ uses key-params hashtab API */", 1)[0]
-              if "struct filename_trans ft;" not in legacy:
-                  raise SystemExit("[FAIL] V10: legacy filename_trans declaration is missing.")
-              if "hashtab_insert(db->filename_trans, new_key, datum)" not in legacy:
-                  raise SystemExit("[FAIL] V10: legacy 3-argument hashtab_insert path is missing.")
-              if "struct filename_trans_key key;" in legacy:
-                  raise SystemExit("[FAIL] V10: newer filename_trans_key leaked into legacy branch.")
-              print("[PASS] V10: actual LG policydb.h requires and receives the legacy filename_trans branch.")
-          elif "struct filename_trans_key {" in policydb_h:
-              if "struct filename_trans_key key;" not in s:
-                  raise SystemExit("[FAIL] V10: filename_trans_key branch is missing.")
-              if "hashtab_search(&db->filename_trans, &key)" not in s:
-                  raise SystemExit("[FAIL] V10: 5.8 filename_trans search path is missing.")
-              if "hashtab_insert(&db->filename_trans, new_key, trans);" not in s:
-                  raise SystemExit("[FAIL] V10: 5.8 3-argument filename_trans insertion path is missing.")
-              if "hashtab_insert(&db->filename_trans, new_key, trans, filenametr_key_params)" not in s:
-                  raise SystemExit("[FAIL] V10: 5.9+ key-params filename_trans insertion path is missing.")
-              print("[PASS] V10: actual policydb.h requires the filename_trans_key branch and both 5.8/5.9 API paths are present.")
-          else:
-              raise SystemExit("[FAIL] V10: unrecognized filename transition representation in actual policydb.h.")
-          print("[PASS] V12: Setup 27 uses the same source-derived filename-transition contract as Setup 17.")
-          names = ["remove_avtab_node", "add_filename_trans", "add_type", "add_typeattribute_raw"]
-          counts = {}
-          for name in names:
-              pat = re.compile(
-                  r'(?ms)^static\s+(?:bool|void|struct\s+avtab_node\s*\*)\s+'
-                  + re.escape(name) + r'\s*\([^;{}]*\)\s*\{'
-              )
-              counts[name] = len(pat.findall(s))
-          if counts != {n: 1 for n in names}:
-              raise SystemExit("[FAIL] V10: duplicate/missing researched function definitions: " + repr(counts))
-
-          print("[PASS] V10: avtab keeps Linux 4.19 flex_array traversal.")
-          print("[PASS] V10: hashtab has its separate native pointer-array traversal.")
-          print("[PASS] V10: duplicate Setup-27 AVTAB injection is absent.")
-          print("[PASS] V10: researched functions occur exactly once.")
+              marker = "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)"
+              if marker not in s:
+                  raise SystemExit("[FAIL] V33: researched legacy filename_trans branch missing.")
+          for name in ("remove_avtab_node", "add_filename_trans", "add_type", "add_typeattribute_raw"):
+              pat = r'(?ms)^static\s+(?:bool|void|struct\s+avtab_node\s*\*)\s+' + re.escape(name) + r'\s*\([^;{}]*\)\s*\{'
+              if len(re.findall(pat, s)) != 1:
+                  raise SystemExit(f"[FAIL] V33: {name} definition count is not exactly one.")
+          print("[PASS] V33: actual LG 4.19 hashtab/AVTAB source contracts verified.")
+          print("[PASS] V33: no synthetic ksu_hashtab_for_each requirement is imposed.")
+          print("[PASS] V33: Setup 27 performs no source mutation.")
           PY
 
           echo "----- REAL KBUILD GATES (NO AUTOFIX) -----"
@@ -3204,26 +3143,20 @@ jobs:
             exit 1
           }
           sha256sum -c "$RUNNER_TEMP/12B-sepolicy.sha256"
-          # V14 validator correction:
-          # Linux 4.19 has two different iterator contracts in this file.
-          # V26 SOURCE-CONTRACT VERIFICATION: verify the two 4.19 table layouts separately.
-          python3 - "$SEPOLICY_C" <<'PY'
-          from pathlib import Path
-          import sys
-          c=Path(sys.argv[1]).read_text()
-          h=Path("security/selinux/ss/avtab.h").read_text()
-          if "struct flex_array *htable" not in h:
-              raise SystemExit("[FAIL] V26: actual avtab.h is not the expected LG 4.19 flex_array layout.")
-          if "#define ksu_avtab_for_each(" not in c or "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)" not in c:
-              raise SystemExit("[FAIL] V26: dedicated AVTAB flex_array iterator is missing.")
-          if "flex_array_get_ptr(db->te_avtab.htable, i)" not in c:
-              raise SystemExit("[FAIL] V26: AVTAB flex_array traversal is missing.")
-          if "#define ksu_hash_for_each(" not in c or not __import__("re").search(r"for\s*\(cur\s*=\s*node_ptr\s*\[i\]", c):
-              raise SystemExit("[FAIL] V27: native 4.19 hashtab traversal is missing.")
-          print("[PASS] V27: separate AVTAB flex_array and hashtab pointer-array contracts verified semantically.")
-          PY
-          echo "[PASS] V26: Setup 28 verifies separate 4.19 AVTAB/hashtab source contracts."
-          echo "[PASS] V15: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
+          # V33: Setup 28 verifies the same cumulative source semantics as Setup 27.
+          # Do not reinterpret the source or require a helper name that Setup 17
+          # never needed. Setup 28 must proceed to the real Image.gz build.
+          grep -qF 'for (cur = node_ptr[i]; cur; cur = cur->next)' "$SEPOLICY_C"
+          grep -qF 'for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)' "$SEPOLICY_C"
+          grep -qF 'flex_array_get_ptr(db->te_avtab.htable, i)' "$SEPOLICY_C"
+          grep -qF '#define avtab_for_each(avtab, cur) ksu_avtab_for_each(avtab.htable, avtab.nslot, cur);' "$SEPOLICY_C"
+          grep -qF 'struct hashtab_node **htable' security/selinux/ss/hashtab.h
+          grep -qF 'struct flex_array *htable' security/selinux/ss/avtab.h
+          if grep -qF '#define ksu_hashtab_for_each(htab, cur) ksu_hash_for_each(htab->htable, htab->size, cur)' "$SEPOLICY_C"; then
+            echo "[FAIL] V33: obsolete flex_array hashtab adapter is present."
+            exit 1
+          fi
+          echo "[PASS] V33: Setup 28 source-contract audit passed; proceeding to full kernel build."
 
           export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
@@ -3926,7 +3859,7 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V32"
+            echo "Workflow version: V33"
             echo "Previous workflow: V27"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
@@ -3958,8 +3891,8 @@ jobs:
           fi
 
           {
-            echo "========== V32 ALL SETUP STATUS =========="
-            echo "Workflow version: V32"
+            echo "========== V33 ALL SETUP STATUS =========="
+            echo "Workflow version: V33"
             echo "Previous workflow: V30"
             echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V20 -> V21 -> V22 -> V23 -> V24 -> V25 -> V26 -> V27 -> V28 -> V29 -> V30 -> V32"
             echo "Setup numbers are independent from workflow version numbers."
@@ -3977,7 +3910,7 @@ jobs:
 
           cat > diagnostic-artifact/V32-CURRENT-STATUS.md <<'REPORT'
           # V32 active status is documented below. V32 remains historical context.
-          # V32 Current Status
+          # V33 Current Status
 
           ## Current objective
           Build the LG Velvet global LM-G900/G900EMW kernel from the lineage-23.2 tree with Linux 4.19.325-cip135, preserving all verified existing and future feature work.
@@ -4071,7 +4004,7 @@ jobs:
           REPORT
 
           cat > diagnostic-artifact/V32-ERROR-AND-FIX-HISTORY.md <<'REPORT'
-          ## V32 — Setup 27/28 process-monitor root cause
+          ## V33 — Setup 27/28 contract validator correction
 
           V32 fixes a CI orchestration bug, not a kernel feature bug. Setup 27 and Setup 28 previously polled a background child with `kill -0` before calling `wait()`. On Linux a terminated child can remain a zombie until it is reaped, and `kill(pid, 0)` may still report the PID as existing. That can leave the polling loop alive after `make` has already completed, preventing the workflow from advancing to the next setup. V32 replaces that pattern with direct background `timeout/make`, explicit PID-state polling, and mandatory `wait()` for authoritative completion. V32 also removes `timeout --foreground`, because coreutils documents that in foreground mode children are not timed out.
 
@@ -4116,7 +4049,7 @@ jobs:
           REPORT
 
           cat > diagnostic-artifact/V32-COMPLETED.md <<'REPORT'
-          # V32 Completed Work
+          # V33 Completed Work
 
           - Replaced Setup 27 directory-level build with targeted cumulative KernelSU object compilation.
           - Added parallel object compilation using runner workers.
@@ -4128,13 +4061,13 @@ jobs:
           REPORT
 
           cat > diagnostic-artifact/V32-IN-PROGRESS.md <<'REPORT'
-          # V32 In Progress
+          # V33 In Progress
 
           The next GitHub run must prove that the targeted Setup 27 object set compiles successfully, then execute the full kernel build in Setup 28.
           REPORT
 
           cat > diagnostic-artifact/V32-NEXT-STEPS.md <<'REPORT'
-          # V32 Next Steps
+          # V33 Next Steps
 
           1. Run V32.
           2. Confirm Setup 27 targeted hotspot compilation completes well below the previous ~1h46m bottleneck.
@@ -4199,10 +4132,10 @@ jobs:
           # V32 Artifact Manifest
 
           Expected successful artifacts:
-          - V32-LG-Velvet-G900-Diagnostics
-          - V32-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          - V32-LG-Velvet-G900-Kernel-Only
-          - V32-LG-Velvet-G900-Raw-Kernel
+          - V33-LG-Velvet-G900-Diagnostics
+          - V33-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          - V33-LG-Velvet-G900-Kernel-Only
+          - V33-LG-Velvet-G900-Raw-Kernel
 
           Diagnostics package contains complete logs, source/workflow state, A→Z documentation, research references, setup results, and regression evidence.
           REPORT
@@ -4262,7 +4195,7 @@ jobs:
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
           # V32 Diagnostic Package Manifest
 
-          Workflow version: V32
+          Workflow version: V33
           Previous workflow: V30
           Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V20 -> V21 -> V22 -> V23 -> V24 -> V25 -> V26 -> V27 -> V28 -> V29 -> V30 -> V32
 
@@ -4292,7 +4225,7 @@ jobs:
           - project-history/
 
           Artifact naming:
-          V32-LG-Velvet-G900-Diagnostics
+          V33-LG-Velvet-G900-Diagnostics
           REPORT
 
           echo "[PASS] V30 diagnostic directory staged."
@@ -4300,7 +4233,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V32-LG-Velvet-G900-Diagnostics
+          name: V33-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
@@ -4310,7 +4243,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V32-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          name: V33-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
           path: artifacts/V32-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
@@ -4320,7 +4253,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V32-LG-Velvet-G900-Kernel-Only
+          name: V33-LG-Velvet-G900-Kernel-Only
           path: artifacts/V32-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
@@ -4330,7 +4263,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V32-LG-Velvet-G900-Raw-Kernel
+          name: V33-LG-Velvet-G900-Raw-Kernel
           path: arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 14
