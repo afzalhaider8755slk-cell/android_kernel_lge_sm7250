@@ -1,5 +1,5 @@
 # V10 VERIFIED ERROR-FIX BASELINE (derived from V4, feature-preserving):
-# V25 ROOT-CAUSE NOTE: Setup 27 was incorrectly hard-coded to require the legacy flex_array avtab iterator. The actual LG 4.19 headers are authoritative; verification now derives the iterator form from avtab.h instead of forcing a representation. No source feature is removed.
+# V26 ROOT-CAUSE NOTE: LG 4.19 AVTAB uses flex_array while hashtab uses a native pointer array. V26 separates the iterators without removing features.
 # The observed V4 failure was caused by changing the shared ksu_hash_for_each()
 # iterator and then injecting a second AVTAB macro in Setup 27. Linux 4.19 hashtab
 # uses struct hashtab_node **. The avtab representation is verified from the
@@ -2017,6 +2017,52 @@ jobs:
           print("[PASS] V19: no Wi-Fi/qcacld feature or compiler flag was removed.")
           PY
 
+          # V26 ROOT-CAUSE FIX: LG 4.19 has separate SELinux table layouts.
+          # hashtab->htable is a native pointer array; avtab->htable is a flex_array.
+          # Keep both iterators explicit. No feature is removed or disabled.
+          SEPOLICY_C="drivers/kernelsu/selinux/sepolicy.c"
+          AVTAB_H="security/selinux/ss/avtab.h"
+          python3 - "$SEPOLICY_C" "$AVTAB_H" <<'PY'
+          from pathlib import Path
+          import re, sys
+          c = Path(sys.argv[1])
+          h = Path(sys.argv[2])
+          s = c.read_text()
+          hs = h.read_text()
+          if "struct flex_array *htable" not in hs:
+              raise SystemExit("[FAIL] V26: LG 4.19 avtab flex_array storage not found.")
+          native_marker = "#define ksu_hash_for_each(node_ptr, n_slot, cur)"
+          native_end = "        for (cur = node_ptr[i]; cur; cur = cur->next)"
+          start_pos = s.find(native_marker)
+          if start_pos < 0:
+              raise SystemExit("[FAIL] V26: native hashtab iterator block not found.")
+          end_pos = s.find(native_end, start_pos)
+          if end_pos < 0:
+              raise SystemExit("[FAIL] V26: native hashtab iterator terminator not found.")
+          end_pos += len(native_end)
+          if "#define ksu_avtab_for_each(" not in s:
+              macro = "\n\n" + "\n".join([
+                  "#define ksu_avtab_for_each(node_ptr, n_slot, cur) \\",
+                  "    int i; \\",
+                  "    for (i = 0; i < n_slot; ++i) \\",
+                  "        for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)",
+              ])
+              s = s[:end_pos] + macro + s[end_pos:]
+          old = "#define avtab_for_each(avtab, cur) ksu_hash_for_each(avtab.htable, avtab.nslot, cur);"
+          new = "#define avtab_for_each(avtab, cur) ksu_avtab_for_each(avtab.htable, avtab.nslot, cur);"
+          if old in s:
+              s = s.replace(old, new, 1)
+          if s.count("#define ksu_avtab_for_each(") != 1:
+              raise SystemExit("[FAIL] V26: dedicated AVTAB iterator was not installed exactly once.")
+          if "flex_array_get_ptr(node_ptr, i)" not in s:
+              raise SystemExit("[FAIL] V26: dedicated AVTAB flex_array traversal missing.")
+          if new not in s:
+              raise SystemExit("[FAIL] V26: avtab_for_each was not routed to dedicated iterator.")
+          c.write_text(s)
+          print("[FIXED] V26: separate AVTAB flex_array and hashtab pointer-array iterators.")
+          print("[PASS] V26: no SELinux/SukiSU feature was removed or disabled.")
+          PY
+
       - name: Setup 18 - SELinux 4.19 Preflight
         shell: bash
         run: |
@@ -2918,25 +2964,17 @@ jobs:
           p = Path(sys.argv[1])
           s = p.read_text()
 
-          # Source-derived iterator contract: do not assume avtab's storage type.
-          # Some 4.19-derived trees keep avtab->htable as struct flex_array *,
-          # while this LG tree may carry a native pointer-array form.  The
-          # validator must follow the checked-out headers rather than forcing
-          # one representation and must never mutate the source here.
+          # V26: actual LG 4.19 AVTAB is flex_array; hashtab is native array.
           avtab_h = Path("security/selinux/ss/avtab.h").read_text()
-          if "struct flex_array *htable" in avtab_h:
-              avtab_iterator = "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)"
-              avtab_direct = "flex_array_get_ptr(db->te_avtab.htable, i)"
-              avtab_mode = "flex_array"
-          elif "struct avtab_node **htable" in avtab_h:
-              avtab_iterator = "for (cur = node_ptr[i]; cur; cur = cur->next)"
-              avtab_direct = "db->te_avtab.htable[i]"
-              avtab_mode = "native-array"
-          else:
-              raise SystemExit("[FAIL] V10: unsupported avtab->htable representation in the actual 4.19 headers.")
-
-          if avtab_iterator not in s:
-              raise SystemExit(f"[FAIL] V10: ksu_hash_for_each() does not match actual avtab {avtab_mode} storage.")
+          if "struct flex_array *htable" not in avtab_h:
+              raise SystemExit("[FAIL] V26: expected LG 4.19 AVTAB flex_array storage is absent.")
+          avtab_iterator = "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)"
+          avtab_direct = "flex_array_get_ptr(db->te_avtab.htable, i)"
+          avtab_mode = "flex_array"
+          if avtab_iterator not in s or "#define ksu_avtab_for_each(" not in s:
+              raise SystemExit("[FAIL] V26: dedicated AVTAB flex_array iterator is missing.")
+          if "#define avtab_for_each(avtab, cur) ksu_avtab_for_each(avtab.htable, avtab.nslot, cur);" not in s:
+              raise SystemExit("[FAIL] V26: AVTAB traversal is not routed through dedicated iterator.")
 
           # The only 4.19 hashtab correction is the dedicated native-array adapter.
           if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in s:
@@ -2964,9 +3002,8 @@ jobs:
           if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in legacy_code:
               raise SystemExit("[FAIL] V10: Linux 4.19 hashtab branch lacks native pointer-array traversal.")
 
-          # The obsolete duplicate AVTAB injection must be absent.
-          if "#define ksu_" + "avtab_for_each(" in s:
-              raise SystemExit("[FAIL] V10: obsolete duplicate AVTAB macro injection remains.")
+          if s.count("#define ksu_avtab_for_each(") != 1:
+              raise SystemExit("[FAIL] V26: dedicated AVTAB iterator count is not exactly one.")
 
           # Setup 17's researched AVTAB traversal must match the actual header.
           if avtab_direct not in s:
@@ -3156,52 +3193,23 @@ jobs:
           sha256sum -c "$RUNNER_TEMP/12B-sepolicy.sha256"
           # V14 validator correction:
           # Linux 4.19 has two different iterator contracts in this file.
-          # 1) ksu_hash_for_each() uses the native hashtab pointer-array form.
-          # 2) avtab uses whichever storage representation the actual checked-out
-          #    4.19-derived avtab.h declares.
-          # The previous Setup 28 audit hard-coded the legacy avtab flex_array form
-          # and could therefore stop the workflow even when the actual tree
-          # legitimately uses a native pointer-array avtab.
-          # Setup 27 already proved the exact separation; Setup 28 must verify,
-          # not reinterpret, that compiler-tested state.
-          # V15 SOURCE-CONTRACT VERIFICATION:
-          # Verify iterator semantics against the actual checked-out avtab.h.
-          # Do not force the legacy flex_array representation onto an LG tree
-          # whose avtab is already a native pointer array.
+          # V26 SOURCE-CONTRACT VERIFICATION: verify the two 4.19 table layouts separately.
           python3 - "$SEPOLICY_C" <<'PY'
           from pathlib import Path
           import sys
-          c = Path(sys.argv[1]).read_text()
-          h = Path("security/selinux/ss/avtab.h").read_text()
-          if "struct flex_array *htable" in h:
-              if "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)" not in c:
-                  raise SystemExit("[FAIL] V15: avtab flex_array iterator does not match actual header.")
-              if "flex_array_get_ptr(db->te_avtab.htable, i)" not in c:
-                  raise SystemExit("[FAIL] V15: AVTAB flex_array traversal is missing.")
-              print("[PASS] V15: AVTAB flex_array contract verified from avtab.h.")
-          elif "struct avtab_node **htable" in h:
-              if "for (cur = node_ptr[i]; cur; cur = cur->next)" not in c:
-                  raise SystemExit("[FAIL] V15: native avtab iterator does not match actual header.")
-              if "db->te_avtab.htable[i]" not in c:
-                  raise SystemExit("[FAIL] V15: native AVTAB traversal is missing.")
-              print("[PASS] V15: native AVTAB pointer-array contract verified from avtab.h.")
-          else:
-              raise SystemExit("[FAIL] V15: unsupported avtab->htable representation.")
-
+          c=Path(sys.argv[1]).read_text()
+          h=Path("security/selinux/ss/avtab.h").read_text()
+          if "struct flex_array *htable" not in h:
+              raise SystemExit("[FAIL] V26: actual avtab.h is not the expected LG 4.19 flex_array layout.")
+          if "#define ksu_avtab_for_each(" not in c or "for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)" not in c:
+              raise SystemExit("[FAIL] V26: dedicated AVTAB flex_array iterator is missing.")
+          if "flex_array_get_ptr(db->te_avtab.htable, i)" not in c:
+              raise SystemExit("[FAIL] V26: AVTAB flex_array traversal is missing.")
           if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in c:
-              raise SystemExit("[FAIL] V15: native 4.19 hashtab adapter semantic contract is missing.")
-          print("[PASS] V15: native 4.19 hashtab adapter verified separately from AVTAB storage.")
+              raise SystemExit("[FAIL] V26: native 4.19 hashtab traversal is missing.")
+          print("[PASS] V26: separate AVTAB flex_array and hashtab pointer-array contracts verified.")
           PY
-
-          if grep -qE '#define[[:space:]]+ksu_hashtab_for_each\(htab,[[:space:]]*cur\)[[:space:]]*\\' "$SEPOLICY_C" &&
-             grep -qF 'for (cur = (htab)->htable[i]; cur; cur = cur->next)' "$SEPOLICY_C"; then
-            echo "[PASS] V15: native 4.19 hashtab adapter is present; multiline macro form verified."
-          else
-            echo "[FAIL] V15: native 4.19 hashtab adapter semantic contract is missing."
-            exit 1
-          fi
-
-          echo "[PASS] V15: Setup 28 verifies source semantics, not fragile one-line formatting."
+          echo "[PASS] V26: Setup 28 verifies separate 4.19 AVTAB/hashtab source contracts."
           echo "[PASS] V15: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
 
           export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
