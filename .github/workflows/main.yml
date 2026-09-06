@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V18
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V19
 
 on:
   workflow_dispatch:
@@ -1852,119 +1852,146 @@ jobs:
           set +x
           set -Eeuo pipefail
 
-          # V18: V17's guard was too strict about indentation across a Make
-          # continuation line. Verify the pinned CIP135 rule by tokens/structure,
-          # not whitespace. Never mutate an unexpected source.
-          KBUILD_BUILD="scripts/Makefile.build"
-          test -f "$KBUILD_BUILD"
+          # V19 root-cause correction:
+          # The checked-out LG tree is NOT the plain CIP135 cmd_ar_builtin form.
+          # It carries the verified CONFIG_LTO_CLANG / CONFIG_MODVERSIONS
+          # pre-command:
+          #   $(update_lto_symversions) \
+          # This wrapper is part of the protected LTO implementation and MUST
+          # survive the ARG_MAX backport.
+          #
+          # The upstream ARG_MAX patch also relies on the Kbuild helper
+          # real-prereqs = $(filter-out $(PHONY), $^). The current LG Kbuild.include
+          # does not define that helper, so V19 adds the exact upstream helper
+          # only when it is absent, then patches only the built-in.a rule.
+          #
+          # No qcacld/Wi-Fi feature, SukiSU, KPM, SUSFS, LTO, or AR flag is removed.
 
-          python3 - "$KBUILD_BUILD" <<'PY'
+          KBUILD_BUILD="scripts/Makefile.build"
+          KBUILD_INCLUDE="scripts/Kbuild.include"
+          test -f "$KBUILD_BUILD"
+          test -f "$KBUILD_INCLUDE"
+
+          python3 - "$KBUILD_BUILD" "$KBUILD_INCLUDE" <<'PY'
           from pathlib import Path
           import sys
 
-          p = Path(sys.argv[1])
-          lines = p.read_text().splitlines()
+          build = Path(sys.argv[1])
+          include = Path(sys.argv[2])
+          bs = build.read_text()
+          ins = include.read_text()
 
-          def cmd_blocks():
+          HELPER = "real-prereqs = $(filter-out $(PHONY), $^)"
+          if ins.count(HELPER) > 1:
+              raise SystemExit("[FAIL] V19: duplicate real-prereqs helper already exists.")
+          if HELPER not in ins:
+              marker = "basetarget = $(basename $(notdir $@))"
+              if marker not in ins:
+                  raise SystemExit("[FAIL] V19: Kbuild.include insertion anchor not found; refusing speculative edit.")
+              ins = ins.replace(marker, marker + "\n\n###\n# real prerequisites without phony targets\n" + HELPER, 1)
+              include.write_text(ins)
+              print("[FIXED] V19: added the upstream Kbuild real-prereqs helper exactly once.")
+          else:
+              print("[PASS] V19: upstream real-prereqs helper already exists exactly once.")
+
+          def blocks(text):
+              lines = text.splitlines()
               out = []
               i = 0
               while i < len(lines):
                   if lines[i].lstrip().startswith("cmd_ar_builtin") and "=" in lines[i]:
-                      start = i
-                      block = [lines[i]]
-                      while block[-1].rstrip().endswith("\\") and i + 1 < len(lines):
+                      b = [lines[i]]
+                      while b[-1].rstrip().endswith("\\") and i + 1 < len(lines):
                           i += 1
-                          block.append(lines[i])
-                      out.append("\n".join(block))
+                          b.append(lines[i])
+                      out.append("\n".join(b))
                   i += 1
               return out
 
-          blocks = cmd_blocks()
+          def flat(b):
+              return " ".join(x.strip() for x in b.splitlines())
 
-          def is_baseline(b):
-              flat = " ".join(x.strip() for x in b.splitlines())
-              return (
-                  "cmd_ar_builtin = rm -f $@;" in flat and
-                  "$(AR) rcSTP$(KBUILD_ARFLAGS) $@" in flat and
-                  "$(filter $(real-obj-y), $^)" in flat and
-                  "patsubst" not in flat and
-                  "xargs" not in flat
-              )
+          bs_blocks = blocks(bs)
 
-          def is_installed(b):
-              flat = " ".join(x.strip() for x in b.splitlines())
-              return (
-                  "cmd_ar_builtin = rm -f $@;" in flat and
-                  "$(patsubst $(obj)/%,%,$(real-prereqs))" in flat and
-                  "sed -E 's:([^ ]+):$(obj)/\\1:g'" in flat and
-                  "xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@" in flat
-              )
+          # Exact current LG protected baseline: LTO symversion update + rcSTP.
+          baseline = [
+              b for b in bs_blocks
+              if "$(update_lto_symversions)" in flat(b)
+              and "rm -f $@;" in flat(b)
+              and "$(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)" in flat(b)
+              and "patsubst" not in flat(b)
+              and "xargs" not in flat(b)
+          ]
 
-          base = [b for b in blocks if is_baseline(b)]
-          inst = [b for b in blocks if is_installed(b)]
+          installed = [
+              b for b in bs_blocks
+              if "$(update_lto_symversions)" in flat(b)
+              and "$(patsubst $(obj)/%,%,$(real-prereqs))" in flat(b)
+              and "sed -E 's:([^ ]+):$(obj)/\\1:g'" in flat(b)
+              and "xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@" in flat(b)
+          ]
 
-          if len(base) == 1 and len(inst) == 0:
-              old = base[0]
+          if len(baseline) == 1 and len(installed) == 0:
+              old = baseline[0]
+              lines = bs.splitlines()
+              old_lines = old.splitlines()
               start = None
-              end = None
-              for i, line in enumerate(lines):
-                  if "\n".join(lines[i:i+len(old.splitlines())]) == old:
-                      start, end = i, i + len(old.splitlines())
+              for i in range(len(lines) - len(old_lines) + 1):
+                  if lines[i:i+len(old_lines)] == old_lines:
+                      start = i
                       break
               if start is None:
-                  raise SystemExit("[FAIL] V18: baseline block was detected but could not be located for safe replacement.")
+                  raise SystemExit("[FAIL] V19: exact protected LTO-wrapped baseline detected but could not be located.")
+              end = start + len(old_lines)
               indent = lines[start][:len(lines[start]) - len(lines[start].lstrip())]
               replacement = [
-                  indent + '# To make this rule robust against "Argument list too long" error,',
-                  indent + '# remove $(obj)/ prefix, and restore it by a shell command.',
-                  indent + 'cmd_ar_builtin = rm -f $@; \\',
-                  indent + '\techo $(patsubst $(obj)/%,%,$(real-prereqs)) | \\',
+                  indent + "# To make this rule robust against \"Argument list too long\" error,",
+                  indent + "# remove $(obj)/ prefix, and restore it by a shell command.",
+                  indent + "cmd_ar_builtin = $(update_lto_symversions) \\",
+                  indent + "\techo $(patsubst $(obj)/%,%,$(real-prereqs)) | \\",
                   indent + "\tsed -E 's:([^ ]+):$(obj)/\\1:g' | \\",
-                  indent + '\txargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@',
+                  indent + "\txargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@",
               ]
               lines[start:end] = replacement
-              p.write_text("\n".join(lines) + "\n")
-              print("[FIXED] V18: upstream built-in.a ARG_MAX rule applied to exact CIP135 baseline.")
-          elif len(base) == 0 and len(inst) == 1:
-              print("[PASS] V18: upstream built-in.a ARG_MAX rule already installed exactly once.")
-          elif len(base) == 0 and len(inst) == 0:
-              raise SystemExit("[FAIL] V18: authoritative CIP135 baseline and installed rule both absent; refusing speculative edit.")
+              build.write_text("\n".join(lines) + "\n")
+              print("[FIXED] V19: applied upstream built-in.a ARG_MAX transport while preserving update_lto_symversions and rcSTP flags.")
+          elif len(baseline) == 0 and len(installed) == 1:
+              print("[PASS] V19: protected LTO-wrapped ARG_MAX rule is already installed exactly once.")
+          elif len(baseline) == 0 and len(installed) == 0:
+              raise SystemExit("[FAIL] V19: neither the exact protected LG LTO baseline nor the exact installed rule exists; refusing speculative edit.")
           else:
-              raise SystemExit(f"[FAIL] V18: ambiguous built-in.a source state baseline={len(base)} installed={len(inst)}; refusing mutation.")
+              raise SystemExit(f"[FAIL] V19: ambiguous built-in.a state baseline={len(baseline)} installed={len(installed)}; refusing mutation.")
 
-          final_lines = p.read_text().splitlines()
-          final_blocks = []
-          i = 0
-          while i < len(final_lines):
-              if final_lines[i].lstrip().startswith("cmd_ar_builtin") and "=" in final_lines[i]:
-                  block = [final_lines[i]]
-                  while block[-1].rstrip().endswith("\\") and i + 1 < len(final_lines):
-                      i += 1
-                      block.append(final_lines[i])
-                  final_blocks.append(" ".join(x.strip() for x in block))
-              i += 1
-
-          final_inst = [
+          final = build.read_text()
+          final_blocks = blocks(final)
+          final_installed = [
               b for b in final_blocks
-              if "$(patsubst $(obj)/%,%,$(real-prereqs))" in b
-              and "sed -E 's:([^ ]+):$(obj)/\\1:g'" in b
-              and "xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@" in b
+              if "$(update_lto_symversions)" in flat(b)
+              and "$(patsubst $(obj)/%,%,$(real-prereqs))" in flat(b)
+              and "sed -E 's:([^ ]+):$(obj)/\\1:g'" in flat(b)
+              and "xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@" in flat(b)
           ]
-          final_base = [
+          final_unsafe = [
               b for b in final_blocks
-              if "$(AR) rcSTP$(KBUILD_ARFLAGS) $@" in b
-              and "$(filter $(real-obj-y), $^)" in b
-              and "$(patsubst" not in b
-              and "xargs" not in b
+              if "$(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)" in flat(b)
+              and "$(update_lto_symversions)" in flat(b)
+              and "xargs" not in flat(b)
           ]
 
-          if len(final_inst) != 1:
-              raise SystemExit(f"[FAIL] V18: installed built-in.a rule count={len(final_inst)}; expected exactly 1.")
-          if len(final_base) != 0:
-              raise SystemExit(f"[FAIL] V18: original unsafe built-in.a rule remains count={len(final_base)}.")
-          print("[PASS] V18: whitespace-independent CIP135 contract verified.")
-          print("[PASS] V18: upstream ARG_MAX adapter installed exactly once; original rule absent.")
+          if len(final_installed) != 1:
+              raise SystemExit(f"[FAIL] V19: installed protected ARG_MAX rule count={len(final_installed)}; expected exactly 1.")
+          if len(final_unsafe) != 0:
+              raise SystemExit(f"[FAIL] V19: unsafe protected LTO-wrapped built-in.a rule remains count={len(final_unsafe)}.")
+          if final.count("$(update_lto_symversions)") < 1:
+              raise SystemExit("[FAIL] V19: update_lto_symversions disappeared; LTO protection was not preserved.")
+          if final.count("$(AR) rcSTP$(KBUILD_ARFLAGS)") != 1:
+              raise SystemExit("[FAIL] V19: rcSTP Kbuild archive command count is not exactly one.")
 
+          print("[PASS] V19: protected LTO wrapper retained.")
+          print("[PASS] V19: rcSTP$(KBUILD_ARFLAGS) retained exactly once.")
+          print("[PASS] V19: upstream patsubst/sed/xargs ARG_MAX transport installed exactly once.")
+          print("[PASS] V19: original unsafe expanded-prerequisite AR invocation is absent.")
+          print("[PASS] V19: no Wi-Fi/qcacld feature or compiler flag was removed.")
           PY
 
       - name: Setup 18 - SELinux 4.19 Preflight
@@ -3683,16 +3710,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V18-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V18-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V18-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3779,8 +3806,8 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V18"
-            echo "Previous workflow: V17"
+            echo "Workflow version: V19"
+            echo "Previous workflow: V18"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
             echo "workflow_ref=$GITHUB_WORKFLOW_REF"
@@ -3802,9 +3829,9 @@ jobs:
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v17-workflow-source/V18-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v17-workflow-source/V18-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V18-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v17-workflow-source/V19-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v17-workflow-source/V19-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V19-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V17 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
@@ -3812,8 +3839,8 @@ jobs:
 
           {
             echo "========== V17 ALL SETUP STATUS =========="
-            echo "Workflow version: V18"
-            echo "Previous workflow: V17"
+            echo "Workflow version: V19"
+            echo "Previous workflow: V18"
             echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18"
             echo "Setup numbers are independent from workflow version numbers."
             date -u
@@ -3828,165 +3855,138 @@ jobs:
             done
           } | tee diagnostic-artifact/V18-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V18-CURRENT-STATUS.md <<'REPORT'
-          # V17 Current Status
+          cat > diagnostic-artifact/V19-CURRENT-STATUS.md <<'REPORT'
+          # V19 Current Status
 
-          ## V16 actual result
-          V16 did NOT apply the researched built-in.a fix. Setup 17 stopped
-          before mutation because its guard expected the wrong source form.
-          Exact V16 failure:
-            [FAIL] V16: expected CIP135 built-in.a rule not found exactly once; refusing speculative edit.
-          Therefore V16 is a failed pre-build compatibility attempt, not a successful ARG_MAX fix.
+          ## V18 actual result
+          V18 did not reach Setup 27 or Setup 28. Setup 17 failed before any source mutation:
+            [FAIL] V18: authoritative CIP135 baseline and installed rule both absent; refusing speculative edit.
 
-          ## Root cause carried into V17
-          The actual pinned CIP v4.19.325-cip135 scripts/Makefile.build uses:
-            cmd_ar_builtin = rm -f $@; \
-              $(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)
-          This expands a long object list into one shell/AR command. V15 reached
-          drivers/staging/qcacld-3.0/built-in.a and failed with `/bin/sh: Argument list too long`.
+          The V18 diagnostic artifact therefore contains no V18 full-kernel build result. Setup 30 PASS was only a final configuration/artifact check; it did not produce a kernel image.
 
-          ## V17 fix
-          Setup 17 now matches that exact CIP135 baseline and applies the
-          upstream-proven patsubst/printf/xargs built-in.a rule. It refuses
-          speculative edits if the source differs or the contract is duplicated.
+          ## Verified underlying root cause
+          V15 reached the real qcacld-3.0 built-in.a archive command and failed with:
+            /bin/sh: Argument list too long
+          This is a Kbuild built-in.a command-length scalability failure, not a Wi-Fi/qcacld feature incompatibility.
 
-          ## Live console policy
-          Setup 28 full compiler/linker output is artifact-only. The GitHub
-          console shows concise file/activity heartbeat and final status.
+          ## V18 guard failure root cause
+          The actual checked-out LG kernel tree at HEAD 90f583e83d4b766222b96c84bd16af8583fbfd68 does not use the plain CIP135 built-in.a rule. It wraps the archive command with:
+            $(update_lto_symversions) \
+          before the rcSTP AR invocation.
+          V18's guard treated the plain CIP135 form as authoritative and therefore refused to mutate. That refusal was safe, but the V18 proposed replacement would also have been unsafe because it would have dropped the protected LTO wrapper.
 
-          ## Protected feature rule
-          V4 remains the protected baseline. No verified kernel feature is
-          removed or disabled for this fix.
+          ## V19 source-backed correction
+          V19 matches the actual protected LG LTO-wrapped rule, preserves:
+          - $(update_lto_symversions)
+          - rcSTP$(KBUILD_ARFLAGS)
+          - all qcacld/Wi-Fi objects and compiler flags
+          and applies only the upstream patsubst -> sed -> xargs argument-length transport.
 
-          ## Completion standard
-          Setup 17 and Setup 27 passing are not final kernel success. The
-          complete compiler/linker/image stages must pass.
+          The current LG scripts/Kbuild.include lacks the upstream `real-prereqs` helper required by that upstream rule. V19 adds only that exact helper:
+            real-prereqs = $(filter-out $(PHONY), $^)
+          before applying the archive-rule change.
 
-          ## Continuation
-          If V17 reaches another failure, preserve the exact diagnostic, research
-          the actual source/toolchain contract, fix only the proven cause, and
-          carry the complete A-to-Z history into V18.
+          ## Setup 17 / 27 / 28 contract
+          - Setup 17: mutation + exact source contract audit.
+          - Setup 27: read-only cumulative hotspot compile gate.
+          - Setup 28: authoritative full kernel build.
+          Setup 27/28 must not be considered successful unless their actual logs exist and contain PASS markers. V18 has no 27/28 execution evidence.
 
-          cat > diagnostic-artifact/PROJECT-CONTEXT-A-Z.md <<'REPORT'
-          # LG Velvet LM-G900/G900EMW Kernel Project — A→Z Portable Context
-
-          ## Purpose
-          This is the portable continuation record. A future session/account should be able to read this Diagnostics ZIP alone and understand the project, protected features, complete version history, verified failures/fixes, current state, and next step.
-
-          ## Device / source / targets
-          - Device: LG Velvet global LM-G900 / G900EMW
-          - Kernel tree: lge-qcom-dev/android_kernel_lge_sm7250
-          - Kernel baseline: Linux 4.19.325-cip135
-          - Android target: Android 16 / QPR2
-          - Lineage branch: lineage-23.2
-          - Protected hardware goals: fingerprint, vibration/haptics, Dual-SIM/RIL, audio, IMS, Wi-Fi Calling/VoWiFi.
-
-          ## Non-negotiable rule
-          Preserve every previously verified feature and fix. Never remove a feature merely to solve an error. Remove only a genuine duplicate/unnecessary item, or fix an actual incompatibility after source/upstream research and verification. Never guess APIs, structs, Kconfig values, flags, or compatibility values.
-
-          ## Protected feature baseline
-          SukiSU-Ultra, KPM, SUSFS, LTO, WALT, SchedTune, ZRAM, Baseband-Guard, Maphide/JIT-Zygote work, and previously verified device/vendor requirements remain protected.
+          ## Protected features
+          No verified feature is removed or disabled for this fix. SukiSU-Ultra, KPM, SUSFS, Full Clang LTO, Maphide/JIT-Zygote, Baseband-Guard, WALT/SchedTune/ZRAM work, and the required LG hardware/vendor compatibility goals remain protected.
 
           ## Version progression
-          V4 → V5 → V6 → V7 → V8 → V9 → V10 → V11 → V12 → V13 → V14 → V15 → V16 → V17 → V18
+          V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19
 
-          ## Version-by-version history
-          - V4: protected feature baseline.
-          - V5–V8: compatibility and cleanup progression; verified features/fixes preserved.
-          - V9: identified the Setup 17 ↔ Setup 27 contract loop.
-          - V10: consolidated compatibility ownership: Setup 17 mutates; Setup 27 verifies/compiles.
-          - V11: moved required source-derived fixes before Setup 27 to correct ordering.
-          - V12: corrected KernelSU built-in.a artifact verification.
-          - V13: corrected archive-member path verification.
-          - V14: corrected SELinux native hashtab vs AVTAB flex_array validator semantics.
-          - V15: reached the real full-kernel build; qcacld-3.0/built-in.a failed with `/bin/sh: Argument list too long`; MONITOR_PID produced a secondary cleanup error.
-          - V16: safely refused mutation because the guard expected the wrong CIP135 source form; ARG_MAX fix was not applied.
-          - V17: still refused mutation because its baseline regex incorrectly required matching indentation across the Make continuation; no source mutation occurred.
-          - V18: current attempt. Uses whitespace-independent, token/structure-specific verification and the exact upstream Kbuild ARG_MAX strategy while preserving CIP135's existing AR flags.
-
-          ## Root cause proven by V15
-          The 4.19 Kbuild `built-in.a` command expands a long list of full `$(obj)/...` paths into one AR command. In `drivers/staging/qcacld-3.0` the command exceeded the shell argument limit. This is a Kbuild scalability issue, not a Wi-Fi feature incompatibility.
-
-          ## Research-backed fix
-          Upstream Linux commit `cd968b97c49214e6557381bddddacbd0e0fb696e` fixes this exact problem by removing the repeated `$(obj)/` prefix with `patsubst`, restoring the prefix through a shell pipeline, and invoking AR through `xargs`. The upstream rationale changes command-length growth from O(D*N) toward O(D+N). V18 applies this mechanism to the exact CIP135 rule while preserving `rcSTP$(KBUILD_ARFLAGS)`.
-
-          ## V18 safety gates
-          - Exact pinned CIP135 baseline must be found exactly once, OR the exact installed upstream-style rule must already exist exactly once.
-          - Unexpected/ambiguous source state => hard fail, no speculative edit.
-          - New rule exactly once.
-          - Old unsafe rule absent.
-          - `patsubst` and `xargs` contracts exactly once.
-          - No qcacld/Wi-Fi feature removal.
-          - No SukiSU/KPM/SUSFS/LTO feature removal.
-
-          ## Live console policy
-          Setup 28 detailed compiler/build output is artifact-only. The console receives only concise build-file activity, elapsed time, artifact-diagnostic notices, and final status. Full output remains in `12-build-full.log`.
-
-          ## Portable Diagnostics requirement
-          Every V-version Diagnostics ZIP must include: this A→Z context, complete error/fix history, current status, current workflow, research sources, setup status, raw logs/evidence, and historical workflow snapshots where available. No ZIP is nested inside the Diagnostics artifact.
-
-          ## Current state
-          V18 is source/static verified only. Actual GitHub build success is not known until V18 runs. Setup 17 must pass first; then Setup 27 and Setup 28 must be allowed to reach the real build.
-
-          ## Next step
-          Run V18 and upload `V18-LG-Velvet-G900-Diagnostics`. The next investigation must use the actual V18 logs rather than assumptions.
+          ## Completion standard
+          V19 is not a claimed build success until Setup 17, Setup 27, Setup 28, and the final image/artifact checks actually pass in the same run.
           REPORT
 
-          cat > diagnostic-artifact/V18-ERROR-AND-FIX-HISTORY.md <<'REPORT'
-          # V18 Error and Fix History
+          cat > diagnostic-artifact/PROJECT-CONTEXT-A-Z.md <<'REPORT'
+          # LG Velvet LM-G900 / G900EMW Kernel Project — Portable A→Z Context
 
-          ## V15 — Primary build failure
-          - Stage: Setup 28 / real full-kernel build.
-          - Error: `/bin/sh: Argument list too long` while creating `drivers/staging/qcacld-3.0/built-in.a`.
-          - Root cause: legacy Kbuild built-in.a rule expanded repeated long object-directory prefixes into one AR command.
-          - Secondary error: MONITOR_PID cleanup obscured the primary failure.
-          - Result: primary root cause established; no feature removal justified.
+          ## Target
+          Device: LG Velvet global LM-G900 / G900EMW
+          Kernel: Linux 4.19.325-cip135
+          Android target: Android 16 / QPR2
+          Lineage branch: lineage-23.2
 
-          ## V16 — Safe refusal
-          - Stage: Setup 17.
-          - Error: guard did not recognize the actual CIP135 `cmd_ar_builtin` source form.
-          - Result: no mutation was performed. This was correctly treated as an unverified source state, but it meant the ARG_MAX fix remained unapplied.
+          ## Protected rules
+          Never remove a verified feature/fix to solve a new error. Never guess APIs, structs, Kconfig values, compiler flags, version boundaries, or output names. Use actual checked-out source, pinned CIP135 source, relevant upstream source, and actual compiler diagnostics.
 
-          ## V17 — Guard formatting defect
-          - Stage: Setup 17.
-          - Error: `authoritative CIP135 built-in.a baseline not found`.
-          - Root cause: regex required the second continuation line to use the same indentation as the first line.
-          - Result: no source mutation. The kernel tree was not changed by this failed guard.
+          Protected feature families include SukiSU-Ultra, KPM, SUSFS, Full Clang LTO, Maphide/JIT-Zygote, Baseband-Guard, WALT, SchedTune, ZRAM, and required fingerprint, vibration/haptics, Dual-SIM/RIL, audio, IMS, and Wi-Fi Calling/VoWiFi compatibility work.
 
-          ## V18 — Current fix
-          - Verification: match the CIP135 rule by semantic tokens and continuation structure while ignoring indentation.
-          - Mutation: apply only the upstream `patsubst -> sed -> xargs` built-in.a ARG_MAX rule, preserving CIP135 `rcSTP$(KBUILD_ARFLAGS)`.
-          - Safety: exact baseline/installed counts, old-rule absence, new-rule count, patsubst count, and xargs count.
-          - Build result: pending actual V18 run.
+          ## History V4 -> V19
+          V4: protected baseline; researched Linux 4.19 SELinux hashtab/AVTAB boundary.
+          V5: duplicate/redundant CI cleanup without feature removal.
+          V6: actual-source filename-transition API mismatch identified.
+          V7: duplicate textual add_filename_trans and workflow-source capture corrected.
+          V8: Setup 17 repair-script ordering/NameError defect fixed.
+          V9: Setup 17 <-> Setup 27 contract loop identified.
+          V10: one source-derived contract established; Setup 17 mutates, Setup 27 verifies/compiles.
+          V11: cumulative ordering/build progression.
+          V12: actual KernelSU built-in.a reached; verifier expected the wrong archive filename form.
+          V13: exact llvm-ar archive-member paths verified.
+          V14: SELinux hashtab vs AVTAB flex_array validator corrected.
+          V15: real full build reached qcacld-3.0/built-in.a and failed with Argument list too long.
+          V16: safe refusal; wrong source guard, no mutation.
+          V17: safe refusal; indentation-sensitive guard, no mutation.
+          V18: safe refusal; plain CIP135 guard did not recognize the actual LG LTO-wrapped rule.
+          V19: source-derived correction preserves the LTO wrapper and applies the upstream ARG_MAX transport.
 
-          ## Research sources
-          - CIP v4.19.325-cip135 `scripts/Makefile.build`
-          - Linux Kbuild commit `cd968b97c49214e6557381bddddacbd0e0fb696e`
-          - Linux Kernel Mailing List v7 patch discussion and testing evidence
-          - Kbuild Makefiles documentation
+          ## ARG_MAX root cause
+          The qcacld-3.0 built-in.a rule expands many long `$(obj)/...` paths into a single AR command. The command exceeds the shell argument limit. Upstream Linux solved this by stripping the repeated object-directory prefix with `patsubst`, restoring it in a shell pipeline with sed, and feeding AR through xargs. This changes command-length scaling from O(D*N) toward O(D+N).
+
+          ## Actual LG source boundary
+          The checked-out LG tree adds `$(update_lto_symversions) \` before the rcSTP archive command. That wrapper is part of the LTO implementation and must remain intact.
+          The checked-out `scripts/Kbuild.include` lacks `real-prereqs`; V19 adds the upstream helper exactly once because the upstream ARG_MAX rule depends on it.
+
+          ## Verification contract
+          Setup 17 must prove the exact protected baseline or exact installed rule and fail closed on ambiguity.
+          Setup 27 is read-only and must compile the cumulative hotspots.
+          Setup 28 is the real full-kernel build. Static verification alone is never final build proof.
+
+          ## Diagnostics contract
+          Every V-version diagnostics artifact must contain the A→Z context, complete error/fix history, current workflow, research references, setup logs, build output, source/commit/config state, current verification status, and next steps. No ZIP inside the diagnostics directory; GitHub uploads the directory as the single artifact ZIP.
           REPORT
+          cat > diagnostic-artifact/V19-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          # Complete Error and Fix History V4 -> V19
 
-          cat > diagnostic-artifact/WORKFLOW-HISTORY-INDEX.md <<'REPORT'
-          # Workflow History Index
-          V4: protected feature baseline
-          V5: duplicate/redundant CI cleanup
-          V6: researched 4.19 compatibility corrections
-          V7: source-integrity/workflow capture corrections
-          V8: Setup 17 repair correction
-          V9: Setup 17/27 contract mismatch discovery
-          V10: single source-derived compatibility contract
-          V11: cumulative build progression/order correction
-          V12: actual KernelSU built-in.a archive verification
-          V13: exact archive-member verification
-          V14: SELinux hashtab/AVTAB validator correction
-          V15: real qcacld-3.0 built-in.a ARG_MAX failure identified
-          V16: safe refusal due to wrong CIP135 source guard
-          V17: safe refusal due to indentation-sensitive guard
-          V18: whitespace-independent CIP135 contract verification + upstream ARG_MAX fix
+          V4 — Protected Linux 4.19 SELinux compatibility baseline.
+          V5 — CI cleanup without removing verified features.
+          V6 — Actual-source filename-transition API mismatch identified.
+          V7 — Duplicate add_filename_trans handling and workflow-source capture corrected.
+          V8 — Setup 17 repair-script ordering/NameError defect fixed.
+          V9 — Setup 17/27 contract loop identified.
+          V10 — One source-derived compatibility contract established.
+          V11 — Cumulative ordering/build progression continued.
+          V12 — KernelSU built-in.a reached; verifier expected wrong archive member path.
+          V13 — Archive-member verification corrected to actual llvm-ar output.
+          V14 — SELinux hashtab/AVTAB validator corrected.
+          V15 — Real full build reached qcacld-3.0 built-in.a and failed with `/bin/sh: Argument list too long`.
+          V16 — Safe refusal because the guard expected the wrong CIP135 source form; no mutation.
+          V17 — Safe refusal because the guard was indentation-sensitive; no mutation.
+          V18 — Safe refusal because the actual LG tree wraps cmd_ar_builtin with `$(update_lto_symversions)`; no mutation.
+          V19 — Corrected source contract: preserve the LTO wrapper, provide the upstream `real-prereqs` helper if absent, and apply only the upstream patsubst/sed/xargs ARG_MAX transport.
+
+          ## V15 primary root cause
+          Kbuild's built-in.a archive command expanded a long list of full object paths into one AR invocation. The failure is command-length scalability, not a qcacld/Wi-Fi incompatibility.
+
+          ## V18 root cause
+          The V18 guard was keyed to the plain pinned CIP135 rule. The actual project tree has a protected LTO wrapper around the same AR operation. The V18 guard correctly refused to mutate unexpected source, preventing accidental removal of LTO behavior.
+
+          ## V19 exact fix
+          Preserve `$(update_lto_symversions)` and `rcSTP$(KBUILD_ARFLAGS)`.
+          Add only the upstream `real-prereqs = $(filter-out $(PHONY), $^)` helper when missing.
+          Replace only the long prerequisite expansion with:
+          `echo $(patsubst $(obj)/%,%,$(real-prereqs)) | sed -E 's:([^ ]+):$(obj)/\1:g' | xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@`
+
+          ## Verification status
+          V19 workflow creation is source/research verified. Actual Setup 17/27/28 results are pending the next GitHub run.
           REPORT
 
           cat > diagnostic-artifact/RESEARCH-SOURCES.md <<'REPORT'
-          # Research Sources - V18
+          # Research Sources - V19
 
           ## Pinned CIP135 source
           https://gitlab.com/cip-project/cip-kernel/linux-cip/-/raw/v4.19.325-cip135/scripts/Makefile.build
@@ -4033,22 +4033,22 @@ jobs:
           fi
 
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
-          # V18 Diagnostic Package Manifest
+          # V19 Diagnostic Package Manifest
 
-          Workflow version: V18
-          Previous workflow: V17
-          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V18
+          Workflow version: V19
+          Previous workflow: V18
+          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19
 
           Current source:
-          - V18-CURRENT-WORKFLOW.yml
+          - V19-CURRENT-WORKFLOW.yml
 
           Current status/history:
-          - V18-CURRENT-STATUS.md
-          - V18-ERROR-AND-FIX-HISTORY.md
+          - V19-CURRENT-STATUS.md
+          - V19-ERROR-AND-FIX-HISTORY.md
           - PROJECT-CONTEXT-A-Z.md
           - WORKFLOW-HISTORY-INDEX.md
           - RESEARCH-SOURCES.md
-          - V18-ALL-SETUP-STATUS.log
+          - V19-ALL-SETUP-STATUS.log
 
           Raw runner evidence:
           - ci-logs/
@@ -4062,48 +4062,48 @@ jobs:
           - project-history/
 
           Artifact naming:
-          V18-LG-Velvet-G900-Diagnostics
+          V19-LG-Velvet-G900-Diagnostics
 
           ZIP rule:
           This directory is uploaded directly to GitHub Actions. GitHub creates the
           single downloadable ZIP. No diagnostic ZIP is created inside it.
 
-          echo "[PASS] V17 diagnostic directory staged. No diagnostic ZIP is created here."
-      - name: Artifact - V18 Diagnostics
+          echo "[PASS] V19 diagnostic directory staged. No diagnostic ZIP is created here."
+      - name: Artifact - V19 Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V18-LG-Velvet-G900-Diagnostics
+          name: V19-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V18 AnyKernel3 OrangeFox Flashable
+      - name: Artifact - V19 AnyKernel3 OrangeFox Flashable
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V17-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V18-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          name: V19-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          path: artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V18 Kernel Only ZIP
+      - name: Artifact - V19 Kernel Only ZIP
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V17-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V18-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V19-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V19-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V18 Raw Kernel Image
+      - name: Artifact - V19 Raw Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V17-LG-Velvet-G900-Raw-Kernel
+          name: V19-LG-Velvet-G900-Raw-Kernel
           path: arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 14
