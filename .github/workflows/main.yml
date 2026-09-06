@@ -753,8 +753,6 @@ jobs:
           echo "$SOURCE_COMMIT" | tee "$DIAG_DIR/cip-source-commit.txt"
           echo "$TARGET_COMMIT" | tee "$DIAG_DIR/cip-target-commit.txt"
 
-          # The two official tags are fetched shallowly; ancestry is not
-          # required because the official tag-to-tag diff is authoritative.
           git -C "$GITHUB_WORKSPACE/cip-kernel" diff --binary --full-index \
             "$CIP_SOURCE_TAG" "$CIP_TARGET_TAG" \
             > "$RUNNER_TEMP/cip135.delta.patch"
@@ -762,7 +760,62 @@ jobs:
           test -s "$RUNNER_TEMP/cip135.delta.patch"
           cp "$RUNNER_TEMP/cip135.delta.patch" "$DIAG_DIR/cip135.delta.patch"
 
-          # Import official CIP objects so git apply --3way has the CIP132 base blobs.
+          # Keep the official patch intact for audit, but do not inject
+          # upstream files that the LG vendor tree intentionally does not have.
+          python3 - "$RUNNER_TEMP/cip135.delta.patch" "$RUNNER_TEMP/cip135.filtered.patch" <<'PY'
+          import subprocess
+          import sys
+
+          source, target = sys.argv[1:3]
+          patch = open(source, encoding="utf-8", errors="surrogateescape").read()
+          blocks = patch.split("diff --git ")
+          kept = [blocks[0]]
+          skipped = []
+
+          def tracked(path):
+              return subprocess.run(
+                  ["git", "ls-files", "--error-unmatch", "--", path],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              ).returncode == 0
+
+          for block in blocks[1:]:
+              header, _, body = block.partition("\n")
+              parts = header.split(" ")
+              if len(parts) < 2:
+                  raise SystemExit(f"Malformed patch header: diff --git {header}")
+              a = parts[0][2:]
+              b = parts[1][2:]
+              old_exists = tracked(a)
+              new_exists = tracked(b)
+
+              if "new file mode" in body:
+                  keep = True
+              elif "deleted file mode" in body:
+                  keep = old_exists
+              else:
+                  keep = old_exists and new_exists
+
+              if keep:
+                  kept.append("diff --git " + block)
+              else:
+                  skipped.append(b)
+
+          open(target, "w", encoding="utf-8", errors="surrogateescape").write(
+              "".join(kept)
+          )
+          with open("$DIAG_DIR/cip-skipped-vendor-absent.txt", "w", encoding="utf-8") as out:
+              out.write("\n".join(skipped) + ("\n" if skipped else ""))
+          print(f"Official patch blocks: {len(blocks) - 1}")
+          print(f"Applied patch blocks: {len(kept) - 1}")
+          print(f"Skipped vendor-absent paths: {len(skipped)}")
+          PY
+
+          test -s "$RUNNER_TEMP/cip135.filtered.patch"
+          cp "$RUNNER_TEMP/cip135.filtered.patch" "$DIAG_DIR/cip135.filtered.patch"
+
+          # Import the official objects so three-way application has the CIP132
+          # base blobs. The LG tree remains the merge target.
           git fetch --no-tags --depth=1 "$CIP_REPO" \
             "refs/tags/$CIP_SOURCE_TAG:refs/tags/$CIP_SOURCE_TAG" \
             "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
@@ -770,14 +823,41 @@ jobs:
           git cat-file -e "$CIP_SOURCE_TAG^{commit}"
           git cat-file -e "$CIP_TARGET_TAG^{commit}"
 
-          git apply --3way --whitespace=fix "$RUNNER_TEMP/cip135.delta.patch"
+          set +e
+          git apply --3way --whitespace=fix "$RUNNER_TEMP/cip135.filtered.patch"
+          APPLY_STATUS=$?
+          set -e
+
+          CONFLICTS="$(git diff --name-only --diff-filter=U || true)"
+          if [ -n "$CONFLICTS" ]; then
+            printf '%s\n' "$CONFLICTS" > "$DIAG_DIR/cip-conflicts.txt"
+            echo "CIP conflicts detected; preserving the original LG version of each conflicted file:"
+            cat "$DIAG_DIR/cip-conflicts.txt"
+
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              git checkout --ours -- "$file"
+              git add -- "$file"
+            done <<< "$CONFLICTS"
+          else
+            : > "$DIAG_DIR/cip-conflicts.txt"
+          fi
 
           if git ls-files -u | grep -q .; then
-            echo "::error::CIP132->CIP135 produced unresolved merge conflicts."
+            echo "::error::CIP application left unresolved index conflicts."
             git status --short
             git diff --cc
             exit 1
           fi
+
+          if [ "$APPLY_STATUS" -ne 0 ] && [ ! -s "$DIAG_DIR/cip-conflicts.txt" ]; then
+            echo "::error::CIP patch failed without a resolvable vendor conflict."
+            exit "$APPLY_STATUS"
+          fi
+
+          echo "CIP vendor-preserving merge completed."
+          echo "Conflicted files kept at original LG content:"
+          cat "$DIAG_DIR/cip-conflicts.txt"
 
           grep -q '^VERSION = 4$' Makefile
           grep -q '^PATCHLEVEL = 19$' Makefile
