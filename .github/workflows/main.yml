@@ -2624,7 +2624,12 @@ jobs:
           check grep -qF 'selinux_state.ss->status_lock' drivers/kernelsu/feature/selinux_hide.c
           check grep -qF 'selinux_state.ss->status_page' drivers/kernelsu/feature/selinux_hide.c
           check grep -qF 'fake_ss.map = selinux_state.ss->map;' drivers/kernelsu/feature/selinux_hide.c
-          check grep -qF 'fake_ss.sidtab = selinux_state.ss->sidtab;' drivers/kernelsu/feature/selinux_hide.c
+          # Linux 4.19 compatibility: fake_ss must use the clean backup sidtab,
+          # because SukiSU/KernelSU's backup policy is independently populated
+          # by policydb_load_isids(). Do not alias the live modified sidtab.
+          check grep -qF 'fake_ss.sidtab = backup_sepolicy->sidtab;' drivers/kernelsu/feature/selinux_hide.c
+          check grep -qF 'backup_sepolicy->sidtab = kzalloc' drivers/kernelsu/selinux/rules.c
+          check grep -qF 'policydb_load_isids(&backup_sepolicy->policydb, backup_sepolicy->sidtab)' drivers/kernelsu/selinux/rules.c
           check grep -qF 'fake_ss.latest_granting = selinux_state.ss->latest_granting;' drivers/kernelsu/feature/selinux_hide.c
           if grep -qE 'selinux_state\.(status_lock|status_page)|fake_state\.policy[[:space:]]*=' drivers/kernelsu/feature/selinux_hide.c; then
             echo "[FAIL] Modern direct SELinux state fields remain after the 4.19 port." | tee -a "$REPORT"
