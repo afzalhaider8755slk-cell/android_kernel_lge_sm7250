@@ -3108,6 +3108,90 @@ jobs:
           print("[PASS] Setup 28: all archive members and KBUILD_ARFLAGS remain preserved.")
           PY
 
+          echo
+          echo "=========================================="
+          echo "SETUP 28 PRE-BUILD ARGMAX HARD GATE"
+          echo "=========================================="
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import subprocess
+          import tempfile
+
+          makefile = Path("scripts/Makefile.build")
+          source = makefile.read_text(errors="replace")
+
+          rule = '$(if $(real-prereqs), printf "$(obj)/%s " $(patsubst $(obj)/%,%,$(real-prereqs)) | xargs) \\\n$(AR) cDPrST $@'
+          if rule not in source:
+              raise SystemExit("[FAIL] Setup 28 pre-build gate: upstream ARG_MAX-safe archive rule is not present.")
+
+          legacy = '$(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)'
+          if legacy in source:
+              raise SystemExit("[FAIL] Setup 28 pre-build gate: unbounded built-in.a archive argv is still present.")
+
+          if subprocess.run(["sh", "-c", "command -v xargs >/dev/null 2>&1"]).returncode != 0:
+              raise SystemExit("[FAIL] Setup 28 pre-build gate: xargs is unavailable.")
+
+          with tempfile.TemporaryDirectory(prefix="setup28-argmax-gate-") as td:
+              root = Path(td)
+              log = root / "ar.log"
+              fake_ar = root / "fake-ar"
+              fake_ar.write_text(
+                  "#!/bin/sh\n"
+                  "printf '%s\\n' \"$#\" >> \"$AR_TEST_LOG\"\n"
+              )
+              fake_ar.chmod(0o755)
+
+              member_count = 30000
+              members = [
+                  f"drivers/staging/qcacld-3.0/{i:05d}/"
+                  + ("x" * 96)
+                  + ".o"
+                  for i in range(member_count)
+              ]
+              payload = " ".join(members) + " "
+
+              env = os.environ.copy()
+              env["AR_TEST_LOG"] = str(log)
+              result = subprocess.run(
+                  ["xargs", str(fake_ar), "cDPrST", "drivers/staging/qcacld-3.0/built-in.a"],
+                  input=payload,
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  env=env,
+                  check=False,
+              )
+
+              if result.returncode != 0:
+                  raise SystemExit(
+                      "[FAIL] Setup 28 pre-build gate: xargs batching failed: "
+                      + result.stderr.strip()
+                  )
+
+              counts = [int(line) for line in log.read_text().splitlines() if line.strip()]
+              received = sum(max(count - 2, 0) for count in counts)
+              if len(counts) < 2:
+                  raise SystemExit(
+                      f"[FAIL] Setup 28 pre-build gate: synthetic archive used only {len(counts)} invocation(s); "
+                      "ARG_MAX batching was not exercised."
+                  )
+              if received != member_count:
+                  raise SystemExit(
+                      f"[FAIL] Setup 28 pre-build gate: synthetic archive lost members "
+                      f"({received}/{member_count})."
+                  )
+
+              arg_max = os.sysconf("SC_ARG_MAX")
+              print(
+                  f"[PASS] Setup 28 pre-build gate: xargs split {member_count} synthetic members "
+                  f"across {len(counts)} archive invocation(s); ARG_MAX={arg_max}."
+              )
+
+          print("[PASS] Setup 28 pre-build gate: legacy unbounded archive command is absent.")
+          print("[PASS] Setup 28 pre-build gate: archive member preservation and batching verified before make.")
+          PY
+
           # The current Setup 28 starts no monitor process. Keep cleanup
           # conditional so a build failure cannot be replaced by an unrelated
           # set -u MONITOR_PID error.
