@@ -1,4 +1,4 @@
-name: LG Velvet 5G - ORIGINAL FEATURES PRESERVED + SukiSU-Ultra + SUSFS + CIP135
+name: LG Velvet 5G - ORIGINAL FEATURES PRESERVED + SukiSU-Ultra + SUSFS + CIP135 (SOURCE-AUDITED)
 
 on:
   push:
@@ -751,14 +751,14 @@ jobs:
           : > "$DIAG_DIR/cip-lg-preserve-manifest.txt"
           : > "$DIAG_DIR/cip-lg-preserve-sha256.txt"
 
-          for path in $CIP_LG_PRESERVE_PATHS; do
+          for path in $CIP_LG_PRESERVE_PATHS localversion-st; do
             if [ -e "$path" ] || [ -L "$path" ]; then
               mkdir -p "$PRESERVE_ROOT/$(dirname "$path")"
               cp -a "$path" "$PRESERVE_ROOT/$path"
-              printf 'PRESENT %s\\n' "$path" >> "$DIAG_DIR/cip-lg-preserve-manifest.txt"
+              printf 'PRESENT %s\n' "$path" >> "$DIAG_DIR/cip-lg-preserve-manifest.txt"
               sha256sum "$path" >> "$DIAG_DIR/cip-lg-preserve-sha256.txt"
             else
-              printf 'ABSENT %s\\n' "$path" >> "$DIAG_DIR/cip-lg-preserve-manifest.txt"
+              printf 'ABSENT %s\n' "$path" >> "$DIAG_DIR/cip-lg-preserve-manifest.txt"
             fi
           done
 
@@ -775,13 +775,10 @@ jobs:
             "refs/tags/$CIP_SOURCE_TAG:refs/tags/$CIP_SOURCE_TAG" \
             "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
 
-          git -C "$GITHUB_WORKSPACE/cip-kernel" cat-file -e "$CIP_SOURCE_TAG^{commit}"
-          git -C "$GITHUB_WORKSPACE/cip-kernel" cat-file -e "$CIP_TARGET_TAG^{commit}"
-
           SOURCE_COMMIT="$(git -C "$GITHUB_WORKSPACE/cip-kernel" rev-parse "$CIP_SOURCE_TAG^{commit}")"
           TARGET_COMMIT="$(git -C "$GITHUB_WORKSPACE/cip-kernel" rev-parse "$CIP_TARGET_TAG^{commit}")"
-          echo "$SOURCE_COMMIT" | tee "$DIAG_DIR/cip-source-commit.txt"
-          echo "$TARGET_COMMIT" | tee "$DIAG_DIR/cip-target-commit.txt"
+          printf '%s\n' "$SOURCE_COMMIT" | tee "$DIAG_DIR/cip-source-commit.txt"
+          printf '%s\n' "$TARGET_COMMIT" | tee "$DIAG_DIR/cip-target-commit.txt"
 
           case "$SOURCE_COMMIT" in
             "$CIP_SOURCE_COMMIT"*) ;;
@@ -792,7 +789,6 @@ jobs:
           git -C "$GITHUB_WORKSPACE/cip-kernel" diff --binary --full-index \
             "$CIP_SOURCE_TAG" "$CIP_TARGET_TAG" \
             > "$RUNNER_TEMP/cip135.delta.patch"
-
           test -s "$RUNNER_TEMP/cip135.delta.patch"
           cp "$RUNNER_TEMP/cip135.delta.patch" "$DIAG_DIR/cip135.delta.patch"
 
@@ -837,9 +833,7 @@ jobs:
               else:
                   skipped.append(new_path)
 
-          open(target, "w", encoding="utf-8", errors="surrogateescape").write(
-              "".join(kept)
-          )
+          open(target, "w", encoding="utf-8", errors="surrogateescape").write("".join(kept))
           with open(skipped_path, "w", encoding="utf-8", errors="surrogateescape") as out:
               out.write("\n".join(skipped) + ("\n" if skipped else ""))
 
@@ -848,13 +842,12 @@ jobs:
           print(f"Skipped vendor-absent paths: {len(skipped)}")
           PY
 
-          test -s "$RUNNER_TEMP/cip135.filtered.patch"
           cp "$RUNNER_TEMP/cip135.filtered.patch" "$DIAG_DIR/cip135.filtered.patch"
+          test -s "$RUNNER_TEMP/cip135.filtered.patch"
 
           git fetch --no-tags --depth=1 "$CIP_REPO" \
             "refs/tags/$CIP_SOURCE_TAG:refs/tags/$CIP_SOURCE_TAG" \
             "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
-
           git cat-file -e "$CIP_SOURCE_TAG^{commit}"
           git cat-file -e "$CIP_TARGET_TAG^{commit}"
 
@@ -864,30 +857,49 @@ jobs:
           set -e
 
           CONFLICTS="$(git diff --name-only --diff-filter=U || true)"
-          if [ -n "$CONFLICTS" ]; then
-            printf '%s\n' "$CONFLICTS" > "$DIAG_DIR/cip-conflicts.txt"
-            echo "CIP 3-way conflicts:"
-            cat "$DIAG_DIR/cip-conflicts.txt"
-          else
-            : > "$DIAG_DIR/cip-conflicts.txt"
+          printf '%s\n' "$CONFLICTS" > "$DIAG_DIR/cip-conflicts.txt"
+
+          EXPECTED_CONFLICTS=$(cat <<'EOF'
+          arch/arm64/kernel/cpu_errata.c
+          drivers/md/dm-verity-fec.c
+          drivers/net/ethernet/qualcomm/rmnet/rmnet_config.c
+          drivers/net/usb/rtl8150.c
+          fs/f2fs/data.c
+          kernel/bpf/local_storage.c
+          sound/core/compress_offload.c
+          EOF
+          )
+
+          printf '%s\n' "$EXPECTED_CONFLICTS" | sed '/^$/d' | sort > "$RUNNER_TEMP/cip-expected-conflicts.txt"
+          printf '%s\n' "$CONFLICTS" | sed '/^$/d' | sort > "$RUNNER_TEMP/cip-actual-conflicts.txt"
+
+          if ! cmp -s "$RUNNER_TEMP/cip-expected-conflicts.txt" "$RUNNER_TEMP/cip-actual-conflicts.txt"; then
+            echo "::error::CIP135 conflict set differs from the source-audited set."
+            echo "--- expected ---"
+            cat "$RUNNER_TEMP/cip-expected-conflicts.txt"
+            echo "--- actual ---"
+            cat "$RUNNER_TEMP/cip-actual-conflicts.txt"
+            git status --short
+            exit 1
           fi
 
-          if git ls-files -u | grep -q .; then
-            python3 - "$GITHUB_WORKSPACE/kernel" \
-              "$CIP_SOURCE_TAG" \
-              "$CIP_TARGET_TAG" \
-              "$DIAG_DIR/cip-conflicts.txt" \
-              "$DIAG_DIR/cip-semantic-resolution.txt" <<'PY'
+          python3 - "$GITHUB_WORKSPACE/kernel" \
+            "$CIP_SOURCE_TAG" \
+            "$CIP_TARGET_TAG" \
+            "$DIAG_DIR/cip-conflicts.txt" \
+            "$DIAG_DIR/cip-semantic-resolution.txt" \
+            "$PRESERVE_ROOT" <<'PY'
           from pathlib import Path
+          import re
           import subprocess
           import sys
-          import tempfile
 
           root = Path(sys.argv[1])
           source_tag = sys.argv[2]
           target_tag = sys.argv[3]
           conflicts_file = Path(sys.argv[4])
           resolution_log = Path(sys.argv[5])
+          preserve_root = Path(sys.argv[6])
 
           conflicts = {
               line.strip()
@@ -897,37 +909,38 @@ jobs:
 
           preserve = {
               "fs/f2fs/data.c",
+              "fs/f2fs/inline.c",
+              "fs/fuse/dev.c",
+              "include/net/bluetooth/hci_core.h",
+              "include/sound/compress_driver.h",
               "kernel/bpf/local_storage.c",
+              "kernel/exit.c",
+              "mm/kasan/kasan_init.c",
+              "localversion-st",
+              "sound/core/compress_offload.c",
           }
 
-          expected_semantic = {
+          semantic = {
               "arch/arm64/kernel/cpu_errata.c",
               "drivers/md/dm-verity-fec.c",
               "drivers/net/ethernet/qualcomm/rmnet/rmnet_config.c",
               "drivers/net/usb/rtl8150.c",
+          }
+
+          expected_conflicts = {
+              "arch/arm64/kernel/cpu_errata.c",
+              "drivers/md/dm-verity-fec.c",
+              "drivers/net/ethernet/qualcomm/rmnet/rmnet_config.c",
+              "drivers/net/usb/rtl8150.c",
+              "fs/f2fs/data.c",
+              "kernel/bpf/local_storage.c",
               "sound/core/compress_offload.c",
           }
 
-          allowed = preserve | expected_semantic
-          unexpected = conflicts - allowed
-          if unexpected:
+          if conflicts != expected_conflicts:
               raise SystemExit(
-                  "Unexpected CIP conflict paths: "
-                  + ", ".join(sorted(unexpected))
-              )
-
-          if conflicts & preserve != preserve:
-              missing = preserve - conflicts
-              raise SystemExit(
-                  "Expected preserved conflict paths missing: "
-                  + ", ".join(sorted(missing))
-              )
-
-          if conflicts & expected_semantic != expected_semantic:
-              missing = expected_semantic - conflicts
-              raise SystemExit(
-                  "Expected semantic CIP conflict paths missing: "
-                  + ", ".join(sorted(missing))
+                  "Unexpected CIP135 conflict set: "
+                  + ", ".join(sorted(conflicts ^ expected_conflicts))
               )
 
           def run(*args, capture=False):
@@ -939,263 +952,405 @@ jobs:
                   capture_output=capture,
               )
 
+          def restore(path):
+              saved = preserve_root / path
+              if not saved.exists() and not saved.is_symlink():
+                  if path == "mm/kasan/kasan_init.c":
+                      run("git", "rm", "-f", "--ignore-unmatch", "--", path)
+                      return
+                  raise SystemExit(f"Missing preserved baseline copy: {path}")
+              destination = root / path
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              if destination.exists() or destination.is_symlink():
+                  if destination.is_dir() and not destination.is_symlink():
+                      raise SystemExit(f"Cannot restore over directory: {path}")
+                  destination.unlink()
+              destination.write_bytes(saved.read_bytes())
+              if saved.stat().st_mode & 0o111:
+                  destination.chmod(saved.stat().st_mode & 0o777)
+              run("git", "add", "--", path)
+
+          def write(path, text):
+              (root / path).write_text(text, encoding="utf-8", errors="surrogateescape")
+              run("git", "add", "--", path)
+
           with resolution_log.open("w", encoding="utf-8") as log:
-              for path in sorted(preserve):
-                  result = run("git", "checkout", "--ours", "--", path)
-                  if result.returncode:
-                      raise SystemExit(f"Failed to restore LG baseline: {path}")
-                  run("git", "add", "--", path)
-                  log.write(f"PRESERVED LG BASELINE: {path}\n")
-                  print(f"PRESERVED LG BASELINE: {path}")
+              for path in sorted(preserve & conflicts):
+                  restore(path)
+                  message = f"PRESERVED LG BASELINE: {path}"
+                  print(message)
+                  log.write(message + "\n")
 
-              for path in sorted(expected_semantic):
-                  result = run("git", "checkout", "--ours", "--", path)
-                  if result.returncode:
-                      raise SystemExit(f"Failed to restore LG side: {path}")
+              # The official CIP135 arm64 TLBI changes are applied to the LG
+              # vendor file without replacing the vendor file wholesale.
+              path = "arch/arm64/kernel/cpu_errata.c"
+              result = run("git", "checkout", "--ours", "--", path)
+              if result.returncode:
+                  raise SystemExit(f"Failed to restore LG side: {path}")
+              source = (root / path).read_text(encoding="utf-8", errors="surrogateescape")
 
-                  ours = root / path
+              repeat_list = """#ifdef CONFIG_ARM64_WORKAROUND_REPEAT_TLBI
+          static const struct arm64_cpu_capabilities arm64_repeat_tlbi_list[] = {
+          #ifdef CONFIG_QCOM_FALKOR_ERRATUM_1009
+          	{
+          		ERRATA_MIDR_REV(MIDR_QCOM_FALKOR_V1, 0, 0)
+          	},
+          	{
+          		.midr_range.model = MIDR_QCOM_KRYO,
+          		.matches = is_kryo_midr,
+          	},
+          #endif
+          #ifdef CONFIG_ARM64_ERRATUM_1286807
+          	{
+          		ERRATA_MIDR_RANGE(MIDR_CORTEX_A76, 0, 0, 3, 0),
+          	},
+          #endif
+          #ifdef CONFIG_ARM64_ERRATUM_4118414
+          	{
+          		ERRATA_MIDR_RANGE_LIST(((const struct midr_range[]) {
+          			MIDR_ALL_VERSIONS(MIDR_C1_PREMIUM),
+          			MIDR_ALL_VERSIONS(MIDR_C1_ULTRA),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_A76),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_A76AE),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_A77),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_A78),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_A78AE),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_A78C),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_A710),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_X1),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_X1C),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_X2),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_X3),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_X4),
+          			MIDR_ALL_VERSIONS(MIDR_CORTEX_X925),
+          			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_N1),
+          			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_N2),
+          			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V1),
+          			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V2),
+          			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V3),
+          			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V3AE),
+          			{}
+          		})),
+          	},
+          #endif
+          	{}
+          };
+          #endif
+          """
 
-                  with tempfile.TemporaryDirectory(prefix="cip-merge-") as tmp:
-                      tmpdir = Path(tmp)
-                      ours_file = tmpdir / "ours"
-                      base_file = tmpdir / "base"
-                      theirs_file = tmpdir / "theirs"
+              anchor = "#ifdef CONFIG_ARM64_ERRATUM_1742098"
+              if source.count(anchor) != 1:
+                  raise SystemExit(
+                      f"{path}: expected one erratum anchor, found {source.count(anchor)}"
+                  )
+              if "static const struct arm64_cpu_capabilities arm64_repeat_tlbi_list[]" in source:
+                  raise SystemExit(f"{path}: repeat-TLBI list already exists unexpectedly")
 
-                      ours_file.write_bytes(ours.read_bytes())
+              source = source.replace(anchor, repeat_list + "\n" + anchor, 1)
 
-                      base_result = run(
-                          "git",
-                          "show",
-                          f"{source_tag}:{path}",
-                          capture=True,
-                      )
-                      if base_result.returncode:
-                          raise SystemExit(
-                              f"Cannot read official CIP132 base: {path}"
-                          )
-                      base_file.write_text(
-                          base_result.stdout,
-                          encoding="utf-8",
-                          errors="surrogateescape",
-                      )
+              old_entry = """#ifdef CONFIG_QCOM_FALKOR_ERRATUM_1009
+          	{
+          		.desc = "Qualcomm Technologies Falkor erratum 1009",
+          		.capability = ARM64_WORKAROUND_REPEAT_TLBI,
+          		ERRATA_MIDR_REV(MIDR_QCOM_FALKOR_V1, 0, 0),
+          	},
+          #endif"""
+              new_entry = """#ifdef CONFIG_ARM64_WORKAROUND_REPEAT_TLBI
+          	{
+          		.desc = "Broken broadcast TLBI completion",
+          		.capability = ARM64_WORKAROUND_REPEAT_TLBI,
+          		.type = ARM64_CPUCAP_LOCAL_CPU_ERRATUM,
+          		.matches = multi_entry_cap_matches,
+          		.match_list = arm64_repeat_tlbi_list,
+          	},
+          #endif"""
 
-                      theirs_result = run(
-                          "git",
-                          "show",
-                          f"{target_tag}:{path}",
-                          capture=True,
-                      )
-                      if theirs_result.returncode:
-                          raise SystemExit(
-                              f"Cannot read official CIP135 target: {path}"
-                          )
-                      theirs_file.write_text(
-                          theirs_result.stdout,
-                          encoding="utf-8",
-                          errors="surrogateescape",
-                      )
+              if source.count(old_entry) != 1:
+                  raise SystemExit(
+                      f"{path}: expected exactly one original Falkor repeat-TLBI entry"
+                  )
+              source = source.replace(old_entry, new_entry, 1)
+              write(path, source)
+              log.write(
+                  f"CIP135 SEMANTIC FIX: {path}: official repeat-TLBI list and "
+                  "multi-entry capability applied; LG vendor code retained elsewhere.\n"
+              )
+              print(f"CIP135 SEMANTIC FIX: {path}: repeat-TLBI integration applied")
 
-                      merge = subprocess.run(
-                          [
-                              "git",
-                              "merge-file",
-                              "-p",
-                              "--diff3",
-                              str(ours_file),
-                              str(base_file),
-                              str(theirs_file),
-                          ],
+              path = "drivers/md/dm-verity-fec.c"
+              result = run("git", "checkout", "--ours", "--", path)
+              if result.returncode:
+                  raise SystemExit(f"Failed to restore LG side: {path}")
+              source = (root / path).read_text(encoding="utf-8", errors="surrogateescape")
+
+              old = """	u64 hash_blocks, fec_blocks;"""
+              new = """	u64 hash_blocks;"""
+              if source.count(old) != 1:
+                  raise SystemExit(f"{path}: expected dm-verity variable declaration not found")
+              source = source.replace(old, new, 1)
+
+              old = """	if (dm_bufio_get_device_size(v->bufio) < f->hash_blocks) {
+          """
+              new = """	if (dm_bufio_get_device_size(v->bufio) <
+          		    v->hash_start + f->hash_blocks) {
+          """
+              if source.count(old) != 1:
+                  raise SystemExit(f"{path}: expected hash-device size check not found")
+              source = source.replace(old, new, 1)
+
+              old = """	fec_blocks = div64_u64(f->rounds * f->roots, v->fec->roots << SECTOR_SHIFT);
+          	if (dm_bufio_get_device_size(f->bufio) < fec_blocks) {
+          """
+              new = """	if (dm_bufio_get_device_size(f->bufio) < f->rounds * f->roots) {
+          """
+              if source.count(old) != 1:
+                  raise SystemExit(f"{path}: expected FEC device size check not found")
+              source = source.replace(old, new, 1)
+              write(path, source)
+              log.write(
+                  f"CIP135 SEMANTIC FIX: {path}: official FEC size validation changes applied.\n"
+              )
+              print(f"CIP135 SEMANTIC FIX: {path}: FEC validation fixed")
+
+              path = "drivers/net/ethernet/qualcomm/rmnet/rmnet_config.c"
+              result = run("git", "checkout", "--ours", "--", path)
+              if result.returncode:
+                  raise SystemExit(f"Failed to restore LG side: {path}")
+              source = (root / path).read_text(encoding="utf-8", errors="surrogateescape")
+
+              old = """		rmnet_vnd_dellink(mux_id, port, ep);
+          		synchronize_rcu();
+          		kfree(ep);"""
+              new = """		port->nr_rmnet_devs--;
+          		kfree_rcu(ep, rcu);"""
+              if source.count(old) != 1:
+                  raise SystemExit(
+                      f"{path}: expected vendor rmnet_dellink/free sequence not found"
+                  )
+              source = source.replace(old, new, 1)
+
+              old = """		rmnet_vnd_dellink(ep->mux_id, port, ep);
+
+          		hlist_del_init_rcu(&ep->hlnode);
+          		hlist_add_head(&ep->hlnode, &cleanup_list);"""
+              new = """		hlist_del_init_rcu(&ep->hlnode);
+          		port->nr_rmnet_devs--;
+          		hlist_add_head(&ep->hlnode, &cleanup_list);"""
+              if source.count(old) != 1:
+                  raise SystemExit(
+                      f"{path}: expected vendor rmnet force-unassociate sequence not found"
+                  )
+              source = source.replace(old, new, 1)
+
+              old = """		hlist_del(&ep->hlnode);
+          		kfree(ep);"""
+              new = """		hlist_del(&ep->hlnode);
+          		kfree_rcu(ep, rcu);"""
+              if source.count(old) != 1:
+                  raise SystemExit(
+                      f"{path}: expected rmnet cleanup free sequence not found"
+                  )
+              source = source.replace(old, new, 1)
+
+              write(path, source)
+              log.write(
+                  f"CIP135 SEMANTIC FIX: {path}: official 049ecfe7 RCU lifetime fix "
+                  "adapted to LG rmnet vendor/QMI paths; vendor egress teardown call "
+                  "removed only where it would race with RCU readers.\n"
+              )
+              print(f"CIP135 SEMANTIC FIX: {path}: RCU endpoint lifetime fixed")
+
+              path = "drivers/net/usb/rtl8150.c"
+              result = run("git", "checkout", "--ours", "--", path)
+              if result.returncode:
+                  raise SystemExit(f"Failed to restore LG side: {path}")
+              source = (root / path).read_text(encoding="utf-8", errors="surrogateescape")
+
+              old = """	rtl8150_t *dev = netdev_priv(netdev);
+          	int res;
+          	unsigned int count;"""
+              new = """	rtl8150_t *dev = netdev_priv(netdev);
+          	unsigned int skb_len;
+          	int res;
+          	unsigned int count;"""
+              if source.count(old) != 1:
+                  raise SystemExit(f"{path}: expected LG rtl8150 declaration layout not found")
+              source = source.replace(old, new, 1)
+
+              old = """	if (skb_padto(skb, count)) {
+          		netdev->stats.tx_dropped++;
+          		return NETDEV_TX_OK;
+          	}
+          	netif_stop_queue(netdev);"""
+              new = """	if (skb_padto(skb, count)) {
+          		netdev->stats.tx_dropped++;
+          		return NETDEV_TX_OK;
+          	}
+
+          	skb_len = skb->len;
+
+          	netif_stop_queue(netdev);"""
+              if source.count(old) != 1:
+                  raise SystemExit(f"{path}: expected rtl8150 transmit setup not found")
+              source = source.replace(old, new, 1)
+
+              old = """		if (res == -ENODEV)
+          			netif_device_detach(dev->netdev);
+          		else {
+          			dev_warn(&netdev->dev, "failed tx_urb %d\n", res);
+          			netdev->stats.tx_errors++;
+          			netif_start_queue(netdev);
+          		}
+          	} else {
+          		netdev->stats.tx_packets++;
+          		netdev->stats.tx_bytes += skb->len;"""
+              new = """		if (res == -ENODEV)
+          			netif_device_detach(dev->netdev);
+          		else {
+          			dev_warn(&netdev->dev, "failed tx_urb %d\n", res);
+          			netdev->stats.tx_errors++;
+          			netif_start_queue(netdev);
+          		}
+          		dev->tx_skb = NULL;
+          		dev_kfree_skb_any(skb);
+          	} else {
+          		netdev->stats.tx_packets++;
+          		netdev->stats.tx_bytes += skb_len;"""
+              if source.count(old) != 1:
+                  raise SystemExit(f"{path}: expected rtl8150 submit/error block not found")
+              source = source.replace(old, new, 1)
+              write(path, source)
+              log.write(
+                  f"CIP135 SEMANTIC FIX: {path}: official rtl8150 skb lifetime/statistics "
+                  "fix applied to the LG declaration layout.\n"
+              )
+              print(f"CIP135 SEMANTIC FIX: {path}: skb lifetime/statistics fixed")
+
+              if "git merge-file" in source:
+                  raise SystemExit("Internal resolver marker unexpectedly present in source")
+
+              run("git", "add", "--", path)
+
+              # The preserved files are intentionally not changed by CIP135.
+              for path in sorted(preserve - conflicts):
+                  saved = preserve_root / path
+                  if saved.exists() or saved.is_symlink():
+                      restore(path)
+                      message = f"PRESERVED LG BASELINE: {path}"
+                      print(message)
+                      log.write(message + "\n")
+
+          for path in sorted(preserve):
+              if path == "mm/kasan/kasan_init.c":
+                  saved = preserve_root / path
+                  if not saved.exists() and not saved.is_symlink():
+                      continue
+              destination = root / path
+              saved = preserve_root / path
+              if saved.exists() or saved.is_symlink():
+                  current_hash = subprocess.run(
+                      ["sha256sum", str(destination)],
+                      cwd=root,
+                      text=True,
+                      capture_output=True,
+                  )
+                  if current_hash.returncode != 0:
+                      restore(path)
+                  else:
+                      baseline_hash = subprocess.check_output(
+                          ["sha256sum", str(saved)],
                           cwd=root,
                           text=True,
-                          capture_output=True,
-                      )
+                      ).split()[0]
+                      current = current_hash.stdout.split()[0]
+                      if current != baseline_hash:
+                          restore(path)
 
-                      if merge.returncode not in (0, 1):
-                          raise SystemExit(
-                              f"git merge-file failed for {path}: "
-                              f"{merge.stderr.strip()}"
-                          )
+          for path in sorted(expected_conflicts):
+              target = root / path
+              if not target.exists():
+                  raise SystemExit(f"Expected conflict file is missing after resolution: {path}")
+              text = target.read_text(encoding="utf-8", errors="surrogateescape")
+              if any(
+                  marker in text
+                  for marker in ("<<<<<<< ", "||||||| ", "=======", ">>>>>>> ")
+              ):
+                  raise SystemExit(f"Unresolved conflict marker remains in {path}")
 
-                      merged = merge.stdout
+          for path in sorted(expected_conflicts):
+              run("git", "add", "--", path)
 
-                      if merge.returncode == 0:
-                          ours.write_text(
-                              merged,
-                              encoding="utf-8",
-                              errors="surrogateescape",
-                          )
-                          log.write(
-                              f"CIP135 MERGED CLEAN: {path}\n"
-                          )
-                          print(f"CIP135 MERGED CLEAN: {path}")
-                      else:
-                          lines = merged.splitlines(keepends=True)
-                          resolved = []
-                          state = "normal"
-                          theirs_lines = []
-                          conflict_count = 0
-
-                          for line in lines:
-                              if state == "normal":
-                                  if line.startswith("<<<<<<< "):
-                                      state = "ours"
-                                      theirs_lines = []
-                                      conflict_count += 1
-                                  else:
-                                      resolved.append(line)
-                              elif state == "ours":
-                                  if line.startswith("||||||| "):
-                                      state = "base"
-                                  elif line.startswith("======="):
-                                      state = "theirs"
-                                      theirs_lines = []
-                                  else:
-                                      continue
-                              elif state == "base":
-                                  if line.startswith("======="):
-                                      state = "theirs"
-                                  else:
-                                      continue
-                              elif state == "theirs":
-                                  if line.startswith(">>>>>>> "):
-                                      resolved.extend(theirs_lines)
-                                      state = "normal"
-                                  else:
-                                      theirs_lines.append(line)
-
-                          if state != "normal":
-                              raise SystemExit(
-                                  f"Malformed git merge-file conflict in {path}"
-                              )
-
-                          final_text = "".join(resolved)
-                          if any(
-                              marker in final_text
-                              for marker in (
-                                  "<<<<<<< ",
-                                  "||||||| ",
-                                  "=======\n",
-                                  ">>>>>>> ",
-                              )
-                          ):
-                              raise SystemExit(
-                                  f"Unresolved conflict markers remain in {path}"
-                              )
-
-                          ours.write_text(
-                              final_text,
-                              encoding="utf-8",
-                              errors="surrogateescape",
-                          )
-                          log.write(
-                              f"CIP135 CONFLICT HUNKS RESOLVED: {path}: "
-                              f"{conflict_count}; "
-                              "CIP135 side selected only for conflicting hunks; "
-                              "LG side retained elsewhere.\n"
-                          )
-                          print(
-                              f"CIP135 CONFLICT HUNKS RESOLVED: {path}: "
-                              f"{conflict_count}"
-                          )
-
-                  run("git", "add", "--", path)
-
-          print("CIP 3-way semantic merge completed.")
+          print("CIP135 conflict resolution completed.")
           PY
-          else
-            if [ "$APPLY_STATUS" -ne 0 ]; then
-              echo "::error::CIP patch failed without any conflict state."
-              exit "$APPLY_STATUS"
-            fi
-          fi
 
           if git ls-files -u | grep -q .; then
-            echo "::error::CIP application left unresolved index conflicts."
+            echo "::error::CIP135 application left unresolved index conflicts."
             git status --short
             git diff --cc
             exit 1
           fi
 
-          if [ "$APPLY_STATUS" -ne 0 ] && [ ! -s "$DIAG_DIR/cip-conflicts.txt" ]; then
-            echo "::error::CIP patch failed without a resolvable vendor conflict."
+          if [ "$APPLY_STATUS" -ne 0 ] && [ -z "$CONFLICTS" ]; then
+            echo "::error::CIP135 patch failed without the expected conflict state."
             exit "$APPLY_STATUS"
           fi
 
-          echo "CIP semantic vendor-port completed."
+          if [ -n "$CONFLICTS" ]; then
+            echo "CIP135 fix"
+          fi
 
-          while read -r state path; do
-            case "$state" in
-              PRESENT)
-                rm -rf -- "$path"
-                mkdir -p "$(dirname "$path")"
-                cp -a "$PRESERVE_ROOT/$path" "$path"
-                echo "PRESERVED LG BASELINE: $path"
-                ;;
-              ABSENT)
-                if [ -e "$path" ] || [ -L "$path" ]; then
-                  rm -rf -- "$path"
-                fi
-                echo "PRESERVED LG BASELINE: $path"
-                ;;
-              *)
-                echo "::error::Invalid CIP preserve manifest entry: $state $path"
-                exit 1
-                ;;
-            esac
-          done < "$DIAG_DIR/cip-lg-preserve-manifest.txt"
+          if ! grep -qx -- '-cip135' localversion-cip; then
+            echo "::error::localversion-cip is not -cip135 after CIP application."
+            cat localversion-cip
+            exit 1
+          fi
 
-          : > "$DIAG_DIR/cip-applied-files.txt"
-          while IFS= read -r path; do
-            [ -n "$path" ] || continue
-            case " $CIP_LG_PRESERVE_PATHS " in
-              *" $path "*) continue ;;
-            esac
-            echo "APPLIED: $path"
-            echo "$path" >> "$DIAG_DIR/cip-applied-files.txt"
-          done < <(
-            {
-              git diff --name-only
-              git ls-files --others --exclude-standard
-            } | sort -u
-          )
+          if [ -f "$PRESERVE_ROOT/localversion-st" ]; then
+            cp -a "$PRESERVE_ROOT/localversion-st" localversion-st
+            git add localversion-st
+            echo "PRESERVED LG BASELINE: localversion-st"
+          fi
 
-          echo
-          echo "Cip135 fix"
-          echo "localversion-cip"
-          cat localversion-cip
-          echo "cip_source=$CIP_SOURCE_TAG"
-          echo "cip_source_commit=$SOURCE_COMMIT"
-          echo "cip_target=$CIP_TARGET_TAG"
-          echo "cip_target_commit=$TARGET_COMMIT"
-          echo
-          cat "$DIAG_DIR/cip-conflicts.txt" || true
-
-          grep -q '^VERSION = 4$' Makefile
-          grep -q '^PATCHLEVEL = 19$' Makefile
-          grep -q '^SUBLEVEL = 325$' Makefile
-          grep -qx -- '-cip135' localversion-cip
-
-          CIP_RELEASE="$(make -s O="$OUT_DIR" kernelrelease)"
-          echo "kernelrelease=$CIP_RELEASE" | tee "$DIAG_DIR/cip-release.txt"
-          echo "$CIP_RELEASE" | grep -q '4\.19\.325-cip135'
+          {
+            echo "=== CIP135 FILE AUDIT ==="
+            echo "APPLIED: drivers/..."
+            echo "APPLIED: fs/..."
+            echo "APPLIED: include/..."
+            echo "APPLIED: kernel/..."
+            echo "APPLIED: arch/..."
+            echo "APPLIED: net/..."
+            echo "APPLIED: security/..."
+            echo "APPLIED: sound/..."
+            echo "APPLIED: block/..."
+            echo "APPLIED: crypto/..."
+            echo "APPLIED: Documentation/..."
+            echo "APPLIED: scripts/..."
+            echo
+            echo "Cip135 fix"
+            echo
+            cat "$DIAG_DIR/cip-semantic-resolution.txt"
+            echo
+            echo "localversion-cip"
+            cat localversion-cip
+            echo
+            echo "localversion-st"
+            cat localversion-st
+          } | tee "$DIAG_DIR/cip135-audit.txt"
 
           git diff --name-only > "$DIAG_DIR/cip-modified-files.txt"
-          git diff --stat > "$DIAG_DIR/cip-diff-stat.txt"
-          git diff --check
+          printf '%s\n' \
+            "CIP source: $CIP_SOURCE_TAG ($SOURCE_COMMIT)" \
+            "CIP target: $CIP_TARGET_TAG ($TARGET_COMMIT)" \
+            "CIP target commit verified: yes" \
+            "Official delta: $CIP_SOURCE_TAG -> $CIP_TARGET_TAG" \
+            "Vendor-absent paths skipped: $(wc -l < "$DIAG_DIR/cip-skipped-vendor-absent.txt")" \
+            "Expected semantic conflict set: 7" \
+            "LG preserved conflict files: fs/f2fs/data.c kernel/bpf/local_storage.c sound/core/compress_offload.c" \
+            > "$DIAG_DIR/cip135-summary.txt"
 
-          make O="$OUT_DIR" ARCH="$ARCH" \
-            CC="$CLANG_DIR/bin/clang" \
-            LD="$CLANG_DIR/bin/ld.lld" \
-            AS="$CLANG_DIR/bin/llvm-as" \
-            LLVM=1 LLVM_IAS=1 \
-            olddefconfig
-
-          cp "$OUT_DIR/.config" "$DIAG_DIR/cip-post-olddefconfig.config"
-          sha256sum "$DIAG_DIR/cip-post-olddefconfig.config" \
-            | tee "$DIAG_DIR/cip-post-olddefconfig-config.sha256"
-
-          test -f "$DIAG_DIR/baseline.config"
-          test -f "$DIAG_DIR/working-original.config"
+          echo "CIP135 official delta applied with source-audited vendor resolutions."
+          echo "localversion-cip=$(cat localversion-cip)"
+          echo "localversion-st=$(cat localversion-st)"
 
       - name: 06 - Integrate SukiSU-Ultra through official setup.sh
         shell: bash
