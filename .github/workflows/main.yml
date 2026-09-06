@@ -9,7 +9,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V28
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V29
 
 on:
   workflow_dispatch:
@@ -2931,29 +2931,27 @@ jobs:
         shell: bash
         run: |
           SETUP_NO="27"
-          SETUP_NAME="Setup 27 - Cumulative 4.19 Hotspot Compile Gate (Parallel)"
+          SETUP_NAME="Setup 27 - Cumulative 4.19 Hotspot Compile Gate (Targeted)"
           SETUP_LOG="$DIAG_DIR/27-setup-27-cumulative-4-19-hotspot-compile-gate-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
           exec 3>&1
-          exec > >(tee -a "$SETUP_LOG") 2>&1
-          echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          exec >>"$SETUP_LOG" 2>&1
           export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
-          trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
+          set +x
+          trap 'rc=$?; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
-          LOG="$DIAG_DIR/12B-targeted-419-compile-smoke.log"
-          : > "$LOG"
-          exec > >(tee -a "$LOG") 2>&1
 
-          echo "========== V12 CUMULATIVE 4.19 HOTSPOT COMPILE GATE =========="
-          echo "[RULE] No feature removal. No compiler-error skipping."
-          echo "[RULE] Setup 27 is verification/compile-only. It performs NO source mutation."
-          echo "[RULE] All compatibility fixes must already exist in the cumulative tree."
+          echo "========== $SETUP_NAME =========="
+          echo "[RULE] No feature removal. No compiler-error skipping. No source mutation."
+          echo "[RULE] Setup 27 is a targeted cumulative hotspot compile gate."
 
           SEPOLICY_C="drivers/kernelsu/selinux/sepolicy.c"
+          KSU_BUILD_DIR="drivers/kernelsu"
+          SEPOLICY_O="$KSU_BUILD_DIR/selinux/sepolicy.o"
+          KSU_KBUILD="$KSU_BUILD_DIR/Kbuild"
           test -s "$SEPOLICY_C"
+          test -f "$KSU_KBUILD"
 
           echo "----- CURRENT CUMULATIVE sepolicy.c -----"
           sed -n '50,115p' "$SEPOLICY_C"
@@ -3077,118 +3075,87 @@ jobs:
           print("[PASS] V10: researched functions occur exactly once.")
           PY
 
-          echo "----- REAL KBUILD GATES (NO AUTOFIX) -----"
-          # Research correction: Linux 4.19 Kbuild's supported directory
-          # traversal is "make -f scripts/Makefile.build obj=<dir>".  The
-          # SukiSU Kbuild declares kernelsu.o as a composite object and
-          # sepolicy.o as one of kernelsu-objs.  Calling the top-level Make
-          # target "drivers/kernelsu/kernelsu.o" directly bypasses that
-          # directory traversal and, in this tree, returns "No rule to make
-          # target".  Do not alter the Kbuild/source; invoke the same
-          # scripts/Makefile.build path used by normal kernel recursion.
-          KSU_BUILD_DIR="drivers/kernelsu"
-          SEPOLICY_O="$KSU_BUILD_DIR/selinux/sepolicy.o"
-          KSU_COMPOSITE_O="$KSU_BUILD_DIR/kernelsu.o"
-          KSU_KBUILD="$KSU_BUILD_DIR/Kbuild"
-          test -f "$KSU_KBUILD"
-          test -L "$KSU_BUILD_DIR" || test -d "$KSU_BUILD_DIR"
-          : > "$RUNNER_TEMP/12B-sepolicy-make-command.log"
-
-          # Linux 4.19's top-level Makefile documents the directory target form
-          # '%/: ... $(MAKE) $(build)=$(build-dir)'.  Calling 'make dir/' is
-          # therefore the native single-directory Kbuild entry point.  Do not
-          # bypass it with a direct scripts/Makefile.build invocation: that
-          # invocation produced the '/drivers/kernelsu/Makefile' lookup in V3.
-          if ! make -n V=1 "$KSU_BUILD_DIR/" > "$RUNNER_TEMP/12B-sepolicy-make-command.log" 2>&1; then
-            echo "[FAIL] V10: Linux 4.19 native directory target $KSU_BUILD_DIR/ failed."
-            echo "[FAIL] This is a real Kbuild failure; no compiler error is being skipped."
-            cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
-            exit 2
-          fi
-          test -s "$RUNNER_TEMP/12B-sepolicy-make-command.log"
-          grep -F "$SEPOLICY_O" "$RUNNER_TEMP/12B-sepolicy-make-command.log" >/dev/null
-          cat "$RUNNER_TEMP/12B-sepolicy-make-command.log"
-
-          # V28 ROOT-CAUSE FIX: the previous run entered the native KernelSU
-          # directory target without -j. That made Setup 27 effectively serial;
-          # the GitHub run spent ~1h46m in this gate and the 120-minute job timeout
-          # cancelled the job before Setup 28 could start. Keep the exact same
-          # native Kbuild target and source contract, but use the runner's workers.
+          echo "----- TARGETED 4.19 KBUILD HOTSPOT GATE -----"
+          # V29 root-cause correction:
+          # The previous Setup 27 invoked `make drivers/kernelsu/`, which is a
+          # directory-level Kbuild and can rebuild the entire KernelSU subtree.
+          # That made the supposedly targeted gate run for ~1h46m and the GitHub
+          # job was cancelled before Setup 28. Compile the audited objects only.
+          # Setup 28 remains the authoritative full-kernel + built-in.a gate.
           KSU_JOBS="${KSU_JOBS:-$(nproc)}"
           test "$KSU_JOBS" -ge 2
-          echo "[INFO] Setup 27 parallel Kbuild jobs: $KSU_JOBS"
 
-          # V28 LIVE ACTIVITY POLICY: detailed compiler output stays in the
-          # diagnostic artifact log. The GitHub console receives only the latest
-          # file/target being built; no compiler log is streamed to the console.
-          : > "$RUNNER_TEMP/12B-kernelsu-build-status"
-          set +e
-          ( make -j"$KSU_JOBS" V=1 "$KSU_BUILD_DIR/" >"$LOG" 2>&1; printf '%s\n' "$?" > "$RUNNER_TEMP/12B-kernelsu-build-status" ) &
+          HOTSPOT_OBJECTS=(
+            drivers/kernelsu/kpm/compact.o
+            drivers/kernelsu/kpm/kpm.o
+            drivers/kernelsu/core/init.o
+            drivers/kernelsu/selinux/selinux.o
+            drivers/kernelsu/selinux/rules.o
+            drivers/kernelsu/selinux/sepolicy.o
+            drivers/kernelsu/supercall/dispatch.o
+            drivers/kernelsu/supercall/perm.o
+            drivers/kernelsu/supercall/supercall.o
+            drivers/kernelsu/feature/selinux_hide.o
+            drivers/kernelsu/feature/cpu_spoof.o
+          )
+          printf '%s\n' "${HOTSPOT_OBJECTS[@]}" > "$RUNNER_TEMP/v29-hotspot-object-list.txt"
+          : > "$DIAG_DIR/12B-targeted-419-compile-smoke.log"
+          : > "$RUNNER_TEMP/v29-hotspot-build-status"
+
+          # Validate the native directory target without executing it. This is a
+          # cheap Kbuild contract check; it is not the compile gate itself.
+          : > "$RUNNER_TEMP/v29-kbuild-dryrun.log"
+          if ! make -n V=1 "$KSU_BUILD_DIR/" > "$RUNNER_TEMP/v29-kbuild-dryrun.log" 2>&1; then
+            echo "[FAIL] Linux 4.19 native KernelSU directory target dry-run failed." >&3
+            tail -80 "$RUNNER_TEMP/v29-kbuild-dryrun.log" >&3 || true
+            exit 2
+          fi
+          test -s "$RUNNER_TEMP/v29-kbuild-dryrun.log"
+
+          # All compiler stdout/stderr goes to the diagnostics artifact only.
+          # The console gets only the current source/object filename.
+          BUILD_LOG="$DIAG_DIR/12B-targeted-419-compile-smoke.log"
+          (
+            timeout --foreground 45m stdbuf -oL -eL \
+              make -j"$KSU_JOBS" V=1 "${HOTSPOT_OBJECTS[@]}" \
+              >"$BUILD_LOG" 2>&1
+            printf '%s\n' "$?" > "$RUNNER_TEMP/v29-hotspot-build-status"
+          ) &
           KSU_BUILD_PID=$!
-          set -e
 
           LAST_LIVE_FILE=""
           while kill -0 "$KSU_BUILD_PID" 2>/dev/null; do
-            sleep 10
-            CURRENT_FILE="$(grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)([[:space:]]|\[)' "$LOG" | tail -1 | grep -oE '([[:alnum:]_./+@-]+)\.(c|cc|cpp|S|o|a|dtb|dtbo)' | tail -1 || true)"
+            sleep 5
+            CURRENT_FILE="$(tail -n 500 "$BUILD_LOG" 2>/dev/null \
+              | grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)([[:space:]]|\[)' \
+              | grep -oE '([[:alnum:]_./+@-]+)\.(c|cc|cpp|S|o|a|dtb|dtbo)' \
+              | tail -1 || true)"
             if [ -n "$CURRENT_FILE" ] && [ "$CURRENT_FILE" != "$LAST_LIVE_FILE" ]; then
-              printf '[V28 LIVE] %s\n' "$CURRENT_FILE" >&3
+              printf '%s\n' "$CURRENT_FILE" >&3
               LAST_LIVE_FILE="$CURRENT_FILE"
             fi
           done
           wait "$KSU_BUILD_PID" || true
-          KSU_BUILD_STATUS="$(cat "$RUNNER_TEMP/12B-kernelsu-build-status" 2>/dev/null || echo 1)"
+          KSU_BUILD_STATUS="$(cat "$RUNNER_TEMP/v29-hotspot-build-status" 2>/dev/null || echo 1)"
+
           if [ "$KSU_BUILD_STATUS" -ne 0 ]; then
-            echo "[FAIL] Setup 27 KernelSU Kbuild exited with status $KSU_BUILD_STATUS. Full compiler output is in the artifact log."
+            echo "[FAIL] Setup 27 targeted KernelSU compilation failed with status $KSU_BUILD_STATUS." >&3
+            echo "[FAIL] Full compiler output is in 12B-targeted-419-compile-smoke.log." >&3
+            tail -120 "$BUILD_LOG" >> "$SETUP_LOG" || true
             exit "$KSU_BUILD_STATUS"
           fi
-          test -s "$SEPOLICY_O"
 
-          # V13 KBUILD CONTRACT:
-          # The actual V12 runner proved that Kbuild creates
-          # drivers/kernelsu/built-in.a and that llvm-ar lists members using
-          # their complete relative paths from the kernel source root.
-          # This is a verification-only correction: match the exact names
-          # actually emitted by Kbuild; do not invent a shortened path.
-          KSU_ARCHIVE="$KSU_BUILD_DIR/built-in.a"
-          test -s "$KSU_ARCHIVE"
-
-          llvm-ar t "$KSU_ARCHIVE" > "$RUNNER_TEMP/12B-kernelsu-archive-members.log"
-          for required_member in \
-            drivers/kernelsu/kpm/compact.o \
-            drivers/kernelsu/kpm/kpm.o \
-            drivers/kernelsu/core/init.o \
-            drivers/kernelsu/selinux/selinux.o \
-            drivers/kernelsu/selinux/rules.o \
-            drivers/kernelsu/selinux/sepolicy.o \
-            drivers/kernelsu/supercall/dispatch.o \
-            drivers/kernelsu/supercall/perm.o \
-            drivers/kernelsu/supercall/supercall.o \
-            drivers/kernelsu/feature/selinux_hide.o \
-            drivers/kernelsu/feature/cpu_spoof.o
-          do
-            grep -Fx "$required_member" "$RUNNER_TEMP/12B-kernelsu-archive-members.log" >/dev/null || {
-              echo "[FAIL] current archive contract: required KernelSU archive member is missing: $required_member"
-              cat "$RUNNER_TEMP/12B-kernelsu-archive-members.log"
+          for obj in "${HOTSPOT_OBJECTS[@]}"; do
+            test -s "$obj" || {
+              echo "[FAIL] Required compiled object is missing: $obj" >> "$SETUP_LOG"
               exit 1
             }
           done
 
-          echo "[PASS] current archive contract: actual Kbuild output is drivers/kernelsu/built-in.a."
-          echo "[PASS] current archive contract: required KernelSU objects are present in built-in.a."
-          echo "[PASS] current archive contract: member paths match Kbuild's actual emitted paths."
-          echo "[PASS] current archive contract: no standalone kernelsu.o is assumed."
+          echo "[PASS] Setup 27 targeted cumulative KernelSU hotspot compilation completed." >> "$SETUP_LOG"
+          echo "[PASS] Setup 27 did not execute a second full drivers/kernelsu/ directory build." >> "$SETUP_LOG"
+          echo "[PASS] Full built-in.a membership will be verified after Setup 28 full kernel build." >> "$SETUP_LOG"
 
-          make -j2 V=1 drivers/usb/gadget/function/f_hid.o
-          test -s drivers/kernelsu/feature/selinux_hide.o
-          test -s drivers/kernelsu/feature/cpu_spoof.o
-
-          sha256sum "$SEPOLICY_C" | tee "$RUNNER_TEMP/12B-sepolicy.sha256"
-          cp -f "$SEPOLICY_C" "$RUNNER_TEMP/12B-sepolicy.c.locked"
-
-          echo "[PASS] V10: targeted cumulative hotspot objects compiled."
-          echo "[PASS] V12: Setup 27 applied no fix and performed no source mutation."
-          echo "=============================================================="
       - name: Setup 28 - Full Kernel Build HARD GATE
         shell: bash
         run: |
@@ -3200,8 +3167,6 @@ jobs:
           exec 3>&1
           exec >>"$SETUP_LOG" 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Detailed output is captured in $SETUP_LOG" >&3
-          echo "[LIVE] Console shows build-file activity only." >&3
           export PS4="+ [SETUP-${SETUP_NO}] "
           set +x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -3593,11 +3558,6 @@ jobs:
           echo "CURRENT ERROR POLICY: NO SPECULATIVE XFRM FIX"
           echo "The latest reported failure is in net/xfrm, but no exact compiler diagnostic is embedded here."
           echo "Therefore this workflow does NOT modify net/xfrm. The next failure must be diagnosed from the full build log."
-          echo "=========================================="
-          echo "STARTING STOCK + SUKISU + KPM BUILD"
-          echo "Full compiler/linker stdout/stderr -> kernel-build-full.log (artifact only)"
-          echo "Live console mode: concise file/activity heartbeat only"
-          echo "=========================================="
           echo "clang=$(command -v clang)"
           echo "ld.lld=$(command -v ld.lld)"
           clang --version | sed -n '1,2p'
@@ -3637,13 +3597,16 @@ jobs:
           BUILD_PID=$!
           set -e
 
+          LAST_LIVE_FILE=""
           while kill -0 "$BUILD_PID" 2>/dev/null; do
-            sleep 15
-            if kill -0 "$BUILD_PID" 2>/dev/null; then
-              LAST_ACTIVITY="$(grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)[[:space:]]' "$FULL_LOG" | tail -1 || true)"
-              if [ -z "$LAST_ACTIVITY" ]; then LAST_ACTIVITY="build activity continues; detailed output is in the artifact log"; fi
-              echo "[BUILD-ACTIVITY] $(date -u >&3 '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
-              echo "[BUILD-FILE] ${LAST_ACTIVITY:-waiting for first build activity}" >&3
+            sleep 10
+            CURRENT_FILE="$(tail -n 500 "$FULL_LOG" 2>/dev/null \
+              | grep -E '^[[:space:]]*(CC|AR|LD|AS|HOSTCC|HOSTLD|HOSTAR|GEN|UPD|CHK|CALL|MODPOST|OBJCOPY|OBJDUMP|SORT|SYMLINK|INSTALL)([[:space:]]|\[)' \
+              | grep -oE '([[:alnum:]_./+@-]+)\.(c|cc|cpp|S|o|a|dtb|dtbo)' \
+              | tail -1 || true)"
+            if [ -n "$CURRENT_FILE" ] && [ "$CURRENT_FILE" != "$LAST_LIVE_FILE" ]; then
+              printf '%s\n' "$CURRENT_FILE" >&3
+              LAST_LIVE_FILE="$CURRENT_FILE"
             fi
           done
 
@@ -3690,6 +3653,34 @@ jobs:
           echo "[BUILD-DIAG] build tail captured in artifact: 12-build-tail.log" >&3
 
           if [ "$BUILD_STATUS" -eq 0 ]; then
+            # V29 archive gate: Setup 28 is the first stage allowed to require
+            # the complete KernelSU built-in.a because Setup 27 is object-only.
+            KSU_ARCHIVE="drivers/kernelsu/built-in.a"
+            test -s "$KSU_ARCHIVE" || {
+              echo "[FAIL] KernelSU built-in.a was not produced by the full kernel build." >&3
+              exit 1
+            }
+            llvm-ar t "$KSU_ARCHIVE" > "$RUNNER_TEMP/v29-kernelsu-archive-members.log"
+            for required_member in \
+              drivers/kernelsu/kpm/compact.o \
+              drivers/kernelsu/kpm/kpm.o \
+              drivers/kernelsu/core/init.o \
+              drivers/kernelsu/selinux/selinux.o \
+              drivers/kernelsu/selinux/rules.o \
+              drivers/kernelsu/selinux/sepolicy.o \
+              drivers/kernelsu/supercall/dispatch.o \
+              drivers/kernelsu/supercall/perm.o \
+              drivers/kernelsu/supercall/supercall.o \
+              drivers/kernelsu/feature/selinux_hide.o \
+              drivers/kernelsu/feature/cpu_spoof.o
+            do
+              grep -Fx "$required_member" "$RUNNER_TEMP/v29-kernelsu-archive-members.log" >/dev/null || {
+                echo "[FAIL] Required KernelSU archive member missing: $required_member" >&3
+                exit 1
+              }
+            done
+            echo "[PASS] KernelSU built-in.a contains all required cumulative objects." >&3
+
             KERNEL_IMAGE=""
             for candidate in               arch/arm64/boot/Image.gz; do
               if [ -s "$candidate" ]; then
@@ -3818,16 +3809,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V28-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V29-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V28-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V29-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V28-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V29-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3880,12 +3871,12 @@ jobs:
           } 2>&1 | tee -a "$LOG"
           cat "$LOG"
           if [ ! -s arch/arm64/boot/Image.gz ]; then
-            echo "[FAIL] V28 final image gate: arch/arm64/boot/Image.gz was not produced."
+            echo "[FAIL] V29 final image gate: arch/arm64/boot/Image.gz was not produced."
             echo "[FAIL] A configuration-only PASS is never accepted as a kernel build success."
             exit 1
           fi
           sha256sum arch/arm64/boot/Image.gz | tee -a "$LOG"
-          echo "[PASS] V28 final image gate: arch/arm64/boot/Image.gz exists and is non-empty."
+          echo "[PASS] V29 final image gate: arch/arm64/boot/Image.gz exists and is non-empty."
           exit 0
 
       - name: Support - Stage Complete Diagnostics
@@ -3921,7 +3912,7 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V28"
+            echo "Workflow version: V29"
             echo "Previous workflow: V27"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
@@ -3944,19 +3935,19 @@ jobs:
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v17-workflow-source/V28-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v17-workflow-source/V28-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V28-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v17-workflow-source/V29-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v17-workflow-source/V29-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V29-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V17 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
           fi
 
           {
-            echo "========== V17 ALL SETUP STATUS =========="
-            echo "Workflow version: V28"
-            echo "Previous workflow: V27"
-            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18"
+            echo "========== V29 ALL SETUP STATUS =========="
+            echo "Workflow version: V29"
+            echo "Previous workflow: V28"
+            echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V20 -> V21 -> V22 -> V23 -> V24 -> V25 -> V26 -> V27 -> V28 -> V29"
             echo "Setup numbers are independent from workflow version numbers."
             date -u
             for f in "$DIAG_DIR"/*LIVE.log; do
@@ -3966,158 +3957,259 @@ jobs:
               if [[ "$last_marker" == *"[FAIL]"* ]]; then status="ERROR"
               elif [[ "$last_marker" == *"[PASS]"* ]]; then status="PASS"
               else status="EXECUTED-NO-STATUS-MARKER"; fi
-              printf '%-75s %s\n' "$base" "$status"
+              printf '%-85s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/V18-ALL-SETUP-STATUS.log
+          } > diagnostic-artifact/V29-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V28-CURRENT-STATUS.md <<'REPORT'
-          # V19 Current Status
+          cat > diagnostic-artifact/V29-CURRENT-STATUS.md <<'REPORT'
+          # V29 Current Status
 
-          ## V18 actual result
-          V18 did not reach Setup 27 or Setup 28. Setup 17 failed before any source mutation:
-            [FAIL] V18: authoritative CIP135 baseline and installed rule both absent; refusing speculative edit.
+          ## Current objective
+          Build the LG Velvet global LM-G900/G900EMW kernel from the lineage-23.2 tree with Linux 4.19.325-cip135, preserving all verified existing and future feature work.
 
-          The V18 diagnostic artifact therefore contains no V18 full-kernel build result. Setup 30 PASS was only a final configuration/artifact check; it did not produce a kernel image.
+          ## V29 root-cause fix
+          Previous Setup 27 invoked the native `make drivers/kernelsu/` directory target. That target can rebuild the complete KernelSU subtree instead of acting as a small hotspot gate. The previous run spent about 1h46m in Setup 27 and the overall GitHub job was cancelled before Setup 28.
 
-          ## Verified underlying root cause
-          V15 reached the real qcacld-3.0 built-in.a archive command and failed with:
-            /bin/sh: Argument list too long
-          This is a Kbuild built-in.a command-length scalability failure, not a Wi-Fi/qcacld feature incompatibility.
+          V29 changes Setup 27 to compile only the audited cumulative KernelSU hotspot objects in parallel. It does not remove, disable, or bypass any KernelSU/SukiSU/SUSFS functionality.
 
-          ## V18 guard failure root cause
-          The actual checked-out LG kernel tree at HEAD 90f583e83d4b766222b96c84bd16af8583fbfd68 does not use the plain CIP135 built-in.a rule. It wraps the archive command with:
-            $(update_lto_symversions) \
-          before the rcSTP AR invocation.
-          V18's guard treated the plain CIP135 form as authoritative and therefore refused to mutate. That refusal was safe, but the V18 proposed replacement would also have been unsafe because it would have dropped the protected LTO wrapper.
+          ## Setup 27 contract
+          Setup 27 is now object-level compilation only. The complete `drivers/kernelsu/built-in.a` archive is intentionally verified after the authoritative full kernel build in Setup 28.
 
-          ## V20 source-backed correction
-          V19 matches the actual protected LG LTO-wrapped rule, preserves:
-          - $(update_lto_symversions)
-          - rcSTP$(KBUILD_ARFLAGS)
-          - all qcacld/Wi-Fi objects and compiler flags
-          and applies only the upstream patsubst -> sed -> xargs argument-length transport.
+          ## Timeout protection
+          Setup 27 has a 45-minute hard timeout. A timeout is a real failure and is preserved in diagnostics; it is never converted to PASS.
 
-          The current LG scripts/Kbuild.include lacks the upstream `real-prereqs` helper required by that upstream rule. V19 adds only that exact helper:
-            real-prereqs = $(filter-out $(PHONY), $^)
-          before applying the archive-rule change.
+          ## Live activity contract
+          The GitHub console receives only the current source/object filename while compilation runs. Detailed compiler stdout/stderr remains in the diagnostics artifact.
 
-          ## Setup 17 / 27 / 28 contract
-          - Setup 17: mutation + exact source contract audit.
-          - Setup 27: read-only cumulative hotspot compile gate.
-          - Setup 28: authoritative full kernel build.
-          Setup 27/28 must not be considered successful unless their actual logs exist and contain PASS markers. V18 has no 27/28 execution evidence.
+          ## What has been completed
+          - Linux 4.19.325-cip135 baseline and cumulative compatibility work retained.
+          - Protected LTO-wrapped built-in.a ARG_MAX transport retained.
+          - SELinux 4.19 AVTAB `flex_array` and hashtab native pointer-array contracts separated.
+          - Existing KernelSU/SukiSU/KPM/SUSFS and feature compatibility work retained.
+          - V29 targeted Setup 27 architecture prepared.
 
-          ## Protected features
-          No verified feature is removed or disabled for this fix. SukiSU-Ultra, KPM, SUSFS, Full Clang LTO, Maphide/JIT-Zygote, Baseband-Guard, WALT/SchedTune/ZRAM work, and the required LG hardware/vendor compatibility goals remain protected.
+          ## What is in progress
+          The GitHub run must execute V29 Setup 27 and then the authoritative Setup 28 full kernel build.
 
-          ## Version progression
-          V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19
+          ## What remains
+          1. Setup 27 targeted hotspot compile PASS.
+          2. Setup 28 full `Image.gz` kernel build PASS.
+          3. Verify `drivers/kernelsu/built-in.a` members after the full build.
+          4. Package AnyKernel3/OrangeFox flashable kernel ZIP.
+          5. Run final configuration/artifact verification.
+          6. Upload the complete V29 diagnostics and successful kernel artifacts.
 
-          ## Completion standard
-          V19 is not a claimed build success until Setup 17, Setup 27, Setup 28, and the final image/artifact checks actually pass in the same run.
+          ## Final success rule
+          A workflow is not a kernel-build success merely because static validators pass. Setup 27, Setup 28, the real `Image.gz`, the required KernelSU archive members, packaging, and final artifact checks must all pass in the same run.
           REPORT
 
           cat > diagnostic-artifact/PROJECT-CONTEXT-A-Z.md <<'REPORT'
-          # LG Velvet LM-G900 / G900EMW Kernel Project — Portable A→Z Context
+          # LG Velvet LM-G900 / G900EMW Kernel Project — A→Z Context
 
           ## Target
           Device: LG Velvet global LM-G900 / G900EMW
           Kernel: Linux 4.19.325-cip135
-          Android target: Android 16 / QPR2
+          Android target: Android 16 / QPR2 and newer compatible releases
           Lineage branch: lineage-23.2
 
-          ## Protected rules
-          Never remove a verified feature/fix to solve a new error. Never guess APIs, structs, Kconfig values, compiler flags, version boundaries, or output names. Use actual checked-out source, pinned CIP135 source, relevant upstream source, and actual compiler diagnostics.
+          ## Mandatory protected hardware/vendor goals
+          Fingerprint, vibration/haptics, Dual-SIM/RIL, audio/sound, IMS and Wi-Fi Calling/VoWiFi must remain protected and verified. No future feature may be removed to solve a build error.
 
-          Protected feature families include SukiSU-Ultra, KPM, SUSFS, Full Clang LTO, Maphide/JIT-Zygote, Baseband-Guard, WALT, SchedTune, ZRAM, and required fingerprint, vibration/haptics, Dual-SIM/RIL, audio, IMS, and Wi-Fi Calling/VoWiFi compatibility work.
+          ## Mandatory protected kernel features
+          SukiSU-Ultra, KPM, SUSFS, Full Clang LTO, Maphide/JIT-Zygote, Baseband-Guard, WALT, SchedTune and ZRAM remain protected. New future features are additive unless their source explicitly proves a non-removable compatibility boundary.
 
-          ## History V4 -> V19
-          V4: protected baseline; researched Linux 4.19 SELinux hashtab/AVTAB boundary.
-          V5: duplicate/redundant CI cleanup without feature removal.
+          ## Version history
+          V4: protected Linux 4.19 SELinux compatibility baseline.
+          V5: CI cleanup without removing verified features.
           V6: actual-source filename-transition API mismatch identified.
-          V7: duplicate textual add_filename_trans and workflow-source capture corrected.
+          V7: duplicate filename-transition handling and workflow-source capture corrected.
           V8: Setup 17 repair-script ordering/NameError defect fixed.
-          V9: Setup 17 <-> Setup 27 contract loop identified.
-          V10: one source-derived contract established; Setup 17 mutates, Setup 27 verifies/compiles.
-          V11: cumulative ordering/build progression.
-          V12: actual KernelSU built-in.a reached; verifier expected the wrong archive filename form.
+          V9: Setup 17 ↔ Setup 27 contract loop identified.
+          V10: one source-derived compatibility contract established.
+          V11: cumulative ordering/build progression continued.
+          V12: actual KernelSU built-in.a reached; verifier expected wrong archive path.
           V13: exact llvm-ar archive-member paths verified.
           V14: SELinux hashtab vs AVTAB flex_array validator corrected.
-          V15: real full build reached qcacld-3.0/built-in.a and failed with Argument list too long.
-          V16: safe refusal; wrong source guard, no mutation.
-          V17: safe refusal; indentation-sensitive guard, no mutation.
-          V18: safe refusal; plain CIP135 guard did not recognize the actual LG LTO-wrapped rule.
-          V19: source-derived correction preserves the LTO wrapper and applies the upstream ARG_MAX transport.
+          V15: real qcacld-3.0 built-in.a build failed with Argument list too long.
+          V16: safe refusal of incorrect source guard; no mutation.
+          V17: safe refusal of indentation-sensitive guard; no mutation.
+          V18: safe refusal of plain CIP135 guard that did not recognize the LG LTO wrapper.
+          V19: protected LTO wrapper retained and upstream ARG_MAX transport applied.
+          V20: SELinux 4.19 policy-state compatibility corrected.
+          V21: source-integrity whitespace/compatibility validation corrected.
+          V22: CPU clocksource compatibility handling corrected.
+          V23: CPU-spoof source contract refined against the actual 4.19 architecture layout.
+          V24: SELinux sidtab backup contract corrected.
+          V25: AVTAB and hashtab iterator responsibilities separated.
+          V26: dedicated AVTAB flex_array iterator and native hashtab iterator verified.
+          V27: semantic iterator validation corrected.
+          V28: parallel Setup 27 introduced after the previous 1h46m serial bottleneck.
+          V29: Setup 27 narrowed from a full KernelSU directory build to the audited hotspot object set, with a hard timeout and file-only live activity.
 
-          ## ARG_MAX root cause
-          The qcacld-3.0 built-in.a rule expands many long `$(obj)/...` paths into a single AR command. The command exceeds the shell argument limit. Upstream Linux solved this by stripping the repeated object-directory prefix with `patsubst`, restoring it in a shell pipeline with sed, and feeding AR through xargs. This changes command-length scaling from O(D*N) toward O(D+N).
+          ## Root cause chain relevant to V29
+          The earlier qcacld failure was a Kbuild built-in.a command-length scalability problem. The fix preserves the LG LTO wrapper and uses the upstream-style `patsubst` → `sed` → `xargs` transport.
 
-          ## Actual LG source boundary
-          The checked-out LG tree adds `$(update_lto_symversions) \` before the rcSTP archive command. That wrapper is part of the LTO implementation and must remain intact.
-          The checked-out `scripts/Kbuild.include` lacks `real-prereqs`; V19 adds the upstream helper exactly once because the upstream ARG_MAX rule depends on it.
+          The later Setup 27 delay was a separate CI design problem: a directory-level Kbuild invocation was used as a hotspot gate. V29 corrects that by compiling only the audited objects; Setup 28 remains the full build.
 
-          ## Verification contract
-          Setup 17 must prove the exact protected baseline or exact installed rule and fail closed on ambiguity.
-          Setup 27 is read-only and must compile the cumulative hotspots.
-          Setup 28 is the real full-kernel build. Static verification alone is never final build proof.
-
-          ## Diagnostics contract
-          Every V-version diagnostics artifact must contain the A→Z context, complete error/fix history, current workflow, research references, setup logs, build output, source/commit/config state, current verification status, and next steps. No ZIP inside the diagnostics directory; GitHub uploads the directory as the single artifact ZIP.
-          REPORT
-          cat > diagnostic-artifact/V28-ERROR-AND-FIX-HISTORY.md <<'REPORT'
-          # Complete Error and Fix History V4 -> V19
-
-          V4 — Protected Linux 4.19 SELinux compatibility baseline.
-          V5 — CI cleanup without removing verified features.
-          V6 — Actual-source filename-transition API mismatch identified.
-          V7 — Duplicate add_filename_trans handling and workflow-source capture corrected.
-          V8 — Setup 17 repair-script ordering/NameError defect fixed.
-          V9 — Setup 17/27 contract loop identified.
-          V10 — One source-derived compatibility contract established.
-          V11 — Cumulative ordering/build progression continued.
-          V12 — KernelSU built-in.a reached; verifier expected wrong archive member path.
-          V13 — Archive-member verification corrected to actual llvm-ar output.
-          V14 — SELinux hashtab/AVTAB validator corrected.
-          V15 — Real full build reached qcacld-3.0 built-in.a and failed with `/bin/sh: Argument list too long`.
-          V16 — Safe refusal because the guard expected the wrong CIP135 source form; no mutation.
-          V17 — Safe refusal because the guard was indentation-sensitive; no mutation.
-          V18 — Safe refusal because the actual LG tree wraps cmd_ar_builtin with `$(update_lto_symversions)`; no mutation.
-          V19 — Corrected source contract: preserve the LTO wrapper, provide the upstream `real-prereqs` helper if absent, and apply only the upstream patsubst/sed/xargs ARG_MAX transport.
-
-          ## V15 primary root cause
-          Kbuild's built-in.a archive command expanded a long list of full object paths into one AR invocation. The failure is command-length scalability, not a qcacld/Wi-Fi incompatibility.
-
-          ## V18 root cause
-          The V18 guard was keyed to the plain pinned CIP135 rule. The actual project tree has a protected LTO wrapper around the same AR operation. The V18 guard correctly refused to mutate unexpected source, preventing accidental removal of LTO behavior.
-
-          ## V19 exact fix
-          Preserve `$(update_lto_symversions)` and `rcSTP$(KBUILD_ARFLAGS)`.
-          Add only the upstream `real-prereqs = $(filter-out $(PHONY), $^)` helper when missing.
-          Replace only the long prerequisite expansion with:
-          `echo $(patsubst $(obj)/%,%,$(real-prereqs)) | sed -E 's:([^ ]+):$(obj)/\1:g' | xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@`
-
-          ## Verification status
-          V19 workflow creation is source/research verified. Actual Setup 17/27/28 results are pending the next GitHub run.
+          ## Diagnostics rule
+          Every V-version package must document what was completed, what is currently in progress, what failed, the root cause, exact fixes, research sources, source state, setup results, build logs, artifact results, regression status, and next steps. Detailed logs belong in the artifact; live console output remains concise.
           REPORT
 
-          cat > diagnostic-artifact/RESEARCH-SOURCES.md <<'REPORT'
-          # Research Sources - V19
+          cat > diagnostic-artifact/V29-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          # V29 Error and Fix History
 
-          ## Pinned CIP135 source
-          https://gitlab.com/cip-project/cip-kernel/linux-cip/-/raw/v4.19.325-cip135/scripts/Makefile.build
+          ## V15 — qcacld ARG_MAX
+          Real qcacld-3.0 built-in.a creation failed with `/bin/sh: Argument list too long`.
+          Root cause: too many expanded object paths in one archive command.
+          Fix: upstream-style `patsubst`/`sed`/`xargs` transport while preserving the LG LTO wrapper and rcSTP flags.
 
-          ## Upstream Kbuild ARG_MAX fix
-          https://git.zx2c4.com/linux-dev/commit/scripts?id=cd968b97c49214e6557381bddddacbd0e0fb696e
-          https://lkml.indiana.edu/hypermail/linux/kernel/2205.3/03975.html
+          ## V18/V19 — LTO-wrapped Kbuild rule
+          The LG tree wrapped the archive command with `$(update_lto_symversions)`. The correction preserved that wrapper rather than applying a plain CIP135 rule.
 
-          ## Kbuild documentation
-          https://www.kernel.org/doc/html/latest/kbuild/makefiles.html
+          ## V20–V27 — SELinux/source-contract corrections
+          The workflow progressively corrected 4.19 policy-state, sidtab, AVTAB/flex_array, hashtab/native-array, CPU clocksource, and validator contracts from actual source evidence. No feature-removal workaround was used.
 
-          ## Project/kernel source references retained
-          https://github.com/tiann/KernelSU/blob/main/kernel/selinux/sepolicy.c
-          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/hashtab.h
-          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.h
-          https://raw.githubusercontent.com/lge-qcom-dev/android_kernel_lge_sm7250/lineage-23.2/security/selinux/ss/policydb.c
+          ## V28 — Setup 27 runtime bottleneck
+          Setup 27 used `make -j... drivers/kernelsu/`, a directory-level target. Despite parallel jobs, it could rebuild the entire KernelSU subtree. The previous run reached approximately 1h46m and the GitHub job was cancelled before Setup 28.
+
+          ## V29 — exact fix
+          Setup 27 is now a targeted hotspot gate over the audited cumulative KernelSU object list. The full `drivers/kernelsu/` build is no longer executed in Setup 27. Setup 28 remains the authoritative full kernel build and archive gate.
+
+          ## V29 safety rules
+          - No feature removal.
+          - No compiler-error skipping.
+          - No speculative source mutation in Setup 27.
+          - Timeout is reported as failure, never success.
+          - Full compiler logs are preserved in artifacts.
+          REPORT
+
+          cat > diagnostic-artifact/V29-RESEARCH-SOURCES.md <<'REPORT'
+          # V29 Research / Source References
+
+          - Pinned CIP135 source: https://gitlab.com/cip-project/cip-kernel/linux-cip/-/raw/v4.19.325-cip135/scripts/Makefile.build
+          - Upstream Kbuild ARG_MAX fix: https://git.zx2c4.com/linux-dev/commit/scripts?id=cd968b97c49214e6557381bddddacbd0e0fb696e
+          - Kbuild documentation: https://www.kernel.org/doc/html/latest/kbuild/makefiles.html
+          - LG kernel source: https://github.com/lge-qcom-dev/android_kernel_lge_sm7250/tree/lineage-23.2
+          - KernelSU SELinux reference: https://github.com/tiann/KernelSU/tree/main/kernel/selinux
+          - SukiSU-Ultra reference: https://github.com/SukiSU-Ultra/SukiSU-Ultra
+          REPORT
+
+          cat > diagnostic-artifact/V29-COMPLETED.md <<'REPORT'
+          # V29 Completed Work
+
+          - Replaced Setup 27 directory-level build with targeted cumulative KernelSU object compilation.
+          - Added parallel object compilation using runner workers.
+          - Added 45-minute Setup 27 hard timeout.
+          - Kept detailed compiler output artifact-only.
+          - Kept live console activity filename-only.
+          - Moved complete KernelSU built-in.a verification to Setup 28 after the real full kernel build.
+          - Kept V29 artifact naming throughout.
+          REPORT
+
+          cat > diagnostic-artifact/V29-IN-PROGRESS.md <<'REPORT'
+          # V29 In Progress
+
+          The next GitHub run must prove that the targeted Setup 27 object set compiles successfully, then execute the full kernel build in Setup 28.
+          REPORT
+
+          cat > diagnostic-artifact/V29-NEXT-STEPS.md <<'REPORT'
+          # V29 Next Steps
+
+          1. Run V29.
+          2. Confirm Setup 27 targeted hotspot compilation completes well below the previous ~1h46m bottleneck.
+          3. Confirm Setup 28 creates a real non-empty `arch/arm64/boot/Image.gz`.
+          4. Confirm `drivers/kernelsu/built-in.a` contains every required KernelSU object.
+          5. Package and verify the AnyKernel3/OrangeFox flashable ZIP.
+          6. Complete final artifact/configuration checks.
+          7. Preserve the complete A→Z V29 diagnostics artifact.
+          REPORT
+
+          cat > diagnostic-artifact/V29-FEATURE-MATRIX.md <<'REPORT'
+          # V29 Feature Matrix
+
+          | Feature | Policy | Status |
+          |---|---|---|
+          | SukiSU-Ultra | Never remove | Protected / verify in build |
+          | KPM | Never remove | Protected / verify in build |
+          | SUSFS | Never remove | Protected / verify in build |
+          | Full Clang LTO | Never remove | Protected / verify in build |
+          | Maphide/JIT-Zygote | Never remove | Protected |
+          | Baseband-Guard | Never remove | Protected |
+          | WALT | Never remove | Protected |
+          | SchedTune | Never remove | Protected |
+          | ZRAM | Never remove | Protected |
+          | Fingerprint | Never remove | Protected hardware goal |
+          | Vibration/Haptics | Never remove | Protected hardware goal |
+          | Dual-SIM/RIL | Never remove | Protected hardware goal |
+          | Audio | Never remove | Protected hardware goal |
+          | IMS | Never remove | Protected hardware goal |
+          | Wi-Fi Calling/VoWiFi | Never remove | Protected hardware goal |
+          REPORT
+
+          cat > diagnostic-artifact/V29-SOURCE-CHANGES.md <<'REPORT'
+          # V29 Source / Workflow Changes
+
+          V29 changes the CI workflow only for Setup 27 execution strategy and diagnostics behavior. Setup 27 itself performs no kernel source mutation.
+
+          The targeted object list is:
+          - drivers/kernelsu/kpm/compact.o
+          - drivers/kernelsu/kpm/kpm.o
+          - drivers/kernelsu/core/init.o
+          - drivers/kernelsu/selinux/selinux.o
+          - drivers/kernelsu/selinux/rules.o
+          - drivers/kernelsu/selinux/sepolicy.o
+          - drivers/kernelsu/supercall/dispatch.o
+          - drivers/kernelsu/supercall/perm.o
+          - drivers/kernelsu/supercall/supercall.o
+          - drivers/kernelsu/feature/selinux_hide.o
+          - drivers/kernelsu/feature/cpu_spoof.o
+          REPORT
+
+          cat > diagnostic-artifact/V29-BUILD-STATUS.md <<'REPORT'
+          # V29 Build Status
+
+          Setup 27: targeted cumulative KernelSU hotspot compilation — must be proven by the actual run.
+          Setup 28: authoritative full kernel `Image.gz` build — must be proven by the actual run.
+          Setup 29: AnyKernel3/OrangeFox packaging — only after Setup 28 success.
+          Setup 30: final configuration/artifact verification.
+          REPORT
+
+          cat > diagnostic-artifact/V29-ARTIFACT-MANIFEST.md <<'REPORT'
+          # V29 Artifact Manifest
+
+          Expected successful artifacts:
+          - V29-LG-Velvet-G900-Diagnostics
+          - V29-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          - V29-LG-Velvet-G900-Kernel-Only
+          - V29-LG-Velvet-G900-Raw-Kernel
+
+          Diagnostics package contains complete logs, source/workflow state, A→Z documentation, research references, setup results, and regression evidence.
+          REPORT
+
+          cat > diagnostic-artifact/V29-VALIDATION-RESULTS.md <<'REPORT'
+          # V29 Validation Results
+
+          Results are generated from the actual run. No static PASS is treated as build proof.
+
+          Setup 27: pending actual run.
+          Setup 28: pending actual run.
+          Setup 29: pending actual run.
+          Setup 30: pending actual run.
+          Final Image.gz: pending actual run.
+          KernelSU built-in.a members: pending actual run.
+          REPORT
+
+          cat > diagnostic-artifact/V29-REGRESSION-CHECK.md <<'REPORT'
+          # V29 Regression Check
+
+          Required invariant: no existing or future feature is removed to fix CI/build errors.
+
+          Required source invariants:
+          - LG LTO wrapper remains intact.
+          - ARG_MAX transport remains intact.
+          - AVTAB remains on 4.19 flex_array traversal.
+          - hashtab remains on native pointer-array traversal.
+          - SukiSU/KPM/SUSFS and protected feature work remains present.
           REPORT
 
           {
@@ -4143,82 +4235,81 @@ jobs:
           done < <(git log --all --format='%H' -- .github/workflows 2>/dev/null | head -20)
 
           if [ "$found" -eq 0 ]; then
-            echo "No committed historical workflow snapshots were available in this checkout. The companion ALL-WORKFLOWS history package contains the preserved V6-V12 workflow snapshots." \
-              > diagnostic-artifact/project-history/workflows/README.txt
+            echo "No committed historical workflow snapshots were available in this checkout." > diagnostic-artifact/project-history/workflows/README.txt
           fi
 
           cat > diagnostic-artifact/MANIFEST.txt <<'REPORT'
-          # V28 Diagnostic Package Manifest
+          # V29 Diagnostic Package Manifest
 
-          Workflow version: V19
-          Previous workflow: V18
-          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19
+          Workflow version: V29
+          Previous workflow: V28
+          Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13 -> V14 -> V15 -> V16 -> V17 -> V18 -> V19 -> V20 -> V21 -> V22 -> V23 -> V24 -> V25 -> V26 -> V27 -> V28 -> V29
 
-          Current source:
-          - V28-CURRENT-WORKFLOW.yml
-
-          Current status/history:
-          - V28-CURRENT-STATUS.md
-          - V28-ERROR-AND-FIX-HISTORY.md
+          Core documentation:
           - PROJECT-CONTEXT-A-Z.md
-          - WORKFLOW-HISTORY-INDEX.md
-          - RESEARCH-SOURCES.md
-          - V28-ALL-SETUP-STATUS.log
+          - V29-CURRENT-STATUS.md
+          - V29-ERROR-AND-FIX-HISTORY.md
+          - V29-RESEARCH-SOURCES.md
+          - V29-COMPLETED.md
+          - V29-IN-PROGRESS.md
+          - V29-NEXT-STEPS.md
+          - V29-FEATURE-MATRIX.md
+          - V29-SOURCE-CHANGES.md
+          - V29-BUILD-STATUS.md
+          - V29-ARTIFACT-MANIFEST.md
+          - V29-VALIDATION-RESULTS.md
+          - V29-REGRESSION-CHECK.md
+          - V29-ALL-SETUP-STATUS.log
 
-          Raw runner evidence:
+          Raw evidence:
           - ci-logs/
           - 12-build-full.log
           - final.config
           - git-status.txt
           - kernel-head.txt
           - runner-state/
-
-          Historical workflow evidence:
           - project-history/
 
           Artifact naming:
-          V19-LG-Velvet-G900-Diagnostics
+          V29-LG-Velvet-G900-Diagnostics
+          REPORT
 
-          ZIP rule:
-          This directory is uploaded directly to GitHub Actions. GitHub creates the
-          single downloadable ZIP. No diagnostic ZIP is created inside it.
-
-          echo "[PASS] V28 diagnostic directory staged. No diagnostic ZIP is created here."
-      - name: Artifact - V28 Diagnostics
+          echo "[PASS] V29 diagnostic directory staged."
+      - name: Artifact - V29 Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V28-LG-Velvet-G900-Diagnostics
+          name: V29-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V28 AnyKernel3 OrangeFox Flashable
+      - name: Artifact - V29 AnyKernel3 OrangeFox Flashable
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V28-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V28-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          name: V29-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          path: artifacts/V29-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V28 Kernel Only ZIP
+      - name: Artifact - V29 Kernel Only ZIP
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V28-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V28-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V29-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V29-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V28 Raw Kernel Image
+      - name: Artifact - V29 Raw Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V28-LG-Velvet-G900-Raw-Kernel
+          name: V29-LG-Velvet-G900-Raw-Kernel
           path: arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 14
