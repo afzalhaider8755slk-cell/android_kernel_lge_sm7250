@@ -39,19 +39,23 @@ jobs:
       ORIGINAL_KERNEL_CONFIG_SHA256: a084fd97f58f6af6974a8f347817b88eb6d08f4ec00726cdd3fbe87e3f1e3cdd
 
       SUKISU_SETUP_URL: https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh
-      SUKISU_REF: main
-      SUKISU_EXPECTED_TAG: v4.2.0
-      SUKISU_EXPECTED_COMMIT: "85eb4a9"
+      SUKISU_REF: builtin
+      SUKISU_BRANCH: builtin
+      SUKISU_EXPECTED_COMMIT: "6c5603f0c853a94256940273efc433cbbc85f57a"
+      SUKISU_TARGET_MODEL: LM-G900
+      SUKISU_TARGET_REGION: Global
 
       SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
       SUSFS_BRANCH: kernel-4.19
-      SUSFS_EXPECTED_COMMIT: "001e6991"
+      SUSFS_EXPECTED_COMMIT: "001e69919c6271f690fd00b17e4c721c9e599152"
       SUSFS_EXPECTED_VERSION: "1.5.5"
 
       CIP_REPO: https://gitlab.com/cip-project/cip-kernel/linux-cip.git
       # The LG source is already CIP132; only the official CIP132->CIP135 delta is safe here.
       CIP_SOURCE_TAG: v4.19.325-cip132
       CIP_TARGET_TAG: v4.19.325-cip135
+      CIP_SOURCE_COMMIT: "a0cf0e16"
+      CIP_TARGET_COMMIT: "ba1643922563de1987b5cb0ed4a4b869ae1c3147"
 
       CLANG_REVISION: clang-r563880c
       CLANG_PREBUILT_TAG: ndk-r29
@@ -61,6 +65,15 @@ jobs:
       ARCH: arm64
       OUT_DIR: ${{ github.workspace }}/out
       DIAG_DIR: ${{ github.workspace }}/ci-diagnostics
+      CIP_LG_PRESERVE_PATHS: >-
+        fs/f2fs/data.c
+        fs/f2fs/inline.c
+        fs/fuse/dev.c
+        include/net/bluetooth/hci_core.h
+        include/sound/compress_driver.h
+        kernel/bpf/local_storage.c
+        kernel/exit.c
+        mm/kasan/kasan_init.c
 
     steps:
       - name: 01 - Checkout LG source
@@ -732,6 +745,23 @@ jobs:
           exec > >(tee "$DIAG_DIR/05-cip.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
+          PRESERVE_ROOT="$RUNNER_TEMP/lg-cip-preserve"
+          rm -rf "$PRESERVE_ROOT"
+          mkdir -p "$PRESERVE_ROOT"
+          : > "$DIAG_DIR/cip-lg-preserve-manifest.txt"
+          : > "$DIAG_DIR/cip-lg-preserve-sha256.txt"
+
+          for path in $CIP_LG_PRESERVE_PATHS; do
+            if [ -e "$path" ] || [ -L "$path" ]; then
+              mkdir -p "$PRESERVE_ROOT/$(dirname "$path")"
+              cp -a "$path" "$PRESERVE_ROOT/$path"
+              printf 'PRESENT %s\\n' "$path" >> "$DIAG_DIR/cip-lg-preserve-manifest.txt"
+              sha256sum "$path" >> "$DIAG_DIR/cip-lg-preserve-sha256.txt"
+            else
+              printf 'ABSENT %s\\n' "$path" >> "$DIAG_DIR/cip-lg-preserve-manifest.txt"
+            fi
+          done
+
           if ! grep -qx -- '-cip132' localversion-cip; then
             echo "::error::LG source is not based on CIP132; refusing to apply a CIP132->CIP135 delta."
             cat localversion-cip
@@ -752,6 +782,12 @@ jobs:
           TARGET_COMMIT="$(git -C "$GITHUB_WORKSPACE/cip-kernel" rev-parse "$CIP_TARGET_TAG^{commit}")"
           echo "$SOURCE_COMMIT" | tee "$DIAG_DIR/cip-source-commit.txt"
           echo "$TARGET_COMMIT" | tee "$DIAG_DIR/cip-target-commit.txt"
+
+          case "$SOURCE_COMMIT" in
+            "$CIP_SOURCE_COMMIT"*) ;;
+            *) echo "::error::CIP source tag does not resolve to the expected official commit."; exit 1 ;;
+          esac
+          test "$TARGET_COMMIT" = "$CIP_TARGET_COMMIT"
 
           git -C "$GITHUB_WORKSPACE/cip-kernel" diff --binary --full-index \
             "$CIP_SOURCE_TAG" "$CIP_TARGET_TAG" \
@@ -848,34 +884,40 @@ jobs:
               if line.strip()
           ]
 
-          expected = {
+          expected_semantic = {
               "arch/arm64/kernel/cpu_errata.c",
               "drivers/md/dm-verity-fec.c",
               "drivers/net/ethernet/qualcomm/rmnet/rmnet_config.c",
               "drivers/net/usb/rtl8150.c",
-              "fs/f2fs/data.c",
-              "kernel/bpf/local_storage.c",
               "sound/core/compress_offload.c",
           }
+          preserve = {
+              "fs/f2fs/data.c",
+              "kernel/bpf/local_storage.c",
+          }
+          allowed = expected_semantic | preserve
 
           actual = set(conflicts)
-          if actual - expected:
+          if actual - allowed:
               raise SystemExit(
                   "Unexpected CIP conflict paths: "
-                  + ", ".join(sorted(actual - expected))
-              )
-          if expected - actual:
-              raise SystemExit(
-                  "Expected semantic conflict paths missing: "
-                  + ", ".join(sorted(expected - actual))
+                  + ", ".join(sorted(actual - allowed))
               )
 
-          for path in conflicts:
+          for path in actual & preserve:
               import subprocess
               subprocess.run(
                   ["git", "checkout", "--ours", "--", path],
                   cwd=root,
                   check=True,
+              )
+              print(f"PRESERVED LG BASELINE: {path}")
+
+          semantic_actual = actual & expected_semantic
+          if semantic_actual != expected_semantic:
+              raise SystemExit(
+                  "Expected semantic CIP conflicts missing: "
+                  + ", ".join(sorted(expected_semantic - semantic_actual))
               )
 
           def replace_once(path, old, new, label):
@@ -1090,49 +1132,6 @@ jobs:
           )
 
           replace_once(
-              "fs/f2fs/data.c",
-              """		dec_page_count(sbi, type);
-            		/*
-            		 * we should access sbi before end_page_writeback() to
-            		 * avoid racing w/ kill_f2fs_super()
-            		 */
-            """,
-              """		if (f2fs_in_warm_node_list(sbi, page))
-            			f2fs_del_fsync_node_entry(sbi, page);
-
-            		dec_page_count(sbi, type);
-            		/*
-            		 * we should access sbi before end_page_writeback() to
-            		 * avoid racing w/ kill_f2fs_super()
-            		 */
-            """,
-              "f2fs fsync-node ordering",
-          )
-          replace_once(
-              "fs/f2fs/data.c",
-              """		if (f2fs_in_warm_node_list(sbi, page))
-            			f2fs_del_fsync_node_entry(sbi, page);
-            		clear_page_private_gcing(page);
-            """,
-              """		clear_page_private_gcing(page);
-            """,
-              "f2fs remove old fsync-node location",
-          )
-
-          replace_once(
-              "kernel/bpf/local_storage.c",
-              """		storage = list_next_entry(storage, list_map);
-            		if (!storage)
-            			goto enoent;
-            """,
-              """		storage = list_next_entry(storage, list_map);
-            		if (list_entry_is_head(storage, &map->list, list_map))
-            			goto enoent;
-            """,
-              "bpf cgroup storage list-head check",
-          )
-
-          replace_once(
               "sound/core/compress_offload.c",
               """/* TODO:
              * - add substream support for multiple devices in case of
@@ -1252,7 +1251,53 @@ jobs:
           fi
 
           echo "CIP semantic vendor-port completed."
-          cat "$DIAG_DIR/cip-conflicts.txt"
+
+          while read -r state path; do
+            case "$state" in
+              PRESENT)
+                rm -rf -- "$path"
+                mkdir -p "$(dirname "$path")"
+                cp -a "$PRESERVE_ROOT/$path" "$path"
+                echo "PRESERVED LG BASELINE: $path"
+                ;;
+              ABSENT)
+                if [ -e "$path" ] || [ -L "$path" ]; then
+                  rm -rf -- "$path"
+                fi
+                echo "PRESERVED LG BASELINE: $path"
+                ;;
+              *)
+                echo "::error::Invalid CIP preserve manifest entry: $state $path"
+                exit 1
+                ;;
+            esac
+          done < "$DIAG_DIR/cip-lg-preserve-manifest.txt"
+
+          : > "$DIAG_DIR/cip-applied-files.txt"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            case " $CIP_LG_PRESERVE_PATHS " in
+              *" $path "*) continue ;;
+            esac
+            echo "APPLIED: $path"
+            echo "$path" >> "$DIAG_DIR/cip-applied-files.txt"
+          done < <(
+            {
+              git diff --name-only
+              git ls-files --others --exclude-standard
+            } | sort -u
+          )
+
+          echo
+          echo "Cip135 fix"
+          echo "localversion-cip"
+          cat localversion-cip
+          echo "cip_source=$CIP_SOURCE_TAG"
+          echo "cip_source_commit=$SOURCE_COMMIT"
+          echo "cip_target=$CIP_TARGET_TAG"
+          echo "cip_target_commit=$TARGET_COMMIT"
+          echo
+          cat "$DIAG_DIR/cip-conflicts.txt" || true
 
           grep -q '^VERSION = 4$' Makefile
           grep -q '^PATCHLEVEL = 19$' Makefile
@@ -1289,15 +1334,56 @@ jobs:
           exec > >(tee "$DIAG_DIR/06-sukisu.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
 
-          test "$SUSFS_EXPECTED_COMMIT" = "001e6991"
-          test "$SUSFS_EXPECTED_VERSION" = "1.5.5"
+          rm -rf KernelSU
+
+          echo "git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU"
+          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
+
+          echo "git -C KernelSU fetch --depth=1 origin \\"
+          echo "    $SUKISU_EXPECTED_COMMIT"
+          git -C KernelSU fetch --depth=1 origin \
+            "$SUKISU_EXPECTED_COMMIT"
+
+          echo "git -C KernelSU checkout --detach \\"
+          echo "    $SUKISU_EXPECTED_COMMIT"
+          git -C KernelSU checkout --detach \
+            "$SUKISU_EXPECTED_COMMIT"
+
+          BUILTIN_TIP="$(git -C KernelSU ls-remote origin "refs/heads/$SUKISU_BRANCH" | awk '{print $1}')"
+          test "$BUILTIN_TIP" = "$SUKISU_EXPECTED_COMMIT"
+
+          PINNED_BEFORE_SETUP="$(git -C KernelSU rev-parse HEAD)"
+          test "$PINNED_BEFORE_SETUP" = "$SUKISU_EXPECTED_COMMIT"
+
+          echo "sukisu_commit=$PINNED_BEFORE_SETUP"
+          echo "sukisu_branch=$SUKISU_BRANCH"
+          echo "target_model=$SUKISU_TARGET_MODEL"
+          echo "target_region=$SUKISU_TARGET_REGION"
+
+          # setup.sh runs git pull, so it needs a local branch before builtin integration.
+          git -C KernelSU checkout -B "$SUKISU_BRANCH" \
+            "$SUKISU_EXPECTED_COMMIT"
 
           curl --fail --location --silent --show-error \
             "$SUKISU_SETUP_URL" \
             -o "$RUNNER_TEMP/sukisu-setup.sh"
-
           chmod +x "$RUNNER_TEMP/sukisu-setup.sh"
-          "$RUNNER_TEMP/sukisu-setup.sh" "$SUKISU_REF"
+
+          echo
+          echo "curl -LSs \\"
+          echo "\"$SUKISU_SETUP_URL\" \\"
+          echo "| bash -s builtin"
+          echo
+          "$RUNNER_TEMP/sukisu-setup.sh" builtin
+
+          # setup.sh performs git pull; pin the requested builtin commit again afterwards.
+          git -C KernelSU fetch --depth=1 origin \
+            "$SUKISU_EXPECTED_COMMIT"
+          git -C KernelSU checkout --detach \
+            "$SUKISU_EXPECTED_COMMIT"
+
+          SUKISU_COMMIT="$(git -C KernelSU rev-parse HEAD)"
+          test "$SUKISU_COMMIT" = "$SUKISU_EXPECTED_COMMIT"
 
           test -d KernelSU/kernel
           test -f KernelSU/kernel/Kconfig
@@ -1305,20 +1391,17 @@ jobs:
           test -f KernelSU/kernel/Kbuild
           test -e drivers/kernelsu/Kconfig
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
-          grep -q 'obj-$(CONFIG_KSU)' drivers/Makefile
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
 
-          SUKISU_COMMIT="$(git -C KernelSU rev-parse HEAD)"
-          SUKISU_TAG="$(git -C KernelSU describe --tags --exact-match 2>/dev/null || true)"
+          {
+            echo "sukisu_commit=$SUKISU_COMMIT"
+            echo "sukisu_branch=$SUKISU_BRANCH"
+            echo "target_model=$SUKISU_TARGET_MODEL"
+            echo "target_region=$SUKISU_TARGET_REGION"
+            echo "setup_url=$SUKISU_SETUP_URL"
+            echo "integration_mode=builtin"
+          } | tee "$DIAG_DIR/sukisu-version.txt"
 
-          echo "sukisu_ref=$SUKISU_REF" | tee "$DIAG_DIR/sukisu-version.txt"
-          echo "sukisu_commit=$SUKISU_COMMIT" | tee -a "$DIAG_DIR/sukisu-version.txt"
-          echo "sukisu_tag=$SUKISU_TAG" | tee -a "$DIAG_DIR/sukisu-version.txt"
-
-          case "$SUKISU_COMMIT" in
-            "$SUKISU_EXPECTED_COMMIT"*) ;;
-            *) echo "::error::SukiSU commit does not match the verified commit prefix."; exit 1 ;;
-          esac
-          test "$SUKISU_TAG" = "$SUKISU_EXPECTED_TAG"
           git diff --name-only > "$DIAG_DIR/sukisu-modified-files.txt"
 
       - name: 07 - Fetch and verify SUSFS kernel-4.19
@@ -1336,10 +1419,7 @@ jobs:
           echo "susfs_branch=$SUSFS_BRANCH" | tee "$DIAG_DIR/susfs-version.txt"
           echo "susfs_commit=$SUSFS_COMMIT" | tee -a "$DIAG_DIR/susfs-version.txt"
 
-          case "$SUSFS_COMMIT" in
-            "$SUSFS_EXPECTED_COMMIT"*) ;;
-            *) echo "::error::SUSFS commit does not match the verified commit prefix."; exit 1 ;;
-          esac
+          test "$SUSFS_COMMIT" = "$SUSFS_EXPECTED_COMMIT"
 
           test -f susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch
           test -f susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
@@ -1769,13 +1849,17 @@ jobs:
             echo "defconfig=$DEFCONFIG"
             echo "original_kernel_config_sha256=$ORIGINAL_KERNEL_CONFIG_SHA256"
             echo "sukisu_ref=$SUKISU_REF"
-            echo "sukisu_expected_tag=$SUKISU_EXPECTED_TAG"
+            echo "sukisu_branch=$SUKISU_BRANCH"
             echo "sukisu_expected_commit=$SUKISU_EXPECTED_COMMIT"
+            echo "target_model=$SUKISU_TARGET_MODEL"
+            echo "target_region=$SUKISU_TARGET_REGION"
             echo "susfs_branch=$SUSFS_BRANCH"
             echo "susfs_expected_commit=$SUSFS_EXPECTED_COMMIT"
             echo "susfs_expected_version=$SUSFS_EXPECTED_VERSION"
             echo "cip_source=$CIP_SOURCE_TAG"
+            echo "cip_source_commit=$CIP_SOURCE_COMMIT"
             echo "cip_target=$CIP_TARGET_TAG"
+            echo "cip_target_commit=$CIP_TARGET_COMMIT"
             echo "artifact=Image.gz"
             echo "original_features=preserved_by_exact_config_audit"
             echo "dtb_dtbo=not packaged"
@@ -1810,13 +1894,17 @@ jobs:
             echo "source_branch=$SOURCE_BRANCH"
             echo "defconfig=$DEFCONFIG"
             echo "sukisu_ref=$SUKISU_REF"
-            echo "sukisu_expected_tag=$SUKISU_EXPECTED_TAG"
+            echo "sukisu_branch=$SUKISU_BRANCH"
             echo "sukisu_expected_commit=$SUKISU_EXPECTED_COMMIT"
+            echo "target_model=$SUKISU_TARGET_MODEL"
+            echo "target_region=$SUKISU_TARGET_REGION"
             echo "susfs_branch=$SUSFS_BRANCH"
             echo "susfs_expected_commit=$SUSFS_EXPECTED_COMMIT"
             echo "susfs_expected_version=$SUSFS_EXPECTED_VERSION"
             echo "cip_source=$CIP_SOURCE_TAG"
+            echo "cip_source_commit=$CIP_SOURCE_COMMIT"
             echo "cip_target=$CIP_TARGET_TAG"
+            echo "cip_target_commit=$CIP_TARGET_COMMIT"
           } > "$DIAG_DIR/00-workflow-context.txt"
 
           if [ -d "$GITHUB_WORKSPACE/kernel/.git" ]; then
