@@ -873,16 +873,32 @@ jobs:
           fi
 
           if git ls-files -u | grep -q .; then
-            python3 - "$GITHUB_WORKSPACE/kernel" "$DIAG_DIR/cip-conflicts.txt" <<'PY'
+            python3 - "$GITHUB_WORKSPACE/kernel" \
+              "$CIP_SOURCE_TAG" \
+              "$CIP_TARGET_TAG" \
+              "$DIAG_DIR/cip-conflicts.txt" \
+              "$DIAG_DIR/cip-semantic-resolution.txt" <<'PY'
           from pathlib import Path
+          import subprocess
           import sys
+          import tempfile
 
           root = Path(sys.argv[1])
-          conflicts = [
+          source_tag = sys.argv[2]
+          target_tag = sys.argv[3]
+          conflicts_file = Path(sys.argv[4])
+          resolution_log = Path(sys.argv[5])
+
+          conflicts = {
               line.strip()
-              for line in Path(sys.argv[2]).read_text().splitlines()
+              for line in conflicts_file.read_text().splitlines()
               if line.strip()
-          ]
+          }
+
+          preserve = {
+              "fs/f2fs/data.c",
+              "kernel/bpf/local_storage.c",
+          }
 
           expected_semantic = {
               "arch/arm64/kernel/cpu_errata.c",
@@ -891,345 +907,200 @@ jobs:
               "drivers/net/usb/rtl8150.c",
               "sound/core/compress_offload.c",
           }
-          preserve = {
-              "fs/f2fs/data.c",
-              "kernel/bpf/local_storage.c",
-          }
-          allowed = expected_semantic | preserve
 
-          actual = set(conflicts)
-          if actual - allowed:
+          allowed = preserve | expected_semantic
+          unexpected = conflicts - allowed
+          if unexpected:
               raise SystemExit(
                   "Unexpected CIP conflict paths: "
-                  + ", ".join(sorted(actual - allowed))
+                  + ", ".join(sorted(unexpected))
               )
 
-          for path in actual & preserve:
-              import subprocess
-              subprocess.run(
-                  ["git", "checkout", "--ours", "--", path],
-                  cwd=root,
-                  check=True,
-              )
-              print(f"PRESERVED LG BASELINE: {path}")
-
-          semantic_actual = actual & expected_semantic
-          if semantic_actual != expected_semantic:
+          if conflicts & preserve != preserve:
+              missing = preserve - conflicts
               raise SystemExit(
-                  "Expected semantic CIP conflicts missing: "
-                  + ", ".join(sorted(expected_semantic - semantic_actual))
+                  "Expected preserved conflict paths missing: "
+                  + ", ".join(sorted(missing))
               )
 
-          def replace_once(path, old, new, label):
-              file_path = root / path
-              text = file_path.read_text(encoding="utf-8", errors="surrogateescape")
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(
-                      f"{label}: expected exactly one match in {path}, found {count}"
-                  )
-              file_path.write_text(
-                  text.replace(old, new, 1),
-                  encoding="utf-8",
-                  errors="surrogateescape",
+          if conflicts & expected_semantic != expected_semantic:
+              missing = expected_semantic - conflicts
+              raise SystemExit(
+                  "Expected semantic CIP conflict paths missing: "
+                  + ", ".join(sorted(missing))
               )
 
-          replace_once(
-              "arch/arm64/kernel/cpu_errata.c",
-              """#endif
+          def run(*args, capture=False):
+              return subprocess.run(
+                  list(args),
+                  cwd=root,
+                  check=False,
+                  text=True,
+                  capture_output=capture,
+              )
 
-              #ifdef CONFIG_ARM64_ERRATUM_1742098
-              """,
-              """#endif
+          with resolution_log.open("w", encoding="utf-8") as log:
+              for path in sorted(preserve):
+                  result = run("git", "checkout", "--ours", "--", path)
+                  if result.returncode:
+                      raise SystemExit(f"Failed to restore LG baseline: {path}")
+                  run("git", "add", "--", path)
+                  log.write(f"PRESERVED LG BASELINE: {path}\n")
+                  print(f"PRESERVED LG BASELINE: {path}")
 
-              #ifdef CONFIG_ARM64_WORKAROUND_REPEAT_TLBI
-              static const struct arm64_cpu_capabilities arm64_repeat_tlbi_list[] = {
-              #ifdef CONFIG_QCOM_FALKOR_ERRATUM_1009
-              	{
-              		ERRATA_MIDR_REV(MIDR_QCOM_FALKOR_V1, 0, 0)
-              	},
-              	{
-              		.midr_range.model = MIDR_QCOM_KRYO,
-              		.matches = is_kryo_midr,
-              	},
-              #endif
-              #ifdef CONFIG_ARM64_ERRATUM_1286807
-              	{
-              		ERRATA_MIDR_RANGE(MIDR_CORTEX_A76, 0, 0, 3, 0),
-              	},
-              #endif
-              #ifdef CONFIG_ARM64_ERRATUM_4118414
-              	{
-              		ERRATA_MIDR_RANGE_LIST(((const struct midr_range[]) {
-              			MIDR_ALL_VERSIONS(MIDR_C1_PREMIUM),
-              			MIDR_ALL_VERSIONS(MIDR_C1_ULTRA),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_A76),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_A76AE),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_A77),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_A78),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_A78AE),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_A78C),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_A710),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_X1),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_X1C),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_X2),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_X3),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_X4),
-              			MIDR_ALL_VERSIONS(MIDR_CORTEX_X925),
-              			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_N1),
-              			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_N2),
-              			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V1),
-              			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V2),
-              			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V3),
-              			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V3AE),
-              			{}
-              		})),
-              	},
-              #endif
-              	{}
-              };
-              #endif
+              for path in sorted(expected_semantic):
+                  result = run("git", "checkout", "--ours", "--", path)
+                  if result.returncode:
+                      raise SystemExit(f"Failed to restore LG side: {path}")
 
-              #ifdef CONFIG_ARM64_ERRATUM_1742098
-              """,
-              "arm64 repeat-TLBI list insertion",
-          )
+                  ours = root / path
 
-          replace_once(
-              "arch/arm64/kernel/cpu_errata.c",
-              """#ifdef CONFIG_QCOM_FALKOR_ERRATUM_1009
-              	{
-              		.desc = "Qualcomm Technologies Falkor erratum 1009",
-              		.capability = ARM64_WORKAROUND_REPEAT_TLBI,
-              		ERRATA_MIDR_REV(MIDR_QCOM_FALKOR_V1, 0, 0),
-              	},
-              #endif
-              """,
-              """#ifdef CONFIG_ARM64_WORKAROUND_REPEAT_TLBI
-              	{
-              		.desc = "Broken broadcast TLBI completion",
-              		.capability = ARM64_WORKAROUND_REPEAT_TLBI,
-              		.type = ARM64_CPUCAP_LOCAL_CPU_ERRATUM,
-              		.matches = multi_entry_cap_matches,
-              		.match_list = arm64_repeat_tlbi_list,
-              	},
-              #endif
-              """,
-              "arm64 repeat-TLBI capability replacement",
-          )
+                  with tempfile.TemporaryDirectory(prefix="cip-merge-") as tmp:
+                      tmpdir = Path(tmp)
+                      ours_file = tmpdir / "ours"
+                      base_file = tmpdir / "base"
+                      theirs_file = tmpdir / "theirs"
 
-          replace_once(
-              "drivers/md/dm-verity-fec.c",
-              """	u64 hash_blocks, fec_blocks;
-            """,
-              """	u64 hash_blocks;
-            """,
-              "dm-verity variable cleanup",
-          )
-          replace_once(
-              "drivers/md/dm-verity-fec.c",
-              """	if (dm_bufio_get_device_size(v->bufio) < f->hash_blocks) {
-            """,
-              """	if (dm_bufio_get_device_size(v->bufio) <
-            	    v->hash_start + f->hash_blocks) {
-            """,
-              "dm-verity hash-device size check",
-          )
-          replace_once(
-              "drivers/md/dm-verity-fec.c",
-              """	fec_blocks = div64_u64(f->rounds * f->roots, v->fec->roots << SECTOR_SHIFT);
-            	if (dm_bufio_get_device_size(f->bufio) < fec_blocks) {
-            """,
-              """	if (dm_bufio_get_device_size(f->bufio) < f->rounds * f->roots) {
-            """,
-              "dm-verity FEC device size check",
-          )
+                      ours_file.write_bytes(ours.read_bytes())
 
-          replace_once(
-              "drivers/net/ethernet/qualcomm/rmnet/rmnet_config.c",
-              """		rmnet_vnd_dellink(mux_id, port, ep);
-            		synchronize_rcu();
-            		kfree(ep);
-            """,
-              """		rmnet_vnd_dellink(mux_id, port, ep);
-            		port->nr_rmnet_devs--;
-            		kfree_rcu(ep, rcu);
-            """,
-              "rmnet endpoint teardown",
-          )
-          replace_once(
-              "drivers/net/ethernet/qualcomm/rmnet/rmnet_config.c",
-              """		rmnet_vnd_dellink(ep->mux_id, port, ep);
+                      base_result = run(
+                          "git",
+                          "show",
+                          f"{source_tag}:{path}",
+                          capture=True,
+                      )
+                      if base_result.returncode:
+                          raise SystemExit(
+                              f"Cannot read official CIP132 base: {path}"
+                          )
+                      base_file.write_text(
+                          base_result.stdout,
+                          encoding="utf-8",
+                          errors="surrogateescape",
+                      )
 
-            		hlist_del_init_rcu(&ep->hlnode);
-            		hlist_add_head(&ep->hlnode, &cleanup_list);
-            """,
-              """		rmnet_vnd_dellink(ep->mux_id, port, ep);
+                      theirs_result = run(
+                          "git",
+                          "show",
+                          f"{target_tag}:{path}",
+                          capture=True,
+                      )
+                      if theirs_result.returncode:
+                          raise SystemExit(
+                              f"Cannot read official CIP135 target: {path}"
+                          )
+                      theirs_file.write_text(
+                          theirs_result.stdout,
+                          encoding="utf-8",
+                          errors="surrogateescape",
+                      )
 
-            		port->nr_rmnet_devs--;
-            		hlist_del_init_rcu(&ep->hlnode);
-            		hlist_add_head(&ep->hlnode, &cleanup_list);
-            """,
-              "rmnet endpoint count",
-          )
-          replace_once(
-              "drivers/net/ethernet/qualcomm/rmnet/rmnet_config.c",
-              """		hlist_for_each_entry_safe(ep, tmp_ep, &cleanup_list, hlnode) {
-            		hlist_del(&ep->hlnode);
-            		kfree(ep);
-            	}
-            """,
-              """		hlist_for_each_entry_safe(ep, tmp_ep, &cleanup_list, hlnode) {
-            		hlist_del(&ep->hlnode);
-            		kfree_rcu(ep, rcu);
-            	}
-            """,
-              "rmnet deferred endpoint free",
-          )
+                      merge = subprocess.run(
+                          [
+                              "git",
+                              "merge-file",
+                              "-p",
+                              "--diff3",
+                              str(ours_file),
+                              str(base_file),
+                              str(theirs_file),
+                          ],
+                          cwd=root,
+                          text=True,
+                          capture_output=True,
+                      )
 
-          replace_once(
-              "drivers/net/usb/rtl8150.c",
-              """	netif_stop_queue(netdev);
-            	dev->tx_skb = skb;
-            """,
-              """	skb_len = skb->len;
+                      if merge.returncode not in (0, 1):
+                          raise SystemExit(
+                              f"git merge-file failed for {path}: "
+                              f"{merge.stderr.strip()}"
+                          )
 
-            	netif_stop_queue(netdev);
-            	dev->tx_skb = skb;
-            """,
-              "rtl8150 saved skb length",
-          )
-          replace_once(
-              "drivers/net/usb/rtl8150.c",
-              """			netif_start_queue(netdev);
-            		}
-            	} else {
-            		netdev->stats.tx_packets++;
-            		netdev->stats.tx_bytes += skb->len;
-            """,
-              """			netif_start_queue(netdev);
-            		}
-            		dev->tx_skb = NULL;
-            		dev_kfree_skb_any(skb);
-            	} else {
-            		netdev->stats.tx_packets++;
-            		netdev->stats.tx_bytes += skb_len;
-            """,
-              "rtl8150 failed-submit cleanup",
-          )
-          replace_once(
-              "drivers/net/usb/rtl8150.c",
-              """	rtl8150_t *dev = netdev_priv(netdev);
-            	int res;
-            	unsigned int count;
-            """,
-              """	rtl8150_t *dev = netdev_priv(netdev);
-            	unsigned int skb_len;
-            	int res;
-            	unsigned int count;
-            """,
-              "rtl8150 skb length declaration",
-          )
+                      merged = merge.stdout
 
-          replace_once(
-              "sound/core/compress_offload.c",
-              """/* TODO:
-             * - add substream support for multiple devices in case of
-             *	SND_DYNAMIC_MINORS is not used
-             * - Multiple node representation
-             *	driver should be able to register multiple nodes
-             *	driver should be able to register multiple nodes
-             */
-            """,
-              """#define COMPR_CODEC_CAPS_OVERFLOW
-            """,
-              "unused compress TODO block",
-          )
-          replace_once(
-              "sound/core/compress_offload.c",
-              """static DEFINE_MUTEX(device_mutex);
+                      if merge.returncode == 0:
+                          ours.write_text(
+                              merged,
+                              encoding="utf-8",
+                              errors="surrogateescape",
+                          )
+                          log.write(
+                              f"CIP135 MERGED CLEAN: {path}\n"
+                          )
+                          print(f"CIP135 MERGED CLEAN: {path}")
+                      else:
+                          lines = merged.splitlines(keepends=True)
+                          resolved = []
+                          state = "normal"
+                          theirs_lines = []
+                          conflict_count = 0
 
-            """,
-              "",
-              "compress device mutex",
-          )
+                          for line in lines:
+                              if state == "normal":
+                                  if line.startswith("<<<<<<< "):
+                                      state = "ours"
+                                      theirs_lines = []
+                                      conflict_count += 1
+                                  else:
+                                      resolved.append(line)
+                              elif state == "ours":
+                                  if line.startswith("||||||| "):
+                                      state = "base"
+                                  elif line.startswith("======="):
+                                      state = "theirs"
+                                      theirs_lines = []
+                                  else:
+                                      continue
+                              elif state == "base":
+                                  if line.startswith("======="):
+                                      state = "theirs"
+                                  else:
+                                      continue
+                              elif state == "theirs":
+                                  if line.startswith(">>>>>>> "):
+                                      resolved.extend(theirs_lines)
+                                      state = "normal"
+                                  else:
+                                      theirs_lines.append(line)
 
-          add_device = """static int snd_compress_add_device(struct snd_compr *device)
-            {
-            	int ret;
+                          if state != "normal":
+                              raise SystemExit(
+                                  f"Malformed git merge-file conflict in {path}"
+                              )
 
-            	if (!device->card)
-            		return -EINVAL;
+                          final_text = "".join(resolved)
+                          if any(
+                              marker in final_text
+                              for marker in (
+                                  "<<<<<<< ",
+                                  "||||||| ",
+                                  "=======\n",
+                                  ">>>>>>> ",
+                              )
+                          ):
+                              raise SystemExit(
+                                  f"Unresolved conflict markers remain in {path}"
+                              )
 
-            	/* register the card */
-            	ret = snd_card_register(device->card);
-            	if (ret)
-            		goto out;
-            	return 0;
+                          ours.write_text(
+                              final_text,
+                              encoding="utf-8",
+                              errors="surrogateescape",
+                          )
+                          log.write(
+                              f"CIP135 CONFLICT HUNKS RESOLVED: {path}: "
+                              f"{conflict_count}; "
+                              "CIP135 side selected only for conflicting hunks; "
+                              "LG side retained elsewhere.\n"
+                          )
+                          print(
+                              f"CIP135 CONFLICT HUNKS RESOLVED: {path}: "
+                              f"{conflict_count}"
+                          )
 
-            out:
-            	pr_err("failed with %d\n", ret);
-            	return ret;
+                  run("git", "add", "--", path)
 
-            }
-
-            """
-          add_device_remove = """static int snd_compress_add_device(struct snd_compr *device)
-            {
-            	int ret;
-
-            	if (!device->card)
-            		return -EINVAL;
-
-            	/* register the card */
-            	ret = snd_card_register(device->card);
-            	if (ret)
-            		goto out;
-            	return 0;
-
-            out:
-            	pr_err("failed with %d\n", ret);
-            	return ret;
-
-            }
-
-            """
-          # The upstream CIP135 delta removes the standalone registration helpers.
-          # Require their exact vendor copy before removing them.
-          for helper in (
-              "snd_compress_add_device",
-              "snd_compress_remove_device",
-          ):
-              if helper not in (
-                  (root / "sound/core/compress_offload.c").read_text(
-                      encoding="utf-8", errors="surrogateescape"
-                  )
-              ):
-                  raise SystemExit(f"Missing expected {helper} in vendor source")
-
-          replace_once(
-              "sound/core/compress_offload.c",
-              add_device_remove,
-              "",
-              "compress add-device helper",
-          )
-          remove_device = """static int snd_compress_remove_device(struct snd_compr *device)
-            {
-            	return snd_card_free(device->card);
-            }
-
-            """
-          replace_once(
-              "sound/core/compress_offload.c",
-              remove_device,
-              "",
-              "compress remove-device helper",
-          )
-
-          for path in conflicts:
-              subprocess.run(["git", "add", "--", path], cwd=root, check=True)
-
-          print("Semantic resolution applied to all expected CIP conflicts.")
+          print("CIP 3-way semantic merge completed.")
           PY
           else
             if [ "$APPLY_STATUS" -ne 0 ]; then
