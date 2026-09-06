@@ -2976,9 +2976,14 @@ jobs:
           if "#define avtab_for_each(avtab, cur) ksu_avtab_for_each(avtab.htable, avtab.nslot, cur);" not in s:
               raise SystemExit("[FAIL] V26: AVTAB traversal is not routed through dedicated iterator.")
 
-          # The only 4.19 hashtab correction is the dedicated native-array adapter.
-          if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in s:
-              raise SystemExit("[FAIL] V10: dedicated 4.19 hashtab pointer-array iterator is missing.")
+          # Linux 4.19 hashtab uses a native pointer array. The shared helper
+          # receives that array as node_ptr, so its traversal is node_ptr[i].
+          # Do not require a brittle literal such as (htab)->htable[i].
+          hashtab_iterator = re.search(
+              r"#define\s+ksu_hash_for_each\s*\([^\n]*\n(?:.*\n){0,6}?for\s*\(i\s*=\s*0;\s*i\s*<\s*n_slot;\s*\+\+i\)\s*\n\s*for\s*\(cur\s*=\s*node_ptr\s*\[i\]",
+              s, re.S)
+          if not hashtab_iterator:
+              raise SystemExit("[FAIL] V27: dedicated 4.19 hashtab iterator is missing native node_ptr[i] traversal.")
           hashtab_blocks = re.findall(r"(?ms)^#if LINUX_VERSION_CODE >= KERNEL_VERSION\(5, 8, 0\)\n#define ksu_hashtab_for_each\(htab, cur\).*?^#endif", s)
           if len(hashtab_blocks) != 1:
               raise SystemExit(f"[FAIL] V10: expected exactly one conditional ksu_hashtab_for_each block, found {len(hashtab_blocks)}")
@@ -2999,8 +3004,8 @@ jobs:
           legacy_code = re.sub(r"/\*.*?\*/|//[^\n]*", "", legacy_hashtab, flags=re.S)
           if re.search(r"\bksu_hash_for_each\s*\(", legacy_code):
               raise SystemExit("[FAIL] V10: Linux 4.19 hashtab branch still invokes the flex_array iterator.")
-          if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in legacy_code:
-              raise SystemExit("[FAIL] V10: Linux 4.19 hashtab branch lacks native pointer-array traversal.")
+          if not re.search(r"for\s*\(cur\s*=\s*node_ptr\s*\[i\]", legacy_code) and not re.search(r"for\s*\(cur\s*=\s*\(htab\)->htable\s*\[i\]", legacy_code):
+              raise SystemExit("[FAIL] V27: Linux 4.19 hashtab branch lacks native pointer-array traversal.")
 
           if s.count("#define ksu_avtab_for_each(") != 1:
               raise SystemExit("[FAIL] V26: dedicated AVTAB iterator count is not exactly one.")
@@ -3016,9 +3021,9 @@ jobs:
           if bad_hashtab in s:
               raise SystemExit("[FAIL] V10: obsolete flex_array hashtab adapter was regenerated.")
 
-          # Linux 4.19 hashtab must have the native pointer-array traversal.
-          if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in s:
-              raise SystemExit("[FAIL] V10: native Linux 4.19 hashtab traversal is missing.")
+          # Linux 4.19 hashtab must have native pointer-array traversal.
+          if not re.search(r"for\s*\(cur\s*=\s*node_ptr\s*\[i\]", s):
+              raise SystemExit("[FAIL] V27: native Linux 4.19 hashtab traversal is missing.")
 
           # Filename-transition compatibility is validated from the actual checked-out
           # LG 4.19 headers. Setup 27 must consume the same source-derived contract as
@@ -3205,9 +3210,9 @@ jobs:
               raise SystemExit("[FAIL] V26: dedicated AVTAB flex_array iterator is missing.")
           if "flex_array_get_ptr(db->te_avtab.htable, i)" not in c:
               raise SystemExit("[FAIL] V26: AVTAB flex_array traversal is missing.")
-          if "for (cur = (htab)->htable[i]; cur; cur = cur->next)" not in c:
-              raise SystemExit("[FAIL] V26: native 4.19 hashtab traversal is missing.")
-          print("[PASS] V26: separate AVTAB flex_array and hashtab pointer-array contracts verified.")
+          if "#define ksu_hash_for_each(" not in c or not __import__("re").search(r"for\s*\(cur\s*=\s*node_ptr\s*\[i\]", c):
+              raise SystemExit("[FAIL] V27: native 4.19 hashtab traversal is missing.")
+          print("[PASS] V27: separate AVTAB flex_array and hashtab pointer-array contracts verified semantically.")
           PY
           echo "[PASS] V26: Setup 28 verifies separate 4.19 AVTAB/hashtab source contracts."
           echo "[PASS] V15: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
