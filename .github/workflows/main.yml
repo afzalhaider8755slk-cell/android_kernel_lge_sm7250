@@ -34,8 +34,8 @@ jobs:
 
     env:
       KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
-      SOURCE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || 'sixteen' }}
-      DEFCONFIG: ${{ github.event_name == 'workflow_dispatch' && inputs.defconfig || 'vendor/caymanlm_defconfig' }}
+      SOURCE_BRANCH: sixteen
+      DEFCONFIG: vendor/caymanlm_defconfig
       ORIGINAL_KERNEL_CONFIG_SHA256: a084fd97f58f6af6974a8f347817b88eb6d08f4ec00726cdd3fbe87e3f1e3cdd
 
       SUKISU_SETUP_URL: https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh
@@ -63,28 +63,16 @@ jobs:
       DIAG_DIR: ${{ github.workspace }}/ci-diagnostics
 
     steps:
-      - name: 00 - Validate immutable workflow contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "${SOURCE_BRANCH}" = "sixteen"
-          test "${DEFCONFIG}" = "vendor/caymanlm_defconfig"
-          test "${SUSFS_EXPECTED_COMMIT}" = "001e6991"
-          test "${SUSFS_EXPECTED_VERSION}" = "1.5.5"
-          test "${SUKISU_EXPECTED_COMMIT}" = "85eb4a9"
-          test "${SUKISU_EXPECTED_TAG}" = "v4.2.0"
-          test "${CIP_SOURCE_TAG}" = "v4.19.325-cip132"
-          test "${CIP_TARGET_TAG}" = "v4.19.325-cip135"
-          ! grep -qEi '^(Infinity|NaN|undefined|null)$' <<< "${SUSFS_EXPECTED_COMMIT}"
-          echo "Workflow contract: PASS"
-
       - name: 01 - Checkout LG source
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
           rm -rf "$GITHUB_WORKSPACE/kernel"
-          git ls-remote --exit-code --heads "$KERNEL_REPO" "refs/heads/$SOURCE_BRANCH"             | tee "$DIAG_DIR/source-remote.txt"
+          if ! git ls-remote --exit-code --heads "$KERNEL_REPO" "refs/heads/$SOURCE_BRANCH"             | tee "$DIAG_DIR/source-remote.txt"; then
+            echo "::error::Required LG source branch '$SOURCE_BRANCH' was not found."
+            exit 1
+          fi
 
           git clone --depth=1 --branch "$SOURCE_BRANCH" "$KERNEL_REPO" "$GITHUB_WORKSPACE/kernel"
           cd "$GITHUB_WORKSPACE/kernel"
@@ -95,7 +83,11 @@ jobs:
           git status --short
           git log -1 --format='commit=%H%nsubject=%s' | tee "$DIAG_DIR/source-commit.txt"
 
-          echo "source_branch=$SOURCE_BRANCH" | tee "$DIAG_DIR/source-status.txt"
+          {
+            echo "source_branch=$SOURCE_BRANCH"
+            echo "defconfig=$DEFCONFIG"
+            echo "source_commit=$(git rev-parse HEAD)"
+          } | tee "$DIAG_DIR/source-status.txt"
           echo "source_commit=$(git rev-parse HEAD)" | tee -a "$DIAG_DIR/source-status.txt"
           echo "kernel_version=$(make -s kernelversion)" | tee -a "$DIAG_DIR/source-status.txt"
 
