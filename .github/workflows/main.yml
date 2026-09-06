@@ -49,7 +49,8 @@ jobs:
       SUSFS_EXPECTED_VERSION: 1.5.5
 
       CIP_REPO: https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-      CIP_BASE_TAG: v4.19.325
+      # The LG source is already CIP132; only the official CIP132->CIP135 delta is safe here.
+      CIP_SOURCE_TAG: v4.19.325-cip132
       CIP_TARGET_TAG: v4.19.325-cip135
 
       CLANG_REVISION: clang-r563880c
@@ -716,39 +717,57 @@ jobs:
           echo "baseline_sha256=$actual_hash"
           echo "adapted_baseline_sha256=$(sha256sum "$OUT_DIR/.config" | awk '{print $1}')"
 
-      - name: 05 - Fetch and apply official CIP135 delta
+      - name: 05 - Apply official CIP132 to CIP135 delta
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$DIAG_DIR"
           exec > >(tee "$DIAG_DIR/05-cip.log") 2>&1
-          cd "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE/kernel"
 
-          rm -rf cip-kernel
-          git init cip-kernel
-          git -C cip-kernel remote add origin "$CIP_REPO"
-          git -C cip-kernel fetch --no-tags --depth=1 origin \
-            "refs/tags/$CIP_BASE_TAG:refs/tags/$CIP_BASE_TAG" \
+          if ! grep -qx -- '-cip132' localversion-cip; then
+            echo "::error::LG source is not based on CIP132; refusing to apply a CIP132->CIP135 delta."
+            cat localversion-cip
+            exit 1
+          fi
+
+          rm -rf "$GITHUB_WORKSPACE/cip-kernel"
+          git init "$GITHUB_WORKSPACE/cip-kernel"
+          git -C "$GITHUB_WORKSPACE/cip-kernel" remote add origin "$CIP_REPO"
+          git -C "$GITHUB_WORKSPACE/cip-kernel" fetch --no-tags --depth=1 origin \
+            "refs/tags/$CIP_SOURCE_TAG:refs/tags/$CIP_SOURCE_TAG" \
             "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
 
-          git -C cip-kernel cat-file -e "$CIP_BASE_TAG^{commit}"
-          git -C cip-kernel cat-file -e "$CIP_TARGET_TAG^{commit}"
+          git -C "$GITHUB_WORKSPACE/cip-kernel" cat-file -e "$CIP_SOURCE_TAG^{commit}"
+          git -C "$GITHUB_WORKSPACE/cip-kernel" cat-file -e "$CIP_TARGET_TAG^{commit}"
 
-          git -C cip-kernel rev-parse "$CIP_BASE_TAG^{commit}" | tee "$DIAG_DIR/cip-base-commit.txt"
-          git -C cip-kernel rev-parse "$CIP_TARGET_TAG^{commit}" | tee "$DIAG_DIR/cip-target-commit.txt"
+          SOURCE_COMMIT="$(git -C "$GITHUB_WORKSPACE/cip-kernel" rev-parse "$CIP_SOURCE_TAG^{commit}")"
+          TARGET_COMMIT="$(git -C "$GITHUB_WORKSPACE/cip-kernel" rev-parse "$CIP_TARGET_TAG^{commit}")"
+          echo "$SOURCE_COMMIT" | tee "$DIAG_DIR/cip-source-commit.txt"
+          echo "$TARGET_COMMIT" | tee "$DIAG_DIR/cip-target-commit.txt"
 
-          git -C cip-kernel diff --binary --full-index \
-            "$CIP_BASE_TAG" "$CIP_TARGET_TAG" \
+          git -C "$GITHUB_WORKSPACE/cip-kernel" merge-base --is-ancestor \
+            "$CIP_SOURCE_TAG" "$CIP_TARGET_TAG"
+
+          git -C "$GITHUB_WORKSPACE/cip-kernel" diff --binary --full-index \
+            "$CIP_SOURCE_TAG" "$CIP_TARGET_TAG" \
             > "$RUNNER_TEMP/cip135.delta.patch"
 
           test -s "$RUNNER_TEMP/cip135.delta.patch"
           cp "$RUNNER_TEMP/cip135.delta.patch" "$DIAG_DIR/cip135.delta.patch"
 
-          cd "$GITHUB_WORKSPACE/kernel"
+          # Import official CIP objects so git apply --3way has the CIP132 base blobs.
+          git fetch --no-tags --depth=1 "$CIP_REPO" \
+            "refs/tags/$CIP_SOURCE_TAG:refs/tags/$CIP_SOURCE_TAG" \
+            "refs/tags/$CIP_TARGET_TAG:refs/tags/$CIP_TARGET_TAG"
+
+          git cat-file -e "$CIP_SOURCE_TAG^{commit}"
+          git cat-file -e "$CIP_TARGET_TAG^{commit}"
+
           git apply --3way --whitespace=fix "$RUNNER_TEMP/cip135.delta.patch"
 
           if git ls-files -u | grep -q .; then
-            echo "::error::CIP135 produced unresolved merge conflicts."
+            echo "::error::CIP132->CIP135 produced unresolved merge conflicts."
             git status --short
             git diff --cc
             exit 1
@@ -757,6 +776,7 @@ jobs:
           grep -q '^VERSION = 4$' Makefile
           grep -q '^PATCHLEVEL = 19$' Makefile
           grep -q '^SUBLEVEL = 325$' Makefile
+          grep -qx -- '-cip135' localversion-cip
 
           CIP_RELEASE="$(make -s O="$OUT_DIR" kernelrelease)"
           echo "kernelrelease=$CIP_RELEASE" | tee "$DIAG_DIR/cip-release.txt"
@@ -773,7 +793,8 @@ jobs:
             olddefconfig
 
           cp "$OUT_DIR/.config" "$DIAG_DIR/cip-post-olddefconfig.config"
-          sha256sum "$DIAG_DIR/cip-post-olddefconfig.config"             | tee "$DIAG_DIR/cip-post-olddefconfig-config.sha256"
+          sha256sum "$DIAG_DIR/cip-post-olddefconfig.config" \
+            | tee "$DIAG_DIR/cip-post-olddefconfig-config.sha256"
 
           test -f "$DIAG_DIR/baseline.config"
           test -f "$DIAG_DIR/working-original.config"
@@ -785,6 +806,9 @@ jobs:
           mkdir -p "$DIAG_DIR"
           exec > >(tee "$DIAG_DIR/06-sukisu.log") 2>&1
           cd "$GITHUB_WORKSPACE/kernel"
+
+          test "$SUSFS_EXPECTED_COMMIT" = "001e6991"
+          test "$SUSFS_EXPECTED_VERSION" = "1.5.5"
 
           curl --fail --location --silent --show-error \
             "$SUKISU_SETUP_URL" \
@@ -1222,7 +1246,7 @@ jobs:
             echo "susfs_branch=$SUSFS_BRANCH"
             echo "susfs_expected_commit=$SUSFS_EXPECTED_COMMIT"
             echo "susfs_expected_version=$SUSFS_EXPECTED_VERSION"
-            echo "cip_base=$CIP_BASE_TAG"
+            echo "cip_source=$CIP_SOURCE_TAG"
             echo "cip_target=$CIP_TARGET_TAG"
             echo "artifact=Image.gz"
             echo "original_features=preserved_by_exact_config_audit"
@@ -1263,7 +1287,7 @@ jobs:
             echo "susfs_branch=$SUSFS_BRANCH"
             echo "susfs_expected_commit=$SUSFS_EXPECTED_COMMIT"
             echo "susfs_expected_version=$SUSFS_EXPECTED_VERSION"
-            echo "cip_base=$CIP_BASE_TAG"
+            echo "cip_source=$CIP_SOURCE_TAG"
             echo "cip_target=$CIP_TARGET_TAG"
           } > "$DIAG_DIR/00-workflow-context.txt"
 
