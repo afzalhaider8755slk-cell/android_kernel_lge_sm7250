@@ -1984,11 +1984,29 @@ jobs:
               raise SystemExit(f"[FAIL] V19: unsafe protected LTO-wrapped built-in.a rule remains count={len(final_unsafe)}.")
           if final.count("$(update_lto_symversions)") < 1:
               raise SystemExit("[FAIL] V19: update_lto_symversions disappeared; LTO protection was not preserved.")
-          if final.count("$(AR) rcSTP$(KBUILD_ARFLAGS)") != 1:
-              raise SystemExit("[FAIL] V19: rcSTP Kbuild archive command count is not exactly one.")
+          # Count the protected archive command only inside cmd_ar_builtin blocks.
+          # Do NOT use a whole-file token count: an LG 4.19 tree may legitimately
+          # contain the same rcSTP$(KBUILD_ARFLAGS) token in another archive/helper
+          # command, comments, or an LTO-related command. The contract we need to
+          # prove is exactly one *installed built-in.a rule*, not one raw token in
+          # the entire Makefile.
+          protected_archive_cmds = [
+              b for b in final_blocks
+              if "xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@" in flat(b)
+          ]
+          protected_archive_token_count = sum(
+              b.count("xargs $(AR) rcSTP$(KBUILD_ARFLAGS) $@")
+              for b in final_blocks
+          )
+          if len(protected_archive_cmds) != 1 or protected_archive_token_count != 1:
+              raise SystemExit(
+                  "[FAIL] V19: protected rcSTP archive command inside cmd_ar_builtin "
+                  f"is not exactly one (blocks={len(protected_archive_cmds)}, "
+                  f"tokens={protected_archive_token_count})."
+              )
 
           print("[PASS] V19: protected LTO wrapper retained.")
-          print("[PASS] V19: rcSTP$(KBUILD_ARFLAGS) retained exactly once.")
+          print("[PASS] V19: rcSTP$(KBUILD_ARFLAGS) retained exactly once inside cmd_ar_builtin.")
           print("[PASS] V19: upstream patsubst/sed/xargs ARG_MAX transport installed exactly once.")
           print("[PASS] V19: original unsafe expanded-prerequisite AR invocation is absent.")
           print("[PASS] V19: no Wi-Fi/qcacld feature or compiler flag was removed.")
