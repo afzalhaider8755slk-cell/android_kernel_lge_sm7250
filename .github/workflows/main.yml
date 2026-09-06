@@ -3121,9 +3121,10 @@ jobs:
           makefile = Path("scripts/Makefile.build")
           source = makefile.read_text(errors="replace")
 
-          rule = '$(if $(real-prereqs), printf "$(obj)/%s " $(patsubst $(obj)/%,%,$(real-prereqs)) | xargs) \\\n$(AR) cDPrST $@'
-          if rule not in source:
-              raise SystemExit("[FAIL] Setup 28 pre-build gate: upstream ARG_MAX-safe archive rule is not present.")
+          rule = '$(if $(filter $(real-obj-y),$^), printf "$(obj)/%s " $(patsubst $(obj)/%,%,$(filter $(real-obj-y),$^)) | xargs) \\\n$(AR) rcSTP$(KBUILD_ARFLAGS) $@'
+          if source.count(rule) != 1:
+              raise SystemExit("[FAIL] Setup 28 pre-build gate: expected exactly one Setup 28 ARG_MAX-safe archive rule.")
+
 
           legacy = '$(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)'
           if legacy in source:
@@ -3154,7 +3155,7 @@ jobs:
               env = os.environ.copy()
               env["AR_TEST_LOG"] = str(log)
               result = subprocess.run(
-                  ["xargs", str(fake_ar), "cDPrST", "drivers/staging/qcacld-3.0/built-in.a"],
+                  ["xargs", str(fake_ar), "rcSTP", "drivers/staging/qcacld-3.0/built-in.a"],
                   input=payload,
                   text=True,
                   stdout=subprocess.PIPE,
