@@ -2995,7 +2995,7 @@ jobs:
           SETUP_LOG="$DIAG_DIR/28-setup-28-full-kernel-build-hard-gate-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > "$SETUP_LOG" 2>&1
+          exec > >(tee -a "$SETUP_LOG") 2>&1
           echo "========== $SETUP_NAME =========="
           echo "[LIVE] Full step output is captured in $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
@@ -3011,90 +3011,6 @@ jobs:
           : > "$ERROR_LOG"
           : > "$TAIL_LOG"
           : > "$SUMMARY_LOG"
-          TERMINATION_LOG="$DIAG_DIR/28-setup-28-termination-diagnostics.log"
-          : > "$TERMINATION_LOG"
-          TERMINATION_DIAG_CAPTURED=0
-
-          capture_termination_diagnostics() {
-            local reason="${1:-unknown}"
-            if [ "$TERMINATION_DIAG_CAPTURED" -eq 1 ]; then
-              return 0
-            fi
-            TERMINATION_DIAG_CAPTURED=1
-            {
-              echo "========== SETUP 28 TERMINATION DIAGNOSTICS =========="
-              date -u
-              echo "reason=$reason"
-              echo "run_id=${GITHUB_RUN_ID:-unknown}"
-              echo "run_attempt=${GITHUB_RUN_ATTEMPT:-unknown}"
-              echo "runner_name=${RUNNER_NAME:-unknown}"
-              echo "runner_os=${RUNNER_OS:-unknown}"
-              echo "runner_arch=${RUNNER_ARCH:-unknown}"
-              echo "BUILD_PID=${BUILD_PID:-unset}"
-              echo "BUILD_PGID=${BUILD_PGID:-unset}"
-              echo "BUILD_STATUS=${BUILD_STATUS:-unset}"
-              echo
-              echo "===== PROCESS TABLE ====="
-              ps -eo pid,ppid,pgid,sid,stat,etime,%cpu,%mem,rss,vsz,args --forest 2>&1 || true
-              if [ -n "${BUILD_PID:-}" ] && [ -r "/proc/${BUILD_PID}/status" ]; then
-                echo
-                echo "===== BUILD PROCESS STATUS ====="
-                cat "/proc/${BUILD_PID}/status" 2>&1 || true
-              fi
-              echo
-              echo "===== PROCESS CGROUP ====="
-              cat /proc/self/cgroup 2>&1 || true
-              if [ -n "${BUILD_PID:-}" ] && [ -r "/proc/${BUILD_PID}/cgroup" ]; then
-                echo "----- build process cgroup -----"
-                cat "/proc/${BUILD_PID}/cgroup" 2>&1 || true
-              fi
-              echo
-              echo "===== MEMORY ====="
-              free -h 2>&1 || true
-              echo
-              echo "===== DISK ====="
-              df -h 2>&1 || true
-              if [ -r /sys/fs/cgroup/memory.events ]; then
-                echo
-                echo "===== CGROUP V2 MEMORY EVENTS ====="
-                cat /sys/fs/cgroup/memory.events 2>&1 || true
-              fi
-              if [ -r /sys/fs/cgroup/memory.current ]; then
-                echo
-                echo "===== CGROUP V2 MEMORY CURRENT/MAX ====="
-                echo "memory.current=$(cat /sys/fs/cgroup/memory.current 2>/dev/null || true)"
-                echo "memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)"
-              fi
-              if [ -r /sys/fs/cgroup/cpu.stat ]; then
-                echo
-                echo "===== CGROUP V2 CPU STAT ====="
-                cat /sys/fs/cgroup/cpu.stat 2>&1 || true
-              fi
-              if [ -r /proc/pressure/memory ]; then
-                echo
-                echo "===== MEMORY PRESSURE ====="
-                cat /proc/pressure/memory 2>&1 || true
-              fi
-              if [ -r /proc/pressure/cpu ]; then
-                echo
-                echo "===== CPU PRESSURE ====="
-                cat /proc/pressure/cpu 2>&1 || true
-              fi
-              echo
-              echo "===== BUILD LOG COUNTS AT TERMINATION ====="
-              if [ -f "$FULL_LOG" ]; then
-                echo "bytes=$(wc -c < "$FULL_LOG")"
-                echo "lines=$(wc -l < "$FULL_LOG")"
-              else
-                echo "full_log_missing=true"
-              fi
-              echo "========================================================"
-            } >> "$TERMINATION_LOG" 2>&1
-          }
-
-          trap 'capture_termination_diagnostics "shell received SIGTERM"; exit 143' TERM
-          trap 'capture_termination_diagnostics "shell received SIGHUP"; exit 129' HUP
-          trap 'capture_termination_diagnostics "shell received SIGINT"; exit 130' INT
 
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
           # ------------------------------------------------------------
@@ -3155,102 +3071,82 @@ jobs:
           export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
 
-          # SETUP-28 ONLY: the 4.19 Kbuild archive rule passes every
-          # qcacld-3.0 object to llvm-ar in one argv. That exceeds Linux
-          # ARG_MAX after the compiler response-file fix in Setup 26.
-          # Use the upstream Kbuild xargs archive pattern so llvm-ar receives
-          # bounded batches while preserving every archive member and flag.
+          # No separate monitor process is started; keep cleanup safe under set -u.
+          MONITOR_PID=""
+          # Build-only compatibility fixes are scoped to the exact stock
+
+          # ------------------------------------------------------------
+          # Setup 28 Kbuild ARG_MAX compatibility (source-derived backport)
+          #
+          # The 4.19 tree still expands every qcacld prerequisite into one
+          # shell argv for built-in.a. With CONFIG_LTO_CLANG=y and the large
+          # qcacld object graph, /bin/sh can reject that recipe with:
+          #   Argument list too long
+          #
+          # This is the upstream Kbuild solution: strip the repeated $(obj)/
+          # prefix during make expansion and restore it through xargs, so AR
+          # receives bounded batches. No object is removed and no feature/
+          # config is changed.
+          # ------------------------------------------------------------
           python3 - <<'PY'
           from pathlib import Path
 
-          makefile = Path("scripts/Makefile.build")
-          if not makefile.is_file():
+          p = Path("scripts/Makefile.build")
+          if not p.is_file():
               raise SystemExit("[FAIL] scripts/Makefile.build is missing.")
 
-          source = makefile.read_text(errors="replace")
+          s = p.read_text()
           old = "$(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)"
-          new = """$(if $(filter $(real-obj-y),$^), printf "$(obj)/%s " $(patsubst $(obj)/%,%,$(filter $(real-obj-y),$^)) | xargs) \
-          $(AR) rcSTP$(KBUILD_ARFLAGS) $@"""
+          new = '$(if $(filter $(real-obj-y),$^), printf "$(obj)/%s " $(patsubst $(obj)/%,%,$(filter $(real-obj-y),$^)) | xargs) \\\n          $(AR) rcSTP$(KBUILD_ARFLAGS) $@'
 
-          occurrences = source.count(old)
-          if occurrences == 1:
-              fixed = source.replace(old, new, 1)
-              makefile.write_text(fixed)
-              print("[FIXED] Setup 28: Kbuild built-in.a archive inputs now use xargs batching.")
-          elif occurrences == 0 and new in source:
-              print("[PASS] Setup 28: Kbuild xargs archive batching is already installed.")
+          count = s.count(old)
+          if count == 1:
+              s = s.replace(old, new, 1)
+              p.write_text(s)
+              print("[FIXED] Setup 28: built-in.a archive inputs now use xargs batching.")
+          elif count == 0 and new in s:
+              print("[PASS] Setup 28: xargs built-in.a archive rule already present.")
           else:
               raise SystemExit(
-                  f"[FAIL] Setup 28: expected exactly one legacy built-in.a archive command; found {occurrences}."
+                  f"[FAIL] Setup 28: expected exactly one legacy built-in.a rule; found {count}."
               )
 
-          verify = makefile.read_text(errors="replace")
-          if new not in verify:
-              raise SystemExit("[FAIL] Setup 28: xargs archive rule verification failed.")
+          verify = p.read_text()
           if old in verify:
               raise SystemExit("[FAIL] Setup 28: unbounded built-in.a archive argv remains.")
-          print("[PASS] Setup 28: all archive members and KBUILD_ARFLAGS remain preserved.")
+          if new not in verify:
+              raise SystemExit("[FAIL] Setup 28: xargs archive rule verification failed.")
+          print("[PASS] Setup 28: Kbuild built-in.a ARG_MAX fix verified.")
           PY
 
-          echo
-          echo "=========================================="
-          echo "SETUP 28 PRE-BUILD ARGMAX HARD GATE"
-          echo "=========================================="
+          echo "========== SETUP 28 ARG_MAX PRE-FLIGHT =========="
           python3 - <<'PY'
-          from pathlib import Path
           import os
           import subprocess
           import tempfile
+          from pathlib import Path
 
-          makefile = Path("scripts/Makefile.build")
-          source = makefile.read_text(errors="replace")
-
-          safe_markers = (
-              '$(if $(filter $(real-obj-y),$^),',
-              '| xargs)',
-              '$(AR) rcSTP$(KBUILD_ARFLAGS) $@',
-          )
-          if not all(marker in source for marker in safe_markers):
-              raise SystemExit(
-                  "[FAIL] Setup 28 pre-build gate: installed Kbuild archive batching "
-                  "implementation is missing one or more required semantic markers."
-              )
-
-          legacy = '$(AR) rcSTP$(KBUILD_ARFLAGS) $@ $(filter $(real-obj-y), $^)'
-          if legacy in source:
-              raise SystemExit(
-                  "[FAIL] Setup 28 pre-build gate: unbounded built-in.a archive argv remains."
-              )
-
-          if subprocess.run(
-              ["sh", "-c", "command -v xargs >/dev/null 2>&1"],
-              check=False,
-          ).returncode != 0:
-              raise SystemExit("[FAIL] Setup 28 pre-build gate: xargs is unavailable.")
-
-          with tempfile.TemporaryDirectory(prefix="setup28-argmax-gate-") as td:
+          with tempfile.TemporaryDirectory(prefix="setup28-argmax-") as td:
               root = Path(td)
               log = root / "ar.log"
               fake_ar = root / "fake-ar"
               fake_ar.write_text(
-                  "#!/bin/sh\n"
-                  'printf "%s\\n" "$#" >> "$AR_TEST_LOG"\n',
+                  '#!/bin/sh\nprintf "%s\\n" "$#" >> "$AR_TEST_LOG"\n',
                   encoding="utf-8",
               )
               fake_ar.chmod(0o755)
 
               member_count = 30000
               members = [
-                  f"drivers/staging/qcacld-3.0/{i:05d}/"
-                  + ("x" * 96)
-                  + ".o"
+                  f"drivers/staging/qcacld-3.0/{i:05d}/" + ("x" * 96) + ".o"
                   for i in range(member_count)
               ]
-
               env = os.environ.copy()
               env["AR_TEST_LOG"] = str(log)
-              result = subprocess.run(
-                  ["xargs", str(fake_ar), "rcSTP", "drivers/staging/qcacld-3.0/built-in.a"],
+
+              r = subprocess.run(
+                  ["xargs", str(fake_ar), "rcSTP",
+                   "drivers/staging/qcacld-3.0/built-in.a"],
                   input=" ".join(members) + " ",
                   text=True,
                   stdout=subprocess.PIPE,
@@ -3258,43 +3154,26 @@ jobs:
                   env=env,
                   check=False,
               )
-
-              if result.returncode != 0:
+              if r.returncode != 0:
                   raise SystemExit(
-                      "[FAIL] Setup 28 pre-build gate: xargs batching failed: "
-                      + result.stderr.strip()
+                      "[FAIL] Setup 28 ARG_MAX pre-flight: xargs test failed: "
+                      + r.stderr.strip()
                   )
 
-              counts = [int(line) for line in log.read_text().splitlines() if line.strip()]
-              received = sum(max(count - 2, 0) for count in counts)
-
-              if len(counts) < 2:
+              counts = [int(x) for x in log.read_text().splitlines() if x.strip()]
+              received = sum(max(n - 2, 0) for n in counts)
+              if len(counts) < 2 or received != member_count:
                   raise SystemExit(
-                      "[FAIL] Setup 28 pre-build gate: synthetic test did not exercise "
-                      "multiple xargs invocations."
-                  )
-              if received != member_count:
-                  raise SystemExit(
-                      f"[FAIL] Setup 28 pre-build gate: synthetic archive lost members "
-                      f"({received}/{member_count})."
+                      f"[FAIL] Setup 28 ARG_MAX pre-flight: preserved "
+                      f"{received}/{member_count} members across {len(counts)} invocations."
                   )
 
               print(
-                  f"[PASS] Setup 28 pre-build gate: xargs preserved {received} synthetic "
-                  f"members across {len(counts)} archive invocations; "
+                  f"[PASS] Setup 28 ARG_MAX pre-flight: {received} synthetic "
+                  f"members preserved across {len(counts)} xargs invocations; "
                   f"ARG_MAX={os.sysconf('SC_ARG_MAX')}."
               )
-
-          print("[PASS] Setup 28 pre-build gate: semantic Kbuild batching implementation verified.")
-          print("[PASS] Setup 28 pre-build gate: legacy unbounded archive command is absent.")
-          print("[PASS] Setup 28 pre-build gate: continuing to the real kernel build.")
           PY
-          # The current Setup 28 starts no monitor process. Keep cleanup
-          # conditional so a build failure cannot be replaced by an unrelated
-          # set -u MONITOR_PID error.
-          MONITOR_PID=""
-
-          # Build-only compatibility fixes are scoped to the exact stock
           # source directories/files that failed with this Clang 20 build.
           # No global KCFLAGS and no unrelated kernel features are added.
           #
@@ -3587,7 +3466,7 @@ jobs:
               if "copy_from_kernel_nofault(" in s:
                   print("[PASS] kernel/power/qos.c already uses copy_from_kernel_nofault()")
               else:
-                  print("[PASS] kernel/power/qos.c has no probe_kernel_read()/copy_from_kernel_nofault() call requiring migration.")
+                  raise SystemExit("EXPECTED QOS CALL NOT FOUND: neither probe_kernel_read() nor copy_from_kernel_nofault() exists")
 
           # Verify no executable call to the obsolete API remains.
           remaining = len(re.findall(r"\bprobe_kernel_read\s*\(", qos.read_text()))
@@ -3657,15 +3536,6 @@ jobs:
           echo "[INFO] DTB/DTBO build disabled for V10 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
-          # V23 CI-only termination correction: do not alter .config, feature selections,
-          # versions, source fixes, DTB/DTBO policy, or any kernel setting.
-          # The observed status 143 is SIGTERM rather than a compiler error. This build
-          # enables Full LTO, which is documented as high-RAM; bounding compile fan-out
-          # to two workers reduces runner resource pressure without changing kernel output
-          # configuration or removing any requested feature.
-          BUILD_JOBS=2
-          echo "[INFO] Setup 28 compile fan-out=${BUILD_JOBS}; kernel configuration/features unchanged."
-
           # V10 LIVE BUILD OUTPUT: stream the complete V=1 compiler/linker output to the
           # GitHub Actions console while simultaneously preserving the exact same stream
           # in the diagnostic artifact. This is intentionally not a source fix.
@@ -3678,16 +3548,13 @@ jobs:
               LLVM_IAS=1 \
               CROSS_COMPILE="$CROSS_COMPILE" \
               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              -j"$BUILD_JOBS" \
+              -j"$(nproc)" \
               V=1 \
               WERROR=0 \
               Image.gz 2>&1 | tee -a "$FULL_LOG"
             exit "${PIPESTATUS[0]}"
           ) &
           BUILD_PID=$!
-          BUILD_PGID="$(ps -o pgid= -p "$BUILD_PID" | tr -d ' ' || true)"
-          echo "[DIAG] Build PID=$BUILD_PID PGID=${BUILD_PGID:-unknown}"
-          echo "[DIAG] SIGTERM/SIGHUP/SIGINT traps and post-wait signal diagnostics are enabled."
           set -e
 
           while kill -0 "$BUILD_PID" 2>/dev/null; do
@@ -3719,9 +3586,7 @@ jobs:
           } | tee "$SUMMARY_LOG"
 
           if [ "$BUILD_STATUS" -eq 137 ] || [ "$BUILD_STATUS" -eq 143 ]; then
-            capture_termination_diagnostics "build child exited with signal-derived status=$BUILD_STATUS"
             echo "[DIAG] Build process was terminated by signal (status=$BUILD_STATUS); no compiler diagnostic was emitted in the captured log."
-            echo "[DIAG] Termination diagnostics: $TERMINATION_LOG"
             echo "[DIAG] This is not being converted into a speculative source fix. Runner/resource termination must be distinguished from a compiler error."
           elif [ "$BUILD_STATUS" -ne 0 ]; then
             echo "[DIAG] Non-zero make exit status=$BUILD_STATUS; compiler diagnostics below are authoritative."
@@ -3761,41 +3626,6 @@ jobs:
           fi
 
           exit "$BUILD_STATUS"
-
-      - name: Support - Stage Setup 28 Failure Diagnostics
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          mkdir -p diagnostic-artifact/setup28-failure
-          echo "========== STAGE SETUP 28 FAILURE DIAGNOSTICS =========="
-          date -u
-          for file in \
-            "$DIAG_DIR/28-setup-28-full-kernel-build-hard-gate-LIVE.log" \
-            "$DIAG_DIR/28-setup-28-termination-diagnostics.log" \
-            "$GITHUB_WORKSPACE/kernel-build-full.log" \
-            "$DIAG_DIR/12-build-errors.log" \
-            "$DIAG_DIR/12-build-tail.log" \
-            "$DIAG_DIR/12-build-summary.log"; do
-            if [ -f "$file" ]; then
-              cp -f "$file" diagnostic-artifact/setup28-failure/
-              echo "[PASS] Preserved $(basename "$file")"
-            else
-              echo "[INFO] Missing $(basename "$file")"
-            fi
-          done
-          find diagnostic-artifact/setup28-failure -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
-          echo "[PASS] Setup 28 failure diagnostics staged before later workflow steps."
-
-      - name: Artifact - Setup 28 Failure Diagnostics
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: V22-LG-Velvet-G900-Setup28-Failure-Diagnostics
-          path: diagnostic-artifact/setup28-failure/
-          if-no-files-found: warn
-          retention-days: 14
-          compression-level: 6
 
       - name: Setup 29 - Package Kernel OrangeFox
         if: success()
