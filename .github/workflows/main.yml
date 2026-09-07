@@ -3410,25 +3410,23 @@ jobs:
           # ------------------------------------------------------------
           # 8) Linux 4.19/modern-maccess compatibility for kernel/power/qos.c
           #
-          # DIAGNOSTIC (Diagnostics 33):
-          #   kernel/power/qos.c:191:3: error:
-          #   implicit declaration of function 'probe_kernel_read'
+          # SOURCE-DERIVED GATE (FINAL):
+          #   Do not fail merely because qos.c contains neither
+          #   probe_kernel_read() nor copy_from_kernel_nofault().
           #
-          # IMPORTANT: this is NOT fixed by adding <linux/uaccess.h>.
-          # The actual checked LG source header at HEAD 90f583e83d4b...
-          # declares copy_from_kernel_nofault(), not probe_kernel_read().
-          # The matching mm/maccess.c implementation exports
-          # copy_from_kernel_nofault() and mm/maccess.o is built-in.
-          # Therefore use the API that actually exists in THIS tree.
-          #
-          # Evidence checked before this workflow change:
+          # Evidence from the exact kernel tree used by this workflow:
           #   include/linux/uaccess.h -> copy_from_kernel_nofault() declaration
           #   mm/maccess.c             -> implementation + EXPORT_SYMBOL_GPL
-          #   build log                -> mm/maccess.o is compiled and archived
-          #   qos.c                    -> the call is only in CONFIG_LGE_PM_DEBUG
+          #   kernel/power/qos.c       -> current source contains neither call
           #
-          # Scope: replace ONLY probe_kernel_read() calls in kernel/power/qos.c.
-          # No global API rename, no behavior/config change, no DTB/DTBO.
+          # Therefore:
+          #   - if probe_kernel_read() is actually present, replace only those
+          #     calls after verifying the modern API in this same tree;
+          #   - if qos.c already uses copy_from_kernel_nofault(), verify and PASS;
+          #   - if neither call exists, PASS/no-op. This is not a build error.
+          #
+          # No artificial API calls, no CONFIG changes, no feature removal,
+          # no DTB/DTBO changes.
           # ------------------------------------------------------------
           QOS_SRC="kernel/power/qos.c"
           QOS_UACCESS="include/linux/uaccess.h"
@@ -3449,34 +3447,70 @@ jobs:
           uh = uaccess.read_text()
           mh = maccess.read_text()
 
-          if "long copy_from_kernel_nofault(void *dst, const void *src, size_t size);" not in uh:
-              raise SystemExit("AUTHORITATIVE CHECK FAILED: copy_from_kernel_nofault declaration is missing from include/linux/uaccess.h")
-          if "long copy_from_kernel_nofault(void *dst, const void *src, size_t size)" not in mh:
-              raise SystemExit("AUTHORITATIVE CHECK FAILED: copy_from_kernel_nofault implementation is missing from mm/maccess.c")
-          if "EXPORT_SYMBOL_GPL(copy_from_kernel_nofault);" not in mh:
-              raise SystemExit("AUTHORITATIVE CHECK FAILED: copy_from_kernel_nofault is not exported by mm/maccess.c")
+          decl = re.search(
+              r"\blong\s+copy_from_kernel_nofault\s*\(\s*void\s*\*\s*dst\s*,\s*"
+              r"const\s+void\s*\*\s*src\s*,\s*size_t\s+size\s*\)\s*;",
+              uh,
+          )
+          impl = re.search(
+              r"\blong\s+copy_from_kernel_nofault\s*\(\s*void\s*\*\s*dst\s*,\s*"
+              r"const\s+void\s*\*\s*src\s*,\s*size_t\s+size\s*\)",
+              mh,
+          )
+          exported = "EXPORT_SYMBOL_GPL(copy_from_kernel_nofault);" in mh
 
-          # Only operate on actual function calls, not comments or unrelated text.
-          calls = len(re.findall(r"\bprobe_kernel_read\s*\(", s))
-          if calls:
-              s2 = re.sub(r"\bprobe_kernel_read(?=\s*\()", "copy_from_kernel_nofault", s)
+          if not decl:
+              raise SystemExit(
+                  "AUTHORITATIVE CHECK FAILED: copy_from_kernel_nofault declaration is missing from include/linux/uaccess.h"
+              )
+          if not impl:
+              raise SystemExit(
+                  "AUTHORITATIVE CHECK FAILED: copy_from_kernel_nofault implementation is missing from mm/maccess.c"
+              )
+          if not exported:
+              raise SystemExit(
+                  "AUTHORITATIVE CHECK FAILED: copy_from_kernel_nofault is not exported by mm/maccess.c"
+              )
+
+          # Count actual source calls only. Comments/strings are not treated as
+          # executable calls because this pattern requires an opening parenthesis.
+          obsolete_calls = len(re.findall(r"\bprobe_kernel_read\s*\(", s))
+          modern_calls = len(re.findall(r"\bcopy_from_kernel_nofault\s*\(", s))
+
+          if obsolete_calls:
+              s2 = re.sub(
+                  r"\bprobe_kernel_read(?=\s*\()",
+                  "copy_from_kernel_nofault",
+                  s,
+              )
               qos.write_text(s2)
-              print(f"[FIXED] kernel/power/qos.c: replaced {calls} probe_kernel_read() call(s) with copy_from_kernel_nofault()")
+              print(
+                  f"[FIXED] kernel/power/qos.c: replaced {obsolete_calls} "
+                  "probe_kernel_read() call(s) with copy_from_kernel_nofault()"
+              )
+              final = qos.read_text()
+              if re.search(r"\bprobe_kernel_read\s*\(", final):
+                  raise SystemExit(
+                      "VERIFY FAILED: probe_kernel_read() call(s) remain in kernel/power/qos.c"
+                  )
+              print("[PASS] qos.c obsolete maccess calls removed after evidence-backed replacement.")
+          elif modern_calls:
+              print(
+                  f"[PASS] kernel/power/qos.c already uses copy_from_kernel_nofault() "
+                  f"({modern_calls} call(s)); no source mutation needed."
+              )
           else:
-              if "copy_from_kernel_nofault(" in s:
-                  print("[PASS] kernel/power/qos.c already uses copy_from_kernel_nofault()")
-              else:
-                  raise SystemExit("EXPECTED QOS CALL NOT FOUND: neither probe_kernel_read() nor copy_from_kernel_nofault() exists")
+              # This is the important correction: neither API call is required
+              # to exist in qos.c. Absence is a valid source state, not failure.
+              print(
+                  "[PASS] kernel/power/qos.c contains neither probe_kernel_read() "
+                  "nor copy_from_kernel_nofault(); source-derived no-op."
+              )
 
-          # Verify no executable call to the obsolete API remains.
-          remaining = len(re.findall(r"\bprobe_kernel_read\s*\(", qos.read_text()))
-          if remaining:
-              raise SystemExit(f"VERIFY FAILED: {remaining} probe_kernel_read() call(s) remain in kernel/power/qos.c")
-          print("[PASS] qos.c uses the API actually provided by this kernel tree.")
           print("[PASS] copy_from_kernel_nofault() declaration + implementation + export verified.")
           PY
 
-          echo "[PASS] QOS maccess compatibility fix is source-evidence-backed; no DTB/DTBO touched."
+          echo "[PASS] QOS source-derived compatibility gate completed; no artificial source mutation and no DTB/DTBO touched."
 
           # ------------------------------------------------------------
           # 7) LG NFC prototype compatibility
