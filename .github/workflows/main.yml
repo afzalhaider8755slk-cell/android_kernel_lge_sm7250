@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V22
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V14
 
 on:
   workflow_dispatch:
@@ -3657,68 +3657,51 @@ jobs:
           echo "[INFO] DTB/DTBO build disabled for V10 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
-          # V15 ERROR-ONLY HARDENING:
-          # A prior run reached the real build and returned 143 (SIGTERM) with no
-          # compiler diagnostic.  GitHub documents SIGTERM as part of workflow-step
-          # cancellation; therefore 143 is not evidence of a kernel source error.
-          # Retry the exact same build command once, and only on status 143.
-          # No compiler flags, Kbuild settings, targets, configs, or features change.
-          MAX_SIGTERM_RETRIES=1
-          SIGTERM_RETRY_COUNT=0
+          # V23 CI-only termination correction: do not alter .config, feature selections,
+          # versions, source fixes, DTB/DTBO policy, or any kernel setting.
+          # The observed status 143 is SIGTERM rather than a compiler error. This build
+          # enables Full LTO, which is documented as high-RAM; bounding compile fan-out
+          # to two workers reduces runner resource pressure without changing kernel output
+          # configuration or removing any requested feature.
+          BUILD_JOBS=2
+          echo "[INFO] Setup 28 compile fan-out=${BUILD_JOBS}; kernel configuration/features unchanged."
 
-          while :; do
-            if [ "$SIGTERM_RETRY_COUNT" -eq 0 ]; then
-              : > "$FULL_LOG"
-            else
-              {
-                echo
-                echo "========== SETUP 28 RETRY ${SIGTERM_RETRY_COUNT} AFTER SIGTERM 143 =========="
-                date -u
-                echo "[DIAG] Re-running the identical Image.gz command; prior attempt log is preserved above."
-              } >> "$FULL_LOG"
+          # V10 LIVE BUILD OUTPUT: stream the complete V=1 compiler/linker output to the
+          # GitHub Actions console while simultaneously preserving the exact same stream
+          # in the diagnostic artifact. This is intentionally not a source fix.
+          : > "$FULL_LOG"
+          set +e
+          (
+            stdbuf -oL -eL make \
+              ARCH=arm64 \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              -j"$BUILD_JOBS" \
+              V=1 \
+              WERROR=0 \
+              Image.gz 2>&1 | tee -a "$FULL_LOG"
+            exit "${PIPESTATUS[0]}"
+          ) &
+          BUILD_PID=$!
+          BUILD_PGID="$(ps -o pgid= -p "$BUILD_PID" | tr -d ' ' || true)"
+          echo "[DIAG] Build PID=$BUILD_PID PGID=${BUILD_PGID:-unknown}"
+          echo "[DIAG] SIGTERM/SIGHUP/SIGINT traps and post-wait signal diagnostics are enabled."
+          set -e
+
+          while kill -0 "$BUILD_PID" 2>/dev/null; do
+            sleep 30
+            if kill -0 "$BUILD_PID" 2>/dev/null; then
+              echo "[BUILD-HEARTBEAT] $(date -u '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
+              echo "[BUILD-HEARTBEAT] live V=1 output is streaming above; captured=$(wc -c < "$FULL_LOG") bytes / $(wc -l < "$FULL_LOG") lines"
             fi
-            set +e
-            (
-              stdbuf -oL -eL make \
-                ARCH=arm64 \
-                LLVM=1 \
-                LLVM_IAS=1 \
-                CROSS_COMPILE="$CROSS_COMPILE" \
-                CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-                -j"$(nproc)" \
-                V=1 \
-                WERROR=0 \
-                Image.gz 2>&1 | tee -a "$FULL_LOG"
-              exit "${PIPESTATUS[0]}"
-            ) &
-            BUILD_PID=$!
-            BUILD_PGID="$(ps -o pgid= -p "$BUILD_PID" | tr -d ' ' || true)"
-            echo "[DIAG] Build PID=$BUILD_PID PGID=${BUILD_PGID:-unknown}"
-            echo "[DIAG] SIGTERM/SIGHUP/SIGINT traps and post-wait signal diagnostics are enabled."
-            set -e
-
-            while kill -0 "$BUILD_PID" 2>/dev/null; do
-              sleep 30
-              if kill -0 "$BUILD_PID" 2>/dev/null; then
-                echo "[BUILD-HEARTBEAT] $(date -u '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
-                echo "[BUILD-HEARTBEAT] live V=1 output is streaming above; captured=$(wc -c < "$FULL_LOG") bytes / $(wc -l < "$FULL_LOG") lines"
-              fi
-            done
-
-            set +e
-            wait "$BUILD_PID"
-            BUILD_STATUS=$?
-            set -e
-
-            if [ "$BUILD_STATUS" -eq 143 ] && [ "$SIGTERM_RETRY_COUNT" -lt "$MAX_SIGTERM_RETRIES" ]; then
-              SIGTERM_RETRY_COUNT=$((SIGTERM_RETRY_COUNT + 1))
-              echo "[DIAG] Build child exited with SIGTERM-derived status 143."
-              echo "[DIAG] Retrying the identical Image.gz build once; no source/config/feature changes are made."
-              continue
-            fi
-            break
           done
 
+          set +e
+          wait "$BUILD_PID"
+          BUILD_STATUS=$?
+          set -e
           if [ -n "${MONITOR_PID:-}" ]; then
             kill "$MONITOR_PID" 2>/dev/null || true
             wait "$MONITOR_PID" 2>/dev/null || true
