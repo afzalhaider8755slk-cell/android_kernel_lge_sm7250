@@ -3611,6 +3611,36 @@ jobs:
           BUILD_PID=$!
           set -e
 
+          # V16 DIAGNOSTIC-ONLY: collect runner/resource/process evidence without
+          # changing kernel sources, make flags, target, or feature configuration.
+          # The diagnostic stream is artifact-only; GitHub console remains concise.
+          DIAG_RUNTIME_LOG="$DIAG_DIR/28-runtime-diagnostics.log"
+          : > "$DIAG_RUNTIME_LOG"
+          (
+            while kill -0 "$BUILD_PID" 2>/dev/null; do
+              {
+                echo "===== runtime snapshot $(date -Is) ====="
+                echo "elapsed=$(( $(date +%s) - START ))s"
+                echo "build_pid=$BUILD_PID"
+                echo "nproc=$(nproc)"
+                echo "loadavg=$(cat /proc/loadavg 2>/dev/null || true)"
+                echo "--- memory ---"
+                free -h 2>/dev/null || true
+                echo "--- disk ---"
+                df -h "$GITHUB_WORKSPACE" 2>/dev/null || true
+                echo "--- vmstat ---"
+                vmstat 1 2 2>/dev/null || true
+                echo "--- top processes by RSS ---"
+                ps -eo pid,ppid,stat,%cpu,%mem,rss,etime,args --sort=-rss 2>/dev/null | head -21 || true
+                echo "--- build process tree ---"
+                ps -eo pid,ppid,stat,%cpu,%mem,rss,etime,args 2>/dev/null | awk -v p="$BUILD_PID" '$1==p || $2==p {print}' || true
+                echo
+              } >> "$DIAG_RUNTIME_LOG" 2>&1
+              sleep 30
+            done
+          ) &
+          RUNTIME_DIAG_PID=$!
+
           while kill -0 "$BUILD_PID" 2>/dev/null; do
             sleep 30
             if kill -0 "$BUILD_PID" 2>/dev/null; then
@@ -3622,6 +3652,10 @@ jobs:
           wait "$BUILD_PID"
           BUILD_STATUS=$?
           set -e
+          if [ -n "${RUNTIME_DIAG_PID:-}" ]; then
+            kill "$RUNTIME_DIAG_PID" 2>/dev/null || true
+            wait "$RUNTIME_DIAG_PID" 2>/dev/null || true
+          fi
           if [ -n "${MONITOR_PID:-}" ]; then
             kill "$MONITOR_PID" 2>/dev/null || true
             wait "$MONITOR_PID" 2>/dev/null || true
