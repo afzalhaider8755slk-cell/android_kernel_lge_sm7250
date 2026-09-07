@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V14
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V16
 
 on:
   workflow_dispatch:
@@ -48,13 +48,13 @@ permissions:
 # llvm-ar listed complete relative member paths beginning with drivers/kernelsu/.
 # V12's verifier searched for path-stripped names and falsely reported a
 # missing member. V13 matches the exact emitted paths. Verification only.
-# V15 ROOT-CAUSE / RESEARCH NOTE
+# V16 ROOT-CAUSE / RESEARCH NOTE
 # V14 failed before the full build because Setup 28 used a single-line exact
 # grep for ksu_hashtab_for_each(). The actual compiler-tested sepolicy.c defines
 # that macro over multiple continuation lines. The required native 4.19
 # traversal itself is present: (htab)->htable[i] -> cur->next. The separate
 # AVTAB flex_array traversal is also present and is legitimate for that
-# storage representation. V15 verifies both semantic anchors without changing
+# storage representation. V16 verifies both semantic anchors without changing
 # sepolicy.c or removing any feature/fix.
 jobs:
   build:
@@ -2995,11 +2995,15 @@ jobs:
           SETUP_LOG="$DIAG_DIR/28-setup-28-full-kernel-build-hard-gate-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
-          echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          # V16 LIVE-ACTIVITY: keep the complete Setup 28 log in the artifact only.
+          # FD 3 remains the GitHub Actions console. Only concise file/build activity
+          # is written there; command tracing and diagnostic logs stay in the artifact.
+          exec 3>&1 4>&2
+          exec >"$SETUP_LOG" 2>&1
+          printf '%s\n' "========== $SETUP_NAME ==========" >&3
+          printf '%s\n' "[LIVE] Detailed Setup 28 log -> artifact: $(basename "$SETUP_LOG")" >&3
           export PS4="+ [SETUP-${SETUP_NO}] "
-          set -x
+          set +x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           FULL_LOG="$GITHUB_WORKSPACE/kernel-build-full.log"
@@ -3035,7 +3039,7 @@ jobs:
           # the workflow before the real full-kernel compile could begin.
           # Setup 27 already proved the exact separation; Setup 28 must verify,
           # not reinterpret, that compiler-tested state.
-          # V15 SOURCE-CONTRACT VERIFICATION:
+          # V16 SOURCE-CONTRACT VERIFICATION:
           # The actual compiler-tested V14 source defines the 4.19 adapter as
           # a multi-line macro:
           #   #define ksu_hashtab_for_each(htab, cur) \
@@ -3051,22 +3055,22 @@ jobs:
 
           if grep -qE '#define[[:space:]]+ksu_hashtab_for_each\(htab,[[:space:]]*cur\)[[:space:]]*\\' "$SEPOLICY_C" &&
              grep -qF 'for (cur = (htab)->htable[i]; cur; cur = cur->next)' "$SEPOLICY_C"; then
-            echo "[PASS] V15: native 4.19 hashtab adapter is present; multiline macro form verified."
+            echo "[PASS] V16: native 4.19 hashtab adapter is present; multiline macro form verified."
           else
-            echo "[FAIL] V15: native 4.19 hashtab adapter semantic contract is missing."
+            echo "[FAIL] V16: native 4.19 hashtab adapter semantic contract is missing."
             exit 1
           fi
 
           if grep -qF 'flex_array_get_ptr(db->te_avtab.htable, i)' "$SEPOLICY_C" &&
              grep -qF 'for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)' "$SEPOLICY_C"; then
-            echo "[PASS] V15: AVTAB flex_array contract is present and kept distinct from native hashtab traversal."
+            echo "[PASS] V16: AVTAB flex_array contract is present and kept distinct from native hashtab traversal."
           else
-            echo "[FAIL] V15: AVTAB flex_array contract verification failed."
+            echo "[FAIL] V16: AVTAB flex_array contract verification failed."
             exit 1
           fi
 
-          echo "[PASS] V15: Setup 28 verifies source semantics, not fragile one-line formatting."
-          echo "[PASS] V15: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
+          echo "[PASS] V16: Setup 28 verifies source semantics, not fragile one-line formatting."
+          echo "[PASS] V16: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
 
           export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
@@ -3542,6 +3546,8 @@ jobs:
           echo
           echo "[PASS] Scoped source compatibility fixes prepared."
 
+          printf '%s\n' "[LIVE] Source preflight complete; starting kernel build." >&3
+          printf '%s\n' "[LIVE] Detailed compiler/log output is artifact-only." >&3
           echo "=========================================="
           echo "CURRENT ERROR POLICY: NO SPECULATIVE XFRM FIX"
           echo "The latest reported failure is in net/xfrm, but no exact compiler diagnostic is embedded here."
@@ -3570,9 +3576,8 @@ jobs:
           echo "[INFO] DTB/DTBO build disabled for V10 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
-          # V10 LIVE BUILD OUTPUT: stream the complete V=1 compiler/linker output to the
-          # GitHub Actions console while simultaneously preserving the exact same stream
-          # in the diagnostic artifact. This is intentionally not a source fix.
+          # V16 LIVE BUILD OUTPUT: preserve the complete V=1 stream in the artifact,
+          # but show only concise file-level compile/archive activity in GitHub Actions.
           : > "$FULL_LOG"
           set +e
           (
@@ -3585,7 +3590,22 @@ jobs:
               -j"$(nproc)" \
               V=1 \
               WERROR=0 \
-              Image.gz 2>&1 | tee -a "$FULL_LOG"
+              Image.gz 2>&1 | tee -a "$FULL_LOG" | awk '
+                / -o / {
+                  n=split($0,a," -o ")
+                  if (n >= 2) {
+                    out=a[n]
+                    sub(/^[[:space:]]+/, "", out)
+                    sub(/[[:space:]].*$/, "", out)
+                    if (out != "") print out
+                  }
+                  next
+                }
+                /(^|[[:space:]])built-in\.a([[:space:]]|$)/ {
+                  for (i=1; i<=NF; i++)
+                    if ($i ~ /built-in\.a$/) print $i
+                }
+              ' >&3
             exit "${PIPESTATUS[0]}"
           ) &
           BUILD_PID=$!
@@ -3594,8 +3614,7 @@ jobs:
           while kill -0 "$BUILD_PID" 2>/dev/null; do
             sleep 30
             if kill -0 "$BUILD_PID" 2>/dev/null; then
-              echo "[BUILD-HEARTBEAT] $(date -u '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
-              echo "[BUILD-HEARTBEAT] live V=1 output is streaming above; captured=$(wc -c < "$FULL_LOG") bytes / $(wc -l < "$FULL_LOG") lines"
+              echo "[LIVE] Build heartbeat: elapsed=$(( $(date +%s) - START ))s; captured=$(wc -c < "$FULL_LOG") bytes / $(wc -l < "$FULL_LOG") lines" >&3
             fi
           done
 
@@ -3773,16 +3792,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V15-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V15-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V15-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3869,7 +3888,7 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V15"
+            echo "Workflow version: V16"
             echo "Previous workflow: V12"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
@@ -3892,9 +3911,9 @@ jobs:
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v14-workflow-source/V15-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v14-workflow-source/V15-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V15-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v14-workflow-source/V16-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v14-workflow-source/V16-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V16-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V13 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
@@ -3902,7 +3921,7 @@ jobs:
 
           {
             echo "========== V13 ALL SETUP STATUS =========="
-            echo "Workflow version: V15"
+            echo "Workflow version: V16"
             echo "Previous workflow: V12"
             echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13"
             echo "Setup numbers are independent from workflow version numbers."
@@ -3916,9 +3935,9 @@ jobs:
               else status="EXECUTED-NO-STATUS-MARKER"; fi
               printf '%-75s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/V15-ALL-SETUP-STATUS.log
+          } | tee diagnostic-artifact/V16-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V15-CURRENT-STATUS.md <<'REPORT'
+          cat > diagnostic-artifact/V16-CURRENT-STATUS.md <<'REPORT'
           # V13 Current Status
 
           ## V12 actual result
@@ -3940,7 +3959,7 @@ jobs:
 
           ## Artifact identity
           Current diagnostics artifact:
-            V15-LG-Velvet-G900-Diagnostics
+            V16-LG-Velvet-G900-Diagnostics
 
           The previous V10 filename must not be reused for a V13 run.
 
@@ -4001,7 +4020,7 @@ jobs:
 
           ## Artifact naming
           Version comes FIRST:
-            V15-LG-Velvet-G900-Diagnostics
+            V16-LG-Velvet-G900-Diagnostics
           Never use the old V10 name for V13 content.
 
           ## One-ZIP rule
@@ -4021,7 +4040,7 @@ jobs:
           member list before changing anything.
           REPORT
 
-          cat > diagnostic-artifact/V15-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          cat > diagnostic-artifact/V16-ERROR-AND-FIX-HISTORY.md <<'REPORT'
           # Complete Error/Fix History V4 → V13
 
           V4 — Protected baseline. Fixed LG 4.19 SELinux hashtab vs AVTAB
@@ -4140,15 +4159,15 @@ jobs:
           Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13
 
           Current source:
-          - V15-CURRENT-WORKFLOW.yml
+          - V16-CURRENT-WORKFLOW.yml
 
           Current status/history:
-          - V15-CURRENT-STATUS.md
-          - V15-ERROR-AND-FIX-HISTORY.md
+          - V16-CURRENT-STATUS.md
+          - V16-ERROR-AND-FIX-HISTORY.md
           - PROJECT-CONTEXT-A-Z.md
           - WORKFLOW-HISTORY-INDEX.md
           - RESEARCH-SOURCES.md
-          - V15-ALL-SETUP-STATUS.log
+          - V16-ALL-SETUP-STATUS.log
 
           Raw runner evidence:
           - ci-logs/
@@ -4162,7 +4181,7 @@ jobs:
           - project-history/
 
           Artifact naming:
-          V15-LG-Velvet-G900-Diagnostics
+          V16-LG-Velvet-G900-Diagnostics
 
           ZIP rule:
           This directory is uploaded directly to GitHub Actions. GitHub creates
@@ -4174,7 +4193,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V15-LG-Velvet-G900-Diagnostics
+          name: V16-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
@@ -4185,7 +4204,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: V13-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V15-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          path: artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
@@ -4194,8 +4213,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V15-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V15-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V16-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V16-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
