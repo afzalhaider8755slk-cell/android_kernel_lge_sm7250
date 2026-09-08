@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V16
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V17
 
 on:
   workflow_dispatch:
@@ -3581,13 +3581,14 @@ jobs:
           : > "$FULL_LOG"
           set +e
           (
+              # V17 stability fix: cap build parallelism at 2 on the 4-vCPU hosted runner to reduce runner CPU/memory starvation risk.
             stdbuf -oL -eL make \
               ARCH=arm64 \
               LLVM=1 \
               LLVM_IAS=1 \
               CROSS_COMPILE="$CROSS_COMPILE" \
               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              -j"$(nproc)" \
+              -j2 \
               V=1 \
               WERROR=0 \
               Image.gz 2>&1 | tee -a "$FULL_LOG" | awk '
@@ -3611,36 +3612,6 @@ jobs:
           BUILD_PID=$!
           set -e
 
-          # V16 DIAGNOSTIC-ONLY: collect runner/resource/process evidence without
-          # changing kernel sources, make flags, target, or feature configuration.
-          # The diagnostic stream is artifact-only; GitHub console remains concise.
-          DIAG_RUNTIME_LOG="$DIAG_DIR/28-runtime-diagnostics.log"
-          : > "$DIAG_RUNTIME_LOG"
-          (
-            while kill -0 "$BUILD_PID" 2>/dev/null; do
-              {
-                echo "===== runtime snapshot $(date -Is) ====="
-                echo "elapsed=$(( $(date +%s) - START ))s"
-                echo "build_pid=$BUILD_PID"
-                echo "nproc=$(nproc)"
-                echo "loadavg=$(cat /proc/loadavg 2>/dev/null || true)"
-                echo "--- memory ---"
-                free -h 2>/dev/null || true
-                echo "--- disk ---"
-                df -h "$GITHUB_WORKSPACE" 2>/dev/null || true
-                echo "--- vmstat ---"
-                vmstat 1 2 2>/dev/null || true
-                echo "--- top processes by RSS ---"
-                ps -eo pid,ppid,stat,%cpu,%mem,rss,etime,args --sort=-rss 2>/dev/null | head -21 || true
-                echo "--- build process tree ---"
-                ps -eo pid,ppid,stat,%cpu,%mem,rss,etime,args 2>/dev/null | awk -v p="$BUILD_PID" '$1==p || $2==p {print}' || true
-                echo
-              } >> "$DIAG_RUNTIME_LOG" 2>&1
-              sleep 30
-            done
-          ) &
-          RUNTIME_DIAG_PID=$!
-
           while kill -0 "$BUILD_PID" 2>/dev/null; do
             sleep 30
             if kill -0 "$BUILD_PID" 2>/dev/null; then
@@ -3652,10 +3623,6 @@ jobs:
           wait "$BUILD_PID"
           BUILD_STATUS=$?
           set -e
-          if [ -n "${RUNTIME_DIAG_PID:-}" ]; then
-            kill "$RUNTIME_DIAG_PID" 2>/dev/null || true
-            wait "$RUNTIME_DIAG_PID" 2>/dev/null || true
-          fi
           if [ -n "${MONITOR_PID:-}" ]; then
             kill "$MONITOR_PID" 2>/dev/null || true
             wait "$MONITOR_PID" 2>/dev/null || true
@@ -3826,16 +3793,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V17-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V17-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V16-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V17-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3922,7 +3889,7 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V16"
+            echo "Workflow version: V17"
             echo "Previous workflow: V12"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
@@ -3945,9 +3912,9 @@ jobs:
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v14-workflow-source/V16-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v14-workflow-source/V16-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V16-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v14-workflow-source/V17-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v14-workflow-source/V17-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V17-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V13 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
@@ -3955,7 +3922,7 @@ jobs:
 
           {
             echo "========== V13 ALL SETUP STATUS =========="
-            echo "Workflow version: V16"
+            echo "Workflow version: V17"
             echo "Previous workflow: V12"
             echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13"
             echo "Setup numbers are independent from workflow version numbers."
@@ -3969,9 +3936,9 @@ jobs:
               else status="EXECUTED-NO-STATUS-MARKER"; fi
               printf '%-75s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/V16-ALL-SETUP-STATUS.log
+          } | tee diagnostic-artifact/V17-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V16-CURRENT-STATUS.md <<'REPORT'
+          cat > diagnostic-artifact/V17-CURRENT-STATUS.md <<'REPORT'
           # V13 Current Status
 
           ## V12 actual result
@@ -3993,7 +3960,7 @@ jobs:
 
           ## Artifact identity
           Current diagnostics artifact:
-            V16-LG-Velvet-G900-Diagnostics
+            V17-LG-Velvet-G900-Diagnostics
 
           The previous V10 filename must not be reused for a V13 run.
 
@@ -4054,7 +4021,7 @@ jobs:
 
           ## Artifact naming
           Version comes FIRST:
-            V16-LG-Velvet-G900-Diagnostics
+            V17-LG-Velvet-G900-Diagnostics
           Never use the old V10 name for V13 content.
 
           ## One-ZIP rule
@@ -4074,7 +4041,7 @@ jobs:
           member list before changing anything.
           REPORT
 
-          cat > diagnostic-artifact/V16-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          cat > diagnostic-artifact/V17-ERROR-AND-FIX-HISTORY.md <<'REPORT'
           # Complete Error/Fix History V4 → V13
 
           V4 — Protected baseline. Fixed LG 4.19 SELinux hashtab vs AVTAB
@@ -4193,15 +4160,15 @@ jobs:
           Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13
 
           Current source:
-          - V16-CURRENT-WORKFLOW.yml
+          - V17-CURRENT-WORKFLOW.yml
 
           Current status/history:
-          - V16-CURRENT-STATUS.md
-          - V16-ERROR-AND-FIX-HISTORY.md
+          - V17-CURRENT-STATUS.md
+          - V17-ERROR-AND-FIX-HISTORY.md
           - PROJECT-CONTEXT-A-Z.md
           - WORKFLOW-HISTORY-INDEX.md
           - RESEARCH-SOURCES.md
-          - V16-ALL-SETUP-STATUS.log
+          - V17-ALL-SETUP-STATUS.log
 
           Raw runner evidence:
           - ci-logs/
@@ -4215,7 +4182,7 @@ jobs:
           - project-history/
 
           Artifact naming:
-          V16-LG-Velvet-G900-Diagnostics
+          V17-LG-Velvet-G900-Diagnostics
 
           ZIP rule:
           This directory is uploaded directly to GitHub Actions. GitHub creates
@@ -4227,7 +4194,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V16-LG-Velvet-G900-Diagnostics
+          name: V17-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
@@ -4238,7 +4205,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: V13-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V16-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          path: artifacts/V17-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
@@ -4247,8 +4214,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V16-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V16-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V17-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V17-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
