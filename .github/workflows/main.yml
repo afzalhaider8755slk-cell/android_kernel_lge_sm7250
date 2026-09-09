@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V19
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V20
 
 on:
   workflow_dispatch:
@@ -3576,37 +3576,22 @@ jobs:
           echo "[INFO] DTB/DTBO build disabled for V10 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
-          # V16 LIVE BUILD OUTPUT: preserve the complete V=1 stream in the artifact,
-          # but show only concise file-level compile/archive activity in GitHub Actions.
+          # V20 LIVE BUILD OUTPUT: preserve the complete V=1 stream in the artifact.
+          # GitHub Actions receives only the existing 30-second heartbeat to reduce live-log transport pressure.
           : > "$FULL_LOG"
           set +e
           (
-              # V17 stability fix: cap build parallelism at 2 on the 4-vCPU hosted runner to reduce runner CPU/memory starvation risk.
+              # V20 stability fix: single-job build plus artifact-only compiler output to reduce hosted-runner CPU/memory and live-log transport pressure.
             stdbuf -oL -eL make \
               ARCH=arm64 \
               LLVM=1 \
               LLVM_IAS=1 \
               CROSS_COMPILE="$CROSS_COMPILE" \
               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              -j2 \
+              -j1 \
               V=1 \
               WERROR=0 \
-              Image.gz 2>&1 | tee -a "$FULL_LOG" | awk '
-                / -o / {
-                  n=split($0,a," -o ")
-                  if (n >= 2) {
-                    out=a[n]
-                    sub(/^[[:space:]]+/, "", out)
-                    sub(/[[:space:]].*$/, "", out)
-                    if (out != "") print out
-                  }
-                  next
-                }
-                /(^|[[:space:]])built-in\.a([[:space:]]|$)/ {
-                  for (i=1; i<=NF; i++)
-                    if ($i ~ /built-in\.a$/) print $i
-                }
-              ' >&3
+              Image.gz 2>&1 | tee -a "$FULL_LOG" >/dev/null
             exit "${PIPESTATUS[0]}"
           ) &
           BUILD_PID=$!
