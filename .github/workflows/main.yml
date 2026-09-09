@@ -958,7 +958,7 @@ jobs:
           config LTO_NONE
           \tbool "None"
 
-          config LTO_CLANG_FULL
+          config LTO_CLANG_THIN
           \tbool "Clang Thin LTO (EXPERIMENTAL)"
           \tdepends on ARCH_SUPPORTS_LTO_CLANG
           \tdepends on !FTRACE_MCOUNT_RECORD || HAVE_C_RECORDMCOUNT
@@ -966,7 +966,7 @@ jobs:
           \tdepends on CC_IS_CLANG && LD_IS_LLD
           \tselect LTO_CLANG
           \thelp
-          \t  This option enables Clang's full Link Time Optimization (LTO).
+          \t  This option enables Clang's Thin Link Time Optimization (Thin LTO).
 
           endchoice
           """
@@ -974,7 +974,7 @@ jobs:
           needle="config CFI\n"
           thin="""config THINLTO
           \tbool "Use clang ThinLTO (legacy 4.19 compatibility)"
-          \tdepends on LTO_CLANG && ARCH_SUPPORTS_THINLTO && !LTO_CLANG_FULL
+          \tdepends on LTO_CLANG && ARCH_SUPPORTS_THINLTO && !LTO_CLANG_THIN
           \tdefault n
 
           """
@@ -2307,12 +2307,12 @@ jobs:
             done
 
             echo
-            echo "========== FULL CLANG LTO =========="
+            echo "========== THIN CLANG LTO =========="
             for req in CONFIG_LTO=y CONFIG_LTO_CLANG=y CONFIG_LTO_CLANG_THIN=y; do
               grep -qx "$req" .config || { echo "[FAIL] Missing $req"; exit 1; }
             done
-            if grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
-              echo "[FAIL] ThinLTO/LTO_NONE is still enabled; Thin LTO must be exclusive."
+            if grep -qx 'CONFIG_LTO_CLANG_FULL=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
+              echo "[FAIL] Full LTO/LTO_NONE is still enabled; Thin LTO must be exclusive."
               exit 1
             fi
             echo "[PASS] Thin Clang LTO is selected exclusively."
@@ -2476,7 +2476,7 @@ jobs:
             check grep -qx "$req" .config
           done
 
-          if grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
+          if grep -qx 'CONFIG_LTO_CLANG_FULL=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
             echo "[FAIL] Thin LTO exclusivity violated." | tee -a "$REPORT"
             fail=$((fail+1))
           else
