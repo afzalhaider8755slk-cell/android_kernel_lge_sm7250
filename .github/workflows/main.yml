@@ -921,7 +921,7 @@ jobs:
 
           echo "========== THIN LTO 4.19 KCONFIG COMPATIBILITY BACKPORT =========="
           # The LG 4.19 tree already contains the real Clang LTO build machinery.
-          # Backport ONLY the missing Kconfig interface for explicit Thin LTO.
+          # Backport ONLY the missing Kconfig interface for explicit Full LTO.
           python3 - <<'PY'
           from pathlib import Path
           import re
@@ -958,15 +958,15 @@ jobs:
           config LTO_NONE
           \tbool "None"
 
-          config LTO_CLANG_THIN
-          \tbool "Clang Thin LTO (EXPERIMENTAL)"
+          config LTO_CLANG_FULL
+          \tbool "Clang Full LTO (EXPERIMENTAL)"
           \tdepends on ARCH_SUPPORTS_LTO_CLANG
           \tdepends on !FTRACE_MCOUNT_RECORD || HAVE_C_RECORDMCOUNT
           \tdepends on !KASAN
           \tdepends on CC_IS_CLANG && LD_IS_LLD
           \tselect LTO_CLANG
           \thelp
-          \t  This option enables Clang's Thin Link Time Optimization (Thin LTO).
+          \t  This option enables Clang's Thin Link Time Optimization (LTO).
 
           endchoice
           """
@@ -974,7 +974,7 @@ jobs:
           needle="config CFI\n"
           thin="""config THINLTO
           \tbool "Use clang ThinLTO (legacy 4.19 compatibility)"
-          \tdepends on LTO_CLANG && ARCH_SUPPORTS_THINLTO && !LTO_CLANG_THIN
+          \tdepends on LTO_CLANG && ARCH_SUPPORTS_THINLTO && !LTO_CLANG_FULL
           \tdefault n
 
           """
@@ -986,9 +986,9 @@ jobs:
           grep -q '^config LTO_CLANG_FULL$' arch/Kconfig || { echo "[FAIL] Thin-LTO Kconfig compatibility backport was not installed."; exit 1; }
           grep -q '^config LTO_CLANG$' arch/Kconfig || { echo "[FAIL] Hidden LTO_CLANG selector is missing after backport."; exit 1; }
           grep -q '^config THINLTO$' arch/Kconfig || { echo "[FAIL] Legacy THINLTO compatibility symbol is missing."; exit 1; }
-          grep -q 'lto-clang-flags[[:space:]]*:=[[:space:]]*-flto=thin$' Makefile || { echo "[FAIL] Existing 4.19 Makefile thin-LTO path (-flto) was not found."; exit 1; }
+          grep -q 'lto-clang-flags[[:space:]]*:=[[:space:]]*-flto=thin$' Makefile || { echo "[FAIL] Existing 4.19 Makefile ThinLTO path (-flto=thin) was not found."; exit 1; }
           grep -q 'lto-clang-flags[[:space:]]*:=[[:space:]]*-flto=thin$' Makefile || { echo "[FAIL] Existing 4.19 ThinLTO path was not found; refusing to claim LTO compatibility."; exit 1; }
-          echo "[PASS] Thin-LTO Kconfig interface backported onto existing 4.19 LTO build machinery."
+          echo "[PASS] Full-LTO Kconfig interface backported onto existing 4.19 LTO build machinery."
 
           echo
           echo "========== THIN LTO CONFIGURATION =========="
@@ -998,10 +998,10 @@ jobs:
           fi
           scripts/config --enable CONFIG_LTO_CLANG_THIN
           scripts/config --enable CONFIG_LTO_CLANG
-          scripts/config --disable CONFIG_LTO_CLANG_FULL 2>/dev/null || true
+          scripts/config --disable CONFIG_LTO_CLANG_THIN 2>/dev/null || true
           scripts/config --disable CONFIG_LTO_NONE 2>/dev/null || true
           scripts/config --disable CONFIG_THINLTO 2>/dev/null || true
-          echo "[REQUIRED] Thin Clang LTO requested: CONFIG_LTO_CLANG_THIN=y"
+          echo "[REQUIRED] Full Clang LTO requested: CONFIG_LTO_CLANG_THIN=y"
 
             # DroidSpaces-OSS legacy 4.19 requirements
             for sym in \
@@ -1916,7 +1916,7 @@ jobs:
           print("[AUDIT] actual function definitions:", counts)
           PY
           echo "[PASS] SELinux 4.19 source audit complete."
-          echo "[UNCHANGED] SukiSU-Ultra 4.2.0 / KPM / SUSFS / Baseband-Guard / Maphide / Thin LTO"
+          echo "[UNCHANGED] SukiSU-Ultra 4.2.0 / KPM / SUSFS / Baseband-Guard / Maphide / Full LTO"
           echo "[UNCHANGED] Fingerprint / vibration / Dual-SIM-RIL / audio / IMS / VoWiFi requirements"
           echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
           echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
@@ -2312,7 +2312,7 @@ jobs:
               grep -qx "$req" .config || { echo "[FAIL] Missing $req"; exit 1; }
             done
             if grep -qx 'CONFIG_LTO_CLANG_FULL=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
-              echo "[FAIL] Full LTO/LTO_NONE is still enabled; Thin LTO must be exclusive."
+              echo "[FAIL] ThinLTO/LTO_NONE is still enabled; Full LTO must be exclusive."
               exit 1
             fi
             echo "[PASS] Thin Clang LTO is selected exclusively."
@@ -2480,7 +2480,7 @@ jobs:
             echo "[FAIL] Thin LTO exclusivity violated." | tee -a "$REPORT"
             fail=$((fail+1))
           else
-            echo "[PASS] Thin Clang LTO exclusivity." | tee -a "$REPORT"
+            echo "[PASS] Full Clang LTO exclusivity." | tee -a "$REPORT"
             pass=$((pass+1))
           fi
 
@@ -3969,7 +3969,7 @@ jobs:
           flags, version thresholds, or output filenames.
 
           Preserved feature families include the verified SukiSU-Ultra, KPM,
-          SUSFS, Thin LTO, Maphide/JIT-Zygote, Baseband-Guard and the other
+          SUSFS, Full LTO, Maphide/JIT-Zygote, Baseband-Guard and the other
           previously verified kernel/device compatibility work.
 
           ## Version progression
