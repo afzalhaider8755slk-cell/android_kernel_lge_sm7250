@@ -1,10 +1,10 @@
-# V21 — LG Velvet LM-G900/G900EMW
+# V22 — LG Velvet LM-G900/G900EMW
 # Strategy: exact working-kernel config baseline + ONLY:
 #   1) CIP135
 #   2) Android Clang 21 / r563880c
 #   3) SukiSU-Ultra builtin + native SUSFS
 # KPROBES is locked OFF.
-name: KERNEL-BUILD-Velvet-LM-G900-V21-WORKING-BASELINE-CIP135-CLANG21-SUKISU-SUSFS
+name: KERNEL-BUILD-Velvet-LM-G900-V22-WORKING-BASELINE-CIP135-CLANG21-SUKISU-SUSFS
 
 on:
   workflow_dispatch:
@@ -426,7 +426,7 @@ jobs:
 
       - name: 16 - Upload diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43608f5bad # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: V21-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
@@ -436,7 +436,7 @@ jobs:
 
       - name: 17 - Upload flashable kernel
         if: success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43608f5bad # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: V21-LG-Velvet-G900-SukiSU-Ultra-SUSFS-Flashable
           path: artifacts/V21-LM-G900-SukiSU-Ultra-SUSFS-CIP135-Clang21-AnyKernel3.zip
@@ -446,7 +446,7 @@ jobs:
 
       - name: 18 - Upload raw Image
         if: success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43608f5bad # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: V21-LG-Velvet-G900-Raw-Image
           path: artifacts/Image
