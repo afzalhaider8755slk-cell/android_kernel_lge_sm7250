@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V19
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V20
 
 on:
   workflow_dispatch:
@@ -105,9 +105,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/01-setup-01-initialize-diagnostics-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -166,7 +178,19 @@ jobs:
           SETUP_LOG="$DIAG_DIR/02A-setup-02A-checkout-state-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           export PS4='+ [SETUP-02A] '
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-02A][PASS] Checkout state captured."; else echo "[SETUP-02A][FAIL] Checkout state capture exited with code $rc."; fi' EXIT
@@ -185,9 +209,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/03-setup-03-integrate-cip135-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -383,9 +419,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/04-setup-04-install-build-dependencies-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -418,9 +466,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/05-setup-05-install-android-clang-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -454,9 +514,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/06-setup-06-install-aarch64-gcc-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -483,9 +555,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/07-setup-07-install-arm32-gcc-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -512,9 +596,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/08-setup-08-prepare-toolchain-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -580,9 +676,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/09-setup-09-integrate-sukisu-ultra-non-gki-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -640,9 +748,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/10-setup-10-verify-root-kpm-susfs-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -685,9 +805,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/11-setup-11-verify-non-gki-hook-architecture-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -710,9 +842,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/12-setup-12-configure-defconfig-and-features-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -863,6 +1007,16 @@ jobs:
             scripts/config --enable CONFIG_KALLSYMS_ALL
             scripts/config --enable CONFIG_KPM
             scripts/config --enable CONFIG_EXT4_FS
+            # Source-derived: this tree defines Android vendor-hook tracepoints
+            # and drivers/android/Makefile builds their implementation only when
+            # CONFIG_ANDROID_VENDOR_HOOKS=y. Current kernel objects reference them.
+            if grep -RqsE '^[[:space:]]*(config|menuconfig)[[:space:]]+ANDROID_VENDOR_HOOKS([[:space:]]|$)' drivers arch include kernel fs mm net security sound virt; then
+              scripts/config --enable CONFIG_ANDROID_VENDOR_HOOKS
+              echo "[PASS] CONFIG_ANDROID_VENDOR_HOOKS enabled from source-defined vendor-hook support."
+            else
+              echo "[FAIL] CONFIG_ANDROID_VENDOR_HOOKS is absent from the source tree."
+              exit 1
+            fi
             scripts/config --disable CONFIG_KSU_TRACEPOINT_HOOK 2>/dev/null || true
 
             kconfig_has() {
@@ -1050,9 +1204,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/13-setup-13-integrate-maphide-jit-zygote-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -1229,9 +1395,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/14-setup-14-core-integration-verification-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -1287,9 +1465,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/15-setup-15-kpm-kbuild-preflight-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -1738,9 +1928,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/16-setup-16-hard-no-autofix-audit-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -1771,16 +1973,28 @@ jobs:
           SETUP_LOG="$DIAG_DIR/17-setup-17-apply-researched-4-19-fixes-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           LOG="$DIAG_DIR/10A-manual-compatibility-fixes.log"
           : > "$LOG"
-          exec > >(tee -a "$SETUP_LOG" | tee -a "$LOG") 2>&1
+          exec > >(tee -a "$LOG") 2>&1
           trap 'rc=$?; echo "[FAIL] 10A manual compatibility step failed: rc=$rc line=$LINENO cmd=$BASH_COMMAND"; exit $rc' ERR
           echo "========== MANUAL 4.19 COMPATIBILITY FIXES =========="
           echo "Auto-Fix: DISABLED"
@@ -1791,6 +2005,11 @@ jobs:
           chmod 700 "$RUNNER_TEMP/ksu_rules_fix.py" "$RUNNER_TEMP/manual_compat.py"
           cp -f "$RUNNER_TEMP/ksu_rules_fix.py" /tmp/ksu_rules_fix.py
           python3 "$RUNNER_TEMP/manual_compat.py"
+          echo
+          echo "========== LINUX 4.19 API COMPATIBILITY SHIMS =========="
+          printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwID0gUGF0aCgiZnMvbmFtZXNwYWNlLmMiKQpzID0gcC5yZWFkX3RleHQoKQptYXJrZXIgPSAic3RhdGljIHN0cnVjdCB1Y291bnRzICppbmNfbW50X25hbWVzcGFjZXMoc3RydWN0IHVzZXJfbmFtZXNwYWNlICpucykiCnNoaW0gPSByIiIiCi8qCiAqIExpbnV4IDQuMTkgY29tcGF0aWJpbGl0eSBleHBvcnRzIGZvciBTdWtpU1UtVWx0cmEgNC4yLjAuCiAqIFJldXNlIHRoZSBleGlzdGluZyA0LjE5IFZGUyBvcGVyYXRpb25zOyBubyBmZWF0dXJlIGlzIHJlbW92ZWQuCiAqLwppbnQgcGF0aF9tb3VudChjb25zdCBjaGFyICpkZXZfbmFtZSwgc3RydWN0IHBhdGggKnBhdGgsCiAgICAgICAgICAgICAgIGNvbnN0IGNoYXIgKnR5cGVfcGFnZSwgdW5zaWduZWQgbG9uZyBmbGFncywgdm9pZCAqZGF0YV9wYWdlKQp7CiAgICBpZiAoIXBhdGgpCiAgICAgICAgcmV0dXJuIC1FSU5WQUw7CiAgICBpZiAoIW1heV9tb3VudCgpKQogICAgICAgIHJldHVybiAtRVBFUk07CiAgICBpZiAoZmxhZ3MgJiAoTVNfU0hBUkVEIHwgTVNfUFJJVkFURSB8IE1TX1NMQVZFIHwgTVNfVU5CSU5EQUJMRSkpCiAgICAgICAgcmV0dXJuIGRvX2NoYW5nZV90eXBlKHBhdGgsIGZsYWdzKTsKICAgIHJldHVybiAtRU9QTk9UU1VQUDsKfQpFWFBPUlRfU1lNQk9MX0dQTChwYXRoX21vdW50KTsKCmludCBwYXRoX3Vtb3VudChzdHJ1Y3QgcGF0aCAqcGF0aCwgaW50IGZsYWdzKQp7CiAgICBzdHJ1Y3QgbW91bnQgKm1udDsKICAgIGludCByZXR2YWw7CgogICAgaWYgKCFwYXRoKQogICAgICAgIHJldHVybiAtRUlOVkFMOwogICAgaWYgKCFtYXlfbW91bnQoKSkKICAgICAgICByZXR1cm4gLUVQRVJNOwoKICAgIG1udCA9IHJlYWxfbW91bnQocGF0aC0+bW50KTsKICAgIHJldHZhbCA9IC1FSU5WQUw7CiAgICBpZiAocGF0aC0+ZGVudHJ5ICE9IHBhdGgtPm1udC0+bW50X3Jvb3QpCiAgICAgICAgZ290byBvdXQ7CiAgICBpZiAoIWNoZWNrX21udChtbnQpKQogICAgICAgIGdvdG8gb3V0OwogICAgaWYgKG1udC0+bW50Lm1udF9mbGFncyAmIE1OVF9MT0NLRUQpCiAgICAgICAgZ290byBvdXQ7CiAgICBpZiAoKGZsYWdzICYgTU5UX0ZPUkNFKSAmJiAhY2FwYWJsZShDQVBfU1lTX0FETUlOKSkgewogICAgICAgIHJldHZhbCA9IC1FUEVSTTsKICAgICAgICBnb3RvIG91dDsKICAgIH0KICAgIHJldHZhbCA9IGRvX3Vtb3VudChtbnQsIGZsYWdzKTsKb3V0OgogICAgZHB1dChwYXRoLT5kZW50cnkpOwogICAgbW50cHV0X25vX2V4cGlyZShtbnQpOwogICAgcmV0dXJuIHJldHZhbDsKfQpFWFBPUlRfU1lNQk9MX0dQTChwYXRoX3Vtb3VudCk7CgoiIiIKYXNzZXJ0IG1hcmtlciBpbiBzCmlmICJpbnQgcGF0aF9tb3VudChjb25zdCBjaGFyICpkZXZfbmFtZSwgc3RydWN0IHBhdGggKnBhdGgsIiBub3QgaW4gczoKICAgIHM9cy5yZXBsYWNlKG1hcmtlcixzaGltK21hcmtlciwxKQpwLndyaXRlX3RleHQocykKCnA9UGF0aCgia2VybmVsL3NlY2NvbXAuYyIpCnM9cC5yZWFkX3RleHQoKQptYXJrZXI9IiNlbmRpZlx0LyogQ09ORklHX1NFQ0NPTVBfRklMVEVSICovIgppZiBtYXJrZXIgbm90IGluIHM6IG1hcmtlcj0iI2VuZGlmIC8qIENPTkZJR19TRUNDT01QX0ZJTFRFUiAqLyIKc2hpbT1yIiIiCi8qCiAqIExpbnV4IDQuMTkgY29tcGF0aWJpbGl0eSBBUEkgZm9yIG5ld2VyIGluLWtlcm5lbCBjYWxsZXJzLgogKiA0LjE5IGV4cG9zZXMgcHV0X3NlY2NvbXBfZmlsdGVyKCksIHRoZSBleGlzdGluZyBmaWx0ZXItcmVsZWFzZSBwcmltaXRpdmUuCiAqLwp2b2lkIHNlY2NvbXBfZmlsdGVyX3JlbGVhc2Uoc3RydWN0IHRhc2tfc3RydWN0ICp0c2spCnsKICAgIHB1dF9zZWNjb21wX2ZpbHRlcih0c2spOwp9CkVYUE9SVF9TWU1CT0xfR1BMKHNlY2NvbXBfZmlsdGVyX3JlbGVhc2UpOwoKIiIiCmFzc2VydCBtYXJrZXIgaW4gcwppZiAidm9pZCBzZWNjb21wX2ZpbHRlcl9yZWxlYXNlKHN0cnVjdCB0YXNrX3N0cnVjdCAqdHNrKSIgbm90IGluIHM6CiAgICBzPXMucmVwbGFjZShtYXJrZXIsc2hpbSttYXJrZXIsMSkKcC53cml0ZV90ZXh0KHMpCmFzc2VydCAiaW50IHBhdGhfbW91bnQoY29uc3QgY2hhciAqZGV2X25hbWUsIHN0cnVjdCBwYXRoICpwYXRoLCIgaW4gUGF0aCgiZnMvbmFtZXNwYWNlLmMiKS5yZWFkX3RleHQoKQphc3NlcnQgInZvaWQgc2VjY29tcF9maWx0ZXJfcmVsZWFzZShzdHJ1Y3QgdGFza19zdHJ1Y3QgKnRzaykiIGluIFBhdGgoImtlcm5lbC9zZWNjb21wLmMiKS5yZWFkX3RleHQoKQpwcmludCgiW1BBU1NdIHNoaW0gc2NyaXB0IikK' | base64 -d > "$RUNNER_TEMP/v20_api_compat.py"
+          python3 "$RUNNER_TEMP/v20_api_compat.py"
+          echo "[PASS] Linux 4.19 API compatibility shims verified."
           printf '%s' 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMscmUKcD1QYXRoKHN5cy5hcmd2WzFdKTsgcz1wLnJlYWRfdGV4dCgpCgpkZWYgZmluZF9mdW5jKHRleHQsbmFtZSk6CiAgICBwYXQ9cmUuY29tcGlsZShyJyg/bXMpXnN0YXRpY1xzKyg/OmJvb2x8dm9pZHxzdHJ1Y3RccythdnRhYl9ub2RlXHMqXCopXHMrJytyZS5lc2NhcGUobmFtZSkrcidccypcKFteO10qP1wpXHMqXHsnKQogICAgbT1wYXQuc2VhcmNoKHRleHQpCiAgICBpZiBub3QgbTogcmFpc2UgU3lzdGVtRXhpdCgnZnVuY3Rpb24gYm9keSBub3QgZm91bmQ6ICcrbmFtZSkKICAgIGJyYWNlPXRleHQuZmluZCgneycsbS5zdGFydCgpLG0uZW5kKCkpOyBkZXB0aD0wCiAgICBmb3IgaSBpbiByYW5nZShicmFjZSxsZW4odGV4dCkpOgogICAgICAgIGlmIHRleHRbaV09PSd7JzogZGVwdGgrPTEKICAgICAgICBlbGlmIHRleHRbaV09PSd9JzoKICAgICAgICAgICAgZGVwdGgtPTEKICAgICAgICAgICAgaWYgZGVwdGg9PTA6IHJldHVybiBtLnN0YXJ0KCksaSsxCiAgICByYWlzZSBTeXN0ZW1FeGl0KCdicmFjZSBtaXNtYXRjaDogJytuYW1lKQoKZGVmIHJlcGxhY2VfZnVuYyh0ZXh0LG5hbWUsYm9keSk6CiAgICBhLGI9ZmluZF9mdW5jKHRleHQsbmFtZSkKICAgIHJldHVybiB0ZXh0WzphXStib2R5K3RleHRbYjpdCgojIExpbnV4IDQuMTkgU0VMaW51eCBhdnRhYi9oYXNoIGJ1Y2tldHMgdXNlIGZsZXhfYXJyYXkuIEtlZXAgdGhlIG1vZGVybiBwYXRoCiMgaW50YWN0IGZvciBuZXdlciBrZXJuZWxzLCBidXQgbWFrZSB0aGUgNC4xOSBicmFuY2ggZGVyZWZlcmVuY2UgZmxleF9hcnJheS4KbWFjcm9fcGF0PXJlLmNvbXBpbGUocicjZGVmaW5lIGtzdV9oYXNoX2Zvcl9lYWNoXChub2RlX3B0ciwgbl9zbG90LCBjdXJcKS4qP2ZvciBcKGN1ciA9IG5vZGVfcHRyXFtpXF07IGN1cjsgY3VyID0gY3VyLT5uZXh0XCknLHJlLlMpCm1hY3JvX25ldyA9ICdcbicuam9pbihbCiAgICAnI2lmIExJTlVYX1ZFUlNJT05fQ09ERSA+PSBLRVJORUxfVkVSU0lPTig1LCA4LCAwKScsCiAgICAnI2RlZmluZSBrc3VfaGFzaF9mb3JfZWFjaChub2RlX3B0ciwgbl9zbG90LCBjdXIpIFxcJywKICAgICcgICAgaW50IGk7IFxcJywKICAgICcgICAgZm9yIChpID0gMDsgaSA8IG5fc2xvdDsgKytpKSBcXCcsCiAgICAnICAgICAgICBmb3IgKGN1ciA9IG5vZGVfcHRyW2ldOyBjdXI7IGN1ciA9IGN1ci0+bmV4dCknLAogICAgJyNlbHNlJywKICAgICcjZGVmaW5lIGtzdV9oYXNoX2Zvcl9lYWNoKG5vZGVfcHRyLCBuX3Nsb3QsIGN1cikgXFwnLAogICAgJyAgICBpbnQgaTsgXFwnLAogICAgJyAgICBmb3IgKGkgPSAwOyBpIDwgbl9zbG90OyArK2kpIFxcJywKICAgICcgICAgICAgIGZvciAoY3VyID0gZmxleF9hcnJheV9nZXRfcHRyKG5vZGVfcHRyLCBpKTsgY3VyOyBjdXIgPSBjdXItPm5leHQpJywKICAgICcjZW5kaWYnCl0pCmlmIG5vdCBtYWNyb19wYXQuc2VhcmNoKHMpOiByYWlzZSBTeXN0ZW1FeGl0KCdoYXNoIG1hY3JvIHRhcmdldCBub3QgZm91bmQnKQpzPW1hY3JvX3BhdC5zdWIobWFjcm9fbmV3LHMsY291bnQ9MSkKCiMgSU1QT1JUQU5UOiByZXBsYWNlIGVhY2ggb3JpZ2luYWwgZnVuY3Rpb24gZXhhY3RseSBvbmNlLiBEbyBub3Qgd3JhcCBhbiBvbGQKIyBkZWZpbml0aW9uIGluIGFub3RoZXIgI2lmLyNlbHNlIGRlZmluaXRpb247IHRoYXQgY3JlYXRlZCBmYWxzZSBkdXBsaWNhdGUKIyBkZWZpbml0aW9ucyBpbiBWNjQgYW5kIHByZXZlbnRlZCB0aGUgYnVpbGQgZnJvbSByZWFjaGluZyBjb21waWxhdGlvbi4Kcz1yZXBsYWNlX2Z1bmMocywncmVtb3ZlX2F2dGFiX25vZGUnLHInJydzdGF0aWMgYm9vbCByZW1vdmVfYXZ0YWJfbm9kZShzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBzdHJ1Y3QgYXZ0YWJfbm9kZSAqbm9kZSkKewogICAgaW50IGk7CiAgICBpbnQgcmV0OwogICAgaW50IHNocmlua19zaXplID0gc2l6ZW9mKHN0cnVjdCBhdnRhYl9rZXkpICsgc2l6ZW9mKHN0cnVjdCBhdnRhYl9kYXR1bSk7CiAgICBzdHJ1Y3QgYXZ0YWIgcmVtb3ZlZCA9IHt9OwogICAgc3RydWN0IGF2dGFiX25vZGUgKm47CiAgICBzdHJ1Y3QgYXZ0YWJfbm9kZSAqcHJldjsKCiAgICByZXQgPSBhdnRhYl9hbGxvYygmcmVtb3ZlZCwgMSk7CiAgICBpZiAocmV0IDwgMCkKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICBmb3IgKGkgPSAwOyBpIDwgZGItPnRlX2F2dGFiLm5zbG90OyBpKyspIHsKICAgICAgICBwcmV2ID0gTlVMTDsKICAgICAgICBmb3IgKG4gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnRlX2F2dGFiLmh0YWJsZSwgaSk7IG47IHByZXYgPSBuLCBuID0gbi0+bmV4dCkgewogICAgICAgICAgICBpZiAobiAhPSBub2RlKQogICAgICAgICAgICAgICAgY29udGludWU7CiAgICAgICAgICAgIGlmIChwcmV2KQogICAgICAgICAgICAgICAgcHJldi0+bmV4dCA9IG4tPm5leHQ7CiAgICAgICAgICAgIGVsc2UgaWYgKGZsZXhfYXJyYXlfcHV0X3B0cihkYi0+dGVfYXZ0YWIuaHRhYmxlLCBpLCBuLT5uZXh0LCBHRlBfS0VSTkVMIHwgX19HRlBfWkVSTykpIHsKICAgICAgICAgICAgICAgIGF2dGFiX2Rlc3Ryb3koJnJlbW92ZWQpOwogICAgICAgICAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgICAgICAgICB9CiAgICAgICAgICAgIGlmIChkYi0+dGVfYXZ0YWIubmVsID4gMCkKICAgICAgICAgICAgICAgIGRiLT50ZV9hdnRhYi5uZWwtLTsKICAgICAgICAgICAgaWYgKChuLT5rZXkuc3BlY2lmaWVkICYgQVZUQUJfWFBFUk1TKSAmJiBuLT5kYXR1bS51LnhwZXJtcykKICAgICAgICAgICAgICAgIHNocmlua19zaXplICs9IHNpemVvZih1OCkgKyBzaXplb2YodTgpICsgc2l6ZW9mKHUzMikgKiBBUlJBWV9TSVpFKG4tPmRhdHVtLnUueHBlcm1zLT5wZXJtcy5wKTsKICAgICAgICAgICAgbi0+bmV4dCA9IE5VTEw7CiAgICAgICAgICAgIGlmIChmbGV4X2FycmF5X3B1dF9wdHIocmVtb3ZlZC5odGFibGUsIDAsIG4sIEdGUF9LRVJORUwgfCBfX0dGUF9aRVJPKSkgewogICAgICAgICAgICAgICAgYXZ0YWJfZGVzdHJveSgmcmVtb3ZlZCk7CiAgICAgICAgICAgICAgICByZXR1cm4gZmFsc2U7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgcmVtb3ZlZC5uZWwgPSAxOwogICAgICAgICAgICBhdnRhYl9kZXN0cm95KCZyZW1vdmVkKTsKICAgICAgICAgICAgaWYgKGRiLT5sZW4gPj0gc2hyaW5rX3NpemUpCiAgICAgICAgICAgICAgICBkYi0+bGVuIC09IHNocmlua19zaXplOwogICAgICAgICAgICByZXR1cm4gdHJ1ZTsKICAgICAgICB9CiAgICB9CiAgICBhdnRhYl9kZXN0cm95KCZyZW1vdmVkKTsKICAgIHJldHVybiBmYWxzZTsKfScnJykKYWRkX2ZpbGVuYW1lX2JvZHkgPSByJycnc3RhdGljIGJvb2wgYWRkX2ZpbGVuYW1lX3RyYW5zKHN0cnVjdCBwb2xpY3lkYiAqZGIsIGNvbnN0IGNoYXIgKnMsIGNvbnN0IGNoYXIgKnQsCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBjb25zdCBjaGFyICpjLCBjb25zdCBjaGFyICpkLCBjb25zdCBjaGFyICpvKQp7CiAgICBzdHJ1Y3QgdHlwZV9kYXR1bSAqc3JjLCAqdGd0LCAqZGVmOwogICAgc3RydWN0IGNsYXNzX2RhdHVtICpjbHM7CiAgICBpbnQgcmM7CgojaWYgTElOVVhfVkVSU0lPTl9DT0RFIDwgS0VSTkVMX1ZFUlNJT04oNSwgOCwgMCkKICAgIHN0cnVjdCBmaWxlbmFtZV90cmFucyBmdDsKICAgIHN0cnVjdCBmaWxlbmFtZV90cmFucyAqbmV3X2tleSA9IE5VTEw7CiAgICBzdHJ1Y3QgZmlsZW5hbWVfdHJhbnNfZGF0dW0gKmRhdHVtOwoKICAgIHNyYyA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX3R5cGVzLCBzKTsKICAgIHRndCA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX3R5cGVzLCB0KTsKICAgIGNscyA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX2NsYXNzZXMsIGMpOwogICAgZGVmID0gc3ltdGFiX3NlYXJjaCgmZGItPnBfdHlwZXMsIGQpOwogICAgaWYgKCFzcmMgfHwgIXRndCB8fCAhY2xzIHx8ICFkZWYpCiAgICAgICAgcmV0dXJuIGZhbHNlOwoKICAgIGZ0LnN0eXBlID0gc3JjLT52YWx1ZTsKICAgIGZ0LnR0eXBlID0gdGd0LT52YWx1ZTsKICAgIGZ0LnRjbGFzcyA9IGNscy0+dmFsdWU7CiAgICBmdC5uYW1lID0gbzsKCiAgICBkYXR1bSA9IGt6YWxsb2Moc2l6ZW9mKCpkYXR1bSksIEdGUF9LRVJORUwpOwogICAgaWYgKCFkYXR1bSkKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICBkYXR1bS0+b3R5cGUgPSBkZWYtPnZhbHVlOwoKICAgIG5ld19rZXkgPSBrbWVtZHVwKCZmdCwgc2l6ZW9mKGZ0KSwgR0ZQX0tFUk5FTCk7CiAgICBpZiAoIW5ld19rZXkpCiAgICAgICAgZ290byBsZWdhY3lfZnJlZV9kYXR1bTsKICAgIG5ld19rZXktPm5hbWUgPSBrc3RyZHVwKGZ0Lm5hbWUsIEdGUF9LRVJORUwpOwogICAgaWYgKCFuZXdfa2V5LT5uYW1lKQogICAgICAgIGdvdG8gbGVnYWN5X2ZyZWVfa2V5OwoKICAgIHJjID0gaGFzaHRhYl9pbnNlcnQoZGItPmZpbGVuYW1lX3RyYW5zLCBuZXdfa2V5LCBkYXR1bSk7CiAgICBpZiAocmMpCiAgICAgICAgZ290byBsZWdhY3lfZnJlZV9uYW1lOwoKICAgIGlmIChlYml0bWFwX3NldF9iaXQoJmRiLT5maWxlbmFtZV90cmFuc190dHlwZXMsIGZ0LnR0eXBlLCAxKSkKICAgICAgICByZXR1cm4gZmFsc2U7CgpyZXR1cm4gdHJ1ZTsKCmxlZ2FjeV9mcmVlX25hbWU6CiAgICBrZnJlZSgoY2hhciAqKW5ld19rZXktPm5hbWUpOwpsZWdhY3lfZnJlZV9rZXk6CiAgICBrZnJlZShuZXdfa2V5KTsKbGVnYWN5X2ZyZWVfZGF0dW06CiAgICBrZnJlZShkYXR1bSk7CiAgICByZXR1cm4gZmFsc2U7CiNlbHNlIC8qIExpbnV4IDUuOCsgZmlsZW5hbWVfdHJhbnNfa2V5OyA1LjkrIHVzZXMga2V5LXBhcmFtcyBoYXNodGFiIEFQSSAqLwogICAgc3RydWN0IGZpbGVuYW1lX3RyYW5zX2tleSBrZXk7CiAgICBzdHJ1Y3QgZmlsZW5hbWVfdHJhbnNfZGF0dW0gKmxhc3QgPSBOVUxMLCAqdHJhbnM7CiAgICBzdHJ1Y3QgZmlsZW5hbWVfdHJhbnNfa2V5ICpuZXdfa2V5ID0gTlVMTDsKCiAgICBzcmMgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgcyk7CiAgICB0Z3QgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgdCk7CiAgICBjbHMgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF9jbGFzc2VzLCBjKTsKICAgIGRlZiA9IHN5bXRhYl9zZWFyY2goJmRiLT5wX3R5cGVzLCBkKTsKICAgIGlmICghc3JjIHx8ICF0Z3QgfHwgIWNscyB8fCAhZGVmKQogICAgICAgIHJldHVybiBmYWxzZTsKCiAgICBrZXkudHR5cGUgPSB0Z3QtPnZhbHVlOwogICAga2V5LnRjbGFzcyA9IGNscy0+dmFsdWU7CiAgICBrZXkubmFtZSA9IG87CgojaWYgTElOVVhfVkVSU0lPTl9DT0RFID49IEtFUk5FTF9WRVJTSU9OKDUsIDksIDApCiAgICB0cmFucyA9IHBvbGljeWRiX2ZpbGVuYW1ldHJfc2VhcmNoKGRiLCAma2V5KTsKI2Vsc2UKICAgIHRyYW5zID0gaGFzaHRhYl9zZWFyY2goJmRiLT5maWxlbmFtZV90cmFucywgJmtleSk7CiNlbmRpZgogICAgd2hpbGUgKHRyYW5zKSB7CiAgICAgICAgaWYgKGViaXRtYXBfZ2V0X2JpdCgmdHJhbnMtPnN0eXBlcywgc3JjLT52YWx1ZSAtIDEpKSB7CiAgICAgICAgICAgIHRyYW5zLT5vdHlwZSA9IGRlZi0+dmFsdWU7CiAgICAgICAgICAgIHJldHVybiB0cnVlOwogICAgICAgIH0KICAgICAgICBpZiAodHJhbnMtPm90eXBlID09IGRlZi0+dmFsdWUpCiAgICAgICAgICAgIGJyZWFrOwogICAgICAgIGxhc3QgPSB0cmFuczsKICAgICAgICB0cmFucyA9IHRyYW5zLT5uZXh0OwogICAgfQoKICAgIGlmICghdHJhbnMpIHsKICAgICAgICB0cmFucyA9IGtjYWxsb2MoMSwgc2l6ZW9mKCp0cmFucyksIEdGUF9LRVJORUwpOwogICAgICAgIGlmICghdHJhbnMpCiAgICAgICAgICAgIHJldHVybiBmYWxzZTsKICAgICAgICBlYml0bWFwX2luaXQoJnRyYW5zLT5zdHlwZXMpOwogICAgICAgIHRyYW5zLT5vdHlwZSA9IGRlZi0+dmFsdWU7CiAgICAgICAgdHJhbnMtPm5leHQgPSBsYXN0OwogICAgICAgIGlmICghbGFzdCkgewogICAgICAgICAgICBuZXdfa2V5ID0ga3phbGxvYyhzaXplb2YoKm5ld19rZXkpLCBHRlBfS0VSTkVMKTsKICAgICAgICAgICAgaWYgKCFuZXdfa2V5KQogICAgICAgICAgICAgICAgZ290byBtb2Rlcm5fZnJlZV90cmFuczsKICAgICAgICAgICAgKm5ld19rZXkgPSBrZXk7CiAgICAgICAgICAgIG5ld19rZXktPm5hbWUgPSBrc3RyZHVwKGtleS5uYW1lLCBHRlBfS0VSTkVMKTsKICAgICAgICAgICAgaWYgKCFuZXdfa2V5LT5uYW1lKQogICAgICAgICAgICAgICAgZ290byBtb2Rlcm5fZnJlZV9rZXk7CiNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPj0gS0VSTkVMX1ZFUlNJT04oNSwgOSwgMCkKICAgICAgICAgICAgcmMgPSBoYXNodGFiX2luc2VydCgmZGItPmZpbGVuYW1lX3RyYW5zLCBuZXdfa2V5LCB0cmFucywgZmlsZW5hbWV0cl9rZXlfcGFyYW1zKTsKI2Vsc2UKICAgICAgICAgICAgcmMgPSBoYXNodGFiX2luc2VydCgmZGItPmZpbGVuYW1lX3RyYW5zLCBuZXdfa2V5LCB0cmFucyk7CiNlbmRpZgogICAgICAgICAgICBpZiAocmMpCiAgICAgICAgICAgICAgICBnb3RvIG1vZGVybl9mcmVlX25hbWU7CiAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAgbGFzdC0+bmV4dCA9IHRyYW5zOwogICAgICAgIH0KICAgIH0KICAgIHJldHVybiBlYml0bWFwX3NldF9iaXQoJnRyYW5zLT5zdHlwZXMsIHNyYy0+dmFsdWUgLSAxLCAxKSA9PSAwOwoKbW9kZXJuX2ZyZWVfbmFtZToKICAgIGtmcmVlKG5ld19rZXktPm5hbWUpOwptb2Rlcm5fZnJlZV9rZXk6CiAgICBrZnJlZShuZXdfa2V5KTsKbW9kZXJuX2ZyZWVfdHJhbnM6CiAgICBlYml0bWFwX2Rlc3Ryb3koJnRyYW5zLT5zdHlwZXMpOwogICAga2ZyZWUodHJhbnMpOwogICAgcmV0dXJuIGZhbHNlOwojZW5kaWYKfScnJwpzPXJlcGxhY2VfZnVuYyhzLCdhZGRfZmlsZW5hbWVfdHJhbnMnLGFkZF9maWxlbmFtZV9ib2R5KQoKcz1yZXBsYWNlX2Z1bmMocywnYWRkX3R5cGUnLHInJydzdGF0aWMgYm9vbCBhZGRfdHlwZShzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBjb25zdCBjaGFyICp0eXBlX25hbWUsIGJvb2wgYXR0cikKewogICAgc3RydWN0IHR5cGVfZGF0dW0gKnR5cGUgPSBzeW10YWJfc2VhcmNoKCZkYi0+cF90eXBlcywgdHlwZV9uYW1lKTsKICAgIHUzMiB2YWx1ZTsKICAgIGNoYXIgKmtleTsKICAgIHN0cnVjdCBmbGV4X2FycmF5ICpuZXdfdHlwZV9hdHRyX21hcF9hcnJheTsKICAgIHN0cnVjdCBmbGV4X2FycmF5ICpuZXdfdHlwZV92YWxfdG9fc3RydWN0OwogICAgc3RydWN0IGZsZXhfYXJyYXkgKm5ld192YWxfdG9fbmFtZV90eXBlczsKICAgIGludCBpLCBqOwogICAgdm9pZCAqb2xkX2VsZW07CiAgICBzdHJ1Y3QgZmxleF9hcnJheSAqb2xkX2ZhOwoKICAgIGlmICh0eXBlKSByZXR1cm4gdHJ1ZTsKICAgIHZhbHVlID0gKytkYi0+cF90eXBlcy5ucHJpbTsKICAgIHR5cGUgPSAoc3RydWN0IHR5cGVfZGF0dW0gKilremFsbG9jKHNpemVvZigqdHlwZSksIEdGUF9BVE9NSUMpOwogICAgaWYgKCF0eXBlKSByZXR1cm4gZmFsc2U7CiAgICB0eXBlLT5wcmltYXJ5ID0gMTsgdHlwZS0+dmFsdWUgPSB2YWx1ZTsgdHlwZS0+YXR0cmlidXRlID0gYXR0cjsKICAgIGtleSA9IGtzdHJkdXAodHlwZV9uYW1lLCBHRlBfQVRPTUlDKTsKICAgIGlmICgha2V5KSB7IGtmcmVlKHR5cGUpOyByZXR1cm4gZmFsc2U7IH0KICAgIGlmIChzeW10YWJfaW5zZXJ0KCZkYi0+cF90eXBlcywga2V5LCB0eXBlKSkgeyBrZnJlZShrZXkpOyBrZnJlZSh0eXBlKTsgcmV0dXJuIGZhbHNlOyB9CgogICAgbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXkgPSBmbGV4X2FycmF5X2FsbG9jKHNpemVvZihzdHJ1Y3QgZWJpdG1hcCksIGRiLT5wX3R5cGVzLm5wcmltLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTyk7CiAgICBuZXdfdHlwZV92YWxfdG9fc3RydWN0ID0gZmxleF9hcnJheV9hbGxvYyhzaXplb2Yoc3RydWN0IHR5cGVfZGF0dW0gKiksIGRiLT5wX3R5cGVzLm5wcmltLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTyk7CiAgICBuZXdfdmFsX3RvX25hbWVfdHlwZXMgPSBmbGV4X2FycmF5X2FsbG9jKHNpemVvZihjaGFyICopLCBkYi0+c3ltdGFiW1NZTV9UWVBFU10ubnByaW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKTsKICAgIGlmICghbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXkgfHwgIW5ld190eXBlX3ZhbF90b19zdHJ1Y3QgfHwgIW5ld192YWxfdG9fbmFtZV90eXBlcykgcmV0dXJuIGZhbHNlOwoKICAgIGlmIChmbGV4X2FycmF5X3ByZWFsbG9jKG5ld190eXBlX2F0dHJfbWFwX2FycmF5LCAwLCBkYi0+cF90eXBlcy5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pIHx8CiAgICAgICAgZmxleF9hcnJheV9wcmVhbGxvYyhuZXdfdHlwZV92YWxfdG9fc3RydWN0LCAwLCBkYi0+cF90eXBlcy5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pIHx8CiAgICAgICAgZmxleF9hcnJheV9wcmVhbGxvYyhuZXdfdmFsX3RvX25hbWVfdHlwZXMsIDAsIGRiLT5zeW10YWJbU1lNX1RZUEVTXS5ucHJpbSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pKQogICAgICAgIHJldHVybiBmYWxzZTsKCiAgICBpZiAoZGItPnR5cGVfYXR0cl9tYXBfYXJyYXkpIHsKICAgICAgICBmb3IgKGogPSAwOyBqIDwgZGItPnR5cGVfYXR0cl9tYXBfYXJyYXktPnRvdGFsX25yX2VsZW1lbnRzOyBqKyspIHsKICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldChkYi0+dHlwZV9hdHRyX21hcF9hcnJheSwgaik7CiAgICAgICAgICAgIGlmIChvbGRfZWxlbSAmJiBmbGV4X2FycmF5X3B1dChuZXdfdHlwZV9hdHRyX21hcF9hcnJheSwgaiwgb2xkX2VsZW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSkgcmV0dXJuIGZhbHNlOwogICAgICAgIH0KICAgIH0KICAgIGlmIChkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5KSB7CiAgICAgICAgZm9yIChqID0gMDsgaiA8IGRiLT50eXBlX3ZhbF90b19zdHJ1Y3RfYXJyYXktPnRvdGFsX25yX2VsZW1lbnRzOyBqKyspIHsKICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheSwgaik7CiAgICAgICAgICAgIGlmIChvbGRfZWxlbSAmJiBmbGV4X2FycmF5X3B1dF9wdHIobmV3X3R5cGVfdmFsX3RvX3N0cnVjdCwgaiwgb2xkX2VsZW0sIEdGUF9BVE9NSUMgfCBfX0dGUF9aRVJPKSkgcmV0dXJuIGZhbHNlOwogICAgICAgIH0KICAgIH0KICAgIGlmIChkYi0+c3ltX3ZhbF90b19uYW1lW1NZTV9UWVBFU10pIHsKICAgICAgICBmb3IgKGogPSAwOyBqIDwgZGItPnN5bXRhYltTWU1fVFlQRVNdLm5wcmltOyBqKyspIHsKICAgICAgICAgICAgb2xkX2VsZW0gPSBmbGV4X2FycmF5X2dldF9wdHIoZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdLCBqKTsKICAgICAgICAgICAgaWYgKG9sZF9lbGVtICYmIGZsZXhfYXJyYXlfcHV0X3B0cihuZXdfdmFsX3RvX25hbWVfdHlwZXMsIGosIG9sZF9lbGVtLCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykpIHJldHVybiBmYWxzZTsKICAgICAgICB9CiAgICB9CgogICAgb2xkX2ZhID0gZGItPnR5cGVfYXR0cl9tYXBfYXJyYXk7IGRiLT50eXBlX2F0dHJfbWFwX2FycmF5ID0gbmV3X3R5cGVfYXR0cl9tYXBfYXJyYXk7IGlmIChvbGRfZmEpIGZsZXhfYXJyYXlfZnJlZShvbGRfZmEpOwogICAgZWJpdG1hcF9pbml0KGZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB2YWx1ZSAtIDEpKTsKICAgIGlmIChlYml0bWFwX3NldF9iaXQoZmxleF9hcnJheV9nZXQoZGItPnR5cGVfYXR0cl9tYXBfYXJyYXksIHZhbHVlIC0gMSksIHZhbHVlIC0gMSwgMSkpIHJldHVybiBmYWxzZTsKCiAgICBvbGRfZmEgPSBkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5OyBkYi0+dHlwZV92YWxfdG9fc3RydWN0X2FycmF5ID0gbmV3X3R5cGVfdmFsX3RvX3N0cnVjdDsgaWYgKG9sZF9mYSkgZmxleF9hcnJheV9mcmVlKG9sZF9mYSk7CiAgICBpZiAoZmxleF9hcnJheV9wdXRfcHRyKGRiLT50eXBlX3ZhbF90b19zdHJ1Y3RfYXJyYXksIHZhbHVlIC0gMSwgdHlwZSwgR0ZQX0FUT01JQyB8IF9fR0ZQX1pFUk8pKSByZXR1cm4gZmFsc2U7CgogICAgb2xkX2ZhID0gZGItPnN5bV92YWxfdG9fbmFtZVtTWU1fVFlQRVNdOyBkYi0+c3ltX3ZhbF90b19uYW1lW1NZTV9UWVBFU10gPSBuZXdfdmFsX3RvX25hbWVfdHlwZXM7IGlmIChvbGRfZmEpIGZsZXhfYXJyYXlfZnJlZShvbGRfZmEpOwogICAgaWYgKGZsZXhfYXJyYXlfcHV0X3B0cihkYi0+c3ltX3ZhbF90b19uYW1lW1NZTV9UWVBFU10sIHZhbHVlIC0gMSwga2V5LCBHRlBfQVRPTUlDIHwgX19HRlBfWkVSTykpIHJldHVybiBmYWxzZTsKCiAgICBmb3IgKGkgPSAwOyBpIDwgZGItPnBfcm9sZXMubnByaW07ICsraSkKICAgICAgICBlYml0bWFwX3NldF9iaXQoJmRiLT5yb2xlX3ZhbF90b19zdHJ1Y3RbaV0tPnR5cGVzLCB2YWx1ZSAtIDEsIDEpOwogICAgcmV0dXJuIHRydWU7Cn0nJycpCnM9cmVwbGFjZV9mdW5jKHMsJ2FkZF90eXBlYXR0cmlidXRlX3JhdycscicnJ3N0YXRpYyB2b2lkIGFkZF90eXBlYXR0cmlidXRlX3JhdyhzdHJ1Y3QgcG9saWN5ZGIgKmRiLCBzdHJ1Y3QgdHlwZV9kYXR1bSAqdHlwZSwgc3RydWN0IHR5cGVfZGF0dW0gKmF0dHIpCnsKICAgIHN0cnVjdCBlYml0bWFwICpzYXR0ciA9IGZsZXhfYXJyYXlfZ2V0KGRiLT50eXBlX2F0dHJfbWFwX2FycmF5LCB0eXBlLT52YWx1ZSAtIDEpOwogICAgc3RydWN0IGhhc2h0YWJfbm9kZSAqbm9kZTsKICAgIHN0cnVjdCBjb25zdHJhaW50X25vZGUgKm47CiAgICBzdHJ1Y3QgY29uc3RyYWludF9leHByICplOwogICAgaWYgKCFzYXR0cikgcmV0dXJuOwogICAgZWJpdG1hcF9zZXRfYml0KHNhdHRyLCBhdHRyLT52YWx1ZSAtIDEsIDEpOwogICAga3N1X2hhc2h0YWJfZm9yX2VhY2goZGItPnBfY2xhc3Nlcy50YWJsZSwgbm9kZSkKICAgIHsKICAgICAgICBzdHJ1Y3QgY2xhc3NfZGF0dW0gKmNscyA9IChzdHJ1Y3QgY2xhc3NfZGF0dW0gKikobm9kZS0+ZGF0dW0pOwogICAgICAgIGZvciAobiA9IGNscy0+Y29uc3RyYWludHM7IG47IG4gPSBuLT5uZXh0KQogICAgICAgICAgICBmb3IgKGUgPSBuLT5leHByOyBlOyBlID0gZS0+bmV4dCkKICAgICAgICAgICAgICAgIGlmIChlLT5leHByX3R5cGUgPT0gQ0VYUFJfTkFNRVMgJiYgZWJpdG1hcF9nZXRfYml0KCZlLT50eXBlX25hbWVzLT50eXBlcywgYXR0ci0+dmFsdWUgLSAxKSkKICAgICAgICAgICAgICAgICAgICBlYml0bWFwX3NldF9iaXQoJmUtPm5hbWVzLCB0eXBlLT52YWx1ZSAtIDEsIDEpOwogICAgfTsKfScnJykKCm1hcmtlcj0nI2RlZmluZSBzdHJpcF9hdihlZmZlY3QsIGludmVydCkgKChlZmZlY3QgPT0gQVZUQUJfQVVESVRERU5ZKSA9PSAhaW52ZXJ0KVxuJwpjb21wYXQ9IiNkZWZpbmUgc3RyaXBfYXYoZWZmZWN0LCBpbnZlcnQpICgoZWZmZWN0ID09IEFWVEFCX0FVRElUREVOWSkgPT0gIWludmVydClcbiNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPCBLRVJORUxfVkVSU0lPTig1LCA5LCAwKVxuI2lmbmRlZiBzeW10YWJfc2VhcmNoXG4jZGVmaW5lIHN5bXRhYl9zZWFyY2gocywgbmFtZSkgaGFzaHRhYl9zZWFyY2goKHMpLT50YWJsZSwgbmFtZSlcbiNlbmRpZlxuI2lmbmRlZiBzeW10YWJfaW5zZXJ0XG4jZGVmaW5lIHN5bXRhYl9pbnNlcnQocywgbmFtZSwgZGF0dW0pIGhhc2h0YWJfaW5zZXJ0KChzKS0+dGFibGUsIG5hbWUsIGRhdHVtKVxuI2VuZGlmXG4jZW5kaWZcbiIKaWYgbWFya2VyIG5vdCBpbiBzOiByYWlzZSBTeXN0ZW1FeGl0KCdzdHJpcF9hdiBtYXJrZXIgbWlzc2luZycpCnM9cy5yZXBsYWNlKG1hcmtlcixjb21wYXQsMSkKCmhhc2h0YWJfYmxvY2sgPSByIiIiI2lmIExJTlVYX1ZFUlNJT05fQ09ERSA+PSBLRVJORUxfVkVSU0lPTig1LCA4LCAwKQojZGVmaW5lIGtzdV9oYXNodGFiX2Zvcl9lYWNoKGh0YWIsIGN1cikga3N1X2hhc2hfZm9yX2VhY2goaHRhYi5odGFibGUsIGh0YWIuc2l6ZSwgY3VyKQojZWxzZQovKiBMaW51eCA0LjE5IFNFTGludXggaGFzaHRhYjo6aHRhYmxlIGlzIHN0cnVjdCBoYXNodGFiX25vZGUgKiouCiAqIERlbGliZXJhdGVseSBzZXBhcmF0ZSBmcm9tIGtzdV9oYXNoX2Zvcl9lYWNoKCksIHdob3NlIDQuMTkgYnJhbmNoIGlzCiAqIHJlc2VydmVkIGZvciBhdnRhYidzIGZsZXhfYXJyYXkgc3RvcmFnZS4gKi8KI2RlZmluZSBrc3VfaGFzaHRhYl9mb3JfZWFjaChodGFiLCBjdXIpIFwKICAgIGludCBpOyBcCiAgICBmb3IgKGkgPSAwOyBpIDwgKGh0YWIpLT5zaXplOyArK2kpIFwKICAgICAgICBmb3IgKGN1ciA9IChodGFiKS0+aHRhYmxlW2ldOyBjdXI7IGN1ciA9IGN1ci0+bmV4dCkKI2VuZGlmIiIiCiMgUmVtb3ZlIGV2ZXJ5IHByZS1leGlzdGluZyBrc3VfaGFzaHRhYl9mb3JfZWFjaCBjb25kaXRpb25hbCBibG9jaywgdGhlbiBpbnN0YWxsIGV4YWN0bHkgb25lLgpibG9ja19yZSA9IHJlLmNvbXBpbGUociIjaWYgTElOVVhfVkVSU0lPTl9DT0RFID49IEtFUk5FTF9WRVJTSU9OXCg1LCA4LCAwXClcbiNkZWZpbmUga3N1X2hhc2h0YWJfZm9yX2VhY2hcKGh0YWIsIGN1clwpLio/XiNlbmRpZiIsIHJlLlMgfCByZS5NKQpzLCByZW1vdmVkID0gYmxvY2tfcmUuc3VibignJywgcykKaWYgcmVtb3ZlZCA9PSAwOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnTm8gZXhpc3Rpbmcga3N1X2hhc2h0YWJfZm9yX2VhY2ggYmxvY2sgZm91bmQ7IHJlZnVzaW5nIHNwZWN1bGF0aXZlIGluc2VydGlvbicpCmFuY2hvciA9ICcjZGVmaW5lIHN0cmlwX2F2KGVmZmVjdCwgaW52ZXJ0KSAoKGVmZmVjdCA9PSBBVlRBQl9BVURJVERFTlkpID09ICFpbnZlcnQpXG4nCmlmIGFuY2hvciBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ3N0cmlwX2F2IG1hcmtlciBtaXNzaW5nIGZvciBjYW5vbmljYWwgaGFzaHRhYiBhZGFwdGVyJykKcyA9IHMucmVwbGFjZShhbmNob3IsIGFuY2hvciArIGhhc2h0YWJfYmxvY2sgKyAnXG4nLCAxKQppZiBsZW4ocmUuZmluZGFsbChyJyg/bSleI2RlZmluZSBrc3VfaGFzaHRhYl9mb3JfZWFjaFwoJywgcykpICE9IDI6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCdjYW5vbmljYWwgaGFzaHRhYiBjb25kaXRpb25hbCBibG9jayBkb2VzIG5vdCBjb250YWluIGV4YWN0bHkgdHdvIGJyYW5jaCBkZWZpbml0aW9ucycpCmlmIHMuY291bnQoJ0RlbGliZXJhdGVseSBzZXBhcmF0ZSBmcm9tIGtzdV9oYXNoX2Zvcl9lYWNoKCknKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnY2Fub25pY2FsIGhhc2h0YWIgYWRhcHRlciB3YXMgbm90IGluc3RhbGxlZCBleGFjdGx5IG9uY2UnKQoKZGVmIGNvdW50X2RlZihuYW1lKToKICAgIHBhdD1yZS5jb21waWxlKHInKD9tcylec3RhdGljXHMrKD86Ym9vbHx2b2lkKVxzKycrcmUuZXNjYXBlKG5hbWUpK3InXHMqXChbXjt7fV0qXClccypceycpCiAgICByZXR1cm4gbGVuKHBhdC5maW5kYWxsKHMpKQpjb3VudHM9e246Y291bnRfZGVmKG4pIGZvciBuIGluIFsncmVtb3ZlX2F2dGFiX25vZGUnLCdhZGRfZmlsZW5hbWVfdHJhbnMnLCdhZGRfdHlwZScsJ2FkZF90eXBlYXR0cmlidXRlX3JhdyddfQppZiBjb3VudHMgIT0geydyZW1vdmVfYXZ0YWJfbm9kZSc6MSwnYWRkX2ZpbGVuYW1lX3RyYW5zJzoxLCdhZGRfdHlwZSc6MSwnYWRkX3R5cGVhdHRyaWJ1dGVfcmF3JzoxfToKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ3VuZXhwZWN0ZWQgYWN0dWFsIGZ1bmN0aW9uIGRlZmluaXRpb24gY291bnRzOiAnK3JlcHIoY291bnRzKSkKZm9yIG5lZWRsZSBpbiBbJyNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPCBLRVJORUxfVkVSU0lPTig1LCA4LCAwKScsCiAgICAgICAgICAgICAgJ3N0cnVjdCBmaWxlbmFtZV90cmFucyBmdDsnLAogICAgICAgICAgICAgICdoYXNodGFiX2luc2VydChkYi0+ZmlsZW5hbWVfdHJhbnMsIG5ld19rZXksIGRhdHVtKScsCiAgICAgICAgICAgICAgJ2ZsZXhfYXJyYXlfZ2V0X3B0cihkYi0+dGVfYXZ0YWIuaHRhYmxlLCBpKScsCiAgICAgICAgICAgICAgJ3N0cnVjdCBmaWxlbmFtZV90cmFuc19rZXkga2V5JywKICAgICAgICAgICAgICAnZmxleF9hcnJheV9nZXQoZGItPnR5cGVfYXR0cl9tYXBfYXJyYXksIHR5cGUtPnZhbHVlIC0gMSknLAogICAgICAgICAgICAgICdmbGV4X2FycmF5X3B1dF9wdHIoZGItPnR5cGVfdmFsX3RvX3N0cnVjdF9hcnJheSwgdmFsdWUgLSAxLCB0eXBlLCddOgogICAgaWYgbmVlZGxlIG5vdCBpbiBzOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ3JlcXVpcmVkIHNvdXJjZS1kZXJpdmVkIGNvbXBhdGliaWxpdHkgY29uc3RydWN0IG1pc3Npbmc6ICcrbmVlZGxlKQpsZWdhY3lfcGFydCA9IHMuc3BsaXQoJyNlbHNlIC8qIExpbnV4IDUuOCsgZmlsZW5hbWVfdHJhbnNfa2V5OyA1LjkrIHVzZXMga2V5LXBhcmFtcyBoYXNodGFiIEFQSSAqLycsIDEpWzBdCmlmICdjb21wYXRfZmlsZW5hbWVfdHJhbnNfY291bnQnIGluIGxlZ2FjeV9wYXJ0OgogICAgcmFpc2UgU3lzdGVtRXhpdCgnbGVnYWN5IExHIDQuMTkgZmlsZW5hbWVfdHJhbnMgYnJhbmNoIHJlZmVyZW5jZXMgbmV3ZXIgY29tcGF0X2ZpbGVuYW1lX3RyYW5zX2NvdW50JykKaWYgJ3BvbGljeWRiX2ZpbGVuYW1ldHJfc2VhcmNoKGRiLCAma2V5KScgbm90IGluIHM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCduZXdlciBmaWxlbmFtZV90cmFucyBzZWFyY2ggcGF0aCBtaXNzaW5nJykKaWYgJ2hhc2h0YWJfc2VhcmNoKCZkYi0+ZmlsZW5hbWVfdHJhbnMsICZrZXkpJyBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ0xpbnV4IDUuOCBmaWxlbmFtZV90cmFucyBzZWFyY2ggcGF0aCBtaXNzaW5nJykKaWYgJ2hhc2h0YWJfaW5zZXJ0KCZkYi0+ZmlsZW5hbWVfdHJhbnMsIG5ld19rZXksIHRyYW5zLCBmaWxlbmFtZXRyX2tleV9wYXJhbXMpJyBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ0xpbnV4IDUuOSsgZmlsZW5hbWVfdHJhbnMgaW5zZXJ0aW9uIHBhdGggbWlzc2luZycpCmlmICdoYXNodGFiX2luc2VydCgmZGItPmZpbGVuYW1lX3RyYW5zLCBuZXdfa2V5LCB0cmFucyk7JyBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoJ0xpbnV4IDUuOCBmaWxlbmFtZV90cmFucyBpbnNlcnRpb24gcGF0aCBtaXNzaW5nJykKcC53cml0ZV90ZXh0KHMpCnByaW50KCdbRklYRURdIEV4YWN0IHJlc2VhcmNoZWQgU0VMaW51eCBjb21wYXRpYmlsaXR5IHNvdXJjZSB0cmFuc2Zvcm1hdGlvbiBhcHBsaWVkIG9uY2UgcGVyIGZ1bmN0aW9uLicpCnByaW50KCdbQVVESVRdIGFjdHVhbCBmdW5jdGlvbiBkZWZpbml0aW9uczonLGNvdW50cykK' | base64 -d > "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
           chmod 700 "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
           python3 -m py_compile "$RUNNER_TEMP/ksu_sepolicy_419_fix.py"
@@ -1856,9 +2075,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/18-setup-18-selinux-4-19-preflight-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -1941,9 +2172,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/19-setup-19-selinux-4-19-compatibility-port-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -2058,9 +2301,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/20-setup-20-cpu-clocksource-compatibility-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -2146,9 +2401,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/21-setup-21-source-integrity-audit-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -2179,9 +2446,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/22-setup-22-verify-maphide-baseband-guard-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -2212,9 +2491,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/23-setup-23-stable-feature-matrix-audit-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -2236,10 +2527,10 @@ jobs:
             echo
             echo "========== CLANG LTO DISABLED =========="
             if grep -qx 'CONFIG_LTO=y' .config || grep -qx 'CONFIG_LTO_CLANG=y' .config || grep -qx 'CONFIG_LTO_CLANG_FULL=y' .config || grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_THINLTO=y' .config; then
-              echo "[FAIL] A Clang LTO mode remains enabled; V19 requires LTO disabled."
+              echo "[FAIL] A Clang LTO mode remains enabled; V20 requires LTO disabled."
               exit 1
             fi
-            echo "[PASS] Full LTO/ThinLTO disabled for V19 memory-isolation test."
+            echo "[PASS] Full LTO/ThinLTO disabled for V20 memory-isolation test."
 
             echo
             echo "========== LZ4K / LZ4KD =========="
@@ -2247,6 +2538,17 @@ jobs:
             echo "Only source-defined LZ4K/LZ4KD symbols are enabled."
 
             echo
+            echo "========== ANDROID VENDOR HOOKS =========="
+            grep -qx 'CONFIG_ANDROID_VENDOR_HOOKS=y' .config || {
+              echo "[FAIL] CONFIG_ANDROID_VENDOR_HOOKS=y missing; vendor hook tracepoints would remain unresolved."
+              exit 1
+            }
+            grep -qF 'obj-$(CONFIG_ANDROID_VENDOR_HOOKS) += vendor_hooks.o' drivers/android/Makefile || {
+              echo "[FAIL] vendor_hooks.o is not build-wired."
+              exit 1
+            }
+            echo "[PASS] Android vendor hooks are enabled and build-wired."
+
             echo "========== REQUIRED SECURITY FEATURES =========="
             grep -RqsE 'MAPHIDE|maphide|69_hide_stuff|jit-zygote-cache' fs/proc || {
               echo "[FAIL] Maphide/JIT-Zygote source marker missing."; exit 1;
@@ -2327,9 +2629,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/24-setup-24-clean-compiler-preflight-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -2358,9 +2672,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/25-setup-25-full-source-derived-compatibility-matrix-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -2401,7 +2727,7 @@ jobs:
           done
 
           if grep -qx 'CONFIG_LTO=y' .config || grep -qx 'CONFIG_LTO_CLANG=y' .config || grep -qx 'CONFIG_LTO_CLANG_FULL=y' .config || grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_THINLTO=y' .config; then
-            echo "[FAIL] A Clang LTO mode remains enabled; V19 requires LTO disabled." | tee -a "$REPORT"
+            echo "[FAIL] A Clang LTO mode remains enabled; V20 requires LTO disabled." | tee -a "$REPORT"
             fail=$((fail+1))
           else
             echo "[PASS] Full LTO/ThinLTO disabled." | tee -a "$REPORT"
@@ -2482,9 +2808,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/26-setup-26-hid-qcacld-compatibility-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -2701,9 +3039,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/27-setup-27-cumulative-4-19-hotspot-compile-gate-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -2919,9 +3269,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/28-setup-28-full-kernel-build-hard-gate-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -3594,9 +3956,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/29-setup-29-package-kernel-orangefox-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -3697,16 +4071,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V20-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V20-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V20-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3727,9 +4101,21 @@ jobs:
           SETUP_LOG="$DIAG_DIR/30-setup-30-final-configuration-artifact-verification-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          exec > >(tee -a "$SETUP_LOG") 2>&1
+          exec > >(tee -a "$SETUP_LOG" | awk '
+            /^\[LIVE\]/ {print; next}
+            /^\[FILE\]/ {print; next}
+            /(^|[[:space:]])(clang|clang\+\+|gcc|cc1|ld\.lld|llvm-ar|ar)[[:space:]]/ {
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /\.(c|cc|cpp|h|o|a|S|s|ko|dtb|dtbo|gz|zip)(:|$)/) {
+                  print "[FILE] " $i
+                  break
+                }
+              }
+            }
+            /(^|[[:space:]])(CC|AR|LD|LINK)[[:space:]]/ {print}
+          ') 2>&1
           echo "========== $SETUP_NAME =========="
-          echo "[LIVE] Full step output is captured in $SETUP_LOG"
+          echo "[LIVE] File activity only; detailed logs are artifact-only: $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
           set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
@@ -4094,37 +4480,37 @@ jobs:
           REPORT
 
           echo "[PASS] V13 diagnostic directory staged. No diagnostic ZIP is created here."
-      - name: Artifact - V14 Diagnostics
+      - name: Artifact - V20 Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V19-LG-Velvet-G900-Diagnostics
+          name: V20-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V14 AnyKernel3 OrangeFox Flashable
+      - name: Artifact - V20 AnyKernel3 OrangeFox Flashable
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: V13-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          path: artifacts/V20-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V14 Kernel Only ZIP
+      - name: Artifact - V20 Kernel Only ZIP
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V19-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V19-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V20-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V20-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V14 Raw Kernel Image
+      - name: Artifact - V20 Raw Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
