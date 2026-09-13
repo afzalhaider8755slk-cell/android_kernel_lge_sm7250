@@ -8,7 +8,7 @@
 # Setup 10A is intentionally preserved as the locked baseline.
 # V10: live step output is mirrored to per-setup logs; verbose compiler output remains enabled.
 # A source-derived compatibility preflight runs before compilation; Setup 10A remains immutable.
-name: KERNEL-BUILD-Velvet-5G-LM-G900-V18
+name: KERNEL-BUILD-Velvet-5G-LM-G900-V19
 
 on:
   workflow_dispatch:
@@ -48,13 +48,13 @@ permissions:
 # llvm-ar listed complete relative member paths beginning with drivers/kernelsu/.
 # V12's verifier searched for path-stripped names and falsely reported a
 # missing member. V13 matches the exact emitted paths. Verification only.
-# V16 ROOT-CAUSE / RESEARCH NOTE
+# V15 ROOT-CAUSE / RESEARCH NOTE
 # V14 failed before the full build because Setup 28 used a single-line exact
 # grep for ksu_hashtab_for_each(). The actual compiler-tested sepolicy.c defines
 # that macro over multiple continuation lines. The required native 4.19
 # traversal itself is present: (htab)->htable[i] -> cur->next. The separate
 # AVTAB flex_array traversal is also present and is legitimate for that
-# storage representation. V16 verifies both semantic anchors without changing
+# storage representation. V15 verifies both semantic anchors without changing
 # sepolicy.c or removing any feature/fix.
 jobs:
   build:
@@ -919,89 +919,17 @@ jobs:
               enable_if_present "$sym"
             done
 
-          echo "========== FULL LTO 4.19 KCONFIG COMPATIBILITY BACKPORT =========="
-          # The LG 4.19 tree already contains the real Clang LTO build machinery.
-          # Backport ONLY the missing Kconfig interface for explicit Full LTO.
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          p = Path("arch/Kconfig")
-          s = p.read_text()
-          if "config LTO_CLANG_FULL" in s:
-              raise SystemExit("[FAIL] CONFIG_LTO_CLANG_FULL already exists before compatibility backport.")
-          m = re.search(r'config LTO\n\tdef_bool n\n.*?^endchoice\n', s, re.M | re.S)
-          if not m:
-              raise SystemExit("[FAIL] Could not locate the expected LG 4.19 LTO Kconfig block; refusing to rewrite it.")
-          old = m.group(0)
-          for marker in ("config ARCH_SUPPORTS_LTO_CLANG", "config ARCH_SUPPORTS_THINLTO", "config THINLTO", "config LTO_NONE", "config LTO_CLANG", "depends on CC_IS_CLANG && LD_IS_LLD"):
-              if marker not in old:
-                  raise SystemExit("[FAIL] Existing LTO block does not match expected LG 4.19 implementation; refusing rewrite.")
-          replacement = """config LTO
-          \tdef_bool n
-
-          config LTO_CLANG
-          \tbool
-          \tselect LTO
-          \thelp
-          \t  Selected if the kernel will be built using Clang's LTO feature.
-
-          config ARCH_SUPPORTS_LTO_CLANG
-          \tbool
-
-          config ARCH_SUPPORTS_THINLTO
-          \tbool
-
-          choice
-          \tprompt "Link-Time Optimization (LTO) (EXPERIMENTAL)"
-          \tdefault LTO_NONE
-
-          config LTO_NONE
-          \tbool "None"
-
-          config LTO_CLANG_FULL
-          \tbool "Clang Full LTO (EXPERIMENTAL)"
-          \tdepends on ARCH_SUPPORTS_LTO_CLANG
-          \tdepends on !FTRACE_MCOUNT_RECORD || HAVE_C_RECORDMCOUNT
-          \tdepends on !KASAN
-          \tdepends on CC_IS_CLANG && LD_IS_LLD
-          \tselect LTO_CLANG
-          \thelp
-          \t  This option enables Clang's full Link Time Optimization (LTO).
-
-          endchoice
-          """
-          s=s[:m.start()]+replacement+s[m.end():]
-          needle="config CFI\n"
-          thin="""config THINLTO
-          \tbool "Use clang ThinLTO (legacy 4.19 compatibility)"
-          \tdepends on LTO_CLANG && ARCH_SUPPORTS_THINLTO && !LTO_CLANG_FULL
-          \tdefault n
-
-          """
-          if needle not in s:
-              raise SystemExit("[FAIL] Could not locate CFI Kconfig anchor after LTO rewrite.")
-          s=s.replace(needle,thin+needle,1)
-          p.write_text(s)
-          PY
-          grep -q '^config LTO_CLANG_FULL$' arch/Kconfig || { echo "[FAIL] Full-LTO Kconfig compatibility backport was not installed."; exit 1; }
-          grep -q '^config LTO_CLANG$' arch/Kconfig || { echo "[FAIL] Hidden LTO_CLANG selector is missing after backport."; exit 1; }
-          grep -q '^config THINLTO$' arch/Kconfig || { echo "[FAIL] Legacy THINLTO compatibility symbol is missing."; exit 1; }
-          grep -q 'lto-clang-flags[[:space:]]*:=[[:space:]]*-flto$' Makefile || { echo "[FAIL] Existing 4.19 Makefile full-LTO path (-flto) was not found."; exit 1; }
-          grep -q 'lto-clang-flags[[:space:]]*:=[[:space:]]*-flto=thin$' Makefile || { echo "[FAIL] Existing 4.19 ThinLTO path was not found; refusing to claim LTO compatibility."; exit 1; }
-          echo "[PASS] Full-LTO Kconfig interface backported onto existing 4.19 LTO build machinery."
-
-          echo
-          echo "========== FULL LTO CONFIGURATION =========="
-          if ! kconfig_has CONFIG_LTO_CLANG_FULL; then
-            echo "[FAIL] CONFIG_LTO_CLANG_FULL is still not visible to Kconfig."
-            exit 1
-          fi
-          scripts/config --enable CONFIG_LTO_CLANG_FULL
-          scripts/config --enable CONFIG_LTO_CLANG
+          echo "========== FULL LTO DISABLED FOR MEMORY-REDUCTION TEST =========="
+          # V19 test: keep the existing 4.19 LTO machinery/source untouched,
+          # but do NOT select any LTO mode. This isolates the Full-LTO feature
+          # as the requested memory variable without removing other features.
+          scripts/config --disable CONFIG_LTO_CLANG_FULL 2>/dev/null || true
           scripts/config --disable CONFIG_LTO_CLANG_THIN 2>/dev/null || true
-          scripts/config --disable CONFIG_LTO_NONE 2>/dev/null || true
           scripts/config --disable CONFIG_THINLTO 2>/dev/null || true
-          echo "[REQUIRED] Full Clang LTO requested: CONFIG_LTO_CLANG_FULL=y"
+          scripts/config --disable CONFIG_LTO_CLANG 2>/dev/null || true
+          scripts/config --disable CONFIG_LTO 2>/dev/null || true
+          scripts/config --enable CONFIG_LTO_NONE 2>/dev/null || true
+          echo "[REQUIRED] Full Clang LTO disabled: CONFIG_LTO_CLANG_FULL is not selected."
 
             # DroidSpaces-OSS legacy 4.19 requirements
             for sym in \
@@ -1043,7 +971,6 @@ jobs:
             }
             for req in \
               CONFIG_KPROBES CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_KPM CONFIG_BBG \
-              CONFIG_LTO CONFIG_LTO_CLANG CONFIG_LTO_CLANG_FULL \
               CONFIG_ZRAM CONFIG_ZSMALLOC CONFIG_CRYPTO_LZ4 \
               CONFIG_TCP_CONG_BBR CONFIG_WIREGUARD CONFIG_NET_SCH_CAKE CONFIG_NET_SCH_FQ_CODEL \
               CONFIG_RMNET CONFIG_RMNET_IPA3 CONFIG_RMNET_MAP CONFIG_QRTR \
@@ -1916,7 +1843,7 @@ jobs:
           print("[AUDIT] actual function definitions:", counts)
           PY
           echo "[PASS] SELinux 4.19 source audit complete."
-          echo "[UNCHANGED] SukiSU-Ultra 4.2.0 / KPM / SUSFS / Baseband-Guard / Maphide / Full LTO"
+          echo "[UNCHANGED] SukiSU-Ultra 4.2.0 / KPM / SUSFS / Baseband-Guard / Maphide / Full LTO DISABLED"
           echo "[UNCHANGED] Fingerprint / vibration / Dual-SIM-RIL / audio / IMS / VoWiFi requirements"
           echo "[UNCHANGED] Kernel-only build; no DTB/DTBO/DTS build"
           echo "[DISABLED] Adaptive Auto-Fix / research mutation engine"
@@ -2307,15 +2234,12 @@ jobs:
             done
 
             echo
-            echo "========== FULL CLANG LTO =========="
-            for req in CONFIG_LTO=y CONFIG_LTO_CLANG=y CONFIG_LTO_CLANG_FULL=y; do
-              grep -qx "$req" .config || { echo "[FAIL] Missing $req"; exit 1; }
-            done
-            if grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
-              echo "[FAIL] ThinLTO/LTO_NONE is still enabled; Full LTO must be exclusive."
+            echo "========== CLANG LTO DISABLED =========="
+            if grep -qx 'CONFIG_LTO=y' .config || grep -qx 'CONFIG_LTO_CLANG=y' .config || grep -qx 'CONFIG_LTO_CLANG_FULL=y' .config || grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_THINLTO=y' .config; then
+              echo "[FAIL] A Clang LTO mode remains enabled; V19 requires LTO disabled."
               exit 1
             fi
-            echo "[PASS] Full Clang LTO is selected exclusively."
+            echo "[PASS] Full LTO/ThinLTO disabled for V19 memory-isolation test."
 
             echo
             echo "========== LZ4K / LZ4KD =========="
@@ -2472,15 +2396,15 @@ jobs:
           }
 
           echo "--- Required source/config symbols ---" | tee -a "$REPORT"
-          for req in CONFIG_KSU=y CONFIG_KPROBES=y CONFIG_KPROBE_EVENTS=y CONFIG_KALLSYMS=y CONFIG_KALLSYMS_ALL=y CONFIG_KPM=y CONFIG_LTO=y CONFIG_LTO_CLANG=y CONFIG_LTO_CLANG_FULL=y CONFIG_EXT4_FS=y CONFIG_OVERLAY_FS=y CONFIG_BBG=y; do
+          for req in CONFIG_KSU=y CONFIG_KPROBES=y CONFIG_KPROBE_EVENTS=y CONFIG_KALLSYMS=y CONFIG_KALLSYMS_ALL=y CONFIG_KPM=y CONFIG_EXT4_FS=y CONFIG_OVERLAY_FS=y CONFIG_BBG=y; do
             check grep -qx "$req" .config
           done
 
-          if grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_LTO_NONE=y' .config; then
-            echo "[FAIL] Full LTO exclusivity violated." | tee -a "$REPORT"
+          if grep -qx 'CONFIG_LTO=y' .config || grep -qx 'CONFIG_LTO_CLANG=y' .config || grep -qx 'CONFIG_LTO_CLANG_FULL=y' .config || grep -qx 'CONFIG_LTO_CLANG_THIN=y' .config || grep -qx 'CONFIG_THINLTO=y' .config; then
+            echo "[FAIL] A Clang LTO mode remains enabled; V19 requires LTO disabled." | tee -a "$REPORT"
             fail=$((fail+1))
           else
-            echo "[PASS] Full Clang LTO exclusivity." | tee -a "$REPORT"
+            echo "[PASS] Full LTO/ThinLTO disabled." | tee -a "$REPORT"
             pass=$((pass+1))
           fi
 
@@ -2995,15 +2919,11 @@ jobs:
           SETUP_LOG="$DIAG_DIR/28-setup-28-full-kernel-build-hard-gate-LIVE.log"
           mkdir -p "$DIAG_DIR"
           : > "$SETUP_LOG"
-          # V16 LIVE-ACTIVITY: keep the complete Setup 28 log in the artifact only.
-          # FD 3 remains the GitHub Actions console. Only concise file/build activity
-          # is written there; command tracing and diagnostic logs stay in the artifact.
-          exec 3>&1 4>&2
-          exec >"$SETUP_LOG" 2>&1
-          printf '%s\n' "========== $SETUP_NAME ==========" >&3
-          printf '%s\n' "[LIVE] Detailed Setup 28 log -> artifact: $(basename "$SETUP_LOG")" >&3
+          exec > >(tee -a "$SETUP_LOG") 2>&1
+          echo "========== $SETUP_NAME =========="
+          echo "[LIVE] Full step output is captured in $SETUP_LOG"
           export PS4="+ [SETUP-${SETUP_NO}] "
-          set +x
+          set -x
           trap 'rc=$?; set +x; if [ "$rc" -eq 0 ]; then echo "[SETUP-${SETUP_NO}][PASS] $SETUP_NAME completed with exit code 0."; else echo "[SETUP-${SETUP_NO}][FAIL] $SETUP_NAME exited with code $rc."; fi' EXIT
           set -Eeuo pipefail
           FULL_LOG="$GITHUB_WORKSPACE/kernel-build-full.log"
@@ -3039,7 +2959,7 @@ jobs:
           # the workflow before the real full-kernel compile could begin.
           # Setup 27 already proved the exact separation; Setup 28 must verify,
           # not reinterpret, that compiler-tested state.
-          # V16 SOURCE-CONTRACT VERIFICATION:
+          # V15 SOURCE-CONTRACT VERIFICATION:
           # The actual compiler-tested V14 source defines the 4.19 adapter as
           # a multi-line macro:
           #   #define ksu_hashtab_for_each(htab, cur) \
@@ -3055,22 +2975,22 @@ jobs:
 
           if grep -qE '#define[[:space:]]+ksu_hashtab_for_each\(htab,[[:space:]]*cur\)[[:space:]]*\\' "$SEPOLICY_C" &&
              grep -qF 'for (cur = (htab)->htable[i]; cur; cur = cur->next)' "$SEPOLICY_C"; then
-            echo "[PASS] V16: native 4.19 hashtab adapter is present; multiline macro form verified."
+            echo "[PASS] V15: native 4.19 hashtab adapter is present; multiline macro form verified."
           else
-            echo "[FAIL] V16: native 4.19 hashtab adapter semantic contract is missing."
+            echo "[FAIL] V15: native 4.19 hashtab adapter semantic contract is missing."
             exit 1
           fi
 
           if grep -qF 'flex_array_get_ptr(db->te_avtab.htable, i)' "$SEPOLICY_C" &&
              grep -qF 'for (cur = flex_array_get_ptr(node_ptr, i); cur; cur = cur->next)' "$SEPOLICY_C"; then
-            echo "[PASS] V16: AVTAB flex_array contract is present and kept distinct from native hashtab traversal."
+            echo "[PASS] V15: AVTAB flex_array contract is present and kept distinct from native hashtab traversal."
           else
-            echo "[FAIL] V16: AVTAB flex_array contract verification failed."
+            echo "[FAIL] V15: AVTAB flex_array contract verification failed."
             exit 1
           fi
 
-          echo "[PASS] V16: Setup 28 verifies source semantics, not fragile one-line formatting."
-          echo "[PASS] V16: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
+          echo "[PASS] V15: Setup 28 verifies source semantics, not fragile one-line formatting."
+          echo "[PASS] V15: sepolicy.c remains byte-identical to the compiler-tested cumulative state."
 
           export CROSS_COMPILE="$GCC64_DIR/bin/aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="$GCC32_DIR/bin/arm-linux-androideabi-"
@@ -3083,7 +3003,7 @@ jobs:
           # Setup 28 Kbuild ARG_MAX compatibility (source-derived backport)
           #
           # The 4.19 tree still expands every qcacld prerequisite into one
-          # shell argv for built-in.a. With CONFIG_LTO_CLANG=y and the large
+          # shell argv for built-in.a. With the large
           # qcacld object graph, /bin/sh can reject that recipe with:
           #   Argument list too long
           #
@@ -3546,8 +3466,6 @@ jobs:
           echo
           echo "[PASS] Scoped source compatibility fixes prepared."
 
-          printf '%s\n' "[LIVE] Source preflight complete; starting kernel build." >&3
-          printf '%s\n' "[LIVE] Detailed compiler/log output is artifact-only." >&3
           echo "=========================================="
           echo "CURRENT ERROR POLICY: NO SPECULATIVE XFRM FIX"
           echo "The latest reported failure is in net/xfrm, but no exact compiler diagnostic is embedded here."
@@ -3576,80 +3494,22 @@ jobs:
           echo "[INFO] DTB/DTBO build disabled for V10 kernel-only run."
           echo "[INFO] Building target: Image.gz"
 
-          # V18 TARGETED REPRODUCTION: compile the exact qcacld scan object that
-          # was the last visible target before the V18 runner communication loss.
-          # This is a reproduction gate, not a source workaround: the same
-          # qcacld Kbuild file, CONFIG, compiler, ARCH/LLVM settings and include
-          # flags are used. Only wlan-y is narrowed temporarily to this object.
-          # No kernel feature is disabled and no source file is modified.
-          SCAN_OBJ="drivers/staging/qca-wifi-host-cmn/os_if/linux/scan/src/wlan_cfg80211_scan.o"
-          SCAN_SRC="drivers/staging/qca-wifi-host-cmn/os_if/linux/scan/src/wlan_cfg80211_scan.c"
-          SCAN_REPRO_LOG="$DIAG_DIR/28A-qcacld-scan-object-reproduction.log"
-          rm -f "$SCAN_OBJ" "$SCAN_REPRO_LOG"
-          test -f "$SCAN_SRC"
-          test -f drivers/staging/qcacld-3.0/Kbuild
-          echo "[V18] Reproducing exact qcacld scan compilation:" | tee "$SCAN_REPRO_LOG"
-          echo "[V18] source=$SCAN_SRC" | tee -a "$SCAN_REPRO_LOG"
-          echo "[V18] object=$SCAN_OBJ" | tee -a "$SCAN_REPRO_LOG"
-          echo "[V18] compiler=$(command -v clang)" | tee -a "$SCAN_REPRO_LOG"
-          clang --version | head -1 | tee -a "$SCAN_REPRO_LOG"
-          set +e
-          timeout --signal=TERM --kill-after=30s 12m \
-            stdbuf -oL -eL make \
-              ARCH=arm64 \
-              LLVM=1 \
-              LLVM_IAS=1 \
-              CROSS_COMPILE="$CROSS_COMPILE" \
-              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              V=1 \
-              WERROR=0 \
-              M=drivers/staging/qcacld-3.0 \
-              wlan-y="../qca-wifi-host-cmn/os_if/linux/scan/src/wlan_cfg80211_scan.o" \
-              modules 2>&1 | tee -a "$SCAN_REPRO_LOG"
-          SCAN_MAKE_STATUS=${PIPESTATUS[0]}
-          set -e
-          if [ -s "$SCAN_OBJ" ]; then
-            echo "[V18][PASS] Exact wlan_cfg80211_scan.o compilation produced a non-empty object (make status=$SCAN_MAKE_STATUS)." | tee -a "$SCAN_REPRO_LOG"
-          else
-            if [ "$SCAN_MAKE_STATUS" -eq 124 ]; then
-              echo "[V18][FAIL] Exact wlan_cfg80211_scan.o compilation exceeded the 12-minute reproduction timeout." | tee -a "$SCAN_REPRO_LOG"
-            else
-              echo "[V18][FAIL] Exact wlan_cfg80211_scan.o compilation did not produce an object (make status=$SCAN_MAKE_STATUS)." | tee -a "$SCAN_REPRO_LOG"
-            fi
-            exit 1
-          fi
-
-          # V16 LIVE BUILD OUTPUT: preserve the complete V=1 stream in the artifact,
-          # but show only concise file-level compile/archive activity in GitHub Actions.
+          # V10 LIVE BUILD OUTPUT: stream the complete V=1 compiler/linker output to the
+          # GitHub Actions console while simultaneously preserving the exact same stream
+          # in the diagnostic artifact. This is intentionally not a source fix.
           : > "$FULL_LOG"
           set +e
           (
-              # V18 stability fix: cap build parallelism at 2 on the 4-vCPU hosted runner to reduce runner CPU/memory starvation risk.
             stdbuf -oL -eL make \
               ARCH=arm64 \
               LLVM=1 \
               LLVM_IAS=1 \
               CROSS_COMPILE="$CROSS_COMPILE" \
               CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              -j2 \
+              -j"$(nproc)" \
               V=1 \
               WERROR=0 \
-              Image.gz 2>&1 | tee -a "$FULL_LOG" | awk '
-                / -o / {
-                  n=split($0,a," -o ")
-                  if (n >= 2) {
-                    out=a[n]
-                    sub(/^[[:space:]]+/, "", out)
-                    sub(/[[:space:]].*$/, "", out)
-                    if (out != "") print out
-                  }
-                  next
-                }
-                /(^|[[:space:]])built-in\.a([[:space:]]|$)/ {
-                  for (i=1; i<=NF; i++)
-                    if ($i ~ /built-in\.a$/) print $i
-                }
-              ' >&3
+              Image.gz 2>&1 | tee -a "$FULL_LOG"
             exit "${PIPESTATUS[0]}"
           ) &
           BUILD_PID=$!
@@ -3658,7 +3518,8 @@ jobs:
           while kill -0 "$BUILD_PID" 2>/dev/null; do
             sleep 30
             if kill -0 "$BUILD_PID" 2>/dev/null; then
-              echo "[LIVE] Build heartbeat: elapsed=$(( $(date +%s) - START ))s; captured=$(wc -c < "$FULL_LOG") bytes / $(wc -l < "$FULL_LOG") lines" >&3
+              echo "[BUILD-HEARTBEAT] $(date -u '+%Y-%m-%dT%H:%M:%SZ') elapsed=$(( $(date +%s) - START ))s"
+              echo "[BUILD-HEARTBEAT] live V=1 output is streaming above; captured=$(wc -c < "$FULL_LOG") bytes / $(wc -l < "$FULL_LOG") lines"
             fi
           done
 
@@ -3836,16 +3697,16 @@ jobs:
             (
               cd "$AK3_DIR"
               rm -rf .git
-              zip -r9 "$GITHUB_WORKSPACE/artifacts/V18-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
+              zip -r9 "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip" . \
                 -x 'README.md' '*placeholder' >/dev/null
             )
 
-            test -s "$GITHUB_WORKSPACE/artifacts/V18-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
+            test -s "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip"
 
             # Keep a second direct kernel-only ZIP as well.
             (
               cd artifacts/kernel
-              zip -9 "$GITHUB_WORKSPACE/artifacts/V18-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
+              zip -9 "$GITHUB_WORKSPACE/artifacts/V19-LM-G900-Kernel-Only-4.19.325-cip135.zip" \
                 Image.gz kernel.sha256 >/dev/null
             )
 
@@ -3932,7 +3793,7 @@ jobs:
           {
             echo "========== DIAGNOSTIC COLLECTION =========="
             date -u
-            echo "Workflow version: V18"
+            echo "Workflow version: V19"
             echo "Previous workflow: V12"
             echo "diag_dir=$DIAG_DIR"
             echo "workspace=$GITHUB_WORKSPACE"
@@ -3955,9 +3816,9 @@ jobs:
           RAW_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${WORKFLOW_PATH}?ref=${GITHUB_SHA}"
           if curl -fsSL -H "Authorization: Bearer ${GH_TOKEN:-}" \
             -H "Accept: application/vnd.github.raw+json" "$RAW_URL" \
-            > "$RUNNER_TEMP/v14-workflow-source/V18-CURRENT-WORKFLOW.yml"; then
-            cp -f "$RUNNER_TEMP/v14-workflow-source/V18-CURRENT-WORKFLOW.yml" \
-              diagnostic-artifact/V18-CURRENT-WORKFLOW.yml
+            > "$RUNNER_TEMP/v14-workflow-source/V15-CURRENT-WORKFLOW.yml"; then
+            cp -f "$RUNNER_TEMP/v14-workflow-source/V15-CURRENT-WORKFLOW.yml" \
+              diagnostic-artifact/V15-CURRENT-WORKFLOW.yml
           else
             echo "[FAIL] Unable to capture the running V13 workflow source." \
               > diagnostic-artifact/runner-state/workflow-source-capture-failure.txt
@@ -3965,7 +3826,7 @@ jobs:
 
           {
             echo "========== V13 ALL SETUP STATUS =========="
-            echo "Workflow version: V18"
+            echo "Workflow version: V19"
             echo "Previous workflow: V12"
             echo "Version progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13"
             echo "Setup numbers are independent from workflow version numbers."
@@ -3979,9 +3840,9 @@ jobs:
               else status="EXECUTED-NO-STATUS-MARKER"; fi
               printf '%-75s %s\n' "$base" "$status"
             done
-          } | tee diagnostic-artifact/V18-ALL-SETUP-STATUS.log
+          } | tee diagnostic-artifact/V15-ALL-SETUP-STATUS.log
 
-          cat > diagnostic-artifact/V18-CURRENT-STATUS.md <<'REPORT'
+          cat > diagnostic-artifact/V15-CURRENT-STATUS.md <<'REPORT'
           # V13 Current Status
 
           ## V12 actual result
@@ -4003,7 +3864,7 @@ jobs:
 
           ## Artifact identity
           Current diagnostics artifact:
-            V18-LG-Velvet-G900-Diagnostics
+            V19-LG-Velvet-G900-Diagnostics
 
           The previous V10 filename must not be reused for a V13 run.
 
@@ -4032,7 +3893,7 @@ jobs:
           flags, version thresholds, or output filenames.
 
           Preserved feature families include the verified SukiSU-Ultra, KPM,
-          SUSFS, Full LTO, Maphide/JIT-Zygote, Baseband-Guard and the other
+          SUSFS, Maphide/JIT-Zygote, Baseband-Guard and the other
           previously verified kernel/device compatibility work.
 
           ## Version progression
@@ -4064,7 +3925,7 @@ jobs:
 
           ## Artifact naming
           Version comes FIRST:
-            V18-LG-Velvet-G900-Diagnostics
+            V19-LG-Velvet-G900-Diagnostics
           Never use the old V10 name for V13 content.
 
           ## One-ZIP rule
@@ -4084,7 +3945,7 @@ jobs:
           member list before changing anything.
           REPORT
 
-          cat > diagnostic-artifact/V18-ERROR-AND-FIX-HISTORY.md <<'REPORT'
+          cat > diagnostic-artifact/V15-ERROR-AND-FIX-HISTORY.md <<'REPORT'
           # Complete Error/Fix History V4 → V13
 
           V4 — Protected baseline. Fixed LG 4.19 SELinux hashtab vs AVTAB
@@ -4203,15 +4064,15 @@ jobs:
           Progression: V4 -> V5 -> V6 -> V7 -> V8 -> V9 -> V10 -> V11 -> V12 -> V13
 
           Current source:
-          - V18-CURRENT-WORKFLOW.yml
+          - V15-CURRENT-WORKFLOW.yml
 
           Current status/history:
-          - V18-CURRENT-STATUS.md
-          - V18-ERROR-AND-FIX-HISTORY.md
+          - V15-CURRENT-STATUS.md
+          - V15-ERROR-AND-FIX-HISTORY.md
           - PROJECT-CONTEXT-A-Z.md
           - WORKFLOW-HISTORY-INDEX.md
           - RESEARCH-SOURCES.md
-          - V18-ALL-SETUP-STATUS.log
+          - V15-ALL-SETUP-STATUS.log
 
           Raw runner evidence:
           - ci-logs/
@@ -4225,7 +4086,7 @@ jobs:
           - project-history/
 
           Artifact naming:
-          V18-LG-Velvet-G900-Diagnostics
+          V19-LG-Velvet-G900-Diagnostics
 
           ZIP rule:
           This directory is uploaded directly to GitHub Actions. GitHub creates
@@ -4233,41 +4094,41 @@ jobs:
           REPORT
 
           echo "[PASS] V13 diagnostic directory staged. No diagnostic ZIP is created here."
-      - name: Artifact - V18 Diagnostics
+      - name: Artifact - V14 Diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V18-LG-Velvet-G900-Diagnostics
+          name: V19-LG-Velvet-G900-Diagnostics
           path: diagnostic-artifact/
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V18 AnyKernel3 OrangeFox Flashable
+      - name: Artifact - V14 AnyKernel3 OrangeFox Flashable
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V18-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
-          path: artifacts/V18-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
+          name: V13-LG-Velvet-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable
+          path: artifacts/V19-LM-G900-SukiSU-4.2.0-AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V18 Kernel Only ZIP
+      - name: Artifact - V14 Kernel Only ZIP
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V18-LG-Velvet-G900-Kernel-Only
-          path: artifacts/V18-LM-G900-Kernel-Only-4.19.325-cip135.zip
+          name: V19-LG-Velvet-G900-Kernel-Only
+          path: artifacts/V19-LM-G900-Kernel-Only-4.19.325-cip135.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
 
-      - name: Artifact - V18 Raw Kernel Image
+      - name: Artifact - V14 Raw Kernel Image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: V18-LG-Velvet-G900-Raw-Kernel
+          name: V13-LG-Velvet-G900-Raw-Kernel
           path: arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 14
