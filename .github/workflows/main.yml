@@ -1,4 +1,4 @@
-name: V3-LM-G900-KARNAL-BUILT-FIXED
+name: V3-LM-G900-KARNAL-BUILT-FIXED-V2
 
 on:
   workflow_dispatch:
@@ -30,7 +30,7 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V3-FIXED
+  WORKFLOW_VERSION: V3-FIXED-V2
   OUTPUT_PREFIX: V3-LM-G900-KARNAL
 
 jobs:
@@ -79,11 +79,11 @@ jobs:
           cp device-sm7250-common/BoardConfigCommon.mk logs/device-tree/BoardConfigCommon.mk
           cp vendor-caymanlm/BoardConfigVendor.mk logs/device-tree/BoardConfigVendor.mk
 
-          # --- FIX START: Auto-detect defconfig instead of hardcoding ---
+          # --- ڈیف کانفگ کو مکمل طور پر خودکار طریقے سے ڈھونڈیں ---
           TARGET_KERNEL_CONFIG="$({ grep -E '^[[:space:]]*TARGET_KERNEL_CONFIG[[:space:]]*:?=' device-caymanlm/BoardConfig.mk || true; } | tail -n1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+$//')"
           
           if [ -z "${TARGET_KERNEL_CONFIG}" ]; then
-            echo "[ERROR] TARGET_KERNEL_CONFIG not found in BoardConfig.mk. Attempting to auto-detect from source tree..."
+            echo "[WARN] TARGET_KERNEL_CONFIG not found in BoardConfig.mk. Searching the kernel tree..."
             cd kernel
             mapfile -t DEFS < <(
               find arch/arm64/configs -maxdepth 2 -type f \
@@ -97,12 +97,12 @@ jobs:
               exit 1
             fi
             DEFCONFIG="${DEFS[0]#arch/arm64/configs/}"
-            echo "[WARN] Auto-selected defconfig: ${DEFCONFIG}"
+            echo "[INFO] Auto-selected defconfig: ${DEFCONFIG}"
             cd ..
           else
             DEFCONFIG="arch/arm64/configs/${TARGET_KERNEL_CONFIG}"
           fi
-          # --- FIX END ---
+          # --- خودکار ڈھونڈنے کا اختتام ---
 
           {
             echo "DEVICE_REPO=${DEVICE_REPO}"
