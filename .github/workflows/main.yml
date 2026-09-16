@@ -1,4 +1,4 @@
-name: V1-LM-G900-KARNAL-BUILT
+name: V2-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -10,52 +10,106 @@ env:
   KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
   KERNEL_REF: sixteen
 
-  CIP_OLD: v4.19.325-cip132
-  CIP_TARGET: v4.19.325-cip136
+  # Known-good baseline supplied by the user:
+  BASELINE_KERNEL_SHA256: 85dd6083fd5a34135f301de661cae5f90b1aee82f4f5aa8d6dee30eacd34659d
+  BASELINE_KERNEL_VERSION: 4.19.325
+  BASELINE_CIP: v4.19.325-cip132
+
+  # CIP is resolved dynamically at build time from the official CIP tag list.
+  CIP_PREFIX: v4.19.325-cip
 
   KSU_VERSION: v3.3.0
 
-  # IMPORTANT:
-  # The official SUSFS tree has newer 2.x/2.3.x branches for newer kernels,
-  # but the maintained kernel-4.19 branch is the compatible legacy patch line
-  # and currently carries SUSFS 1.5.5. Do not substitute a 5.x/6.x SUSFS patch
-  # into this 4.19 tree automatically.
-  SUSFS_BRANCH: kernel-4.19
-  SUSFS_VERSION: 1.5.5
-
-  # Exact SHA256 of the uploaded known-good baseline kernel Image.
-  BASELINE_KERNEL_SHA256: 85dd6083fd5a34135f301de661cae5f90b1aee82f4f5aa8d6dee30eacd34659d
+  # SUSFS 2.2.0 is not published by upstream simonpunk as a kernel-4.19 branch.
+  # V2 therefore uses a separately maintained Non-GKI backport source and FAILS
+  # closed if a verifiable 4.19 + 2.2.0 patch cannot be found/applied cleanly.
+  SUSFS_VERSION: 2.2.0
+  SUSFS_BACKPORT_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
+  SUSFS_BACKPORT_REF: mainline
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V1
+  WORKFLOW_VERSION: V2
 
 jobs:
   build:
-    name: Build V1
+    name: Build V2
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: "1. Checkout kernel source"
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::[1/9] Checkout"
+          mkdir -p logs
+          echo "::group::[1/15] Checkout kernel source"
           git clone --depth=1 --branch "${KERNEL_REF}" "${KERNEL_REPO}" kernel
           cd kernel
           git fetch --unshallow >/dev/null 2>&1
           printf 'SOURCE_COMMIT=%s\n' "$(git rev-parse HEAD)" > ../source-info.txt
           printf 'SOURCE_BRANCH=%s\n' "${KERNEL_REF}" >> ../source-info.txt
-          echo "[OK] Source checked out"
+          test "$(make -s kernelversion)" = "${BASELINE_KERNEL_VERSION}"
+          git status --short > ../baseline-git-status.txt
+          echo "[OK] Source checked out: $(git rev-parse HEAD)"
+          echo "[OK] Kernel version: $(make -s kernelversion)"
           echo "::endgroup::"
 
-      - name: "2. Prepare build tools"
+      - name: "2. Select and snapshot device defconfig"
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p logs
-          echo "::group::[2/13] Prepare build tools"
+          echo "::group::[2/15] Select and snapshot device defconfig"
+          cd kernel
+          mapfile -t DEFS < <(
+            find arch/arm64/configs -maxdepth 2 -type f \
+              \( -iname '*cayman*defconfig' -o \
+                 -iname '*sm7250*defconfig' -o \
+                 -iname '*g900*defconfig' \) \
+              -print | sort
+          )
+          if [ "${#DEFS[@]}" -ne 1 ]; then
+            echo "[ERROR] Expected exactly one Cayman/SM7250/G900 defconfig; found ${#DEFS[@]}."
+            printf '%s\n' "${DEFS[@]}"
+            exit 1
+          fi
+          DEFCONFIG="${DEFS[0]#arch/arm64/configs/}"
+          printf 'DEFCONFIG=%s\n' "${DEFCONFIG}" > ../logs/02-defconfig.log
+          echo "DEFCONFIG=${DEFCONFIG}" >> "$GITHUB_ENV"
+          cp "${DEFS[0]}" ../baseline-defconfig.txt
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          make O=out "${DEFCONFIG}" > ../logs/02-defconfig-make.log 2>&1
+
+          # Snapshot every explicitly enabled baseline symbol. Later steps may
+          # add features, but they are not allowed to silently remove baseline
+          # features.
+          awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config \
+            | sort > ../baseline-enabled-config.txt
+          sha256sum ../baseline-enabled-config.txt > ../logs/02-baseline-enabled-config.sha256
+
+          {
+            echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
+            echo "baseline_kernel_version=${BASELINE_KERNEL_VERSION}"
+            echo "baseline_cip=${BASELINE_CIP}"
+            echo "defconfig=${DEFCONFIG}"
+            echo "baseline_enabled_config_count=$(wc -l < ../baseline-enabled-config.txt)"
+          } > ../baseline-info.txt
+
+          echo "[OK] DEFCONFIG=${DEFCONFIG}"
+          echo "[OK] Baseline enabled symbols: $(wc -l < ../baseline-enabled-config.txt)"
+          echo "::endgroup::"
+
+      - name: "3. Prepare build tools"
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::[3/15] Prepare build tools"
           {
             sudo apt-get update -qq
             sudo apt-get install -y -qq \
@@ -63,266 +117,305 @@ jobs:
               gcc-aarch64-linux-gnu git lld libssl-dev \
               libelf-dev libncurses-dev python3 rsync unzip zip \
               wget curl device-tree-compiler patch
-          } > logs/02-apt.log 2>&1
+          } > logs/03-apt.log 2>&1
 
-          # r563880c was removed from AOSP main. Use an immutable AOSP
-          # commit that still contains the complete clang-r563880c directory.
           curl -fL --retry 3 --retry-delay 2 \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" \
             -o "/tmp/${CLANG_REV}.tar.gz" \
-            > logs/02-clang-download.log 2>&1
+            > logs/03-clang-download.log 2>&1
 
           mkdir -p "clang-prebuilt/${CLANG_REV}"
           tar -xzf "/tmp/${CLANG_REV}.tar.gz" \
             -C "clang-prebuilt/${CLANG_REV}" \
-            > logs/02-clang-extract.log 2>&1
+            > logs/03-clang-extract.log 2>&1
 
           export CLANG_BIN="$GITHUB_WORKSPACE/clang-prebuilt/${CLANG_REV}/bin"
           test -x "${CLANG_BIN}/clang"
           test -x "${CLANG_BIN}/ld.lld"
-          "${CLANG_BIN}/clang" --version > logs/02-clang-version.log 2>&1
-          head -n 1 logs/02-clang-version.log > toolchain-version.txt
-
+          "${CLANG_BIN}/clang" --version > logs/03-clang-version.log 2>&1
+          head -n 1 logs/03-clang-version.log > toolchain-version.txt
           echo "CLANG_BIN=${CLANG_BIN}" >> "$GITHUB_ENV"
-          echo "[OK] Android Clang ${CLANG_REV} fetched from ${CLANG_COMMIT}"
+
+          echo "[OK] Android Clang ${CLANG_REV}"
           echo "::endgroup::"
 
-      - name: "3. Verify known-good baseline"
+      - name: "4. Resolve latest compatible CIP for 4.19.325"
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::[3/9] Verify baseline"
+          echo "::group::[4/15] Resolve latest compatible CIP"
           cd kernel
+          git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
+          git fetch --no-tags cip "+refs/tags/${BASELINE_CIP}:refs/tags/${BASELINE_CIP}" \
+            > ../logs/04-cip-baseline-fetch.log 2>&1
 
-          test "$(make -s kernelversion)" = "4.19.325"
-          git grep -n "cip132" -- Makefile scripts 2>/dev/null | head -5 > ../baseline-cip.txt || true
+          git ls-remote --tags --refs cip "refs/tags/${CIP_PREFIX}*" \
+            > ../logs/04-cip-tags.txt 2>&1
+
+          LATEST="$(
+            awk -F/ '{print $NF}' ../logs/04-cip-tags.txt \
+              | grep -E "^${CIP_PREFIX}[0-9]+$" \
+              | sort -V \
+              | tail -n 1
+          )"
+
+          test -n "${LATEST}"
+          echo "CIP_TARGET=${LATEST}" >> "$GITHUB_ENV"
+
+          OLD_N="${BASELINE_CIP##*-cip}"
+          NEW_N="${LATEST##*-cip}"
+          test "${NEW_N}" -ge "${OLD_N}"
+
+          git fetch --no-tags cip \
+            "refs/tags/${LATEST}:refs/tags/${LATEST}" \
+            > ../logs/04-cip-target-fetch.log 2>&1
 
           {
-            echo "expected_baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
-            echo "expected_kernel_version=4.19.325"
-            echo "expected_cip_suffix=cip132"
-            echo "expected_arch=arm64"
-          } > ../baseline-info.txt
+            echo "CIP_BASELINE=${BASELINE_CIP}"
+            echo "CIP_TARGET=${LATEST}"
+            echo "baseline_commit=$(git rev-parse ${BASELINE_CIP})"
+            echo "target_commit=$(git rev-parse ${LATEST})"
+            echo
+            echo "target_subject=$(git show -s --format=%s ${LATEST})"
+            echo
+            git diff --stat "${BASELINE_CIP}..${LATEST}"
+          } > ../logs/04-cip-version.log
 
-          git status --short > ../baseline-git-status.txt
-          echo "[OK] Kernel source reports Linux 4.19.325"
+          echo "[OK] Baseline: ${BASELINE_CIP}"
+          echo "[OK] Latest 4.19.325 CIP: ${LATEST}"
           echo "::endgroup::"
 
-      - name: "4. Apply latest compatible CIP 132 -> 136"
+      - name: "5. Apply CIP delta without hiding conflicts"
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p logs
-          echo "::group::[4/13] Apply ${CIP_OLD} -> ${CIP_TARGET}"
+          echo "::group::[5/15] Apply CIP delta"
           cd kernel
-          {
-            git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-            git fetch --no-tags cip \
-              "refs/tags/${CIP_OLD}:refs/tags/${CIP_OLD}" \
-              "refs/tags/${CIP_TARGET}:refs/tags/${CIP_TARGET}"
 
+          if ! git diff --binary "${BASELINE_CIP}..${CIP_TARGET}" \
+              > ../logs/cip-baseline-to-target.patch; then
+            echo "[ERROR] Failed to generate CIP patch."
+            exit 1
+          fi
+
+          if ! git apply --check --3way ../logs/cip-baseline-to-target.patch \
+              > ../logs/05-cip-check.log 2>&1; then
             {
-              echo "CIP old: ${CIP_OLD}"
-              echo "CIP target: ${CIP_TARGET}"
-              git show -s --format='%H %s' "${CIP_OLD}"
-              git show -s --format='%H %s' "${CIP_TARGET}"
+              echo "[ERROR] CIP patch preflight failed."
               echo
-              echo "CIP delta stat:"
-              git diff --stat "${CIP_OLD}..${CIP_TARGET}"
-            } > ../logs/04-cip-version.log
+              echo "=== git status ==="
+              git status --short
+              echo
+              echo "=== patch check ==="
+              cat ../logs/05-cip-check.log
+            } | tee ../logs/05-cip-check-summary.log
+            exit 1
+          fi
 
-            # Apply only the CIP delta to the known-good LG source tree.
-            git diff --binary "${CIP_OLD}..${CIP_TARGET}" \
-              > ../logs/cip-132-to-136.patch
+          if ! git apply --3way --index ../logs/cip-baseline-to-target.patch \
+              > ../logs/05-cip-apply.log 2>&1; then
+            {
+              echo "[ERROR] CIP patch application failed."
+              echo
+              echo "=== git status ==="
+              git status --short
+              echo
+              echo "=== rejects ==="
+              find . -type f -name '*.rej' -print -exec sed -n '1,220p' {} \; || true
+              echo
+              echo "=== apply log ==="
+              cat ../logs/05-cip-apply.log
+            } | tee ../logs/05-cip-apply-summary.log
+            exit 1
+          fi
 
-            git apply --check --3way ../logs/cip-132-to-136.patch
-            git apply --3way --index ../logs/cip-132-to-136.patch
-          } > ../logs/04-cip-apply.log 2>&1
+          test "$(make -s kernelversion)" = "${BASELINE_KERNEL_VERSION}"
+          git diff --check > ../logs/05-cip-diff-check.log
 
-          echo "[OK] CIP ${CIP_TARGET} delta applied"
+          echo "[OK] CIP ${CIP_TARGET} applied cleanly"
           echo "::endgroup::"
 
-      - name: "5. Integrate KernelSU-Next v3.3.0"
+      - name: "6. Integrate KernelSU-Next v3.3.0"
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::[5/13] KernelSU-Next ${KSU_VERSION}"
+          echo "::group::[6/15] KernelSU-Next ${KSU_VERSION}"
           cd kernel
-          mkdir -p ../logs
-
           curl -fsSL \
             "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_VERSION}/kernel/setup.sh" \
-            -o ../logs/ksu-setup.sh
-          chmod +x ../logs/ksu-setup.sh
-
-          bash ../logs/ksu-setup.sh "${KSU_VERSION}" \
-            > ../logs/kernelsu.log 2>&1
+            -o ../logs/06-ksu-setup.sh
+          chmod +x ../logs/06-ksu-setup.sh
+          bash ../logs/06-ksu-setup.sh "${KSU_VERSION}" \
+            2>&1 | tee ../logs/06-kernelsu.log
 
           test -d KernelSU-Next
           test -L drivers/kernelsu
           grep -q 'CONFIG_KSU' drivers/kernelsu/Kconfig
-
-          echo "[OK] KernelSU-Next ${KSU_VERSION} integrated"
+          echo "[OK] KernelSU-Next ${KSU_VERSION}"
           echo "::endgroup::"
 
-      - name: "6. Integrate SUSFS kernel-4.19 patchset"
+      - name: "7. Integrate SUSFS 2.2.0 4.19 backport"
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::[6/13] SUSFS ${SUSFS_VERSION} (${SUSFS_BRANCH})"
-          cd kernel
-          mkdir -p ../susfs-src ../logs
+          echo "::group::[7/15] SUSFS ${SUSFS_VERSION} 4.19 backport"
+          rm -rf susfs-backport
+          git clone --depth=1 --branch "${SUSFS_BACKPORT_REF}" \
+            "${SUSFS_BACKPORT_REPO}" susfs-backport \
+            2>&1 | tee logs/07-susfs-backport-clone.log
 
-          git clone --depth=1 --branch "${SUSFS_BRANCH}" \
-            https://gitlab.com/simonpunk/susfs4ksu.git ../susfs-src \
-            > ../logs/susfs-clone.log 2>&1
+          git -C susfs-backport rev-parse HEAD > logs/07-susfs-backport-commit.log
 
-          {
-            echo "SUSFS branch: ${SUSFS_BRANCH}"
-            git -C ../susfs-src log -1 --oneline
-            echo
-            echo "SUSFS module version:"
-            sed -n '1,40p' ../susfs-src/ksu_module_susfs/module.prop
-          } > ../logs/susfs-version.log
+          mapfile -t CANDIDATES < <(
+            git -C susfs-backport ls-tree -r --name-only HEAD Patches \
+              | grep -Ei 'susfs.*(2[._-]?2[._-]?0|220).*4[._-]?19|4[._-]?19.*susfs.*(2[._-]?2[._-]?0|220)' \
+              || true
+          )
 
-          # The 4.19 branch is the source-specific patch line. Newer 2.x/2.3.x
-          # branches target newer kernels and are not substituted automatically.
-          test -f ../susfs-src/kernel_patches/50_add_susfs_in_kernel-4.19.patch
-          test -f ../susfs-src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
-          test -f ../susfs-src/kernel_patches/fs/susfs.c
-          test -f ../susfs-src/kernel_patches/include/linux/susfs.h
-
-          cp ../susfs-src/kernel_patches/fs/susfs.c fs/susfs.c
-          cp ../susfs-src/kernel_patches/include/linux/susfs.h include/linux/susfs.h
-
-          if ! patch --dry-run -p1 \
-              < ../susfs-src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch \
-              > ../logs/susfs-ksu-check.log 2>&1; then
-            echo "[ERROR] SUSFS 4.19 -> KernelSU-Next compatibility patch did not apply cleanly."
-            echo "[ERROR] No forced/manual conflict resolution is performed by V1."
+          if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+            echo "[ERROR] No verifiable SUSFS 2.2.0 + kernel-4.19 backport patch was found in the pinned backport repository."
+            echo "[ERROR] Refusing to substitute a 5.10/6.x SUSFS patch into a 4.19 kernel."
+            git -C susfs-backport ls-tree -r --name-only HEAD Patches \
+              | grep -Ei 'susfs|4\.19' > logs/07-susfs-candidates.txt || true
             exit 1
           fi
 
-          patch -p1 \
-            < ../susfs-src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch \
-            > ../logs/susfs-ksu-apply.log 2>&1
+          printf '%s\n' "${CANDIDATES[@]}" | tee logs/07-susfs-candidates.txt
+          PATCH_PATH="${CANDIDATES[0]}"
+          git -C susfs-backport show "HEAD:${PATCH_PATH}" > logs/07-susfs-2.2.0-4.19.patch
 
-          if ! patch --dry-run -p1 \
-              < ../susfs-src/kernel_patches/50_add_susfs_in_kernel-4.19.patch \
-              > ../logs/susfs-kernel-check.log 2>&1; then
-            echo "[ERROR] SUSFS 4.19 kernel patch did not apply cleanly."
-            echo "[ERROR] No forced/manual conflict resolution is performed by V1."
-            exit 1
-          fi
-
-          patch -p1 \
-            < ../susfs-src/kernel_patches/50_add_susfs_in_kernel-4.19.patch \
-            > ../logs/susfs-kernel-apply.log 2>&1
-
-          echo "[OK] SUSFS patchset applied cleanly"
-          echo "::endgroup::"
-
-      - name: "7. Configure and build kernel"
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p logs
-          echo "::group::[7/13] Configure and build kernel"
           cd kernel
-          mkdir -p out
-
-          {
-            mapfile -t DEFS < <(
-              find arch/arm64/configs -maxdepth 2 -type f \
-                \( -iname '*cayman*defconfig' -o \
-                   -iname '*sm7250*defconfig' -o \
-                   -iname '*g900*defconfig' \) \
-                -print | sort
-            )
-
-            if [ "${#DEFS[@]}" -ne 1 ]; then
-              echo "Expected exactly one Cayman/SM7250/G900 defconfig; found ${#DEFS[@]}."
-              printf '%s\n' "${DEFS[@]}"
-              exit 1
-            fi
-
-            DEFCONFIG="${DEFS[0]#arch/arm64/configs/}"
-            echo "DEFCONFIG=${DEFCONFIG}" > ../logs/07-defconfig.log
-
-            export ARCH=arm64
-            export SUBARCH=arm64
-            export LLVM=1
-            export LLVM_IAS=1
-            export CROSS_COMPILE=aarch64-linux-gnu-
-            export CLANG_TRIPLE=aarch64-linux-gnu-
-            export PATH="${CLANG_BIN}:$PATH"
-
-            make O=out "${DEFCONFIG}"
-            ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS
-
-            for sym in \
-              KSU_SUSFS_SUS_PATH \
-              KSU_SUSFS_SUS_MOUNT \
-              KSU_SUSFS_SUS_KSTAT \
-              KSU_SUSFS_SUS_MAPS \
-              KSU_SUSFS_SUS_MEMFD \
-              KSU_SUSFS_TRY_UMOUNT \
-              KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
-              KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
-            do
-              if grep -Rqs "^config ${sym}$" drivers/kernelsu/Kconfig fs/Kconfig* 2>/dev/null; then
-                ./scripts/config --file out/.config --enable "${sym}"
-              fi
-            done
-
-            make O=out olddefconfig
+          if ! patch --dry-run -p1 < ../logs/07-susfs-2.2.0-4.19.patch \
+              > ../logs/07-susfs-check.log 2>&1; then
             {
-              grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS)=' out/.config || true
-              make -s O=out kernelversion
-            } > ../logs/07-config-summary.log
+              echo "[ERROR] SUSFS 2.2.0 4.19 backport does not apply cleanly."
+              echo "Selected patch: ${PATCH_PATH}"
+              cat ../logs/07-susfs-check.log
+            } | tee ../logs/07-susfs-failure.log
+            exit 1
+          fi
 
-            grep -q '^CONFIG_KSU=y$' out/.config
-            grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
+          patch -p1 < ../logs/07-susfs-2.2.0-4.19.patch \
+            2>&1 | tee ../logs/07-susfs-apply.log
 
-            make O=out -j"$(nproc)" \
-              CC=clang LD=ld.lld \
-              AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
-              OBJDUMP=llvm-objdump STRIP=llvm-strip \
-              HOSTCC=clang HOSTCXX=clang++
+          grep -Rqs 'SUSFS' fs/susfs.c include/linux/susfs.h
+          grep -Rqs '2.2.0' fs/susfs.c include/linux/susfs.h || true
 
-            test -s out/arch/arm64/boot/Image
-            sha256sum out/arch/arm64/boot/Image > ../logs/output-image.sha256
-          } > ../logs/07-kernel-build.log 2>&1
-
-          echo "[OK] Kernel build completed"
+          echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport applied"
           echo "::endgroup::"
 
-      - name: "8. Package AnyKernel3 and kernel.zip"
+      - name: "8. Configure features and enforce no-removal policy"
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::[8/15] Configure features"
+          cd kernel
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export PATH="${CLANG_BIN}:$PATH"
+
+          make O=out "${DEFCONFIG}" > ../logs/08-defconfig.log 2>&1
+          ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS
+
+          # Enable every SUSFS option that exists in this source tree, then let
+          # olddefconfig resolve dependencies. This is additive; it never
+          # disables a pre-existing kernel feature.
+          mapfile -t SUSFS_SYMBOLS < <(
+            grep -RhoE '^config KSU_SUSFS_[A-Za-z0-9_]+' \
+              drivers/kernelsu fs include 2>/dev/null \
+              | awk '{print $2}' | sort -u
+          )
+          for sym in "${SUSFS_SYMBOLS[@]}"; do
+            ./scripts/config --file out/.config --enable "${sym}" || true
+          done
+
+          make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
+
+          # Compare baseline enabled features against the post-integration
+          # config. A baseline y/m/numeric/string setting may not silently
+          # disappear. New KSU/SUSFS symbols are allowed.
+          awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config \
+            | sort > ../post-integration-enabled-config.txt
+
+          awk -F= '{print $1}' ../baseline-enabled-config.txt | while read -r sym; do
+            grep -q "^${sym}=" ../post-integration-enabled-config.txt || {
+              echo "[ERROR] Baseline feature removed: ${sym}"
+              exit 1
+            }
+          done
+
+          grep -q '^CONFIG_KSU=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
+
+          {
+            echo "baseline_enabled=$(wc -l < ../baseline-enabled-config.txt)"
+            echo "post_integration_enabled=$(wc -l < ../post-integration-enabled-config.txt)"
+            echo "baseline_config_sha256=$(sha256sum ../baseline-enabled-config.txt | awk '{print $1}')"
+            echo "post_integration_config_sha256=$(sha256sum ../post-integration-enabled-config.txt | awk '{print $1}')"
+            echo "KSU=$(grep '^CONFIG_KSU=' out/.config || true)"
+            echo "KSU_SUSFS=$(grep '^CONFIG_KSU_SUSFS=' out/.config || true)"
+            echo "kernel_version=$(make -s O=out kernelversion)"
+          } | tee ../logs/08-config-summary.log
+
+          echo "[OK] Baseline feature preservation gate passed"
+          echo "::endgroup::"
+
+      - name: "9. Build kernel"
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::[9/15] Build kernel"
+          cd kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export PATH="${CLANG_BIN}:$PATH"
+
+          make O=out -j"$(nproc)" \
+            CC=clang LD=ld.lld \
+            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            HOSTCC=clang HOSTCXX=clang++ \
+            2>&1 | tee ../logs/09-kernel-build.log
+
+          test -s out/arch/arm64/boot/Image
+          sha256sum out/arch/arm64/boot/Image | tee ../logs/output-image.sha256
+
+          strings out/arch/arm64/boot/Image | grep -m1 'Linux version ' \
+            | tee ../logs/09-image-version.log
+
+          echo "[OK] Kernel Image built"
+          echo "::endgroup::"
+
+      - name: "10. Package AnyKernel3 and kernel.zip"
         if: success()
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p logs
-          echo "::group::[8/13] Package AnyKernel3 and kernel.zip"
-          cd "$GITHUB_WORKSPACE"
-
+          echo "::group::[10/15] Package AnyKernel3 and kernel.zip"
           rm -rf release work-anykernel
           mkdir -p release/logs release/build-info release/checksums work-anykernel
 
           cp kernel/out/arch/arm64/boot/Image release/kernel-image
 
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git \
-            work-anykernel > logs/08-anykernel-clone.log 2>&1
+            work-anykernel 2>&1 | tee logs/10-anykernel-clone.log
 
           rm -rf work-anykernel/.git work-anykernel/modules work-anykernel/ramdisk
           cp kernel/out/arch/arm64/boot/Image work-anykernel/Image
 
-          # Official AnyKernel3 syntax. BLOCK=auto resolves the boot block
-          # at flash time; IS_SLOT_DEVICE=auto handles A/B when applicable.
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V1-LM-G900-KARNAL
+          kernel.string=V2-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -349,10 +442,11 @@ jobs:
 
           mkdir -p release/kernel-payload
           cp kernel/out/arch/arm64/boot/Image release/kernel-payload/Image
-
           cp source-info.txt baseline-info.txt toolchain-version.txt \
+            baseline-enabled-config.txt post-integration-enabled-config.txt \
             release/build-info/ 2>/dev/null || true
-          cp baseline-cip.txt release/build-info/ 2>/dev/null || true
+          cp logs/*.log release/logs/ 2>/dev/null || true
+          cp logs/*.patch release/logs/ 2>/dev/null || true
 
           (
             cd release/kernel-payload
@@ -360,18 +454,16 @@ jobs:
           )
           rm -rf release/kernel-payload
 
-          cp logs/*.log release/logs/ 2>/dev/null || true
-          cp logs/*.patch release/logs/ 2>/dev/null || true
-
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V1-LM-G900-KARNAL-BUILT"
-            echo "kernel_output=4.19.325"
-            echo "cip_old=${CIP_OLD}"
+            echo "workflow_name=V2-LM-G900-KARNAL-BUILT"
+            echo "kernel_output=${BASELINE_KERNEL_VERSION}"
+            echo "cip_baseline=${BASELINE_CIP}"
             echo "cip_target=${CIP_TARGET}"
             echo "kernelsu_next=${KSU_VERSION}"
-            echo "susfs_branch=${SUSFS_BRANCH}"
             echo "susfs_version=${SUSFS_VERSION}"
+            echo "susfs_backport_repo=${SUSFS_BACKPORT_REPO}"
+            echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
             echo "clang=${CLANG_REV}"
             echo "clang_commit=${CLANG_COMMIT}"
             echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
@@ -388,61 +480,61 @@ jobs:
 
           (
             cd release
-            zip -qr "../V1-LM-G900-KARNAL-output.zip" .
+            zip -qr "../V2-LM-G900-KARNAL-output.zip" .
           )
 
-          echo "[OK] AnyKernel3-OrangeFox-Flashable.zip created"
-          echo "[OK] kernel.zip created"
-          echo "[OK] V1-LM-G900-KARNAL-output.zip created"
+          echo "[OK] AnyKernel3-OrangeFox-Flashable.zip"
+          echo "[OK] kernel.zip"
+          echo "[OK] V2-LM-G900-KARNAL-output.zip"
           echo "::endgroup::"
 
-      - name: "9. Verify final artifacts"
+      - name: "11. Verify all final artifacts"
         if: success()
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p logs
-          echo "::group::[9/13] Verify final artifacts"
+          echo "::group::[11/15] Verify final artifacts"
           {
-            test -s V1-LM-G900-KARNAL-output.zip
+            test -s V2-LM-G900-KARNAL-output.zip
             test -s release/kernel.zip
             test -s release/AnyKernel3-OrangeFox-Flashable.zip
-            unzip -t V1-LM-G900-KARNAL-output.zip
+            unzip -t V2-LM-G900-KARNAL-output.zip
             unzip -t release/kernel.zip
             unzip -t release/AnyKernel3-OrangeFox-Flashable.zip
-            unzip -l V1-LM-G900-KARNAL-output.zip | sed -n '1,120p'
-          } > logs/09-artifact-verify.log 2>&1
-          echo "[OK] All three ZIP outputs verified"
+            unzip -l V2-LM-G900-KARNAL-output.zip | sed -n '1,180p'
+          } 2>&1 | tee logs/11-artifact-verify.log
+          echo "[OK] All final artifacts verified"
           echo "::endgroup::"
 
-      - name: "10. Upload final V1 output"
-        uses: actions/upload-artifact@v5
-        with:
-          name: V1-LM-G900-KARNAL-output
-          path: V1-LM-G900-KARNAL-output.zip
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: "11. Upload individual flashable ZIPs"
+      - name: "12. Upload V2 final output"
         if: success()
         uses: actions/upload-artifact@v5
         with:
-          name: V1-LM-G900-KARNAL-flashable-zips
+          name: V2-LM-G900-KARNAL-output
+          path: V2-LM-G900-KARNAL-output.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: "13. Upload V2 flashable ZIPs"
+        if: success()
+        uses: actions/upload-artifact@v5
+        with:
+          name: V2-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "12. Collect complete diagnostics (always)"
+      - name: "14. Collect complete diagnostics (always)"
         if: always()
         shell: bash
         env:
           JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
-          mkdir -p logs diagnostics
-          echo "::group::[12/13] Collect complete diagnostics"
+          echo "::group::[14/15] Collect complete diagnostics"
+          mkdir -p diagnostics
           {
             echo "job_status=${JOB_STATUS}"
             echo "workflow=${WORKFLOW_VERSION}"
@@ -450,50 +542,67 @@ jobs:
             echo "run_number=${GITHUB_RUN_NUMBER}"
             echo "sha=${GITHUB_SHA}"
             echo "ref=${GITHUB_REF}"
-            echo "cip_old=${CIP_OLD}"
-            echo "cip_target=${CIP_TARGET}"
+            echo "cip_baseline=${BASELINE_CIP}"
+            echo "cip_target=${CIP_TARGET:-UNRESOLVED}"
             echo "kernelsu_next=${KSU_VERSION}"
-            echo "susfs=${SUSFS_VERSION} (${SUSFS_BRANCH})"
+            echo "susfs=${SUSFS_VERSION}"
+            echo "susfs_backport_repo=${SUSFS_BACKPORT_REPO}"
+            echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
             echo "clang=${CLANG_REV} (${CLANG_COMMIT})"
             echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
             echo
-            echo "Workspace files:"
-            find "$GITHUB_WORKSPACE" -maxdepth 2 -type f \
-              -printf '%P\n' 2>/dev/null | sort | head -500
+            echo "=== Workspace files ==="
+            find "$GITHUB_WORKSPACE" -maxdepth 3 -type f \
+              -printf '%P\n' 2>/dev/null | sort | head -1000
           } > diagnostics/run-summary.txt
 
           cp -a logs/. diagnostics/ 2>/dev/null || true
           cp baseline-info.txt diagnostics/ 2>/dev/null || true
-          cp baseline-cip.txt diagnostics/ 2>/dev/null || true
+          cp baseline-defconfig.txt diagnostics/ 2>/dev/null || true
+          cp baseline-enabled-config.txt diagnostics/ 2>/dev/null || true
+          cp post-integration-enabled-config.txt diagnostics/ 2>/dev/null || true
           cp source-info.txt diagnostics/ 2>/dev/null || true
           cp toolchain-version.txt diagnostics/ 2>/dev/null || true
+          cp V2-LM-G900-KARNAL-output.zip diagnostics/ 2>/dev/null || true
 
           if [ -d kernel ]; then
             {
-              echo "Kernel git status:"
+              echo "=== Kernel git status ==="
               git -C kernel status --short || true
               echo
-              echo "Kernel HEAD:"
+              echo "=== Kernel HEAD ==="
               git -C kernel rev-parse HEAD || true
+              echo
+              echo "=== Kernel version ==="
+              make -s -C kernel kernelversion 2>/dev/null || true
+              echo
+              echo "=== Reject files ==="
+              find kernel -type f -name '*.rej' -print 2>/dev/null || true
             } > diagnostics/kernel-state.txt 2>&1
           fi
 
           (
             cd diagnostics
-            zip -qr "../V1-LM-G900-KARNAL-complete-logs.zip" .
+            zip -qr "../V2-LM-G900-KARNAL-complete-logs.zip" .
           )
 
-          echo "[OK] Complete diagnostics collected"
+          echo "[OK] Complete diagnostics bundle created"
           echo "::endgroup::"
 
-      - name: "13. Upload complete diagnostics (always)"
+      - name: "15. Upload complete diagnostics (always)"
+        if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: V1-LM-G900-KARNAL-logs
+          name: V2-LM-G900-KARNAL-complete-logs
           path: |
+            V2-LM-G900-KARNAL-complete-logs.zip
+            diagnostics/
             logs/
             baseline-info.txt
-            baseline-cip.txt
+            baseline-defconfig.txt
+            baseline-enabled-config.txt
+            post-integration-enabled-config.txt
+            baseline-git-status.txt
             source-info.txt
             toolchain-version.txt
           if-no-files-found: warn
