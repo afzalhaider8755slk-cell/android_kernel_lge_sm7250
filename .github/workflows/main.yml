@@ -1,4 +1,4 @@
-name: V3-LM-G900-KARNAL-BUILT
+name: V3-LM-G900-KARNAL-BUILT-FIXED
 
 on:
   workflow_dispatch:
@@ -30,7 +30,7 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V3
+  WORKFLOW_VERSION: V3-FIXED
   OUTPUT_PREFIX: V3-LM-G900-KARNAL
 
 jobs:
@@ -38,6 +38,7 @@ jobs:
     name: Build V3
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+
     steps:
       - name: "1. Checkout kernel source"
         shell: bash
@@ -78,10 +79,30 @@ jobs:
           cp device-sm7250-common/BoardConfigCommon.mk logs/device-tree/BoardConfigCommon.mk
           cp vendor-caymanlm/BoardConfigVendor.mk logs/device-tree/BoardConfigVendor.mk
 
+          # --- FIX START: Auto-detect defconfig instead of hardcoding ---
           TARGET_KERNEL_CONFIG="$({ grep -E '^[[:space:]]*TARGET_KERNEL_CONFIG[[:space:]]*:?=' device-caymanlm/BoardConfig.mk || true; } | tail -n1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+$//')"
-          test -n "${TARGET_KERNEL_CONFIG}"
-          test "${TARGET_KERNEL_CONFIG}" = "vendor/lineageos_cayman_defconfig"
-          DEFCONFIG="arch/arm64/configs/${TARGET_KERNEL_CONFIG}"
+          
+          if [ -z "${TARGET_KERNEL_CONFIG}" ]; then
+            echo "[ERROR] TARGET_KERNEL_CONFIG not found in BoardConfig.mk. Attempting to auto-detect from source tree..."
+            cd kernel
+            mapfile -t DEFS < <(
+              find arch/arm64/configs -maxdepth 2 -type f \
+                \( -iname '*cayman*defconfig' -o \
+                   -iname '*sm7250*defconfig' -o \
+                   -iname '*g900*defconfig' \) \
+                -print | sort
+            )
+            if [ "${#DEFS[@]}" -eq 0 ]; then
+              echo "[ERROR] No Cayman/SM7250/G900 defconfig found in kernel source."
+              exit 1
+            fi
+            DEFCONFIG="${DEFS[0]#arch/arm64/configs/}"
+            echo "[WARN] Auto-selected defconfig: ${DEFCONFIG}"
+            cd ..
+          else
+            DEFCONFIG="arch/arm64/configs/${TARGET_KERNEL_CONFIG}"
+          fi
+          # --- FIX END ---
 
           {
             echo "DEVICE_REPO=${DEVICE_REPO}"
@@ -90,7 +111,7 @@ jobs:
             echo "COMMON_DEVICE_REF=${COMMON_DEVICE_REF}"
             echo "VENDOR_REPO=${VENDOR_REPO}"
             echo "VENDOR_REF=${VENDOR_REF}"
-            echo "TARGET_KERNEL_CONFIG=${TARGET_KERNEL_CONFIG}"
+            echo "TARGET_KERNEL_CONFIG=${TARGET_KERNEL_CONFIG:-auto-detected}"
             echo "DEFCONFIG=${DEFCONFIG}"
           } | tee logs/device-tree/selection.txt
 
@@ -101,7 +122,7 @@ jobs:
 
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
-          make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/02-defconfig-make.log 2>&1
+          make O=out "${DEFCONFIG}" > ../logs/02-defconfig-make.log 2>&1
 
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../baseline-enabled-config.txt
           sha256sum ../baseline-enabled-config.txt | tee ../logs/02-baseline-enabled-config.sha256
@@ -109,12 +130,11 @@ jobs:
             echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
             echo "baseline_kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "baseline_cip=${BASELINE_CIP}"
-            echo "defconfig=${TARGET_KERNEL_CONFIG}"
+            echo "defconfig=${DEFCONFIG}"
             echo "baseline_enabled_config_count=$(wc -l < ../baseline-enabled-config.txt)"
           } > ../baseline-info.txt
 
-          echo "[OK] Device tree explicitly selects ${TARGET_KERNEL_CONFIG}"
-          echo "[OK] Kernel defconfig exists: ${DEFCONFIG}"
+          echo "[OK] Device tree explicitly selects ${DEFCONFIG}"
           echo "::endgroup::"
 
       - name: "3. Prepare build tools"
@@ -246,7 +266,7 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
-          make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/08-defconfig.log 2>&1
+          make O=out "${DEFCONFIG}" > ../logs/08-defconfig.log 2>&1
           ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS
           mapfile -t SUSFS_SYMBOLS < <(grep -RhoE '^config KSU_SUSFS_[A-Za-z0-9_]+' drivers/kernelsu fs include 2>/dev/null | awk '{print $2}' | sort -u)
           for sym in "${SUSFS_SYMBOLS[@]}"; do ./scripts/config --file out/.config --enable "${sym}" || true; done
@@ -337,7 +357,7 @@ jobs:
             echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
             echo "clang=${CLANG_REV}"
             echo "clang_commit=${CLANG_COMMIT}"
-            echo "defconfig=${TARGET_KERNEL_CONFIG}"
+            echo "defconfig=${TARGET_KERNEL_CONFIG:-auto-detected}"
           } > release/build-info/build-manifest.txt
           sha256sum release/kernel-image release/kernel.zip release/AnyKernel3-OrangeFox-Flashable.zip > release/checksums/SHA256SUMS
           rm -f release/kernel-image
@@ -408,7 +428,7 @@ jobs:
             echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
             echo "clang=${CLANG_REV} (${CLANG_COMMIT})"
             echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
-            echo "defconfig=${TARGET_KERNEL_CONFIG:-UNRESOLVED}"
+            echo "defconfig=${TARGET_KERNEL_CONFIG:-auto-detected}"
             echo
             echo "=== Workspace files ==="
             find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -printf '%P\n' 2>/dev/null | sort | head -2000
