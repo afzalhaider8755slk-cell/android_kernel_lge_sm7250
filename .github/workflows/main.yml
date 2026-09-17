@@ -31,6 +31,7 @@ env:
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
   WORKFLOW_VERSION: V4
+  # V4 baseline is the user-supplied working kernel Image; its SHA-256 is verified before any feature integration.
   OUTPUT_PREFIX: V4-LM-G900-KARNAL
 
 jobs:
@@ -65,19 +66,19 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[2/15] Prepare build tools"
+          echo "::group::[3/15] Prepare build tools"
           {
             sudo apt-get update -qq
             sudo apt-get install -y -qq bc bison build-essential ccache clang flex gcc-aarch64-linux-gnu git lld libssl-dev libelf-dev libncurses-dev python3 rsync unzip zip wget curl device-tree-compiler patch
-          } > logs/02-apt.log 2>&1
-          curl -fL --retry 5 --retry-delay 2 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" -o "/tmp/${CLANG_REV}.tar.gz" > logs/02-clang-download.log 2>&1
+          } > logs/03-apt.log 2>&1
+          curl -fL --retry 5 --retry-delay 2 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" -o "/tmp/${CLANG_REV}.tar.gz" > logs/03-clang-download.log 2>&1
           mkdir -p "clang-prebuilt/${CLANG_REV}"
-          tar -xzf "/tmp/${CLANG_REV}.tar.gz" -C "clang-prebuilt/${CLANG_REV}" > logs/02-clang-extract.log 2>&1
+          tar -xzf "/tmp/${CLANG_REV}.tar.gz" -C "clang-prebuilt/${CLANG_REV}" > logs/03-clang-extract.log 2>&1
           export CLANG_BIN="$GITHUB_WORKSPACE/clang-prebuilt/${CLANG_REV}/bin"
           test -x "${CLANG_BIN}/clang"
           test -x "${CLANG_BIN}/ld.lld"
-          "${CLANG_BIN}/clang" --version | tee logs/02-clang-version.log
-          head -n1 logs/02-clang-version.log > toolchain-version.txt
+          "${CLANG_BIN}/clang" --version | tee logs/03-clang-version.log
+          head -n1 logs/03-clang-version.log > toolchain-version.txt
           echo "CLANG_BIN=${CLANG_BIN}" >> "$GITHUB_ENV"
           echo "[OK] Android Clang ${CLANG_REV}"
           echo "::endgroup::"
@@ -87,8 +88,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p logs/device-tree diagnostics/device-tree
-          exec > >(tee -a logs/03-defconfig-selection.log) 2>&1
-          echo "::group::[3/15] Select and snapshot device defconfig"
+          exec > >(tee -a logs/02-defconfig-selection.log) 2>&1
+          echo "::group::[2/15] Select and snapshot device defconfig"
 
           rm -rf device-caymanlm device-sm7250-common vendor-caymanlm
           git clone --depth=1 --branch "${DEVICE_REF}" "${DEVICE_REPO}" device-caymanlm
@@ -118,17 +119,17 @@ jobs:
           cd kernel
           test -f "${DEFCONFIG}"
           cp "${DEFCONFIG}" ../baseline-defconfig.txt
-          sha256sum "${DEFCONFIG}" | tee ../logs/03-defconfig.sha256
+          sha256sum "${DEFCONFIG}" | tee ../logs/02-defconfig.sha256
 
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
           test -x "${CLANG_BIN}/clang"
           test -x "${CLANG_BIN}/ld.lld"
-          make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/03-defconfig-make.log 2>&1
+          make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/02-defconfig-make.log 2>&1
 
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../baseline-enabled-config.txt
-          sha256sum ../baseline-enabled-config.txt | tee ../logs/03-baseline-enabled-config.sha256
+          sha256sum ../baseline-enabled-config.txt | tee ../logs/02-baseline-enabled-config.sha256
           {
             echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
             echo "baseline_kernel_version=${BASELINE_KERNEL_VERSION}"
@@ -137,7 +138,6 @@ jobs:
             echo "baseline_enabled_config_count=$(wc -l < ../baseline-enabled-config.txt)"
           } > ../baseline-info.txt
 
-          echo "[FIX] Toolchain prepared before defconfig; clang and ld.lld verified."
           echo "[OK] Device tree explicitly selects ${TARGET_KERNEL_CONFIG}"
           echo "[OK] Kernel defconfig exists: ${DEFCONFIG}"
           echo "::endgroup::"
@@ -367,20 +367,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V4 final output"
+      - name: "12. Upload V3 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V3-LM-G900-KARNAL-output
-          path: V3-LM-G900-KARNAL-output.zip
+          name: V4-LM-G900-KARNAL-output
+          path: V4-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V4 flashable ZIPs"
+      - name: "13. Upload V3 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V3-LM-G900-KARNAL-flashable-zips
+          name: V4-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -435,16 +435,16 @@ jobs:
             rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
             zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .
           )
-          echo "[OK] Complete V4 diagnostics bundle created"
+          echo "[OK] Complete V3 diagnostics bundle created"
           echo "::endgroup::"
 
-      - name: "15. Upload V4 complete diagnostics (always)"
+      - name: "15. Upload V3 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V3-LM-G900-KARNAL-complete-logs
+          name: V4-LM-G900-KARNAL-complete-logs
           path: |
-            V3-LM-G900-KARNAL-complete-logs.zip
+            V4-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
