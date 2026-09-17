@@ -1,4 +1,4 @@
-name: V5-LM-G900-KARNAL-BUILT
+name: V6-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -30,12 +30,16 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V5
-  OUTPUT_PREFIX: V5-LM-G900-KARNAL
+  WORKFLOW_VERSION: V6
+  OUTPUT_PREFIX: V6-LM-G900-KARNAL
+  # V6 fixes two V5 failures:
+  # 1) duplicate local CIP tag fetch ("remote ref already exists")
+  # 2) diagnostics masking the original error with a Broken pipe
+
 
 jobs:
   build:
-    name: Build V5
+    name: Build V6
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -142,11 +146,11 @@ jobs:
           echo "[OK] Kernel defconfig exists: ${DEFCONFIG}"
           echo "::endgroup::"
 
-      - name: "4. Resolve latest compatible CIP for 4.19.325"
+      - name: "4. Resolve latest official CIP for 4.19.325"
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[4/15] Resolve latest compatible CIP"
+          echo "::group::[4/15] Resolve latest official CIP"
           cd kernel
           git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
           git fetch --no-tags cip "+refs/tags/${BASELINE_CIP}:refs/tags/${BASELINE_CIP}" > ../logs/04-cip-baseline-fetch.log 2>&1
@@ -166,7 +170,7 @@ jobs:
             git diff --stat "${BASELINE_CIP}..${LATEST}"
           } | tee ../logs/04-cip-version.log
           echo "[OK] Baseline: ${BASELINE_CIP}"
-          echo "[OK] Latest official 4.19.325 CIP: ${LATEST}"
+          echo "[OK] Latest official 4.19.325 CIP discovered: ${LATEST}"
           echo "::endgroup::"
 
       - name: "5. Select and apply first clean CIP delta"
@@ -175,8 +179,25 @@ jobs:
           set -Eeuo pipefail
           echo "::group::[5/15] Select and apply first clean CIP delta"
           cd kernel
-          git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-          git fetch --no-tags cip "+refs/tags/${BASELINE_CIP}:refs/tags/${BASELINE_CIP}" > ../logs/05-cip-baseline-fetch.log 2>&1
+          mkdir -p ../logs/cip-checks
+          git remote get-url cip >/dev/null 2>&1 || git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
+          # IMPORTANT: initialize diagnostics before any fetch/apply operation so a CIP
+          # failure can never erase the evidence that explains why it failed.
+          : > ../logs/05-cip-compatibility.log
+          : > ../logs/05-cip-failure.log
+          : > ../logs/05-cip-candidates.txt
+          {
+            echo "CIP compatibility probe"
+            echo "Source commit=$(git rev-parse HEAD)"
+            echo "Kernel version=$(make -s kernelversion)"
+            echo "Baseline tag=${BASELINE_CIP}"
+            echo "Remote=https://gitlab.com/cip-project/cip-kernel/linux-cip.git"
+            echo
+          } | tee -a ../logs/05-cip-compatibility.log
+
+          # The previous V5 failure was not a CIP patch conflict. It was a Git ref
+          # collision: step 4 had already created refs/tags/v4.19.325-cip136 and
+          # step 5 tried to create the same local ref again without '+'.
           git ls-remote --tags --refs cip "refs/tags/${CIP_PREFIX}*" > ../logs/05-cip-tags.txt 2>&1
           mapfile -t CIP_TAGS < <(
             awk -F/ '{print $NF}' ../logs/05-cip-tags.txt |
@@ -191,30 +212,71 @@ jobs:
           } | tee ../logs/05-cip-candidates.txt
 
           SELECTED=""
-          : > ../logs/05-cip-compatibility.log
+          BASE_N="${BASELINE_CIP##*-cip}"
           for TAG in "${CIP_TAGS[@]}"; do
             N="${TAG##*-cip}"
-            BASE_N="${BASELINE_CIP##*-cip}"
             if [ "${N}" -lt "${BASE_N}" ]; then
               continue
             fi
-            echo "=== TEST ${TAG} ===" | tee -a ../logs/05-cip-compatibility.log
-            git fetch --no-tags cip "refs/tags/${TAG}:refs/tags/${TAG}" >> ../logs/05-cip-compatibility.log 2>&1
-            git diff --binary "${BASELINE_CIP}..${TAG}" > "../logs/cip-${TAG}.patch"
-            if git apply --check --3way "../logs/cip-${TAG}.patch" >> ../logs/05-cip-compatibility.log 2>&1; then
+
+            CHECK_LOG="../logs/cip-checks/${TAG}.log"
+            PATCH_FILE="../logs/cip-${TAG}.patch"
+            {
+              echo
+              echo "============================================================"
+              echo "TEST=${TAG}"
+              echo "============================================================"
+            } | tee -a ../logs/05-cip-compatibility.log
+
+            # Fetch only when the exact local tag does not already exist.
+            # '+' also makes the refspec safe if a stale local tag is present.
+            if git rev-parse -q --verify "refs/tags/${TAG}^{commit}" >/dev/null 2>&1; then
+              echo "TAG_SOURCE=local-existing" | tee -a ../logs/05-cip-compatibility.log
+            else
+              echo "TAG_SOURCE=remote-fetch" | tee -a ../logs/05-cip-compatibility.log
+              if ! git fetch --no-tags cip "+refs/tags/${TAG}:refs/tags/${TAG}" >> "$CHECK_LOG" 2>&1; then
+                echo "FETCH_FAILED=${TAG}" | tee -a ../logs/05-cip-compatibility.log
+                cat "$CHECK_LOG" | tee -a ../logs/05-cip-compatibility.log
+                echo "INCOMPATIBLE=${TAG} reason=fetch-failed" | tee -a ../logs/05-cip-compatibility.log
+                continue
+              fi
+            fi
+
+            git diff --binary "${BASELINE_CIP}..${TAG}" > "$PATCH_FILE"
+            {
+              echo "baseline_commit=$(git rev-parse ${BASELINE_CIP})"
+              echo "target_commit=$(git rev-parse ${TAG})"
+              echo "patch_sha256=$(sha256sum "$PATCH_FILE" | awk '{print $1}')"
+              echo "patch_bytes=$(wc -c < "$PATCH_FILE")"
+              echo "patch_files=$(git diff --name-only "${BASELINE_CIP}..${TAG}" | wc -l)"
+            } >> "$CHECK_LOG"
+
+            # --check performs a non-mutating compatibility test. --3way allows
+            # Git to use blob IDs from the real baseline/target history. We do
+            # NOT force, fuzz, or silently drop a conflicting hunk.
+            if git apply --check --3way "$PATCH_FILE" > "$CHECK_LOG.apply" 2>&1; then
+              cat "$CHECK_LOG.apply" >> "$CHECK_LOG"
               echo "COMPATIBLE=${TAG}" | tee -a ../logs/05-cip-compatibility.log
               SELECTED="${TAG}"
+              cp "$CHECK_LOG" "../logs/cip-checks/${TAG}.result.log"
               break
             else
-              echo "INCOMPATIBLE=${TAG}" | tee -a ../logs/05-cip-compatibility.log
+              cat "$CHECK_LOG.apply" >> "$CHECK_LOG"
+              {
+                echo "INCOMPATIBLE=${TAG}"
+                echo "=== conflict/error lines ==="
+                grep -nE '(^error:|with conflicts|conflict|does not apply|patch failed|patch does not apply)' "$CHECK_LOG.apply" || true
+              } | tee -a ../logs/05-cip-compatibility.log
+              cp "$CHECK_LOG" "../logs/cip-checks/${TAG}.result.log"
             fi
           done
 
           if [ -z "${SELECTED}" ]; then
             {
               echo "[ERROR] No CIP tag from ${CIP_PREFIX}* can be applied cleanly to the exact baseline."
-              echo "The workflow will not force, fuzz, or hide conflicts."
-              echo "See logs/05-cip-compatibility.log."
+              echo "No conflict was forced, fuzzed, hidden, or removed."
+              echo "The candidate logs are in logs/cip-checks/."
+              echo "The aggregate result is logs/05-cip-compatibility.log."
             } | tee ../logs/05-cip-failure.log
             exit 1
           fi
@@ -227,12 +289,13 @@ jobs:
             echo "baseline_commit=$(git rev-parse ${BASELINE_CIP})"
             echo "target_commit=$(git rev-parse ${SELECTED})"
             echo "target_subject=$(git show -s --format=%s ${SELECTED})"
+            echo "selected_patch_sha256=$(sha256sum ../logs/cip-selected.patch | awk '{print $1}')"
             git diff --stat "${BASELINE_CIP}..${SELECTED}"
           } | tee ../logs/05-cip-version.log
 
           if ! git apply --3way --index ../logs/cip-selected.patch > ../logs/05-cip-apply.log 2>&1; then
             {
-              echo "[ERROR] Selected CIP application failed."
+              echo "[ERROR] Selected CIP application failed after preflight."
               echo "Selected=${SELECTED}"
               echo "=== status ==="; git status --short
               echo "=== rejects ==="; find . -type f -name '*.rej' -print -exec sed -n '1,220p' {} \; || true
@@ -352,7 +415,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V5-LM-G900-KARNAL
+          kernel.string=V6-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -378,7 +441,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V5-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V6-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -415,12 +478,12 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V4 final output"
+      - name: "12. Upload V6 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V5-LM-G900-KARNAL-output
-          path: V5-LM-G900-KARNAL-output.zip
+          name: V6-LM-G900-KARNAL-output
+          path: V6-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -428,7 +491,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V5-LM-G900-KARNAL-flashable-zips
+          name: V6-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -441,9 +504,12 @@ jobs:
         env:
           JOB_STATUS: ${{ job.status }}
         run: |
-          set -u
-          echo "::group::[14/15] Collect complete diagnostics"
-          mkdir -p diagnostics
+          # Diagnostics must never fail the job a second time. In V5 the diagnostic
+          # collector itself failed with "sort: write error: Broken pipe", masking
+          # the original CIP failure. V6 writes large inventories to files and only
+          # prints bounded summaries to the Actions console.
+          set +e
+          mkdir -p diagnostics diagnostics/logs diagnostics/cip-checks
           {
             echo "job_status=${JOB_STATUS}"
             echo "workflow=${WORKFLOW_VERSION}"
@@ -461,18 +527,25 @@ jobs:
             echo "clang=${CLANG_REV} (${CLANG_COMMIT})"
             echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
             echo "defconfig=${TARGET_KERNEL_CONFIG:-UNRESOLVED}"
-            echo
-            echo "=== Workspace files ==="
-            find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -printf '%P\n' 2>/dev/null | sort | head -2000
           } > diagnostics/run-summary.txt
-          cp -a logs/. diagnostics/ 2>/dev/null || true
+
+          # Preserve every generated log, including partial logs from failed steps.
+          cp -a logs/. diagnostics/logs/ 2>/dev/null || true
           cp -a logs/device-tree/. diagnostics/device-tree/ 2>/dev/null || true
-          cp baseline-info.txt baseline-defconfig.txt baseline-enabled-config.txt post-integration-enabled-config.txt source-info.txt toolchain-version.txt baseline-git-status.txt diagnostics/ 2>/dev/null || true
-          cp "${OUTPUT_PREFIX}-output.zip" diagnostics/ 2>/dev/null || true
+          cp baseline-info.txt baseline-defconfig.txt baseline-enabled-config.txt \
+             post-integration-enabled-config.txt source-info.txt toolchain-version.txt \
+             baseline-git-status.txt diagnostics/ 2>/dev/null || true
+
+          # Full workspace inventory goes to a file, not the Actions stdout pipe.
+          find "$GITHUB_WORKSPACE" -type f \
+            -not -path '*/.git/*' \
+            -not -path '*/clang-prebuilt/*' \
+            -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
+
           {
-            echo "=== A-Z BUILD RECORD ==="
+            echo "=== A-Z BUILD RECORD V6 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
-            echo "Device=LG Velvet LM-G900N/EM/EMW family; codename=caymanlm"
+            echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
             echo "Kernel repo=${KERNEL_REPO}"
             echo "Kernel branch=${KERNEL_REF}"
@@ -500,8 +573,8 @@ jobs:
             git -C vendor-caymanlm rev-parse HEAD 2>/dev/null || true
             git -C susfs-backport rev-parse HEAD 2>/dev/null || true
             echo
-            echo "=== Complete workspace file inventory ==="
-            find "$GITHUB_WORKSPACE" -type f -not -path '*/.git/*' -not -path '*/clang-prebuilt/*' -printf '%P\t%s bytes\n' 2>/dev/null | sort
+            echo "=== Inventory file ==="
+            echo "diagnostics/workspace-files.txt"
             echo
             echo "=== Kernel diff stat ==="
             git -C kernel diff --stat 2>/dev/null || true
@@ -516,8 +589,9 @@ jobs:
             fi
             echo
             echo "=== Release hashes ==="
-            find release -maxdepth 3 -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum
+            find release -maxdepth 3 -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null || true
           } > diagnostics/A-Z-BUILD-RECORD.txt 2>&1
+
           if [ -d kernel ]; then
             {
               echo "=== Kernel git status ==="; git -C kernel status --short || true
@@ -527,21 +601,22 @@ jobs:
               echo; echo "=== Merge conflict markers ==="; grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git 2>/dev/null | head -200 || true
             } > diagnostics/kernel-state.txt 2>&1
           fi
-          (
-            cd diagnostics
-            rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
-            zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .
-          )
-          echo "[OK] Complete V5 A-Z diagnostics bundle created"
+
+          # Copy the diagnostic bundle itself into the output zip only if the build
+          # reached packaging; always create the separate complete-logs artifact.
+          rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
+          (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
+
+          echo "::notice::V6 diagnostics collected; original failure evidence is preserved."
           echo "::endgroup::"
 
-      - name: "15. Upload V4 complete diagnostics (always)"
+      - name: "15. Upload V6 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V5-LM-G900-KARNAL-complete-logs
+          name: V6-LM-G900-KARNAL-complete-logs
           path: |
-            V5-LM-G900-KARNAL-complete-logs.zip
+            V6-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
