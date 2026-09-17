@@ -1,4 +1,4 @@
-name: V3-LM-G900-KARNAL-BUILT-FINAL
+name: V4-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -30,15 +30,14 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V3-FINAL
-  OUTPUT_PREFIX: V3-LM-G900-KARNAL
+  WORKFLOW_VERSION: V4
+  OUTPUT_PREFIX: V4-LM-G900-KARNAL
 
 jobs:
   build:
-    name: Build V3
+    name: Build V4
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-
     steps:
       - name: "1. Checkout kernel source"
         shell: bash
@@ -62,13 +61,34 @@ jobs:
           echo "[OK] Kernel version: $(make -s kernelversion)"
           echo "::endgroup::"
 
-      - name: "2. Select and snapshot device defconfig"
+      - name: "2. Prepare build tools"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "::group::[2/15] Prepare build tools"
+          {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq bc bison build-essential ccache clang flex gcc-aarch64-linux-gnu git lld libssl-dev libelf-dev libncurses-dev python3 rsync unzip zip wget curl device-tree-compiler patch
+          } > logs/02-apt.log 2>&1
+          curl -fL --retry 5 --retry-delay 2 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" -o "/tmp/${CLANG_REV}.tar.gz" > logs/02-clang-download.log 2>&1
+          mkdir -p "clang-prebuilt/${CLANG_REV}"
+          tar -xzf "/tmp/${CLANG_REV}.tar.gz" -C "clang-prebuilt/${CLANG_REV}" > logs/02-clang-extract.log 2>&1
+          export CLANG_BIN="$GITHUB_WORKSPACE/clang-prebuilt/${CLANG_REV}/bin"
+          test -x "${CLANG_BIN}/clang"
+          test -x "${CLANG_BIN}/ld.lld"
+          "${CLANG_BIN}/clang" --version | tee logs/02-clang-version.log
+          head -n1 logs/02-clang-version.log > toolchain-version.txt
+          echo "CLANG_BIN=${CLANG_BIN}" >> "$GITHUB_ENV"
+          echo "[OK] Android Clang ${CLANG_REV}"
+          echo "::endgroup::"
+
+      - name: "3. Select and snapshot device defconfig"
         shell: bash
         run: |
           set -Eeuo pipefail
           mkdir -p logs/device-tree diagnostics/device-tree
-          exec > >(tee -a logs/02-defconfig-selection.log) 2>&1
-          echo "::group::[2/15] Select and snapshot device defconfig"
+          exec > >(tee -a logs/03-defconfig-selection.log) 2>&1
+          echo "::group::[3/15] Select and snapshot device defconfig"
 
           rm -rf device-caymanlm device-sm7250-common vendor-caymanlm
           git clone --depth=1 --branch "${DEVICE_REF}" "${DEVICE_REPO}" device-caymanlm
@@ -79,34 +99,11 @@ jobs:
           cp device-sm7250-common/BoardConfigCommon.mk logs/device-tree/BoardConfigCommon.mk
           cp vendor-caymanlm/BoardConfigVendor.mk logs/device-tree/BoardConfigVendor.mk
 
-          # --- مکمل طور پر خودکار ڈیف کانفگ ڈھونڈیں ---
           TARGET_KERNEL_CONFIG="$({ grep -E '^[[:space:]]*TARGET_KERNEL_CONFIG[[:space:]]*:?=' device-caymanlm/BoardConfig.mk || true; } | tail -n1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+$//')"
-          
-          if [ -z "${TARGET_KERNEL_CONFIG}" ]; then
-            echo "[WARN] TARGET_KERNEL_CONFIG not found in BoardConfig.mk. Searching the kernel tree..."
-            cd kernel
-            mapfile -t DEFS < <(
-              find arch/arm64/configs -maxdepth 2 -type f \
-                \( -iname '*cayman*defconfig' -o \
-                   -iname '*sm7250*defconfig' -o \
-                   -iname '*g900*defconfig' \) \
-                -print | sort
-            )
-            if [ "${#DEFS[@]}" -eq 0 ]; then
-              echo "[ERROR] No Cayman/SM7250/G900 defconfig found in kernel source."
-              exit 1
-            fi
-            DEFCONFIG_FILENAME="${DEFS[0]##*/}"
-            echo "[INFO] Auto-selected defconfig filename: ${DEFCONFIG_FILENAME}"
-            cd ..
-          else
-            DEFCONFIG_FILENAME="${TARGET_KERNEL_CONFIG##*/}"
-          fi
-          # --- خودکار ڈھونڈنے کا اختتام ---
+          test -n "${TARGET_KERNEL_CONFIG}"
+          test "${TARGET_KERNEL_CONFIG}" = "vendor/lineageos_cayman_defconfig"
+          DEFCONFIG="arch/arm64/configs/${TARGET_KERNEL_CONFIG}"
 
-          # make کمانڈ کو صرف فائل کا نام دیں، پورا پاتھ نہیں
-          DEFCONFIG="arch/arm64/configs/${DEFCONFIG_FILENAME}"
-          
           {
             echo "DEVICE_REPO=${DEVICE_REPO}"
             echo "DEVICE_REF=${DEVICE_REF}"
@@ -114,54 +111,35 @@ jobs:
             echo "COMMON_DEVICE_REF=${COMMON_DEVICE_REF}"
             echo "VENDOR_REPO=${VENDOR_REPO}"
             echo "VENDOR_REF=${VENDOR_REF}"
-            echo "TARGET_KERNEL_CONFIG=${TARGET_KERNEL_CONFIG:-auto-detected}"
-            echo "DEFCONFIG_FILENAME=${DEFCONFIG_FILENAME}"
+            echo "TARGET_KERNEL_CONFIG=${TARGET_KERNEL_CONFIG}"
             echo "DEFCONFIG=${DEFCONFIG}"
           } | tee logs/device-tree/selection.txt
 
           cd kernel
           test -f "${DEFCONFIG}"
           cp "${DEFCONFIG}" ../baseline-defconfig.txt
-          sha256sum "${DEFCONFIG}" | tee ../logs/02-defconfig.sha256
+          sha256sum "${DEFCONFIG}" | tee ../logs/03-defconfig.sha256
 
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
-          # صرف فائل کا نام استعمال کریں، پورا پاتھ نہیں
-          make O=out "${DEFCONFIG_FILENAME}" > ../logs/02-defconfig-make.log 2>&1
+          export PATH="${CLANG_BIN}:$PATH"
+          test -x "${CLANG_BIN}/clang"
+          test -x "${CLANG_BIN}/ld.lld"
+          make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/03-defconfig-make.log 2>&1
 
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../baseline-enabled-config.txt
-          sha256sum ../baseline-enabled-config.txt | tee ../logs/02-baseline-enabled-config.sha256
+          sha256sum ../baseline-enabled-config.txt | tee ../logs/03-baseline-enabled-config.sha256
           {
             echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
             echo "baseline_kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "baseline_cip=${BASELINE_CIP}"
-            echo "defconfig=${DEFCONFIG}"
-            echo "defconfig_filename=${DEFCONFIG_FILENAME}"
+            echo "defconfig=${TARGET_KERNEL_CONFIG}"
             echo "baseline_enabled_config_count=$(wc -l < ../baseline-enabled-config.txt)"
           } > ../baseline-info.txt
 
-          echo "[OK] Device tree explicitly selects ${DEFCONFIG_FILENAME}"
-          echo "::endgroup::"
-
-      - name: "3. Prepare build tools"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[3/15] Prepare build tools"
-          {
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq bc bison build-essential ccache clang flex gcc-aarch64-linux-gnu git lld libssl-dev libelf-dev libncurses-dev python3 rsync unzip zip wget curl device-tree-compiler patch
-          } > logs/03-apt.log 2>&1
-          curl -fL --retry 5 --retry-delay 2 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" -o "/tmp/${CLANG_REV}.tar.gz" > logs/03-clang-download.log 2>&1
-          mkdir -p "clang-prebuilt/${CLANG_REV}"
-          tar -xzf "/tmp/${CLANG_REV}.tar.gz" -C "clang-prebuilt/${CLANG_REV}" > logs/03-clang-extract.log 2>&1
-          export CLANG_BIN="$GITHUB_WORKSPACE/clang-prebuilt/${CLANG_REV}/bin"
-          test -x "${CLANG_BIN}/clang"
-          test -x "${CLANG_BIN}/ld.lld"
-          "${CLANG_BIN}/clang" --version | tee logs/03-clang-version.log
-          head -n1 logs/03-clang-version.log > toolchain-version.txt
-          echo "CLANG_BIN=${CLANG_BIN}" >> "$GITHUB_ENV"
-          echo "[OK] Android Clang ${CLANG_REV}"
+          echo "[FIX] Toolchain prepared before defconfig; clang and ld.lld verified."
+          echo "[OK] Device tree explicitly selects ${TARGET_KERNEL_CONFIG}"
+          echo "[OK] Kernel defconfig exists: ${DEFCONFIG}"
           echo "::endgroup::"
 
       - name: "4. Resolve latest compatible CIP for 4.19.325"
@@ -272,8 +250,7 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
-          # صرف فائل کا نام استعمال کریں
-          make O=out "${DEFCONFIG_FILENAME}" > ../logs/08-defconfig.log 2>&1
+          make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/08-defconfig.log 2>&1
           ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS
           mapfile -t SUSFS_SYMBOLS < <(grep -RhoE '^config KSU_SUSFS_[A-Za-z0-9_]+' drivers/kernelsu fs include 2>/dev/null | awk '{print $2}' | sort -u)
           for sym in "${SUSFS_SYMBOLS[@]}"; do ./scripts/config --file out/.config --enable "${sym}" || true; done
@@ -327,7 +304,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V3-LM-G900-KARNAL
+          kernel.string=V4-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -353,7 +330,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V3-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V4-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -364,7 +341,7 @@ jobs:
             echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
             echo "clang=${CLANG_REV}"
             echo "clang_commit=${CLANG_COMMIT}"
-            echo "defconfig=${DEFCONFIG_FILENAME}"
+            echo "defconfig=${TARGET_KERNEL_CONFIG}"
           } > release/build-info/build-manifest.txt
           sha256sum release/kernel-image release/kernel.zip release/AnyKernel3-OrangeFox-Flashable.zip > release/checksums/SHA256SUMS
           rm -f release/kernel-image
@@ -390,7 +367,7 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V3 final output"
+      - name: "12. Upload V4 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
@@ -399,7 +376,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V3 flashable ZIPs"
+      - name: "13. Upload V4 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
@@ -419,7 +396,6 @@ jobs:
           set -u
           echo "::group::[14/15] Collect complete diagnostics"
           mkdir -p diagnostics
-          # ہر چیز کو ایک فائل میں محفوظ کریں، پھر sort کریں تاکہ پائپ نہ ٹوٹے
           {
             echo "job_status=${JOB_STATUS}"
             echo "workflow=${WORKFLOW_VERSION}"
@@ -436,17 +412,15 @@ jobs:
             echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
             echo "clang=${CLANG_REV} (${CLANG_COMMIT})"
             echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
-            echo "defconfig=${DEFCONFIG_FILENAME:-auto-detected}"
+            echo "defconfig=${TARGET_KERNEL_CONFIG:-UNRESOLVED}"
             echo
             echo "=== Workspace files ==="
             find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -printf '%P\n' 2>/dev/null | sort | head -2000
-          } > diagnostics/run-summary.txt 2>&1
-          
+          } > diagnostics/run-summary.txt
           cp -a logs/. diagnostics/ 2>/dev/null || true
           cp -a logs/device-tree/. diagnostics/device-tree/ 2>/dev/null || true
           cp baseline-info.txt baseline-defconfig.txt baseline-enabled-config.txt post-integration-enabled-config.txt source-info.txt toolchain-version.txt baseline-git-status.txt diagnostics/ 2>/dev/null || true
           cp "${OUTPUT_PREFIX}-output.zip" diagnostics/ 2>/dev/null || true
-          
           if [ -d kernel ]; then
             {
               echo "=== Kernel git status ==="; git -C kernel status --short || true
@@ -456,16 +430,15 @@ jobs:
               echo; echo "=== Merge conflict markers ==="; grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git 2>/dev/null | head -200 || true
             } > diagnostics/kernel-state.txt 2>&1
           fi
-          
           (
             cd diagnostics
             rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
             zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .
           )
-          echo "[OK] Complete V3 diagnostics bundle created"
+          echo "[OK] Complete V4 diagnostics bundle created"
           echo "::endgroup::"
 
-      - name: "15. Upload V3 complete diagnostics (always)"
+      - name: "15. Upload V4 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
