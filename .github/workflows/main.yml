@@ -1,4 +1,4 @@
-name: V9-LM-G900-KARNAL-BUILT
+name: V10-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -24,7 +24,7 @@ env:
   CIP_PREFIX: v4.19.325-cip
 
   KSU_VERSION: v3.3.0
-  SUSFS_VERSION: 2.2.0
+  SUSFS_VERSION: 2.3.0
   SUSFS_BACKPORT_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
   SUSFS_BACKPORT_REF: mainline
   SUSFS_BACKPORT_COMMIT: f15603b246d7ce6008af8bdefa0a34b3df28326a
@@ -33,20 +33,22 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V9
-  OUTPUT_PREFIX: V9-LM-G900-KARNAL
-  # V9 fixes the V8 SUSFS compatibility failure and hardens reproducibility:
+  WORKFLOW_VERSION: V10
+  OUTPUT_PREFIX: V10-LM-G900-KARNAL
+  # V10 fixes the V9 remote-fetch failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
   # 3) discover the actual 4.19 backport filename used by that source
   # 4) try a strict direct apply first, then a Git 3-way merge against the staged CIP+KSUN tree
   # 5) reject any unresolved conflicts, .rej/.orig files, or conflict markers
   # 6) verify CONFIG_KSU_SUSFS exists before enabling it
+  # 7) fetch the SUSFS backport with retryable Git transport instead of one fragile clone
+  # 8) enforce that the pinned 4.19 patch and inline-hook script both declare SUSFS 2.3.x
 
 
 jobs:
   build:
-    name: Build V9
+    name: Build V10
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -345,13 +347,48 @@ jobs:
           echo "[OK] KernelSU-Next ${KSU_VERSION} pinned integration"
           echo "::endgroup::"
 
-      - name: "7. Integrate SUSFS 2.2.0 + 4.19 backport"
+      - name: "7. Integrate SUSFS 2.3.0 + 4.19 backport"
         shell: bash
         run: |
           set -Eeuo pipefail
           echo "::group::[7/15] SUSFS ${SUSFS_VERSION} 4.19 backport"
           rm -rf susfs-backport
-          git clone --depth=1 --branch "${SUSFS_BACKPORT_REF}" "${SUSFS_BACKPORT_REPO}" susfs-backport 2>&1 | tee logs/07-susfs-clone.log
+          mkdir -p susfs-backport
+          git -C susfs-backport init -q
+          git -C susfs-backport remote add origin "${SUSFS_BACKPORT_REPO}"
+          : > logs/07-susfs-clone.log
+
+          # V9 stopped at a one-shot `git clone` after the runner printed only
+          # "Cloning into 'susfs-backport'...". That is a transport/acquisition
+          # failure, not evidence that the 4.19 patch is incompatible. V10 uses
+          # protocol v2 + blob filtering + bounded retries, then fetches the exact
+          # audited commit separately. The patch blobs are fetched lazily when
+          # `git show` needs them.
+          FETCH_OK=0
+          for attempt in 1 2 3 4 5; do
+            echo "[SUSFS] branch fetch attempt ${attempt}/5" | tee -a logs/07-susfs-clone.log
+            if git -c protocol.version=2 -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+                 fetch --filter=blob:none --depth=1 origin \
+                 "refs/heads/${SUSFS_BACKPORT_REF}:refs/remotes/origin/${SUSFS_BACKPORT_REF}" \
+                 >> logs/07-susfs-clone.log 2>&1; then
+              FETCH_OK=1
+              break
+            fi
+            echo "[WARN] SUSFS branch fetch failed on attempt ${attempt}." | tee -a logs/07-susfs-clone.log
+            sleep $((attempt * 5))
+          done
+          if [ "${FETCH_OK}" -ne 1 ]; then
+            {
+              echo "[ERROR] Unable to fetch SUSFS backport branch ${SUSFS_BACKPORT_REF} after 5 attempts."
+              echo "Remote=${SUSFS_BACKPORT_REPO}"
+              echo "The failure occurred before any SUSFS patch compatibility test."
+              git -c protocol.version=2 ls-remote --heads "${SUSFS_BACKPORT_REPO}" "${SUSFS_BACKPORT_REF}" || true
+              tail -n 120 logs/07-susfs-clone.log || true
+            } | tee logs/07-susfs-failure.log
+            exit 1
+          fi
+
+          git -C susfs-backport checkout --detach "refs/remotes/origin/${SUSFS_BACKPORT_REF}" >> logs/07-susfs-clone.log 2>&1
           SUSFS_BACKPORT_HEAD="$(git -C susfs-backport rev-parse HEAD)"
           echo "branch_head=${SUSFS_BACKPORT_HEAD}" | tee logs/07-susfs-backport-commit.log
           git -C susfs-backport ls-tree -r --name-only HEAD Patches | tee logs/07-susfs-patches-list.txt
@@ -361,7 +398,24 @@ jobs:
           # so V7 found zero candidates and stopped before testing the patch.
           # Pin the audited backport commit so a moving branch cannot silently change
           # the patch set between runs.
-          git -C susfs-backport fetch --depth=1 origin "${SUSFS_BACKPORT_COMMIT}" 2>&1 | tee logs/07-susfs-pin-fetch.log || true
+          : > logs/07-susfs-pin-fetch.log
+          PIN_OK=0
+          for attempt in 1 2 3 4 5; do
+            echo "[SUSFS] pinned commit fetch attempt ${attempt}/5" | tee -a logs/07-susfs-pin-fetch.log
+            if git -c protocol.version=2 -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+                 fetch --filter=blob:none --depth=1 origin "${SUSFS_BACKPORT_COMMIT}" \
+                 >> logs/07-susfs-pin-fetch.log 2>&1; then
+              PIN_OK=1
+              break
+            fi
+            echo "[WARN] SUSFS pinned commit fetch failed on attempt ${attempt}." | tee -a logs/07-susfs-pin-fetch.log
+            sleep $((attempt * 5))
+          done
+          if [ "${PIN_OK}" -ne 1 ]; then
+            echo "[ERROR] Could not fetch pinned SUSFS commit ${SUSFS_BACKPORT_COMMIT}." | tee logs/07-susfs-failure.log
+            tail -n 160 logs/07-susfs-pin-fetch.log | tee -a logs/07-susfs-failure.log || true
+            exit 1
+          fi
           git -C susfs-backport checkout --detach "${SUSFS_BACKPORT_COMMIT}" 2>&1 | tee logs/07-susfs-pin-checkout.log
           SUSFS_BACKPORT_RESOLVED="$(git -C susfs-backport rev-parse HEAD)"
           test "${SUSFS_BACKPORT_RESOLVED}" = "${SUSFS_BACKPORT_COMMIT}"
@@ -378,6 +432,18 @@ jobs:
             exit 1
           fi
           printf '%s\n' "${CANDIDATES[@]}" | tee logs/07-susfs-candidates.txt
+
+          # The pinned patch currently embeds SUSFS v2.3.0, and the matching
+          # inline-hook script declares PATCH_LEVEL=2.3.00. V9 incorrectly
+          # labelled this source as 2.2.0. Refuse mixed-version integration.
+          TEST_VERSION_PATCH="${CANDIDATES[0]}"
+          PATCH_SUSFS_VERSION="$(git -C susfs-backport show "HEAD:${TEST_VERSION_PATCH}" | grep -E '^#define SUSFS_VERSION "v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 | sed -E 's/.*"v([^"]+)".*/\1/' || true)"
+          INLINE_SUSFS_VERSION="$(git -C susfs-backport show 'HEAD:Patches/susfs_inline_hook_patches.sh' | grep -E '^PATCH_LEVEL="[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/; s/\.00$/\.0/' || true)"
+          echo "patch_declared_susfs=${PATCH_SUSFS_VERSION}" | tee logs/07-susfs-version-check.log
+          echo "inline_hook_declared_susfs=${INLINE_SUSFS_VERSION}" | tee -a logs/07-susfs-version-check.log
+          test "${PATCH_SUSFS_VERSION}" = "${SUSFS_VERSION}"
+          test "${INLINE_SUSFS_VERSION}" = "${SUSFS_VERSION}"
+          test "${SUSFS_VERSION}" = "2.3.0"
 
           # The V8 log proved that the patch is semantically the expected SUSFS patch,
           # but direct patch(1) application fails after CIP because CIP legitimately
@@ -570,7 +636,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V9-LM-G900-KARNAL
+          kernel.string=V10-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -596,7 +662,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V9-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V10-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -633,20 +699,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V9 final output"
+      - name: "12. Upload V10 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V9-LM-G900-KARNAL-output
-          path: V9-LM-G900-KARNAL-output.zip
+          name: V10-LM-G900-KARNAL-output
+          path: V10-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V9 flashable ZIPs"
+      - name: "13. Upload V10 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V9-LM-G900-KARNAL-flashable-zips
+          name: V10-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -661,7 +727,7 @@ jobs:
         run: |
           # Diagnostics must never fail the job a second time. In earlier versions the diagnostic
           # collector itself failed with "sort: write error: Broken pipe", masking
-          # the original CIP failure. V9 writes large inventories to files and only
+          # the original CIP failure. V10 writes large inventories to files and only
           # prints bounded summaries to the Actions console.
           set +e
           mkdir -p diagnostics diagnostics/logs diagnostics/cip-checks
@@ -698,7 +764,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V9 ==="
+            echo "=== A-Z BUILD RECORD V10 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -762,16 +828,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V9 diagnostics collected; SUSFS compatibility fallback and artifact naming fixes are enabled."
+          echo "::notice::V10 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V9 complete diagnostics (always)"
+      - name: "15. Upload V10 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V9-LM-G900-KARNAL-complete-logs
+          name: V10-LM-G900-KARNAL-complete-logs
           path: |
-            V9-LM-G900-KARNAL-complete-logs.zip
+            V10-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
