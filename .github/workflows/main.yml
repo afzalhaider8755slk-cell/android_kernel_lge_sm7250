@@ -1,4 +1,4 @@
-name: V8-LM-G900-KARNAL-BUILT
+name: V9-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -27,21 +27,26 @@ env:
   SUSFS_VERSION: 2.2.0
   SUSFS_BACKPORT_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
   SUSFS_BACKPORT_REF: mainline
+  SUSFS_BACKPORT_COMMIT: f15603b246d7ce6008af8bdefa0a34b3df28326a
+  # This repo documents susfs_patch_to_<kernel>.patch + susfs_inline_hook_patches.sh
+  # as the two-layer non-GKI SUSFS integration path.
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V8
-  OUTPUT_PREFIX: V8-LM-G900-KARNAL
-  # V8 fixes V7's SUSFS candidate-discovery bug and hardens reproducibility:
+  WORKFLOW_VERSION: V9
+  OUTPUT_PREFIX: V9-LM-G900-KARNAL
+  # V9 fixes the V8 SUSFS compatibility failure and hardens reproducibility:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
-  # 2) discover the actual 4.19 backport filename used by the pinned SUSFS repo
-  # 3) require the patch to contain core SUSFS files/config before testing it
-  # 4) dry-run with fuzz=0 and reject reversed/partial applications
+  # 2) pin the SUSFS backport source to the audited commit
+  # 3) discover the actual 4.19 backport filename used by that source
+  # 4) try a strict direct apply first, then a Git 3-way merge against the staged CIP+KSUN tree
+  # 5) reject any unresolved conflicts, .rej/.orig files, or conflict markers
+  # 6) verify CONFIG_KSU_SUSFS exists before enabling it
 
 
 jobs:
   build:
-    name: Build V7
+    name: Build V9
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -319,7 +324,7 @@ jobs:
           cd kernel
           curl -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_VERSION}/kernel/setup.sh" -o ../logs/06-ksu-setup.sh
           chmod +x ../logs/06-ksu-setup.sh
-          # V8 pins both the setup script and the resulting KernelSU-Next checkout to v3.3.0.
+          # V9 pins both the setup script and the resulting KernelSU-Next checkout to v3.3.0.
           bash ../logs/06-ksu-setup.sh "${KSU_VERSION}" 2>&1 | tee ../logs/06-kernelsu.log
           test -d KernelSU-Next
           test -L drivers/kernelsu
@@ -347,16 +352,24 @@ jobs:
           echo "::group::[7/15] SUSFS ${SUSFS_VERSION} 4.19 backport"
           rm -rf susfs-backport
           git clone --depth=1 --branch "${SUSFS_BACKPORT_REF}" "${SUSFS_BACKPORT_REPO}" susfs-backport 2>&1 | tee logs/07-susfs-clone.log
-          SUSFS_BACKPORT_COMMIT="$(git -C susfs-backport rev-parse HEAD)"
-          echo "${SUSFS_BACKPORT_COMMIT}" | tee logs/07-susfs-backport-commit.log
+          SUSFS_BACKPORT_HEAD="$(git -C susfs-backport rev-parse HEAD)"
+          echo "branch_head=${SUSFS_BACKPORT_HEAD}" | tee logs/07-susfs-backport-commit.log
           git -C susfs-backport ls-tree -r --name-only HEAD Patches | tee logs/07-susfs-patches-list.txt
 
           # V7 searched for "2.2.0" in the filename. The pinned backport repository
           # actually uses the stable filename Patches/Patch/susfs_patch_to_4.19.patch,
           # so V7 found zero candidates and stopped before testing the patch.
+          # Pin the audited backport commit so a moving branch cannot silently change
+          # the patch set between runs.
+          git -C susfs-backport fetch --depth=1 origin "${SUSFS_BACKPORT_COMMIT}" 2>&1 | tee logs/07-susfs-pin-fetch.log || true
+          git -C susfs-backport checkout --detach "${SUSFS_BACKPORT_COMMIT}" 2>&1 | tee logs/07-susfs-pin-checkout.log
+          SUSFS_BACKPORT_RESOLVED="$(git -C susfs-backport rev-parse HEAD)"
+          test "${SUSFS_BACKPORT_RESOLVED}" = "${SUSFS_BACKPORT_COMMIT}"
+          echo "pinned_commit=${SUSFS_BACKPORT_RESOLVED}" >> logs/07-susfs-backport-commit.log
+
           mapfile -t CANDIDATES < <(
             git -C susfs-backport ls-tree -r --name-only HEAD Patches |
-              grep -Ei '(^|/)susfs_patch_to_4[._-]?19\.patch$|(^|/)susfs.*4[._-]?19.*\.patch$|(^|/)4[._-]?19.*susfs.*\.patch$' |
+              grep -Ei '(^|/)susfs_patch_to_4[._-]?19\.patch$|(^|/)50_add_susfs_in_kernel[-_]?4[._-]?19\.patch$|(^|/)susfs.*4[._-]?19.*\.patch$|(^|/)4[._-]?19.*susfs.*\.patch$' |
               sort -u || true
           )
 
@@ -366,19 +379,32 @@ jobs:
           fi
           printf '%s\n' "${CANDIDATES[@]}" | tee logs/07-susfs-candidates.txt
 
+          # The V8 log proved that the patch is semantically the expected SUSFS patch,
+          # but direct patch(1) application fails after CIP because CIP legitimately
+          # changed several of the same VFS/proc/mm call sites. V9 therefore performs
+          # two safe modes in order:
+          #   A) strict direct git apply --check (no fuzz)
+          #   B) Git's content-aware 3-way merge using the current staged tree as ours
+          # A 3-way merge is NOT the same as --force or --fuzz: unresolved conflicts
+          # return failure and are never accepted into the build.
           SELECTED_PATCH=""
-          rm -f logs/07-susfs-candidate-*.patch logs/07-susfs-candidate-*.check
+          APPLY_MODE=""
+          rm -f logs/07-susfs-candidate-*.patch logs/07-susfs-candidate-*.check logs/07-susfs-candidate-*.3way
           : > logs/07-susfs-compatibility.log
+
+          # Stage the already validated CIP + KernelSU-Next source modifications so
+          # git apply --3way has a correct 'ours' tree and can use the patch's blob
+          # identities for common-base reconstruction.
+          git add -A
 
           for PATCH_PATH in "${CANDIDATES[@]}"; do
             SAFE_NAME="$(printf '%s' "${PATCH_PATH}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
             TEST_PATCH="logs/07-susfs-candidate-${SAFE_NAME}.patch"
             TEST_LOG="logs/07-susfs-candidate-${SAFE_NAME}.check"
+            TEST_3WAY="logs/07-susfs-candidate-${SAFE_NAME}.3way"
             git -C susfs-backport show "HEAD:${PATCH_PATH}" > "${TEST_PATCH}"
 
-            # A real SUSFS kernel patch must add the SUSFS implementation/header and
-            # expose the KSU_SUSFS config. This rejects unrelated 4.19 patches before
-            # touching the kernel tree.
+            # The patch must contain the core SUSFS implementation and public header.
             if ! grep -Eq 'diff --git a/fs/susfs\.c b/fs/susfs\.c' "${TEST_PATCH}" ||
                ! grep -Eq 'diff --git a/include/linux/susfs\.h b/include/linux/susfs\.h' "${TEST_PATCH}" ||
                ! grep -Eq 'CONFIG_KSU_SUSFS|config KSU_SUSFS' "${TEST_PATCH}"; then
@@ -386,45 +412,95 @@ jobs:
               continue
             fi
 
-            if (cd kernel && patch --dry-run --batch --forward --fuzz=0 -p1 < "../${TEST_PATCH}") > "${TEST_LOG}" 2>&1; then
+            # First: strict, zero-fuzz direct check.
+            if (cd kernel && git apply --check --whitespace=nowarn "../${TEST_PATCH}") > "${TEST_LOG}" 2>&1; then
               SELECTED_PATCH="${PATCH_PATH}"
-              cp "${TEST_PATCH}" logs/07-susfs-2.2.0-4.19.patch
+              APPLY_MODE="direct"
+              cp "${TEST_PATCH}" logs/07-susfs-selected.patch
               cp "${TEST_LOG}" logs/07-susfs-selected-check.log
-              echo "COMPATIBLE=${PATCH_PATH}" | tee -a logs/07-susfs-compatibility.log
+              echo "COMPATIBLE=${PATCH_PATH} mode=direct" | tee -a logs/07-susfs-compatibility.log
               break
-            else
-              echo "INCOMPATIBLE=${PATCH_PATH}" | tee -a logs/07-susfs-compatibility.log
-              cat "${TEST_LOG}" >> logs/07-susfs-compatibility.log
             fi
+
+            echo "DIRECT_INCOMPATIBLE=${PATCH_PATH}" | tee -a logs/07-susfs-compatibility.log
+            cat "${TEST_LOG}" >> logs/07-susfs-compatibility.log
+
+            # Second: content-aware 3-way preflight. Git may return 0 from
+            # --check even when it reports "Applied patch ... with conflicts", so
+            # inspect the preflight log as well as the exit status.
+            if (cd kernel && git apply --3way --check --whitespace=nowarn "../${TEST_PATCH}") > "${TEST_3WAY}" 2>&1; then
+              if ! grep -Eiq "with conflicts|CONFLICT|error:" "${TEST_3WAY}"; then
+                SELECTED_PATCH="${PATCH_PATH}"
+                APPLY_MODE="3way"
+                cp "${TEST_PATCH}" logs/07-susfs-selected.patch
+                cp "${TEST_3WAY}" logs/07-susfs-selected-3way-check.log
+                echo "COMPATIBLE=${PATCH_PATH} mode=3way" | tee -a logs/07-susfs-compatibility.log
+                break
+              fi
+            fi
+
+            echo "THREEWAY_INCOMPATIBLE=${PATCH_PATH}" | tee -a logs/07-susfs-compatibility.log
+            cat "${TEST_3WAY}" >> logs/07-susfs-compatibility.log
           done
 
           if [ -z "${SELECTED_PATCH}" ]; then
             {
-              echo "[ERROR] No SUSFS 4.19 candidate applied cleanly with --forward --fuzz=0."
-              echo "Candidates were tested without forced or fuzzy application."
-              echo "See logs/07-susfs-candidate-*.check and logs/07-susfs-compatibility.log."
+              echo "[ERROR] No SUSFS 4.19 candidate is compatible with the CIP + KernelSU-Next tree."
+              echo "Direct zero-fuzz apply and Git 3-way preflight were both rejected."
+              echo "The V8 failure was a genuine source-context mismatch, not a filename-discovery issue."
+              echo "See logs/07-susfs-candidate-*.check, logs/07-susfs-candidate-*.3way and logs/07-susfs-compatibility.log."
             } | tee logs/07-susfs-failure.log
             exit 1
           fi
 
-          cd kernel
-          patch --batch --forward --fuzz=0 -p1 < ../logs/07-susfs-2.2.0-4.19.patch 2>&1 | tee ../logs/07-susfs-apply.log
-          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "[ERROR] SUSFS application produced reject/original files." | tee ../logs/07-susfs-failure.log
-            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a ../logs/07-susfs-failure.log
+          if [ "${APPLY_MODE}" = "direct" ]; then
+            git -C kernel apply --whitespace=nowarn "../logs/07-susfs-selected.patch" 2>&1 | tee logs/07-susfs-apply.log
+          else
+            git -C kernel apply --3way --whitespace=nowarn "../logs/07-susfs-selected.patch" 2>&1 | tee logs/07-susfs-apply.log
+          fi
+
+          # JackA1ltman's audited non-GKI flow requires the SUSFS inline-hook patch
+          # script in addition to the filesystem backport. This is the missing layer
+          # in V8: the kernel patch alone does not finish the KernelSU/SUSFS hook wiring.
+          INLINE_SCRIPT="Patches/susfs_inline_hook_patches.sh"
+          test -f "susfs-backport/${INLINE_SCRIPT}"
+          cp "susfs-backport/${INLINE_SCRIPT}" logs/07-susfs-inline-hook-patches.sh
+          chmod +x logs/07-susfs-inline-hook-patches.sh
+          (cd kernel && bash ../logs/07-susfs-inline-hook-patches.sh) 2>&1 | tee logs/07-susfs-inline-hooks.log
+
+          # Never accept an unresolved 3-way merge or patch leftovers.
+          if git -C kernel ls-files -u | grep -q .; then
+            echo "[ERROR] SUSFS 3-way merge left unmerged index entries." | tee logs/07-susfs-failure.log
+            git -C kernel status --short | tee -a logs/07-susfs-failure.log
             exit 1
           fi
-          test -f fs/susfs.c
-          test -f include/linux/susfs.h
-          grep -Rqs 'KSU_SUSFS' fs/susfs.c include/linux/susfs.h drivers/kernelsu
-          git diff --check | tee ../logs/07-susfs-diff-check.log
+          if find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+            echo "[ERROR] SUSFS application produced reject/original files." | tee logs/07-susfs-failure.log
+            find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
+            exit 1
+          fi
+          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git > logs/07-susfs-conflict-markers.log 2>&1; then
+            echo "[ERROR] SUSFS application left merge conflict markers." | tee logs/07-susfs-failure.log
+            cat logs/07-susfs-conflict-markers.log | tee -a logs/07-susfs-failure.log
+            exit 1
+          fi
+
+          test -f kernel/fs/susfs.c
+          test -f kernel/include/linux/susfs.h
+          test -f kernel/include/linux/susfs_def.h
+          grep -Rqs 'KSU_SUSFS' kernel/fs/susfs.c kernel/include/linux/susfs.h kernel/include/linux/susfs_def.h kernel/drivers/kernelsu
+          grep -Rqs 'config KSU_SUSFS' kernel/drivers/kernelsu kernel/fs kernel/include/linux
+          git -C kernel diff --check | tee logs/07-susfs-diff-check.log
+          git -C kernel add -A
           {
             echo "selected_patch=${SELECTED_PATCH}"
-            echo "susfs_backport_commit=${SUSFS_BACKPORT_COMMIT}"
+            echo "apply_mode=${APPLY_MODE}"
+            echo "susfs_backport_commit=${SUSFS_BACKPORT_RESOLVED}"
             echo "requested_susfs_version=${SUSFS_VERSION}"
-            echo "kernel_version=$(make -s kernelversion)"
-          } | tee ../logs/07-susfs-selected.txt
-          echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport applied without fuzz"
+            echo "kernel_version=$(make -s -C kernel kernelversion)"
+            echo "kernel_head=$(git -C kernel rev-parse HEAD)"
+          } | tee logs/07-susfs-selected.txt
+          echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE} mode without fuzz."
           echo "::endgroup::"
 
       - name: "8. Configure features and enforce no-removal policy"
@@ -437,6 +513,7 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
           make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/08-defconfig.log 2>&1
+          grep -RqsE "^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)" drivers/kernelsu fs include || { echo "[ERROR] KSU_SUSFS Kconfig symbol is missing after SUSFS + inline-hook integration."; exit 1; }
           ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS
           mapfile -t SUSFS_SYMBOLS < <(grep -RhoE '^config KSU_SUSFS_[A-Za-z0-9_]+' drivers/kernelsu fs include 2>/dev/null | awk '{print $2}' | sort -u)
           for sym in "${SUSFS_SYMBOLS[@]}"; do ./scripts/config --file out/.config --enable "${sym}" || true; done
@@ -493,7 +570,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V7-LM-G900-KARNAL
+          kernel.string=V9-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -519,7 +596,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V8-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V9-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -556,20 +633,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V7 final output"
+      - name: "12. Upload V9 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V8-LM-G900-KARNAL-output
-          path: V7-LM-G900-KARNAL-output.zip
+          name: V9-LM-G900-KARNAL-output
+          path: V9-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V8 flashable ZIPs"
+      - name: "13. Upload V9 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V8-LM-G900-KARNAL-flashable-zips
+          name: V9-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -582,9 +659,9 @@ jobs:
         env:
           JOB_STATUS: ${{ job.status }}
         run: |
-          # Diagnostics must never fail the job a second time. In V5 the diagnostic
+          # Diagnostics must never fail the job a second time. In earlier versions the diagnostic
           # collector itself failed with "sort: write error: Broken pipe", masking
-          # the original CIP failure. V7 writes large inventories to files and only
+          # the original CIP failure. V9 writes large inventories to files and only
           # prints bounded summaries to the Actions console.
           set +e
           mkdir -p diagnostics diagnostics/logs diagnostics/cip-checks
@@ -621,7 +698,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V8 ==="
+            echo "=== A-Z BUILD RECORD V9 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -685,16 +762,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V8 diagnostics collected; original failure evidence is preserved."
+          echo "::notice::V9 diagnostics collected; SUSFS compatibility fallback and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V7 complete diagnostics (always)"
+      - name: "15. Upload V9 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V8-LM-G900-KARNAL-complete-logs
+          name: V9-LM-G900-KARNAL-complete-logs
           path: |
-            V7-LM-G900-KARNAL-complete-logs.zip
+            V9-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
