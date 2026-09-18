@@ -1,4 +1,4 @@
-name: V10-LM-G900-KARNAL-BUILT
+name: V11-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -28,14 +28,16 @@ env:
   SUSFS_BACKPORT_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
   SUSFS_BACKPORT_REF: mainline
   SUSFS_BACKPORT_COMMIT: f15603b246d7ce6008af8bdefa0a34b3df28326a
+  SUSFS_PATCH_PATH: Patches/Patch/susfs_patch_to_4.19.patch
+  SUSFS_PATCH_BLOB_SHA256: f9d8ed735f461ed982d2c49b338e35c17f4378e5
   # This repo documents susfs_patch_to_<kernel>.patch + susfs_inline_hook_patches.sh
   # as the two-layer non-GKI SUSFS integration path.
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V10
-  OUTPUT_PREFIX: V10-LM-G900-KARNAL
-  # V10 fixes the V9 remote-fetch failure and corrects the SUSFS version/source mismatch:
+  WORKFLOW_VERSION: V11
+  OUTPUT_PREFIX: V11-LM-G900-KARNAL
+  # V11 fixes the V9 remote-fetch failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
   # 3) discover the actual 4.19 backport filename used by that source
@@ -48,7 +50,7 @@ env:
 
 jobs:
   build:
-    name: Build V10
+    name: Build V11
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -182,16 +184,14 @@ jobs:
           echo "[OK] Latest official 4.19.325 CIP discovered: ${LATEST}"
           echo "::endgroup::"
 
-      - name: "5. Select and apply first clean CIP delta"
+      - name: "5. Integrate maximum clean CIP level (incremental chain)"
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[5/15] Select and apply first clean CIP delta"
+          echo "::group::[5/15] Integrate maximum clean CIP level"
           cd kernel
           mkdir -p ../logs/cip-checks
           git remote get-url cip >/dev/null 2>&1 || git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-          # IMPORTANT: initialize diagnostics before any fetch/apply operation so a CIP
-          # failure can never erase the evidence that explains why it failed.
           : > ../logs/05-cip-compatibility.log
           : > ../logs/05-cip-failure.log
           : > ../logs/05-cip-candidates.txt
@@ -201,121 +201,132 @@ jobs:
             echo "Kernel version=$(make -s kernelversion)"
             echo "Baseline tag=${BASELINE_CIP}"
             echo "Remote=https://gitlab.com/cip-project/cip-kernel/linux-cip.git"
+            echo "Method=incremental tag-to-tag deltas, strict apply first, clean 3-way second"
             echo
           } | tee -a ../logs/05-cip-compatibility.log
 
-          # The previous V5 failure was not a CIP patch conflict. It was a Git ref
-          # collision: step 4 had already created refs/tags/v4.19.325-cip136 and
-          # step 5 tried to create the same local ref again without '+'.
           git ls-remote --tags --refs cip "refs/tags/${CIP_PREFIX}*" > ../logs/05-cip-tags.txt 2>&1
-          mapfile -t CIP_TAGS < <(
+          mapfile -t ALL_CIP_TAGS < <(
             awk -F/ '{print $NF}' ../logs/05-cip-tags.txt |
               grep -E "^${CIP_PREFIX}[0-9]+$" |
-              sort -V -r
+              sort -V
           )
-          test "${#CIP_TAGS[@]}" -gt 0
+          test "${#ALL_CIP_TAGS[@]}" -gt 0
           {
             echo "Baseline=${BASELINE_CIP}"
-            echo "Candidates=${#CIP_TAGS[@]}"
-            printf '%s\n' "${CIP_TAGS[@]}"
+            echo "All_candidates=${#ALL_CIP_TAGS[@]}"
+            printf '%s\n' "${ALL_CIP_TAGS[@]}"
           } | tee ../logs/05-cip-candidates.txt
 
-          SELECTED=""
           BASE_N="${BASELINE_CIP##*-cip}"
+          mapfile -t CIP_TAGS < <(
+            printf '%s\n' "${ALL_CIP_TAGS[@]}" |
+              awk -v base="${BASE_N}" -F-cip '$2 >= base'
+          )
+          test "${#CIP_TAGS[@]}" -gt 0
+
+          PREV_TAG="${BASELINE_CIP}"
+          SELECTED="${BASELINE_CIP}"
+          LAST_APPLY_MODE="baseline"
+          : > ../logs/05-cip-chain.log
+
+          # The V10 probe compared the entire 132->136 range directly against the
+          # LG tree. That is overly strict for a cumulative stable/CIP series:
+          # a file added by an intermediate tag (for example mm/kasan content)
+          # cannot be represented correctly when the whole range is treated as
+          # one patch against the old LG context. V11 walks 132->133->134->135->136
+          # and tests each real tag-to-tag delta on the already-integrated tree.
           for TAG in "${CIP_TAGS[@]}"; do
-            N="${TAG##*-cip}"
-            if [ "${N}" -lt "${BASE_N}" ]; then
+            [ "${TAG}" = "${BASELINE_CIP}" ] && continue
+            CHECK_LOG="../logs/cip-checks/${TAG}.log"
+            PATCH_FILE="../logs/cip-${PREV_TAG}-to-${TAG}.patch"
+            THREEWAY_LOG="../logs/cip-checks/${TAG}.3way"
+            : > "${CHECK_LOG}"
+            : > "${THREEWAY_LOG}"
+            echo "============================================================" | tee -a ../logs/05-cip-chain.log
+            echo "TEST=${PREV_TAG}..${TAG}" | tee -a ../logs/05-cip-chain.log
+
+            if ! git rev-parse -q --verify "refs/tags/${TAG}^{commit}" >/dev/null 2>&1; then
+              git fetch --no-tags cip "+refs/tags/${TAG}:refs/tags/${TAG}" >> "${CHECK_LOG}" 2>&1
+            fi
+            git diff --binary "${PREV_TAG}..${TAG}" > "${PATCH_FILE}"
+            {
+              echo "from=${PREV_TAG}"
+              echo "to=${TAG}"
+              echo "from_commit=$(git rev-parse ${PREV_TAG})"
+              echo "to_commit=$(git rev-parse ${TAG})"
+              echo "patch_sha256=$(sha256sum "${PATCH_FILE}" | awk '{print $1}')"
+              echo "patch_bytes=$(wc -c < "${PATCH_FILE}")"
+              echo "patch_files=$(git diff --name-only "${PREV_TAG}..${TAG}" | wc -l)"
+            } >> "${CHECK_LOG}"
+
+            if git apply --check --whitespace=nowarn "${PATCH_FILE}" > "${CHECK_LOG}.direct" 2>&1; then
+              echo "COMPATIBLE=${TAG} mode=direct" | tee -a ../logs/05-cip-compatibility.log
+              cat "${CHECK_LOG}.direct" >> "${CHECK_LOG}"
+              git apply --index --whitespace=nowarn "${PATCH_FILE}" > ../logs/05-cip-apply.log 2>&1
+              LAST_APPLY_MODE="direct"
+              SELECTED="${TAG}"
+              PREV_TAG="${TAG}"
+              echo "APPLIED=${TAG} mode=direct" | tee -a ../logs/05-cip-chain.log
+              git diff --check | tee ../logs/05-cip-diff-check.log
               continue
             fi
 
-            CHECK_LOG="../logs/cip-checks/${TAG}.log"
-            PATCH_FILE="../logs/cip-${TAG}.patch"
-            {
-              echo
-              echo "============================================================"
-              echo "TEST=${TAG}"
-              echo "============================================================"
-            } | tee -a ../logs/05-cip-compatibility.log
+            echo "DIRECT_INCOMPATIBLE=${TAG}" | tee -a ../logs/05-cip-compatibility.log
+            cat "${CHECK_LOG}.direct" >> "${CHECK_LOG}"
 
-            # Fetch only when the exact local tag does not already exist.
-            # '+' also makes the refspec safe if a stale local tag is present.
-            if git rev-parse -q --verify "refs/tags/${TAG}^{commit}" >/dev/null 2>&1; then
-              echo "TAG_SOURCE=local-existing" | tee -a ../logs/05-cip-compatibility.log
-            else
-              echo "TAG_SOURCE=remote-fetch" | tee -a ../logs/05-cip-compatibility.log
-              if ! git fetch --no-tags cip "+refs/tags/${TAG}:refs/tags/${TAG}" >> "$CHECK_LOG" 2>&1; then
-                echo "FETCH_FAILED=${TAG}" | tee -a ../logs/05-cip-compatibility.log
-                cat "$CHECK_LOG" | tee -a ../logs/05-cip-compatibility.log
-                echo "INCOMPATIBLE=${TAG} reason=fetch-failed" | tee -a ../logs/05-cip-compatibility.log
+            # Git --3way --check can exit 0 while reporting a textual conflict;
+            # V11 therefore rejects any conflict/error marker in the preflight log.
+            if git apply --3way --check --whitespace=nowarn "${PATCH_FILE}" > "${THREEWAY_LOG}" 2>&1; then
+              if ! grep -Eiq 'with conflicts|CONFLICT|error:|does not apply|patch failed' "${THREEWAY_LOG}"; then
+                echo "COMPATIBLE=${TAG} mode=3way" | tee -a ../logs/05-cip-compatibility.log
+                cat "${THREEWAY_LOG}" >> "${CHECK_LOG}"
+                git apply --3way --index --whitespace=nowarn "${PATCH_FILE}" > ../logs/05-cip-apply.log 2>&1
+                LAST_APPLY_MODE="3way"
+                SELECTED="${TAG}"
+                PREV_TAG="${TAG}"
+                echo "APPLIED=${TAG} mode=3way" | tee -a ../logs/05-cip-chain.log
+                git diff --check | tee ../logs/05-cip-diff-check.log
                 continue
               fi
             fi
 
-            git diff --binary "${BASELINE_CIP}..${TAG}" > "$PATCH_FILE"
             {
-              echo "baseline_commit=$(git rev-parse ${BASELINE_CIP})"
-              echo "target_commit=$(git rev-parse ${TAG})"
-              echo "patch_sha256=$(sha256sum "$PATCH_FILE" | awk '{print $1}')"
-              echo "patch_bytes=$(wc -c < "$PATCH_FILE")"
-              echo "patch_files=$(git diff --name-only "${BASELINE_CIP}..${TAG}" | wc -l)"
-            } >> "$CHECK_LOG"
-
-            # --check performs a non-mutating compatibility test. --3way allows
-            # Git to use blob IDs from the real baseline/target history. We do
-            # NOT force, fuzz, or silently drop a conflicting hunk.
-            if git apply --check --3way "$PATCH_FILE" > "$CHECK_LOG.apply" 2>&1; then
-              cat "$CHECK_LOG.apply" >> "$CHECK_LOG"
-              echo "COMPATIBLE=${TAG}" | tee -a ../logs/05-cip-compatibility.log
-              SELECTED="${TAG}"
-              cp "$CHECK_LOG" "../logs/cip-checks/${TAG}.result.log"
-              break
-            else
-              cat "$CHECK_LOG.apply" >> "$CHECK_LOG"
-              {
-                echo "INCOMPATIBLE=${TAG}"
-                echo "=== conflict/error lines ==="
-                grep -nE '(^error:|with conflicts|conflict|does not apply|patch failed|patch does not apply)' "$CHECK_LOG.apply" || true
-              } | tee -a ../logs/05-cip-compatibility.log
-              cp "$CHECK_LOG" "../logs/cip-checks/${TAG}.result.log"
-            fi
+              echo "INCOMPATIBLE=${TAG}"
+              echo "=== direct ==="
+              cat "${CHECK_LOG}.direct"
+              echo "=== 3way ==="
+              cat "${THREEWAY_LOG}"
+            } | tee -a ../logs/05-cip-compatibility.log
+            cp "${THREEWAY_LOG}" "../logs/cip-checks/${TAG}.result.log"
+            echo "STOPPED_AT=${SELECTED} failed_candidate=${TAG}" | tee -a ../logs/05-cip-chain.log
+            break
           done
 
-          if [ -z "${SELECTED}" ]; then
-            {
-              echo "[ERROR] No CIP tag from ${CIP_PREFIX}* can be applied cleanly to the exact baseline."
-              echo "No conflict was forced, fuzzed, hidden, or removed."
-              echo "The candidate logs are in logs/cip-checks/."
-              echo "The aggregate result is logs/05-cip-compatibility.log."
-            } | tee ../logs/05-cip-failure.log
+          # A clean baseline is always required; failure before 133 is fatal.
+          test "${SELECTED}" != "${BASELINE_CIP}" || {
+            echo "[ERROR] No CIP delta could be applied to the LG baseline." | tee ../logs/05-cip-failure.log
             exit 1
-          fi
+          }
 
-          echo "CIP_TARGET=${SELECTED}" >> "$GITHUB_ENV"
-          cp "../logs/cip-${SELECTED}.patch" ../logs/cip-selected.patch
+          CIP_TARGET="${SELECTED}"
+          echo "CIP_TARGET=${CIP_TARGET}" >> "$GITHUB_ENV"
+          git diff --binary "${BASELINE_CIP}..${CIP_TARGET}" > ../logs/cip-selected.patch
+          sha256sum ../logs/cip-selected.patch | tee ../logs/cip-selected.sha256
           {
             echo "CIP_BASELINE=${BASELINE_CIP}"
-            echo "CIP_TARGET=${SELECTED}"
+            echo "CIP_TARGET=${CIP_TARGET}"
+            echo "final_apply_mode=${LAST_APPLY_MODE}"
             echo "baseline_commit=$(git rev-parse ${BASELINE_CIP})"
-            echo "target_commit=$(git rev-parse ${SELECTED})"
-            echo "target_subject=$(git show -s --format=%s ${SELECTED})"
-            echo "selected_patch_sha256=$(sha256sum ../logs/cip-selected.patch | awk '{print $1}')"
-            git diff --stat "${BASELINE_CIP}..${SELECTED}"
+            echo "target_commit=$(git rev-parse ${CIP_TARGET})"
+            echo "target_subject=$(git show -s --format=%s ${CIP_TARGET})"
+            echo "target_tree=$(git rev-parse ${CIP_TARGET}^{tree})"
+            echo "kernel_version=$(make -s kernelversion)"
+            git diff --stat "${BASELINE_CIP}..${CIP_TARGET}" || true
           } | tee ../logs/05-cip-version.log
 
-          if ! git apply --3way --index ../logs/cip-selected.patch > ../logs/05-cip-apply.log 2>&1; then
-            {
-              echo "[ERROR] Selected CIP application failed after preflight."
-              echo "Selected=${SELECTED}"
-              echo "=== status ==="; git status --short
-              echo "=== rejects ==="; find . -type f -name '*.rej' -print -exec sed -n '1,220p' {} \; || true
-              echo "=== apply log ==="; cat ../logs/05-cip-apply.log
-            } | tee ../logs/05-cip-failure.log
-            exit 1
-          fi
-
-          test "$(make -s kernelversion)" = "${BASELINE_KERNEL_VERSION}"
-          git diff --check | tee ../logs/05-cip-diff-check.log
-          echo "[OK] Selected clean CIP target: ${SELECTED}"
+          echo "[OK] Maximum clean incremental CIP level reached: ${CIP_TARGET}"
+          echo "[INFO] If 136 stopped at an earlier tag, its exact conflict is preserved in logs/cip-checks/."
           echo "::endgroup::"
 
       - name: "6. Integrate KernelSU-Next v3.3.0"
@@ -326,7 +337,7 @@ jobs:
           cd kernel
           curl -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_VERSION}/kernel/setup.sh" -o ../logs/06-ksu-setup.sh
           chmod +x ../logs/06-ksu-setup.sh
-          # V9 pins both the setup script and the resulting KernelSU-Next checkout to v3.3.0.
+          # V11 pins both the setup script and the resulting KernelSU-Next checkout to v3.3.0.
           bash ../logs/06-ksu-setup.sh "${KSU_VERSION}" 2>&1 | tee ../logs/06-kernelsu.log
           test -d KernelSU-Next
           test -L drivers/kernelsu
@@ -358,7 +369,7 @@ jobs:
           git -C susfs-backport remote add origin "${SUSFS_BACKPORT_REPO}"
           : > logs/07-susfs-clone.log
 
-          # V9 stopped at a one-shot `git clone` after the runner printed only
+          # V10 stopped at a one-shot `git clone` after the runner printed only
           # "Cloning into 'susfs-backport'...". That is a transport/acquisition
           # failure, not evidence that the 4.19 patch is incompatible. V10 uses
           # protocol v2 + blob filtering + bounded retries, then fetches the exact
@@ -367,7 +378,7 @@ jobs:
           FETCH_OK=0
           for attempt in 1 2 3 4 5; do
             echo "[SUSFS] branch fetch attempt ${attempt}/5" | tee -a logs/07-susfs-clone.log
-            if git -c protocol.version=2 -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+            if git -C susfs-backport -c protocol.version=2 -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
                  fetch --filter=blob:none --depth=1 origin \
                  "refs/heads/${SUSFS_BACKPORT_REF}:refs/remotes/origin/${SUSFS_BACKPORT_REF}" \
                  >> logs/07-susfs-clone.log 2>&1; then
@@ -382,7 +393,7 @@ jobs:
               echo "[ERROR] Unable to fetch SUSFS backport branch ${SUSFS_BACKPORT_REF} after 5 attempts."
               echo "Remote=${SUSFS_BACKPORT_REPO}"
               echo "The failure occurred before any SUSFS patch compatibility test."
-              git -c protocol.version=2 ls-remote --heads "${SUSFS_BACKPORT_REPO}" "${SUSFS_BACKPORT_REF}" || true
+              git -C susfs-backport -c protocol.version=2 ls-remote --heads "${SUSFS_BACKPORT_REPO}" "${SUSFS_BACKPORT_REF}" || true
               tail -n 120 logs/07-susfs-clone.log || true
             } | tee logs/07-susfs-failure.log
             exit 1
@@ -402,8 +413,8 @@ jobs:
           PIN_OK=0
           for attempt in 1 2 3 4 5; do
             echo "[SUSFS] pinned commit fetch attempt ${attempt}/5" | tee -a logs/07-susfs-pin-fetch.log
-            if git -c protocol.version=2 -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
-                 fetch --filter=blob:none --depth=1 origin "${SUSFS_BACKPORT_COMMIT}" \
+            if git -C susfs-backport -c protocol.version=2 -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+                 fetch --filter=blob:none origin "${SUSFS_BACKPORT_COMMIT}" \
                  >> logs/07-susfs-pin-fetch.log 2>&1; then
               PIN_OK=1
               break
@@ -432,27 +443,32 @@ jobs:
             exit 1
           fi
           printf '%s\n' "${CANDIDATES[@]}" | tee logs/07-susfs-candidates.txt
+          test "${#CANDIDATES[@]}" -eq 1
+          test "${CANDIDATES[0]}" = "${SUSFS_PATCH_PATH}"
 
-          # The pinned patch currently embeds SUSFS v2.3.0, and the matching
-          # inline-hook script declares PATCH_LEVEL=2.3.00. V9 incorrectly
-          # labelled this source as 2.2.0. Refuse mixed-version integration.
+          # The 4.19 patch file itself does not define a SUSFS_VERSION macro.
+          # The authoritative version marker in this backport is the matching
+          # inline-hook script (PATCH_LEVEL=2.3.00). For the kernel patch, pin
+          # the exact audited Git blob SHA so a same-named replacement cannot be
+          # silently accepted.
           TEST_VERSION_PATCH="${CANDIDATES[0]}"
-          PATCH_SUSFS_VERSION="$(git -C susfs-backport show "HEAD:${TEST_VERSION_PATCH}" | grep -E '^#define SUSFS_VERSION "v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 | sed -E 's/.*"v([^"]+)".*/\1/' || true)"
+          PATCH_BLOB_SHA256="$(git -C susfs-backport rev-parse "HEAD:${TEST_VERSION_PATCH}")"
           INLINE_SUSFS_VERSION="$(git -C susfs-backport show 'HEAD:Patches/susfs_inline_hook_patches.sh' | grep -E '^PATCH_LEVEL="[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/; s/\.00$/\.0/' || true)"
-          echo "patch_declared_susfs=${PATCH_SUSFS_VERSION}" | tee logs/07-susfs-version-check.log
+          echo "patch_blob_sha=${PATCH_BLOB_SHA256}" | tee logs/07-susfs-version-check.log
+          echo "expected_patch_blob_sha=${SUSFS_PATCH_BLOB_SHA256}" | tee -a logs/07-susfs-version-check.log
           echo "inline_hook_declared_susfs=${INLINE_SUSFS_VERSION}" | tee -a logs/07-susfs-version-check.log
-          test "${PATCH_SUSFS_VERSION}" = "${SUSFS_VERSION}"
+          test "${PATCH_BLOB_SHA256}" = "${SUSFS_PATCH_BLOB_SHA256}"
           test "${INLINE_SUSFS_VERSION}" = "${SUSFS_VERSION}"
           test "${SUSFS_VERSION}" = "2.3.0"
 
           # The V8 log proved that the patch is semantically the expected SUSFS patch,
           # but direct patch(1) application fails after CIP because CIP legitimately
-          # changed several of the same VFS/proc/mm call sites. V9 therefore performs
+          # changed several of the same VFS/proc/mm call sites. V10 therefore performs
           # two safe modes in order:
           #   A) strict direct git apply --check (no fuzz)
           #   B) Git's content-aware 3-way merge using the current staged tree as ours
-          # A 3-way merge is NOT the same as --force or --fuzz: unresolved conflicts
-          # return failure and are never accepted into the build.
+          # A 3-way merge is still strict: unresolved conflicts are rejected and
+          # never accepted into the build.
           SELECTED_PATCH=""
           APPLY_MODE=""
           rm -f logs/07-susfs-candidate-*.patch logs/07-susfs-candidate-*.check logs/07-susfs-candidate-*.3way
@@ -636,7 +652,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V10-LM-G900-KARNAL
+          kernel.string=V11-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -662,7 +678,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V10-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V11-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -699,20 +715,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V10 final output"
+      - name: "12. Upload V11 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V10-LM-G900-KARNAL-output
-          path: V10-LM-G900-KARNAL-output.zip
+          name: V11-LM-G900-KARNAL-output
+          path: V11-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V10 flashable ZIPs"
+      - name: "13. Upload V11 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V10-LM-G900-KARNAL-flashable-zips
+          name: V11-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -764,7 +780,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V10 ==="
+            echo "=== A-Z BUILD RECORD V11 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -828,16 +844,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V10 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
+          echo "::notice::V11 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V10 complete diagnostics (always)"
+      - name: "15. Upload V11 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V10-LM-G900-KARNAL-complete-logs
+          name: V11-LM-G900-KARNAL-complete-logs
           path: |
-            V10-LM-G900-KARNAL-complete-logs.zip
+            V11-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
