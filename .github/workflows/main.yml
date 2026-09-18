@@ -1,4 +1,4 @@
-name: V7-LM-G900-KARNAL-BUILT
+name: V8-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -30,13 +30,13 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V7
-  OUTPUT_PREFIX: V7-LM-G900-KARNAL
-  # V7 fixes the V6 runner failure and hardens integration:
-  # 1) pin KernelSU-Next to the requested v3.3.0 tag instead of the legacy branch
-  # 2) validate KSU using Kconfig syntax, not the literal CONFIG_KSU string
-  # 3) probe every SUSFS candidate with fuzz=0 before applying
-  # 4) make build diagnostics include staged and unstaged changes
+  WORKFLOW_VERSION: V8
+  OUTPUT_PREFIX: V8-LM-G900-KARNAL
+  # V8 fixes V7's SUSFS candidate-discovery bug and hardens reproducibility:
+  # 1) pin the KernelSU-Next setup script itself to v3.3.0
+  # 2) discover the actual 4.19 backport filename used by the pinned SUSFS repo
+  # 3) require the patch to contain core SUSFS files/config before testing it
+  # 4) dry-run with fuzz=0 and reject reversed/partial applications
 
 
 jobs:
@@ -317,10 +317,9 @@ jobs:
           set -Eeuo pipefail
           echo "::group::[6/15] KernelSU-Next ${KSU_VERSION}"
           cd kernel
-          curl -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" -o ../logs/06-ksu-setup.sh
+          curl -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_VERSION}/kernel/setup.sh" -o ../logs/06-ksu-setup.sh
           chmod +x ../logs/06-ksu-setup.sh
-          # The setup script accepts a branch/tag/commit. V6 passed "legacy", which
-          # selected a moving branch and did not honor the requested v3.3.0 pin.
+          # V8 pins both the setup script and the resulting KernelSU-Next checkout to v3.3.0.
           bash ../logs/06-ksu-setup.sh "${KSU_VERSION}" 2>&1 | tee ../logs/06-kernelsu.log
           test -d KernelSU-Next
           test -L drivers/kernelsu
@@ -348,26 +347,46 @@ jobs:
           echo "::group::[7/15] SUSFS ${SUSFS_VERSION} 4.19 backport"
           rm -rf susfs-backport
           git clone --depth=1 --branch "${SUSFS_BACKPORT_REF}" "${SUSFS_BACKPORT_REPO}" susfs-backport 2>&1 | tee logs/07-susfs-clone.log
-          git -C susfs-backport rev-parse HEAD | tee logs/07-susfs-backport-commit.log
+          SUSFS_BACKPORT_COMMIT="$(git -C susfs-backport rev-parse HEAD)"
+          echo "${SUSFS_BACKPORT_COMMIT}" | tee logs/07-susfs-backport-commit.log
           git -C susfs-backport ls-tree -r --name-only HEAD Patches | tee logs/07-susfs-patches-list.txt
+
+          # V7 searched for "2.2.0" in the filename. The pinned backport repository
+          # actually uses the stable filename Patches/Patch/susfs_patch_to_4.19.patch,
+          # so V7 found zero candidates and stopped before testing the patch.
           mapfile -t CANDIDATES < <(
             git -C susfs-backport ls-tree -r --name-only HEAD Patches |
-              grep -Ei '(susfs.*(2[._-]?2[._-]?0|220).*4[._-]?19|4[._-]?19.*susfs.*(2[._-]?2[._-]?0|220)).*\\.patch$' || true
+              grep -Ei '(^|/)susfs_patch_to_4[._-]?19\.patch$|(^|/)susfs.*4[._-]?19.*\.patch$|(^|/)4[._-]?19.*susfs.*\.patch$' |
+              sort -u || true
           )
+
           if [ "${#CANDIDATES[@]}" -eq 0 ]; then
-            echo "[ERROR] No verifiable SUSFS 2.2.0 + kernel-4.19 backport was found in the pinned repository." | tee logs/07-susfs-failure.log
+            echo "[ERROR] No SUSFS 4.19 backport patch was found in the pinned repository." | tee logs/07-susfs-failure.log
             exit 1
           fi
-          printf '%s\\n' "${CANDIDATES[@]}" | tee logs/07-susfs-candidates.txt
+          printf '%s\n' "${CANDIDATES[@]}" | tee logs/07-susfs-candidates.txt
 
           SELECTED_PATCH=""
           rm -f logs/07-susfs-candidate-*.patch logs/07-susfs-candidate-*.check
+          : > logs/07-susfs-compatibility.log
+
           for PATCH_PATH in "${CANDIDATES[@]}"; do
             SAFE_NAME="$(printf '%s' "${PATCH_PATH}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
             TEST_PATCH="logs/07-susfs-candidate-${SAFE_NAME}.patch"
             TEST_LOG="logs/07-susfs-candidate-${SAFE_NAME}.check"
             git -C susfs-backport show "HEAD:${PATCH_PATH}" > "${TEST_PATCH}"
-            if (cd kernel && patch --dry-run --batch --fuzz=0 -p1 < "../${TEST_PATCH}") > "${TEST_LOG}" 2>&1; then
+
+            # A real SUSFS kernel patch must add the SUSFS implementation/header and
+            # expose the KSU_SUSFS config. This rejects unrelated 4.19 patches before
+            # touching the kernel tree.
+            if ! grep -Eq 'diff --git a/fs/susfs\.c b/fs/susfs\.c' "${TEST_PATCH}" ||
+               ! grep -Eq 'diff --git a/include/linux/susfs\.h b/include/linux/susfs\.h' "${TEST_PATCH}" ||
+               ! grep -Eq 'CONFIG_KSU_SUSFS|config KSU_SUSFS' "${TEST_PATCH}"; then
+              echo "INCOMPATIBLE=${PATCH_PATH} reason=not-a-complete-susfs-patch" | tee -a logs/07-susfs-compatibility.log
+              continue
+            fi
+
+            if (cd kernel && patch --dry-run --batch --forward --fuzz=0 -p1 < "../${TEST_PATCH}") > "${TEST_LOG}" 2>&1; then
               SELECTED_PATCH="${PATCH_PATH}"
               cp "${TEST_PATCH}" logs/07-susfs-2.2.0-4.19.patch
               cp "${TEST_LOG}" logs/07-susfs-selected-check.log
@@ -381,7 +400,7 @@ jobs:
 
           if [ -z "${SELECTED_PATCH}" ]; then
             {
-              echo "[ERROR] No SUSFS candidate applied with --fuzz=0."
+              echo "[ERROR] No SUSFS 4.19 candidate applied cleanly with --forward --fuzz=0."
               echo "Candidates were tested without forced or fuzzy application."
               echo "See logs/07-susfs-candidate-*.check and logs/07-susfs-compatibility.log."
             } | tee logs/07-susfs-failure.log
@@ -389,14 +408,22 @@ jobs:
           fi
 
           cd kernel
-          patch --batch --fuzz=0 -p1 < ../logs/07-susfs-2.2.0-4.19.patch 2>&1 | tee ../logs/07-susfs-apply.log
-          if find . -type f -name '*.rej' -print -quit | grep -q .; then
-            echo "[ERROR] SUSFS application produced reject files." | tee ../logs/07-susfs-failure.log
+          patch --batch --forward --fuzz=0 -p1 < ../logs/07-susfs-2.2.0-4.19.patch 2>&1 | tee ../logs/07-susfs-apply.log
+          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+            echo "[ERROR] SUSFS application produced reject/original files." | tee ../logs/07-susfs-failure.log
+            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a ../logs/07-susfs-failure.log
             exit 1
           fi
           test -f fs/susfs.c
           test -f include/linux/susfs.h
-          echo "selected_patch=${SELECTED_PATCH}" | tee ../logs/07-susfs-selected.txt
+          grep -Rqs 'KSU_SUSFS' fs/susfs.c include/linux/susfs.h drivers/kernelsu
+          git diff --check | tee ../logs/07-susfs-diff-check.log
+          {
+            echo "selected_patch=${SELECTED_PATCH}"
+            echo "susfs_backport_commit=${SUSFS_BACKPORT_COMMIT}"
+            echo "requested_susfs_version=${SUSFS_VERSION}"
+            echo "kernel_version=$(make -s kernelversion)"
+          } | tee ../logs/07-susfs-selected.txt
           echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport applied without fuzz"
           echo "::endgroup::"
 
@@ -492,7 +519,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V7-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V8-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -533,16 +560,16 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V7-LM-G900-KARNAL-output
+          name: V8-LM-G900-KARNAL-output
           path: V7-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V4 flashable ZIPs"
+      - name: "13. Upload V8 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V7-LM-G900-KARNAL-flashable-zips
+          name: V8-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -594,7 +621,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V7 ==="
+            echo "=== A-Z BUILD RECORD V8 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -658,14 +685,14 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V7 diagnostics collected; original failure evidence is preserved."
+          echo "::notice::V8 diagnostics collected; original failure evidence is preserved."
           echo "::endgroup::"
 
       - name: "15. Upload V7 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V7-LM-G900-KARNAL-complete-logs
+          name: V8-LM-G900-KARNAL-complete-logs
           path: |
             V7-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
