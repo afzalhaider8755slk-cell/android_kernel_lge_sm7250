@@ -1,4 +1,4 @@
-name: V21-LM-G900-KARNAL-BUILT
+name: V22-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -35,8 +35,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V21
-  OUTPUT_PREFIX: V21-LM-G900-KARNAL
+  WORKFLOW_VERSION: V22
+  OUTPUT_PREFIX: V22-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -50,7 +50,7 @@ env:
 
 jobs:
   build:
-    name: Build V21
+    name: Build V22
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -364,7 +364,7 @@ jobs:
           set -Eeuo pipefail
           echo "::group::[7/15] Integrate SUSFS ${SUSFS_VERSION} + 4.19 backport"
           mkdir -p logs
-          # V21: never allow a silent post-port test/grep to end Step 7 with only
+          # V22: never allow a silent post-port test/grep to end Step 7 with only
           # "Process completed with exit code 1". Record the exact command and line.
           trap 'rc=$?; echo "[ERROR] Step 7 command failed: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a logs/07-susfs-failure.log; exit ${rc}' ERR
 
@@ -476,10 +476,15 @@ jobs:
             cat logs/07-susfs-direct-check.log | tee -a logs/07-susfs-compatibility.log
 
             echo "[SUSFS] content-aware 3-way apply" | tee -a logs/07-susfs-compatibility.log
-            set +e
-            git -C kernel apply --3way --whitespace=nowarn "../${TEST_PATCH}" > logs/07-susfs-3way-apply.log 2>&1
-            THREEWAY_RC=$?
-            set -e
+            # IMPORTANT: this command is expected to return rc=1 when Git
+            # creates unmerged entries for the four audited source files.
+            # Do NOT run it as a bare command under an ERR trap: `set +e`
+            # does not reliably suppress an ERR trap. A conditional does.
+            if git -C kernel apply --3way --whitespace=nowarn "../${TEST_PATCH}" > logs/07-susfs-3way-apply.log 2>&1; then
+              THREEWAY_RC=0
+            else
+              THREEWAY_RC=$?
+            fi
             echo "threeway_rc=${THREEWAY_RC}" | tee -a logs/07-susfs-compatibility.log
             cat logs/07-susfs-3way-apply.log | tee -a logs/07-susfs-compatibility.log
 
@@ -537,7 +542,7 @@ jobs:
               raise SystemExit(f'No patch section for {target}')
           PY
                 set +e
-                # V21: zero fuzz. Context may move by an offset, but patch context itself
+                # V22: zero fuzz. Context may move by an offset, but patch context itself
                 # must match exactly. Any failed hunk is handled explicitly below.
                 (cd kernel && patch -p1 --forward --batch --fuzz=0 < "../logs/07-susfs-file-${safe}.patch") > "logs/07-susfs-file-${safe}.apply.log" 2>&1
                 FILE_PATCH_RC=$?
@@ -546,7 +551,7 @@ jobs:
                 echo "${f}: patch_rc=${FILE_PATCH_RC}" | tee -a logs/07-susfs-semantic-port.log
               done
 
-              # V21 exact source reconciliation. This block is intentionally a real
+              # V22 exact source reconciliation. This block is intentionally a real
               # shell heredoc: V19 had no closing PY delimiter, so its reconciliation
               # Python never executed. No semantic result from V19 was trusted.
               python3 - "${GITHUB_WORKSPACE}/kernel" <<'PY' | tee -a logs/07-susfs-semantic-port.log
@@ -771,7 +776,7 @@ jobs:
           if leftovers:
               raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
           
-          print("[OK] V21 exact four-file SUSFS reconciliation completed.")
+          print("[OK] V22 exact four-file SUSFS reconciliation completed.")
           print("[OK] task_mmu uses the captured kernel's mmap_read_lock_killable/mmap_read_unlock API.")
           PY
 
@@ -792,7 +797,7 @@ jobs:
             find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
             exit 1
           fi
-          # V21: emit a deterministic file-state inventory for Step-7 evidence.
+          # V22: emit a deterministic file-state inventory for Step-7 evidence.
           {
             echo "=== SUSFS POST-PORT STATE ==="
             git -C kernel status --short
@@ -931,7 +936,7 @@ jobs:
           require_grep '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux
           require_grep 'KSU_SUSFS' kernel/fs/Makefile
           {
-            echo "=== V21 POST-INLINE SUSFS VALIDATION ==="
+            echo "=== V22 POST-INLINE SUSFS VALIDATION ==="
             echo "kernel_head=$(git -C kernel rev-parse HEAD)"
             echo "ksu_head=$(git -C kernel/KernelSU-Next rev-parse HEAD)"
             echo "ksu_tag=$(git -C kernel/KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
@@ -1012,7 +1017,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V21-LM-G900-KARNAL
+          kernel.string=V22-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1038,7 +1043,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V21-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V22-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1075,20 +1080,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V19 final output"
+      - name: "12. Upload V22 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V21-LM-G900-KARNAL-output
-          path: V21-LM-G900-KARNAL-output.zip
+          name: V22-LM-G900-KARNAL-output
+          path: V22-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V19 flashable ZIPs"
+      - name: "13. Upload V22 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V21-LM-G900-KARNAL-flashable-zips
+          name: V22-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1140,7 +1145,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V19 ==="
+            echo "=== A-Z BUILD RECORD V22 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -1204,16 +1209,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V19 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
+          echo "::notice::V22 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V19 complete diagnostics (always)"
+      - name: "15. Upload V22 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V21-LM-G900-KARNAL-complete-logs
+          name: V22-LM-G900-KARNAL-complete-logs
           path: |
-            V21-LM-G900-KARNAL-complete-logs.zip
+            V22-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
