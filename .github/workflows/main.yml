@@ -1,4 +1,4 @@
-name: V35-LM-G900-KARNAL-BUILT
+name: V36-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -58,7 +58,7 @@ env:
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
   WORKFLOW_VERSION: V35
-  OUTPUT_PREFIX: V35-LM-G900-KARNAL
+  OUTPUT_PREFIX: V36-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1383,7 +1383,41 @@ jobs:
             exit 1
           fi
 
-          # V35 FIX 2 — Repair the V33 touch include change without altering any touch data.
+          # V36 FIX 1 — Linux 4.19 KernelSU app_profile seccomp compatibility.
+          # KernelSU-Next v3.3.0 resets seccomp.filter_count when escaping to root, but
+          # Linux 4.19's struct seccomp has only mode + filter (no filter_count).
+          # Keep the seccomp escape path intact and compile only the newer counter reset
+          # on kernels that actually provide that member.
+          KSU_APP_PROFILE="drivers/kernelsu/policy/app_profile.c"
+          if [ -f "$KSU_APP_PROFILE" ]; then
+            python3 - "$KSU_APP_PROFILE" <<'PY_KSU_APP_PROFILE'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text()
+          old='    atomic_set(&current->seccomp.filter_count, 0);'
+          new='#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n              atomic_set(&current->seccomp.filter_count, 0);\n          #endif'
+          if old in s:
+              s=s.replace(old,new,1)
+          elif 'atomic_set(&current->seccomp.filter_count, 0);' in s:
+              raise SystemExit('seccomp filter_count call is present but could not be transformed')
+          else:
+              raise SystemExit('expected KernelSU app_profile seccomp filter_count reset not found')
+          p.write_text(s)
+          PY_KSU_APP_PROFILE
+            if grep -qF 'atomic_set(&current->seccomp.filter_count, 0);' "$KSU_APP_PROFILE"; then
+              if ! grep -B1 -A1 -F 'atomic_set(&current->seccomp.filter_count, 0);' "$KSU_APP_PROFILE" | grep -qF '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)'; then
+                echo "[ERROR] app_profile filter_count reset is not guarded for Linux 4.19."
+                exit 1
+              fi
+            fi
+            echo "[FIX] Applied Linux 4.19 seccomp filter_count compatibility to KernelSU app_profile."
+          else
+            echo "[ERROR] KernelSU app_profile.c not found; refusing to continue without compatibility fix."
+            exit 1
+          fi
+
+          # V36 FIX 2 — Repair the V33 touch include change without altering any touch data.
           # The upstream common-touch.dtsi has no preprocessor guard. V33 injected one but the
           # build log proves it was left unterminated. The actual duplicate-inclusion fix is simply
           # to keep the common file intact and remove only the redundant Rev-1.0 include.
@@ -1461,7 +1495,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V35-LM-G900-KARNAL
+          kernel.string=V36-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1487,7 +1521,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V35-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V36-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1528,8 +1562,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V35-LM-G900-KARNAL-output
-          path: V35-LM-G900-KARNAL-output.zip
+          name: V36-LM-G900-KARNAL-output
+          path: V36-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1537,7 +1571,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V35-LM-G900-KARNAL-flashable-zips
+          name: V36-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1660,9 +1694,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V35-LM-G900-KARNAL-complete-logs
+          name: V36-LM-G900-KARNAL-complete-logs
           path: |
-            V35-LM-G900-KARNAL-complete-logs.zip
+            V36-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
