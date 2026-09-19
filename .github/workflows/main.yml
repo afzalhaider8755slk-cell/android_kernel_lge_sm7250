@@ -1,4 +1,4 @@
-name: V34-LM-G900-KARNAL-BUILT
+name: V35-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V34
-  OUTPUT_PREFIX: V34-LM-G900-KARNAL
+  WORKFLOW_VERSION: V35
+  OUTPUT_PREFIX: V35-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1329,7 +1329,61 @@ jobs:
             exit 1
           fi
 
-          # V34 FIX 2 — Repair the V33 touch include change without altering any touch data.
+          # V35 FIX 1 — Linux 4.19 KernelSU-Next allowlist task_work compatibility.
+          # KernelSU-Next v3.3.0 uses TWA_RESUME + put_task_struct(), but this target is Linux 4.19:
+          # 4.19 exposes task_work_add(..., bool notify), and put_task_struct() is declared by
+          # <linux/sched/task.h>. Preserve the allowlist feature and adapt only these APIs.
+          KSU_ALLOWLIST="drivers/kernelsu/policy/allowlist.c"
+          if [ -f "$KSU_ALLOWLIST" ]; then
+            python3 - "$KSU_ALLOWLIST" <<'PY_KSU_ALLOWLIST'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text()
+
+          if '#include <linux/sched/task.h>' not in s:
+              marker='#include <linux/task_work.h>'
+              if marker not in s:
+                  raise SystemExit('expected <linux/task_work.h> include not found in KernelSU allowlist.c')
+              s=s.replace(marker, marker+'\n#include <linux/sched/task.h>', 1)
+
+          macro = """#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
+          #define KSU_TASK_WORK_RESUME TWA_RESUME
+          #else
+          #define KSU_TASK_WORK_RESUME true
+          #endif"""
+          if 'KSU_TASK_WORK_RESUME' not in s:
+              marker='#include <linux/task_work.h>'
+              s=s.replace(marker, marker+'\n#include <linux/version.h>\n\n'+macro, 1)
+
+          old='task_work_add(tsk, cb, TWA_RESUME)'
+          if old in s:
+              s=s.replace(old, 'task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)', 1)
+          elif 'task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)' not in s:
+              raise SystemExit('expected KernelSU allowlist task_work_add(TWA_RESUME) call not found')
+
+          p.write_text(s)
+          PY_KSU_ALLOWLIST
+
+            if ! grep -qF '#include <linux/sched/task.h>' "$KSU_ALLOWLIST"; then
+              echo "[ERROR] allowlist.c is missing sched/task.h compatibility include."
+              exit 1
+            fi
+            if ! grep -qF 'KSU_TASK_WORK_RESUME' "$KSU_ALLOWLIST"; then
+              echo "[ERROR] allowlist.c task_work compatibility macro was not installed."
+              exit 1
+            fi
+            if grep -qF 'task_work_add(tsk, cb, TWA_RESUME)' "$KSU_ALLOWLIST"; then
+              echo "[ERROR] allowlist.c still uses the 5.7+ TWA_RESUME call directly."
+              exit 1
+            fi
+            echo "[FIX] Applied Linux 4.19 task_work/put_task_struct compatibility to KernelSU allowlist."
+          else
+            echo "[ERROR] KernelSU allowlist.c not found; refusing to continue without compatibility fix."
+            exit 1
+          fi
+
+          # V35 FIX 2 — Repair the V33 touch include change without altering any touch data.
           # The upstream common-touch.dtsi has no preprocessor guard. V33 injected one but the
           # build log proves it was left unterminated. The actual duplicate-inclusion fix is simply
           # to keep the common file intact and remove only the redundant Rev-1.0 include.
@@ -1407,7 +1461,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V34-LM-G900-KARNAL
+          kernel.string=V35-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1433,7 +1487,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V34-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V35-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1474,8 +1528,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V34-LM-G900-KARNAL-output
-          path: V34-LM-G900-KARNAL-output.zip
+          name: V35-LM-G900-KARNAL-output
+          path: V35-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1483,7 +1537,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V34-LM-G900-KARNAL-flashable-zips
+          name: V35-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1606,9 +1660,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V34-LM-G900-KARNAL-complete-logs
+          name: V35-LM-G900-KARNAL-complete-logs
           path: |
-            V34-LM-G900-KARNAL-complete-logs.zip
+            V35-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
