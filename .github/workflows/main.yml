@@ -1,4 +1,4 @@
-name: V22-LM-G900-KARNAL-BUILT
+name: V23-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -35,8 +35,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V22
-  OUTPUT_PREFIX: V22-LM-G900-KARNAL
+  WORKFLOW_VERSION: V23
+  OUTPUT_PREFIX: V23-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -46,11 +46,23 @@ env:
   # 6) verify CONFIG_KSU_SUSFS exists before enabling it
   # 7) fetch the SUSFS backport with retryable Git transport instead of one fragile clone
   # 8) enforce that the pinned 4.19 patch and inline-hook script both declare SUSFS 2.3.x
+  #
+  # V23 fixes the actual, reproducible Step-7 abort seen on every V22 run:
+  # 9) the per-file `patch -p1` call for the four audited conflict files (fs/namespace.c,
+  #    fs/proc/cmdline.c, fs/proc/task_mmu.c, fs/super.c) was wrapped in `set +e ... set -e`,
+  #    which does NOT stop bash's ERR trap from firing on the expected/audited hunk failure.
+  #    Because `set -E` is also active, the trap fired a second time inside the `(cd kernel && ...)`
+  #    subshell too (wrong cwd -> "tee: ... No such file or directory" noise), then again in the
+  #    outer shell, aborting Step 7 on the very first expected failure (fs/namespace.c) every time,
+  #    before the semantic source port, the other 3 files, or the inline-hook stage ever ran.
+  #    Fixed with the same `if <cmd>; then rc=0; else rc=$?; fi` guard already used correctly for
+  #    the 3-way `git apply`, and `patch -d kernel` instead of a `(cd kernel && ...)` subshell so
+  #    there is no subshell for the inherited ERR trap to misfire inside.
 
 
 jobs:
   build:
-    name: Build V22
+    name: Build V23
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -541,12 +553,26 @@ jobs:
           else:
               raise SystemExit(f'No patch section for {target}')
           PY
-                set +e
-                # V22: zero fuzz. Context may move by an offset, but patch context itself
-                # must match exactly. Any failed hunk is handled explicitly below.
-                (cd kernel && patch -p1 --forward --batch --fuzz=0 < "../logs/07-susfs-file-${safe}.patch") > "logs/07-susfs-file-${safe}.apply.log" 2>&1
-                FILE_PATCH_RC=$?
-                set -e
+                # V23 ROOT FIX: `set +e` does NOT suppress bash's ERR trap. The trap fires on
+                # any failing simple command regardless of errexit state, EXCEPT when that
+                # command is the direct condition of if/while/&&-chain (this is the exact same
+                # class of bug the V22 audit already fixed for the 3-way `git apply` above, but
+                # it was never applied to this per-file `patch` call). Worse, because `set -E`
+                # is active, the trap also inherits into the `(cd kernel && patch ...)` subshell,
+                # so it fired a SECOND time inside that subshell (cwd still "kernel/", hence the
+                # "tee: logs/07-susfs-failure.log: No such file or directory" noise seen in the
+                # apply logs) before firing again in the outer shell and aborting Step 7 the
+                # instant the FIRST audited/expected hunk failure (fs/namespace.c, hunk #1)
+                # occurred -- so the other three conflict files, the semantic port, and the
+                # inline-hook stage were never even reached. Fixed with an `if` guard (exempt
+                # from -e/ERR by definition) and `patch -d` instead of a `(cd ...)` subshell, so
+                # there is no subshell for the inherited trap to misfire inside.
+                if patch -d kernel -p1 --forward --batch --fuzz=0 -i "../logs/07-susfs-file-${safe}.patch" \
+                     > "logs/07-susfs-file-${safe}.apply.log" 2>&1; then
+                  FILE_PATCH_RC=0
+                else
+                  FILE_PATCH_RC=$?
+                fi
                 cat "logs/07-susfs-file-${safe}.apply.log" | tee -a logs/07-susfs-semantic-port.log
                 echo "${f}: patch_rc=${FILE_PATCH_RC}" | tee -a logs/07-susfs-semantic-port.log
               done
@@ -776,7 +802,7 @@ jobs:
           if leftovers:
               raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
           
-          print("[OK] V22 exact four-file SUSFS reconciliation completed.")
+          print("[OK] V23 exact four-file SUSFS reconciliation completed.")
           print("[OK] task_mmu uses the captured kernel's mmap_read_lock_killable/mmap_read_unlock API.")
           PY
 
@@ -936,7 +962,7 @@ jobs:
           require_grep '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux
           require_grep 'KSU_SUSFS' kernel/fs/Makefile
           {
-            echo "=== V22 POST-INLINE SUSFS VALIDATION ==="
+            echo "=== V23 POST-INLINE SUSFS VALIDATION ==="
             echo "kernel_head=$(git -C kernel rev-parse HEAD)"
             echo "ksu_head=$(git -C kernel/KernelSU-Next rev-parse HEAD)"
             echo "ksu_tag=$(git -C kernel/KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
@@ -1017,7 +1043,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V22-LM-G900-KARNAL
+          kernel.string=V23-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1043,7 +1069,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V22-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V23-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1080,20 +1106,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V22 final output"
+      - name: "12. Upload V23 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V22-LM-G900-KARNAL-output
-          path: V22-LM-G900-KARNAL-output.zip
+          name: V23-LM-G900-KARNAL-output
+          path: V23-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V22 flashable ZIPs"
+      - name: "13. Upload V23 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V22-LM-G900-KARNAL-flashable-zips
+          name: V23-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1145,7 +1171,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V22 ==="
+            echo "=== A-Z BUILD RECORD V23 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -1209,16 +1235,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V22 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, and artifact naming fixes are enabled."
+          echo "::notice::V23 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V22 complete diagnostics (always)"
+      - name: "15. Upload V23 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V22-LM-G900-KARNAL-complete-logs
+          name: V23-LM-G900-KARNAL-complete-logs
           path: |
-            V22-LM-G900-KARNAL-complete-logs.zip
+            V23-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
