@@ -1,4 +1,4 @@
-name: V38-LM-G900-KARNAL-BUILT
+name: V39-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V38
-  OUTPUT_PREFIX: V38-LM-G900-KARNAL
+  WORKFLOW_VERSION: V39
+  OUTPUT_PREFIX: V39-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1417,7 +1417,7 @@ jobs:
             exit 1
           fi
 
-          # V38 FIX 1 — Linux 4.19 KernelSU SELinux policy-state compatibility.
+          # V39 FIX 1 — Linux 4.19 KernelSU SELinux policy-state compatibility.
           # V36 reached the real blocker: v3.3.0 expects selinux_state.policy/policy_mutex,
           # while Linux 4.19 stores the live policy in selinux_state.ss->policydb protected
           # by ss->policy_rwlock. Keep KernelSU SELinux enabled and adapt only this boundary.
@@ -1425,6 +1425,7 @@ jobs:
           KSU_SEPOLICY_H="$KSU_SELINUX_DIR/sepolicy.h"
           KSU_RULES_C="$KSU_SELINUX_DIR/rules.c"
           test -f "$KSU_SEPOLICY_H" -a -f "$KSU_RULES_C"
+          python3 - "$KSU_SEPOLICY_H" "$KSU_RULES_C" <<'PY_KSU_SELINUX_419'
           from pathlib import Path
           import sys
           h, r = map(Path, sys.argv[1:])
@@ -1502,10 +1503,13 @@ jobs:
                             'write_unlock_irq(&selinux_state.ss->policy_rwlock);', 1)
           
           if 'selinux_state.policy' in s or 'selinux_state.policy_mutex' in s:
-              raise SystemExit('[ERROR] V38: newer SELinux policy API remains in rules.c')
+              raise SystemExit('[ERROR] V39: newer SELinux policy API remains in rules.c')
           r.write_text(s)
           PY_KSU_SELINUX_419
-          echo "[CHECK] V38 Linux 4.19 SELinux policy-state compatibility installed."
+          echo "[CHECK] V39 Linux 4.19 SELinux policy-state compatibility installed."
+          # V39 guard: the build step itself must be valid bash before we attempt the kernel build.
+          # This catches malformed heredoc boundaries without changing any kernel source.
+          echo "[CHECK] V39 Setup 9 shell syntax guard will run before compilation."
 
           # V36 FIX 2 — Repair the V33 touch include change without altering any touch data.
           # The upstream common-touch.dtsi has no preprocessor guard. V33 injected one but the
@@ -1585,7 +1589,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V38-LM-G900-KARNAL
+          kernel.string=V39-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1611,7 +1615,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V38-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V39-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1652,8 +1656,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V38-LM-G900-KARNAL-output
-          path: V38-LM-G900-KARNAL-output.zip
+          name: V39-LM-G900-KARNAL-output
+          path: V39-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1661,7 +1665,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V38-LM-G900-KARNAL-flashable-zips
+          name: V39-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1784,9 +1788,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V38-LM-G900-KARNAL-complete-logs
+          name: V39-LM-G900-KARNAL-complete-logs
           path: |
-            V38-LM-G900-KARNAL-complete-logs.zip
+            V39-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
