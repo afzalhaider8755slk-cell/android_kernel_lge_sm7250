@@ -371,10 +371,10 @@ jobs:
 
           # V10 stopped at a one-shot `git clone` after the runner printed only
           # "Cloning into 'susfs-backport'...". That is a transport/acquisition
-          # failure, not evidence that the 4.19 patch is incompatible. V10 uses
-          # protocol v2 + blob filtering + bounded retries, then fetches the exact
-          # audited commit separately. The patch blobs are fetched lazily when
-          # `git show` needs them.
+          # failure, not evidence that the 4.19 patch is incompatible. V15 uses
+          # protocol v2 + complete shallow blob fetches + bounded retries, then fetches
+          # the exact audited commit separately. The patch blob is explicitly
+          # materialized below before any compatibility test.
           FETCH_OK=0
           for attempt in 1 2 3 4 5; do
             echo "[SUSFS] branch fetch attempt ${attempt}/5" | tee -a logs/07-susfs-clone.log
@@ -461,7 +461,7 @@ jobs:
           test "${INLINE_SUSFS_VERSION}" = "${SUSFS_VERSION}"
           test "${SUSFS_VERSION}" = "2.3.0"
 
-          # V14: the V13 log proves the remaining problem is a REAL source-context
+          # V15: V14 proved the remaining problem is a REAL source-context
           # mismatch, not acquisition, Git-directory, or blob materialization.
           #
           # Direct apply fails in six locations. Git's 3-way merge can apply the
@@ -475,7 +475,7 @@ jobs:
           # kernel version, so these vendor/CIP changes must be ported rather than
           # falsely declaring the candidate "compatible".
           #
-          # V14 strategy:
+          # V15 strategy:
           #   1. strict direct check (diagnostic only)
           #   2. real 3-way apply to retain all clean SUSFS hunks
           #   3. restore ONLY the conflicted files to the kernel's current version
@@ -487,7 +487,29 @@ jobs:
           APPLY_MODE=""
           TEST_PATCH="logs/07-susfs-materialized.patch"
           : > logs/07-susfs-compatibility.log
-          cp "${TEST_PATCH}" logs/07-susfs-candidate-${SUSFS_PATCH_PATH//\//__}.patch
+
+          # V15 critical fix: V14 verified the Git object but never materialized
+          # the patch file before `cp` tried to read it. That caused:
+          #   cp: cannot stat 'logs/07-susfs-materialized.patch'
+          #
+          # Materialize directly from the pinned Git blob, after proving that the
+          # exact path exists and recording its byte size and content SHA256.
+          # This is intentionally done before ANY compatibility test.
+          echo "[SUSFS] materializing exact pinned 4.19 patch" | tee -a logs/07-susfs-compatibility.log
+          git -C susfs-backport cat-file -e "HEAD:${TEST_VERSION_PATCH}"             2>&1 | tee logs/07-susfs-materialize-check.log
+          PATCH_BLOB_SIZE="$(git -C susfs-backport cat-file -s "HEAD:${TEST_VERSION_PATCH}")"
+          test "${PATCH_BLOB_SIZE}" -gt 0
+          git -C susfs-backport cat-file blob "HEAD:${TEST_VERSION_PATCH}" > "${TEST_PATCH}"
+          test -s "${TEST_PATCH}"
+          PATCH_FILE_SHA256="$(sha256sum "${TEST_PATCH}" | awk '{print $1}')"
+          {
+            echo "patch_path=${TEST_VERSION_PATCH}"
+            echo "git_blob_sha=${PATCH_BLOB_SHA256}"
+            echo "patch_bytes=${PATCH_BLOB_SIZE}"
+            echo "patch_file_sha256=${PATCH_FILE_SHA256}"
+          } | tee logs/07-susfs-materialized-info.txt
+          cp "${TEST_PATCH}" "logs/07-susfs-candidate-${SUSFS_PATCH_PATH//\//__}.patch"
+          echo "[OK] Exact SUSFS patch materialized: ${PATCH_BLOB_SIZE} bytes"             | tee -a logs/07-susfs-compatibility.log
 
           echo "[SUSFS] strict direct preflight" | tee -a logs/07-susfs-compatibility.log
           if (cd kernel && git apply --check --whitespace=nowarn "../${TEST_PATCH}") \
@@ -781,7 +803,7 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V14 final output"
+      - name: "12. Upload V15 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
@@ -790,7 +812,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V11 flashable ZIPs"
+      - name: "13. Upload V15 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
@@ -910,10 +932,10 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V11 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
+          echo "::notice::V15 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V14 complete diagnostics (always)"
+      - name: "15. Upload V15 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
