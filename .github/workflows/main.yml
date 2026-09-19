@@ -1,4 +1,4 @@
-name: V33-LM-G900-KARNAL-BUILT
+name: V34-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V33
-  OUTPUT_PREFIX: V33-LM-G900-KARNAL
+  WORKFLOW_VERSION: V34
+  OUTPUT_PREFIX: V34-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -100,14 +100,15 @@ env:
   # inside Step 6 itself, if that commit ever stops declaring "config KSU_SUSFS".
 
 
-  # V33: V32's complete build log showed two independent blockers: CN Rev-1.0 DT still failed dtc,
-  # and KernelSU-Next v3.3.0 pkg_observer.c used handle_inode_event while this 4.19.325 tree
-  # exposes handle_event. V33 uses KernelSU-Next's own legacy fsnotify compatibility pattern
-  # and makes common-touch inclusion idempotent. No setup, future, overlay, or KSU feature is removed.
+  # V34: V33 build log exposed two concrete regressions in the V33 compatibility edits:
+  # (1) the injected common-touch guard was left unterminated, and (2) pkg_observer was
+  # given the 4.19 fsnotify callback type but its body still dereferenced file_name as a qstr.
+  # V34 repairs only those two source-compatibility mistakes; no setup, future, overlay,
+  # touch definition, KernelSU feature, or SUSFS feature is removed.
 
 jobs:
   build:
-    name: Build V33
+    name: Build V34
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1231,11 +1232,11 @@ jobs:
             echo "[OK] include/uapi/linux/mount.h already exists."
           fi
 
-          # V33 FIX 1 — KernelSU-Next v3.3.0 fsnotify API compatibility for Linux 4.19.
+          # V34 FIX 1 — Complete the KernelSU-Next v3.3.0 fsnotify compatibility for Linux 4.19.
           # The v3.3.0 pkg_observer.c directly initializes .handle_inode_event, but this 4.19 fsnotify_ops
           # has only .handle_event. KernelSU-Next's v3.2.0-legacy source provides the KSU_DECL_FSNOTIFY_OPS
           # compatibility abstraction: <5.9 uses handle_event, while >=5.9 uses handle_inode_event.
-          # Apply the same abstraction to v3.3.0 so package observation remains enabled.
+          # Apply the same abstraction to v3.3.0 so package observation remains enabled, including the 4.19 filename type.
           KSU_MANAGER_DIR="drivers/kernelsu/manager"
           KSU_OBS="$KSU_MANAGER_DIR/pkg_observer.c"
           KSU_DEFS="$KSU_MANAGER_DIR/pkg_observer_defs.h"
@@ -1296,6 +1297,13 @@ jobs:
           if old not in s:
               raise SystemExit('expected KernelSU v3.3.0 pkg_observer function signature not found')
           s=s.replace(old,new,1)
+          # Linux 4.19 passes file_name as const unsigned char *, not struct qstr.
+          # Keep the v3.3.0 logic identical while routing length/name access through the
+          # compatibility helpers defined above.
+          if 'file_name->len' in s:
+              s=s.replace('file_name->len', 'ksu_fname_len(file_name)')
+          if 'file_name->name' in s:
+              s=s.replace('file_name->name', 'ksu_fname_arg(file_name)')
           old_ops="""static const struct fsnotify_ops ksu_ops = {
           \t.handle_inode_event = ksu_handle_inode_event,
           };"""
@@ -1311,40 +1319,64 @@ jobs:
           s=s.replace(old_ops,new_ops,1)
           p.write_text(s)
           PY_KSU
-            echo "[FIX] Applied KernelSU-Next legacy fsnotify compatibility to v3.3.0 pkg_observer (4.19 uses handle_event)."
+          if grep -qE 'file_name->(len|name)' "$KSU_OBS"; then
+            echo "[ERROR] pkg_observer still contains qstr-only file_name dereferences."
+            exit 1
+          fi
+            echo "[FIX] Applied complete KernelSU-Next fsnotify compatibility to v3.3.0 pkg_observer (4.19 filename + handle_event API)."
           else
             echo "[ERROR] KernelSU pkg_observer.c not found; refusing to continue without compatibility fix."
             exit 1
           fi
 
-          # V33 FIX 2 — Make common-touch inclusion idempotent while keeping the Rev-1.0 overlay intact.
-          # The normal lao_com touch file already includes common-touch; some source variants also include it
-          # directly from the Rev-1.0 wrapper. The guard preserves the complete first inclusion and makes a
-          # second inclusion a no-op. No touch node, firmware, GPIO, or revision feature is removed.
+          # V34 FIX 2 — Repair the V33 touch include change without altering any touch data.
+          # The upstream common-touch.dtsi has no preprocessor guard. V33 injected one but the
+          # build log proves it was left unterminated. The actual duplicate-inclusion fix is simply
+          # to keep the common file intact and remove only the redundant Rev-1.0 include.
           COMMON_TOUCH="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"
           TOUCH_REV="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-touch_rev-1.0.dtsi"
           test -f "$COMMON_TOUCH"
-          if ! grep -q '__LG_CAYMANLM_COMMON_TOUCH_DTSI__' "$COMMON_TOUCH"; then
-            tmp="${COMMON_TOUCH}.v33.tmp"
-            {
-              echo '/* V33: idempotent include guard; preserves the complete common touch definition. */'
-              echo '#ifndef __LG_CAYMANLM_COMMON_TOUCH_DTSI__'
-              echo '#define __LG_CAYMANLM_COMMON_TOUCH_DTSI__'
-              cat "$COMMON_TOUCH"
-              echo '#endif /* __LG_CAYMANLM_COMMON_TOUCH_DTSI__ */'
-            } > "$tmp"
-            mv "$tmp" "$COMMON_TOUCH"
-            echo "[FIX] Added include guard to common-touch.dtsi; no touch definitions were removed."
-          else
-            echo "[OK] common-touch.dtsi include guard already present."
-          fi
+
+          python3 - "$COMMON_TOUCH" <<'PY_TOUCH_REPAIR'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          lines=p.read_text().splitlines()
+          guard='__LG_CAYMANLM_COMMON_TOUCH_DTSI__'
+          # Remove only the guard that earlier workflow revisions injected. The original
+          # upstream file starts with SPDX/comment lines, so match the guard anywhere in the
+          # first few lines rather than assuming it is line 1.
+          if any(guard in line for line in lines[:8]):
+              cleaned=[]
+              for line in lines:
+                  if guard in line or line.startswith('/* V33: idempotent include guard'):
+                      continue
+                  cleaned.append(line)
+              lines=cleaned
+          # If an earlier revision appended our matching final guard, remove that single line.
+          while lines and lines[-1].strip() in (f'#endif /* {guard} */', f'#endif // {guard}'):
+              lines.pop()
+          p.write_text('\n'.join(lines).rstrip()+'\n')
+          PY_TOUCH_REPAIR
+
           if [ -f "$TOUCH_REV" ] && grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV"; then
             sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$TOUCH_REV"
-            echo "[FIX] Removed only the redundant Rev-1.0 common-touch include; Rev-1.0 nodes remain intact."
+            echo "[FIX] Removed only the redundant Rev-1.0 common-touch include; all Rev-1.0 nodes remain intact."
           fi
-          grep -q '^#ifndef __LG_CAYMANLM_COMMON_TOUCH_DTSI__$' "$COMMON_TOUCH"
-          grep -q '^#define __LG_CAYMANLM_COMMON_TOUCH_DTSI__$' "$COMMON_TOUCH"
-          echo "[CHECK] KernelSU fsnotify compatibility and DT touch include guard are installed."
+
+          # The source file itself must remain byte-for-byte equivalent to the upstream structure
+          # apart from any pre-existing local changes; specifically, it must not contain our broken guard.
+          if grep -q '__LG_CAYMANLM_COMMON_TOUCH_DTSI__' "$COMMON_TOUCH"; then
+            echo "[ERROR] Broken common-touch guard still present after reconciliation."
+            exit 1
+          fi
+          if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV"; then
+            echo "[ERROR] Redundant Rev-1.0 common-touch include still present."
+            exit 1
+          fi
+          echo "[CHECK] V34 touch reconciliation complete: common-touch definitions preserved, redundant include removed."
+
+          echo "[CHECK] KernelSU fsnotify compatibility and DT touch reconciliation are installed."
 
           # Do not invoke a standalone DT overlay target. The real dtbs phase below is
           # the authoritative verification path and preserves all existing overlays.
@@ -1375,7 +1407,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V33-LM-G900-KARNAL
+          kernel.string=V34-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1401,7 +1433,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V33-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V34-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1442,8 +1474,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V33-LM-G900-KARNAL-output
-          path: V33-LM-G900-KARNAL-output.zip
+          name: V34-LM-G900-KARNAL-output
+          path: V34-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1451,7 +1483,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V33-LM-G900-KARNAL-flashable-zips
+          name: V34-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1574,9 +1606,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V33-LM-G900-KARNAL-complete-logs
+          name: V34-LM-G900-KARNAL-complete-logs
           path: |
-            V33-LM-G900-KARNAL-complete-logs.zip
+            V34-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
