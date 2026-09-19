@@ -1,4 +1,4 @@
-name: V17-LM-G900-KARNAL-BUILT
+name: V18-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -35,9 +35,9 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V17
-  OUTPUT_PREFIX: V17-LM-G900-KARNAL
-  # V17 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
+  WORKFLOW_VERSION: V18
+  OUTPUT_PREFIX: V18-LM-G900-KARNAL
+  # V18 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
   # 3) discover the actual 4.19 backport filename used by that source
@@ -50,7 +50,7 @@ env:
 
 jobs:
   build:
-    name: Build V17
+    name: Build V18
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -365,7 +365,7 @@ jobs:
           echo "::group::[7/15] Integrate SUSFS ${SUSFS_VERSION} + 4.19 backport"
           mkdir -p logs
 
-          # V17 ROOT FIX: V16 attempted `git -C susfs-backport ...` without ever
+          # V18 ROOT FIX: V16 attempted `git -C susfs-backport ...` without ever
           # creating the working repository. That produced the exact Step-7 failure:
           # "fatal: cannot change to 'susfs-backport': No such file or directory".
           # Bootstrap a real Git repository first, then fetch the audited branch and
@@ -491,7 +491,7 @@ jobs:
               fi
               APPLY_MODE="3way"
             else
-              # V17 root fix: NEVER run the entire SUSFS patch again after 3-way.
+              # V18 root fix: NEVER run the entire SUSFS patch again after 3-way.
               # the prior revision did that and re-patched clean files, producing reversed hunks and
               # a cascade of .rej/.orig files. Only the four conflicted file sections
               # are re-applied, then their known source-version differences are ported.
@@ -623,10 +623,12 @@ jobs:
               s=(root/rel).read_text()
               for n in needles:
                   if n not in s: raise SystemExit(f'missing semantic SUSFS marker: {rel}: {n}')
-          print('[OK] V17 semantic source-port resolved all four known conflicts.')
+          print('[OK] V18 semantic source-port resolved all four known conflicts.')
           PY
               APPLY_MODE="3way+semantic-port"
-              git -C kernel add -A
+              # The four index conflicts were already resolved with `git add` above.
+              # Leave the nested KernelSU-Next checkout unstaged; it is a build-time
+              # source tree, not a kernel submodule that this workflow needs to commit.
             fi
           fi
 
@@ -640,8 +642,42 @@ jobs:
             find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
             exit 1
           fi
-          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git > logs/07-susfs-conflict-markers.log 2>&1; then
-            echo "[ERROR] SUSFS application left conflict markers." | tee logs/07-susfs-failure.log
+          # Only treat a REAL merge-conflict triplet as a conflict. A kernel tree
+          # legitimately contains many documentation lines made only of '='; the
+          # V17 grep treated those as conflict markers and stopped Step 7 falsely.
+          python3 - "${GITHUB_WORKSPACE}/kernel" > logs/07-susfs-conflict-markers.log 2>&1 <<'PY'
+          import pathlib, re, sys
+          root = pathlib.Path(sys.argv[1])
+          bad = []
+          start_re = re.compile(r'^<<<<<<<(?: .*)?$')
+          sep_re = re.compile(r'^=======$')
+          end_re = re.compile(r'^>>>>>>>(?: .*)?$')
+          for p in root.rglob('*'):
+              if not p.is_file() or '.git' in p.parts:
+                  continue
+              try:
+                  lines = p.read_text(errors='replace').splitlines()
+              except Exception:
+                  continue
+              state = 0
+              start_line = 0
+              for no, line in enumerate(lines, 1):
+                  if state == 0 and start_re.match(line):
+                      state = 1
+                      start_line = no
+                  elif state == 1 and sep_re.match(line):
+                      state = 2
+                  elif state == 2 and end_re.match(line):
+                      bad.append(f'{p}:{start_line}-{no}')
+                      state = 0
+          if bad:
+              print('REAL_MERGE_CONFLICT_MARKERS_FOUND')
+              print('\n'.join(bad))
+              raise SystemExit(1)
+          print('[OK] No real merge-conflict triplets found.')
+          PY
+          if [ "$?" -ne 0 ]; then
+            echo "[ERROR] SUSFS application left real merge-conflict markers." | tee logs/07-susfs-failure.log
             exit 1
           fi
 
@@ -679,12 +715,45 @@ jobs:
             find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
             exit 1
           fi
-          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git > logs/07-susfs-conflict-markers-post-inline.log 2>&1; then
-            echo "[ERROR] Inline SUSFS hook stage left conflict markers." | tee logs/07-susfs-failure.log
+          python3 - "${GITHUB_WORKSPACE}/kernel" > logs/07-susfs-conflict-markers-post-inline.log 2>&1 <<'PY'
+          import pathlib, re, sys
+          root = pathlib.Path(sys.argv[1])
+          bad = []
+          start_re = re.compile(r'^<<<<<<<(?: .*)?$')
+          sep_re = re.compile(r'^=======$')
+          end_re = re.compile(r'^>>>>>>>(?: .*)?$')
+          for p in root.rglob('*'):
+              if not p.is_file() or '.git' in p.parts:
+                  continue
+              try:
+                  lines = p.read_text(errors='replace').splitlines()
+              except Exception:
+                  continue
+              state = 0
+              start_line = 0
+              for no, line in enumerate(lines, 1):
+                  if state == 0 and start_re.match(line):
+                      state = 1
+                      start_line = no
+                  elif state == 1 and sep_re.match(line):
+                      state = 2
+                  elif state == 2 and end_re.match(line):
+                      bad.append(f'{p}:{start_line}-{no}')
+                      state = 0
+          if bad:
+              print('REAL_MERGE_CONFLICT_MARKERS_FOUND')
+              print('\n'.join(bad))
+              raise SystemExit(1)
+          print('[OK] No real merge-conflict triplets found after inline hooks.')
+          PY
+          if [ "$?" -ne 0 ]; then
+            echo "[ERROR] Inline SUSFS hook stage left real merge-conflict markers." | tee logs/07-susfs-failure.log
             exit 1
           fi
           git -C kernel diff --check | tee logs/07-susfs-diff-check-post-inline.log
-          git -C kernel add -A
+          # Do NOT `git add -A` here: KernelSU-Next is intentionally a nested Git
+          # checkout created by its official setup script. Staging the entire tree
+          # produces the misleading "adding embedded git repository" warning.
 
           echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE}."
           echo "::endgroup::"
@@ -756,7 +825,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V17-LM-G900-KARNAL
+          kernel.string=V18-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -782,7 +851,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V17-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V18-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -819,20 +888,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V17 final output"
+      - name: "12. Upload V18 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V17-LM-G900-KARNAL-output
-          path: V17-LM-G900-KARNAL-output.zip
+          name: V18-LM-G900-KARNAL-output
+          path: V18-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V17 flashable ZIPs"
+      - name: "13. Upload V18 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V17-LM-G900-KARNAL-flashable-zips
+          name: V18-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -847,7 +916,7 @@ jobs:
         run: |
           # Diagnostics must never fail the job a second time. In earlier versions the diagnostic
           # collector itself failed with "sort: write error: Broken pipe", masking
-          # the original CIP failure. V17 writes large inventories to files and only
+          # the original CIP failure. V18 writes large inventories to files and only
           # prints bounded summaries to the Actions console.
           set +e
           mkdir -p diagnostics diagnostics/logs diagnostics/cip-checks
@@ -884,7 +953,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V17 ==="
+            echo "=== A-Z BUILD RECORD V18 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -948,16 +1017,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V17 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
+          echo "::notice::V18 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V17 complete diagnostics (always)"
+      - name: "15. Upload V18 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V17-LM-G900-KARNAL-complete-logs
+          name: V18-LM-G900-KARNAL-complete-logs
           path: |
-            V17-LM-G900-KARNAL-complete-logs.zip
+            V18-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
