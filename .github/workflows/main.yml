@@ -1,4 +1,4 @@
-name: V26-LM-G900-KARNAL-BUILT
+name: V27-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V26
-  OUTPUT_PREFIX: V26-LM-G900-KARNAL
+  WORKFLOW_VERSION: V27
+  OUTPUT_PREFIX: V27-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -102,7 +102,7 @@ env:
 
 jobs:
   build:
-    name: Build V26
+    name: Build V27
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -871,7 +871,7 @@ jobs:
           if leftovers:
               raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
           
-          print("[OK] V26 exact four-file SUSFS reconciliation completed.")
+          print("[OK] V27 exact four-file SUSFS reconciliation completed.")
           print("[OK] task_mmu uses the captured kernel's mmap_read_lock_killable/mmap_read_unlock API.")
           PY
 
@@ -1031,7 +1031,7 @@ jobs:
           require_grep '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux
           require_grep 'KSU_SUSFS' kernel/fs/Makefile
           {
-            echo "=== V26 POST-INLINE SUSFS VALIDATION ==="
+            echo "=== V27 POST-INLINE SUSFS VALIDATION ==="
             echo "kernel_head=$(git -C kernel rev-parse HEAD)"
             echo "ksu_head=$(git -C kernel/KernelSU-Next rev-parse HEAD)"
             echo "ksu_tag=$(git -C kernel/KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
@@ -1112,6 +1112,42 @@ jobs:
             } > include/linux/minmax.h
             echo "[FIX] Added missing include/linux/minmax.h compatibility header for KernelSU-Next"
           fi
+          # FIX: drivers/kernelsu/infra/file_wrapper.c (KernelSU-Next) unconditionally uses
+          # struct file_operations.iopoll and .remap_file_range, and the REMAP_FILE_DEDUP
+          # flag. None of the three exist on this 4.19.325 CIP tree (they were introduced by
+          # upstream commits from Linux 4.20+), so the build failed with 8 compile errors:
+          #   error: no member named 'iopoll' in 'struct file_operations'
+          #   error: use of undeclared identifier 'REMAP_FILE_DEDUP'
+          #   error: no member named 'remap_file_range' in 'struct file_operations'
+          # This only touches those exact statements (by line number, verified against the
+          # failing build log) so the file compiles; nothing else in the driver is changed:
+          #   - REMAP_FILE_DEDUP is given its standard upstream value via a guarded #define,
+          #     so the existing dedupe-detection branch keeps compiling as written.
+          #   - The two calls into ->iopoll()/->remap_file_range() (which can never be taken
+          #     on a kernel that has no such op) are replaced with `return -EOPNOTSUPP;`.
+          #   - The two assignments that set p->ops.iopoll / p->ops.remap_file_range are
+          #     dropped, since those destination fields don't exist on this kernel's
+          #     struct file_operations either.
+          FW="drivers/kernelsu/infra/file_wrapper.c"
+          if [ -f "$FW" ] && ! grep -q '^#define REMAP_FILE_DEDUP' "$FW"; then
+            {
+              echo '#pragma clang diagnostic ignored "-Wunused-function"'
+              echo '#ifndef REMAP_FILE_DEDUP'
+              echo '#define REMAP_FILE_DEDUP (1 << 0)'
+              echo '#endif'
+              cat "$FW"
+            } > "${FW}.ksu_compat_tmp"
+            mv "${FW}.ksu_compat_tmp" "$FW"
+            # The 4 lines above shift every original line number down by 4.
+            sed -i \
+              -e '113s#.*#    return -EOPNOTSUPP;#' \
+              -e '346s#.*#        return -EOPNOTSUPP;#' \
+              -e '351s#.*#        return -EOPNOTSUPP;#' \
+              -e '397d' \
+              -e '434,435d' \
+              "$FW"
+            echo "[FIX] Patched file_wrapper.c: stubbed iopoll/remap_file_range fops for pre-4.20 VFS API"
+          fi
           make O=out -j"$(nproc)" CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++ 2>&1 | tee ../logs/09-kernel-build.log
           test -s out/arch/arm64/boot/Image
           sha256sum out/arch/arm64/boot/Image | tee ../logs/output-image.sha256
@@ -1137,7 +1173,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V26-LM-G900-KARNAL
+          kernel.string=V27-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1163,7 +1199,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V26-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V27-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1200,20 +1236,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V26 final output"
+      - name: "12. Upload V27 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V26-LM-G900-KARNAL-output
-          path: V26-LM-G900-KARNAL-output.zip
+          name: V27-LM-G900-KARNAL-output
+          path: V27-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V26 flashable ZIPs"
+      - name: "13. Upload V27 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V26-LM-G900-KARNAL-flashable-zips
+          name: V27-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1265,7 +1301,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V26 ==="
+            echo "=== A-Z BUILD RECORD V27 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -1329,16 +1365,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V26 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V27 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V26 complete diagnostics (always)"
+      - name: "15. Upload V27 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V26-LM-G900-KARNAL-complete-logs
+          name: V27-LM-G900-KARNAL-complete-logs
           path: |
-            V26-LM-G900-KARNAL-complete-logs.zip
+            V27-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
