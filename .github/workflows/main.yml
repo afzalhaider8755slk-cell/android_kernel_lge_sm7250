@@ -1,4 +1,4 @@
-name: V25-LM-G900-KARNAL-BUILT
+name: V26-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V25
-  OUTPUT_PREFIX: V25-LM-G900-KARNAL
+  WORKFLOW_VERSION: V26
+  OUTPUT_PREFIX: V26-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -102,7 +102,7 @@ env:
 
 jobs:
   build:
-    name: Build V25
+    name: Build V26
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -170,6 +170,14 @@ jobs:
           test -n "${TARGET_KERNEL_CONFIG}"
           test "${TARGET_KERNEL_CONFIG}" = "vendor/lineageos_cayman_defconfig"
           DEFCONFIG="arch/arm64/configs/${TARGET_KERNEL_CONFIG}"
+          # V26: TARGET_KERNEL_CONFIG was only ever a local variable inside this step's own
+          # shell process. Every GitHub Actions "run:" step is a fresh shell, so Step 8 (and
+          # the defconfig= lines in Steps 12/15) reading "${TARGET_KERNEL_CONFIG}" always saw
+          # an unset variable -- Step 8's `set -u` then aborted immediately with "unbound
+          # variable" the moment execution finally reached it (previously Step 7 always failed
+          # first, so this was never exercised). Export it through $GITHUB_ENV, the same way
+          # CIP_TARGET already is elsewhere in this workflow, so it persists to every later step.
+          echo "TARGET_KERNEL_CONFIG=${TARGET_KERNEL_CONFIG}" >> "$GITHUB_ENV"
 
           {
             echo "DEVICE_REPO=${DEVICE_REPO}"
@@ -863,7 +871,7 @@ jobs:
           if leftovers:
               raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
           
-          print("[OK] V25 exact four-file SUSFS reconciliation completed.")
+          print("[OK] V26 exact four-file SUSFS reconciliation completed.")
           print("[OK] task_mmu uses the captured kernel's mmap_read_lock_killable/mmap_read_unlock API.")
           PY
 
@@ -1023,7 +1031,7 @@ jobs:
           require_grep '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux
           require_grep 'KSU_SUSFS' kernel/fs/Makefile
           {
-            echo "=== V25 POST-INLINE SUSFS VALIDATION ==="
+            echo "=== V26 POST-INLINE SUSFS VALIDATION ==="
             echo "kernel_head=$(git -C kernel rev-parse HEAD)"
             echo "ksu_head=$(git -C kernel/KernelSU-Next rev-parse HEAD)"
             echo "ksu_tag=$(git -C kernel/KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
@@ -1104,7 +1112,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V25-LM-G900-KARNAL
+          kernel.string=V26-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1130,7 +1138,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V25-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V26-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1167,20 +1175,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V25 final output"
+      - name: "12. Upload V26 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V25-LM-G900-KARNAL-output
-          path: V25-LM-G900-KARNAL-output.zip
+          name: V26-LM-G900-KARNAL-output
+          path: V26-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V25 flashable ZIPs"
+      - name: "13. Upload V26 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V25-LM-G900-KARNAL-flashable-zips
+          name: V26-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1232,7 +1240,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V25 ==="
+            echo "=== A-Z BUILD RECORD V26 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -1296,16 +1304,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V25 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork (tracked at its current tip) for CONFIG_KSU_SUSFS, and artifact naming fixes are enabled."
+          echo "::notice::V26 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V25 complete diagnostics (always)"
+      - name: "15. Upload V26 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V25-LM-G900-KARNAL-complete-logs
+          name: V26-LM-G900-KARNAL-complete-logs
           path: |
-            V25-LM-G900-KARNAL-complete-logs.zip
+            V26-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
