@@ -1,4 +1,4 @@
-name: V23-LM-G900-KARNAL-BUILT
+name: V24-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -24,6 +24,22 @@ env:
   CIP_PREFIX: v4.19.325-cip
 
   KSU_VERSION: v3.3.0
+  # V24: vanilla/official KernelSU-Next (KernelSU-Next/KernelSU-Next) does not carry
+  # the "config KSU_SUSFS" Kconfig entry or the su-compat hook symbols
+  # (ksu_su_compat_enabled, ksu_handle_execveat, ksu_handle_faccessat, ksu_handle_stat,
+  # ksu_handle_setresuid, ...) that SUSFS 2.x's inline-hook layer expects to already
+  # exist inside KernelSU's own source -- confirmed by Step 7 always failing its
+  # "config KSU_SUSFS" Kconfig check once it got far enough to reach it. KernelSU-Next's
+  # own maintainer (@pershoot) publishes a "dev-susfs" branch on the same v3.3.0 base
+  # specifically to add this; it is the same branch/commit multiple independent, current
+  # SUSFS+KernelSU-Next kernel-build projects (WildKernels/GKI_KernelSU_SUSFS,
+  # JeelsBoobz/android-kernel-builder) pin for exactly this reason. Pinned to an exact
+  # commit for reproducibility, matching this workflow's existing pinning style.
+  # NOTE: pershoot has stated this branch is not guaranteed production-stable.
+  KSU_SUSFS_FORK_OWNER: pershoot
+  KSU_SUSFS_FORK_REPO: KernelSU-Next
+  KSU_SUSFS_FORK_BRANCH: dev-susfs
+  KSU_SUSFS_FORK_COMMIT: 3438d6aa431f96a23f9e625bec3d53ce1fb14161
   SUSFS_VERSION: 2.3.0
   SUSFS_BACKPORT_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
   SUSFS_BACKPORT_REF: mainline
@@ -35,8 +51,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V23
-  OUTPUT_PREFIX: V23-LM-G900-KARNAL
+  WORKFLOW_VERSION: V24
+  OUTPUT_PREFIX: V24-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -58,11 +74,23 @@ env:
   #    Fixed with the same `if <cmd>; then rc=0; else rc=$?; fi` guard already used correctly for
   #    the 3-way `git apply`, and `patch -d kernel` instead of a `(cd kernel && ...)` subshell so
   #    there is no subshell for the inherited ERR trap to misfire inside.
+  #
+  # V24 fixes what Step 7 hits once V23's fix lets it run to completion: the patch apply,
+  # semantic four-file port, and inline-hook layer (fs/exec.c, fs/open.c, etc.) all succeed,
+  # but the final "config KSU_SUSFS" Kconfig check always fails. Researched and confirmed this
+  # is a genuine source-compatibility gap, not a script bug: SUSFS 2.x's inline hooks expect
+  # ksu_su_compat_enabled, ksu_handle_execveat, ksu_handle_faccessat, ksu_handle_stat,
+  # ksu_handle_setresuid, and a "config KSU_SUSFS" Kconfig entry to already exist inside
+  # KernelSU's own source -- vanilla/official KernelSU-Next (KernelSU-Next/KernelSU-Next) does
+  # not carry them. Step 6 now clones KernelSU-Next's own SUSFS fork (pershoot/KernelSU-Next,
+  # branch dev-susfs, pinned to a specific commit) instead, which several current, independent
+  # SUSFS+KernelSU-Next projects pin for this exact reason. Everything else about Step 6 (driver
+  # symlink, Makefile/Kconfig wiring, KSU_VERSION=v3.3.0 baseline) is unchanged.
 
 
 jobs:
   build:
-    name: Build V23
+    name: Build V24
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -341,33 +369,56 @@ jobs:
           echo "[INFO] If 136 stopped at an earlier tag, its exact conflict is preserved in logs/cip-checks/."
           echo "::endgroup::"
 
-      - name: "6. Integrate KernelSU-Next v3.3.0"
+      - name: "6. Integrate KernelSU-Next v3.3.0 (SUSFS-enabled fork)"
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[6/15] KernelSU-Next ${KSU_VERSION}"
+          echo "::group::[6/15] KernelSU-Next ${KSU_VERSION} (${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}@${KSU_SUSFS_FORK_BRANCH})"
           cd kernel
-          curl -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_VERSION}/kernel/setup.sh" -o ../logs/06-ksu-setup.sh
-          chmod +x ../logs/06-ksu-setup.sh
-          # V11 pins both the setup script and the resulting KernelSU-Next checkout to v3.3.0.
-          bash ../logs/06-ksu-setup.sh "${KSU_VERSION}" 2>&1 | tee ../logs/06-kernelsu.log
+
+          # V24: replicate the official setup.sh's driver-dir detection, symlink, and
+          # Makefile/Kconfig wiring by hand, because the official setup.sh hardcodes
+          # OWNER=REPO="KernelSU-Next" internally -- downloading that script from any
+          # fork does NOT change which repo it clones. We clone the fork ourselves instead.
+          if test -d common/drivers; then DRIVER_DIR=common/drivers
+          elif test -d drivers; then DRIVER_DIR=drivers
+          else echo '[ERROR] "drivers/" directory not found.'; exit 127
+          fi
+          DRIVER_MAKEFILE="${DRIVER_DIR}/Makefile"
+          DRIVER_KCONFIG="${DRIVER_DIR}/Kconfig"
+
+          git clone "https://github.com/${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}" KernelSU-Next
+          git -C KernelSU-Next fetch origin "${KSU_SUSFS_FORK_BRANCH}"
+          git -C KernelSU-Next checkout "${KSU_SUSFS_FORK_COMMIT}"
+
+          ln -sf "$(realpath --relative-to="${DRIVER_DIR}" "$(pwd)/KernelSU-Next/kernel")" "${DRIVER_DIR}/kernelsu"
+          grep -q "kernelsu" "${DRIVER_MAKEFILE}" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "${DRIVER_MAKEFILE}"
+          grep -q 'source "drivers/kernelsu/Kconfig"' "${DRIVER_KCONFIG}" || sed -i "/endmenu/i\\source \"drivers/kernelsu/Kconfig\"" "${DRIVER_KCONFIG}"
+
           test -d KernelSU-Next
           test -L drivers/kernelsu
           test -f drivers/kernelsu/Kconfig
           # Kconfig declares symbols as "config KSU"; it does not need the literal
           # string "CONFIG_KSU" inside the source Kconfig file.
           grep -Eq '^[[:space:]]*config[[:space:]]+KSU([[:space:]]|$)' drivers/kernelsu/Kconfig
+          # V24: this fork's dev-susfs branch must additionally declare config KSU_SUSFS
+          # in the same Kconfig -- this is the whole reason for switching forks. Fail loudly
+          # here rather than hundreds of lines later in Step 7 if that ever stops being true.
+          grep -Eq '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' drivers/kernelsu/Kconfig
+
           KSU_COMMIT="$(git -C KernelSU-Next rev-parse HEAD)"
-          KSU_TAG="$(git -C KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
-          test "${KSU_TAG}" = "${KSU_VERSION}"
+          test "${KSU_COMMIT}" = "${KSU_SUSFS_FORK_COMMIT}"
+          KSU_TAG="$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
           {
             echo "requested=${KSU_VERSION}"
-            echo "resolved_tag=${KSU_TAG}"
+            echo "fork=${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}@${KSU_SUSFS_FORK_BRANCH}"
+            echo "resolved_describe=${KSU_TAG}"
             echo "resolved_commit=${KSU_COMMIT}"
             echo "kconfig_symbol=KSU"
+            echo "kconfig_symbol=KSU_SUSFS"
             echo "symlink=$(readlink drivers/kernelsu)"
           } | tee ../logs/06-kernelsu-resolved.txt
-          echo "[OK] KernelSU-Next ${KSU_VERSION} pinned integration"
+          echo "[OK] KernelSU-Next ${KSU_VERSION} (SUSFS fork) pinned integration"
           echo "::endgroup::"
 
       - name: "7. Integrate SUSFS 2.3.0 + 4.19 backport"
@@ -802,7 +853,7 @@ jobs:
           if leftovers:
               raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
           
-          print("[OK] V23 exact four-file SUSFS reconciliation completed.")
+          print("[OK] V24 exact four-file SUSFS reconciliation completed.")
           print("[OK] task_mmu uses the captured kernel's mmap_read_lock_killable/mmap_read_unlock API.")
           PY
 
@@ -962,7 +1013,7 @@ jobs:
           require_grep '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux
           require_grep 'KSU_SUSFS' kernel/fs/Makefile
           {
-            echo "=== V23 POST-INLINE SUSFS VALIDATION ==="
+            echo "=== V24 POST-INLINE SUSFS VALIDATION ==="
             echo "kernel_head=$(git -C kernel rev-parse HEAD)"
             echo "ksu_head=$(git -C kernel/KernelSU-Next rev-parse HEAD)"
             echo "ksu_tag=$(git -C kernel/KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
@@ -1043,7 +1094,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V23-LM-G900-KARNAL
+          kernel.string=V24-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1069,7 +1120,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V23-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V24-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1106,20 +1157,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V23 final output"
+      - name: "12. Upload V24 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V23-LM-G900-KARNAL-output
-          path: V23-LM-G900-KARNAL-output.zip
+          name: V24-LM-G900-KARNAL-output
+          path: V24-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V23 flashable ZIPs"
+      - name: "13. Upload V24 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V23-LM-G900-KARNAL-flashable-zips
+          name: V24-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1171,7 +1222,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V23 ==="
+            echo "=== A-Z BUILD RECORD V24 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -1235,16 +1286,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V23 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, and artifact naming fixes are enabled."
+          echo "::notice::V24 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V23 complete diagnostics (always)"
+      - name: "15. Upload V24 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V23-LM-G900-KARNAL-complete-logs
+          name: V24-LM-G900-KARNAL-complete-logs
           path: |
-            V23-LM-G900-KARNAL-complete-logs.zip
+            V24-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
