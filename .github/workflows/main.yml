@@ -1,4 +1,4 @@
-name: V20-LM-G900-KARNAL-BUILT
+name: V21-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -35,8 +35,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V20
-  OUTPUT_PREFIX: V20-LM-G900-KARNAL
+  WORKFLOW_VERSION: V21
+  OUTPUT_PREFIX: V21-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -50,7 +50,7 @@ env:
 
 jobs:
   build:
-    name: Build V20
+    name: Build V21
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -364,6 +364,9 @@ jobs:
           set -Eeuo pipefail
           echo "::group::[7/15] Integrate SUSFS ${SUSFS_VERSION} + 4.19 backport"
           mkdir -p logs
+          # V21: never allow a silent post-port test/grep to end Step 7 with only
+          # "Process completed with exit code 1". Record the exact command and line.
+          trap 'rc=$?; echo "[ERROR] Step 7 command failed: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a logs/07-susfs-failure.log; exit ${rc}' ERR
 
           # V19 ROOT FIX: V16 attempted `git -C susfs-backport ...` without ever
           # creating the working repository. That produced the exact Step-7 failure:
@@ -534,7 +537,7 @@ jobs:
               raise SystemExit(f'No patch section for {target}')
           PY
                 set +e
-                # V20: zero fuzz. Context may move by an offset, but patch context itself
+                # V21: zero fuzz. Context may move by an offset, but patch context itself
                 # must match exactly. Any failed hunk is handled explicitly below.
                 (cd kernel && patch -p1 --forward --batch --fuzz=0 < "../logs/07-susfs-file-${safe}.patch") > "logs/07-susfs-file-${safe}.apply.log" 2>&1
                 FILE_PATCH_RC=$?
@@ -543,7 +546,7 @@ jobs:
                 echo "${f}: patch_rc=${FILE_PATCH_RC}" | tee -a logs/07-susfs-semantic-port.log
               done
 
-              # V20 exact source reconciliation. This block is intentionally a real
+              # V21 exact source reconciliation. This block is intentionally a real
               # shell heredoc: V19 had no closing PY delimiter, so its reconciliation
               # Python never executed. No semantic result from V19 was trusted.
               python3 - "${GITHUB_WORKSPACE}/kernel" <<'PY' | tee -a logs/07-susfs-semantic-port.log
@@ -768,7 +771,7 @@ jobs:
           if leftovers:
               raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
           
-          print("[OK] V20 exact four-file SUSFS reconciliation completed.")
+          print("[OK] V21 exact four-file SUSFS reconciliation completed.")
           print("[OK] task_mmu uses the captured kernel's mmap_read_lock_killable/mmap_read_unlock API.")
           PY
 
@@ -789,7 +792,7 @@ jobs:
             find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
             exit 1
           fi
-          # V19: emit a deterministic file-state inventory for Step-7 evidence.
+          # V21: emit a deterministic file-state inventory for Step-7 evidence.
           {
             echo "=== SUSFS POST-PORT STATE ==="
             git -C kernel status --short
@@ -835,13 +838,29 @@ jobs:
             exit 1
           fi
 
-          test -f kernel/fs/susfs.c
-          test -f kernel/include/linux/susfs.h
-          test -f kernel/include/linux/susfs_def.h
-          grep -Rqs 'KSU_SUSFS' kernel/fs/susfs.c kernel/include/linux/susfs.h kernel/include/linux/susfs_def.h kernel/drivers/kernelsu
-          grep -Rqs 'config KSU_SUSFS' kernel/drivers/kernelsu kernel/fs kernel/include/linux
-          grep -Rqs 'susfs_is_inode_sus_path\|susfs_fake_qstr_name' kernel/fs/namei.c
-          grep -Rqs 'KSU_SUSFS' kernel/fs/Makefile
+          require_file() {
+            local f="$1"
+            if [ ! -f "$f" ]; then
+              echo "[ERROR] Missing required SUSFS file before inline hooks: $f" | tee -a logs/07-susfs-failure.log
+              return 1
+            fi
+            echo "[OK] required file: $f" | tee -a logs/07-susfs-validation.log
+          }
+          require_grep() {
+            local pattern="$1"; shift
+            if ! grep -RqsE "$pattern" "$@"; then
+              echo "[ERROR] Required SUSFS pattern not found: $pattern" | tee -a logs/07-susfs-failure.log
+              printf '[INFO] searched: %s\n' "$*" | tee -a logs/07-susfs-failure.log
+              return 1
+            fi
+            echo "[OK] required pattern: $pattern" | tee -a logs/07-susfs-validation.log
+          }
+          : > logs/07-susfs-validation.log
+          require_file kernel/fs/susfs.c
+          require_file kernel/include/linux/susfs.h
+          require_file kernel/include/linux/susfs_def.h
+          require_grep 'susfs_is_inode_sus_path|susfs_fake_qstr_name' kernel/fs/namei.c
+          require_grep 'KSU_SUSFS' kernel/fs/Makefile
           git -C kernel diff --check | tee logs/07-susfs-diff-check.log
 
           {
@@ -851,7 +870,7 @@ jobs:
             echo "requested_susfs_version=${SUSFS_VERSION}"
             echo "kernel_version=$(make -s -C kernel kernelversion)"
             echo "kernel_head=$(git -C kernel rev-parse HEAD)"
-            echo "susfs_semantic_port=4-file-v16"
+            echo "susfs_semantic_port=4-file-v17"
           } | tee logs/07-susfs-selected.txt
 
           INLINE_SCRIPT="Patches/susfs_inline_hook_patches.sh"
@@ -904,6 +923,20 @@ jobs:
             echo "[ERROR] Inline SUSFS hook stage left real merge-conflict markers." | tee logs/07-susfs-failure.log
             exit 1
           fi
+
+          # V21: the upstream NonGKI flow explicitly runs susfs_inline_hook_patches.sh
+          # only after KernelSU is embedded. Therefore CONFIG_KSU_SUSFS validation is
+          # intentionally performed here, after the inline hook layer, not before it.
+          require_grep 'KSU_SUSFS' kernel/fs/susfs.c kernel/include/linux/susfs.h kernel/include/linux/susfs_def.h kernel/drivers/kernelsu
+          require_grep '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux
+          require_grep 'KSU_SUSFS' kernel/fs/Makefile
+          {
+            echo "=== V21 POST-INLINE SUSFS VALIDATION ==="
+            echo "kernel_head=$(git -C kernel rev-parse HEAD)"
+            echo "ksu_head=$(git -C kernel/KernelSU-Next rev-parse HEAD)"
+            echo "ksu_tag=$(git -C kernel/KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
+            grep -RInE '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux 2>/dev/null | head -40 || true
+          } | tee logs/07-susfs-post-inline-validation.txt
           git -C kernel diff --check | tee logs/07-susfs-diff-check-post-inline.log
           # Do NOT `git add -A` here: KernelSU-Next is intentionally a nested Git
           # checkout created by its official setup script. Staging the entire tree
@@ -979,7 +1012,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V20-LM-G900-KARNAL
+          kernel.string=V21-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1005,7 +1038,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V20-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V21-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1046,8 +1079,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V20-LM-G900-KARNAL-output
-          path: V20-LM-G900-KARNAL-output.zip
+          name: V21-LM-G900-KARNAL-output
+          path: V21-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1055,7 +1088,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V20-LM-G900-KARNAL-flashable-zips
+          name: V21-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1178,9 +1211,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V20-LM-G900-KARNAL-complete-logs
+          name: V21-LM-G900-KARNAL-complete-logs
           path: |
-            V20-LM-G900-KARNAL-complete-logs.zip
+            V21-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
