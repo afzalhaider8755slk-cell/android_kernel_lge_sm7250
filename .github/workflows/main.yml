@@ -1,4 +1,4 @@
-name: V36-LM-G900-KARNAL-BUILT
+name: V37-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V35
-  OUTPUT_PREFIX: V36-LM-G900-KARNAL
+  WORKFLOW_VERSION: V37
+  OUTPUT_PREFIX: V37-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1417,6 +1417,90 @@ jobs:
             exit 1
           fi
 
+          # V37 FIX 1 — Linux 4.19 KernelSU SELinux policy-state compatibility.
+          # V36 reached the real blocker: v3.3.0 expects selinux_state.policy/policy_mutex,
+          # while Linux 4.19 stores the live policy in selinux_state.ss->policydb protected
+          # by ss->policy_rwlock. Keep KernelSU SELinux enabled and adapt only this boundary.
+          KSU_SELINUX_DIR="drivers/kernelsu/selinux"
+          KSU_SEPOLICY_H="$KSU_SELINUX_DIR/sepolicy.h"
+          KSU_RULES_C="$KSU_SELINUX_DIR/rules.c"
+          test -f "$KSU_SEPOLICY_H" -a -f "$KSU_RULES_C"
+          python3 - "$KSU_SEPOLICY_H" "$KSU_RULES_C" <<'PY_KSU_SELINUX_419'
+          from pathlib import Path
+          import sys
+          h,r=map(Path,sys.argv[1:])
+          hs=h.read_text()
+          if 'KSU_LINUX_419_SELINUX_POLICY_COMPAT' not in hs:
+              hs=hs.replace('#include <linux/types.h>','#include <linux/types.h>\n#include <linux/version.h>\n#include "ss/sidtab.h"',1)
+              hs=hs.replace('#include "ss/policydb.h"','#include "ss/policydb.h"\n#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)\n#ifndef KSU_LINUX_419_SELINUX_POLICY_COMPAT\n#define KSU_LINUX_419_SELINUX_POLICY_COMPAT\nstruct selinux_policy { struct policydb policydb; struct sidtab *sidtab; u32 latest_granting; };\n#endif\n#endif',1)
+              h.write_text(hs)
+          s=r.read_text()
+          if 'KSU_LINUX_419_RULES_COMPAT' not in s:
+              a=s.index('void apply_kernelsu_rules()')
+              b=s.index('#define KSU_SEPOLICY_MAX_BATCH_SIZE',a)
+              old=s[a:b]
+              compat='''#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
+          /* KSU_LINUX_419_RULES_COMPAT: native 4.19 SELinux state uses selinux_ss. */
+          void apply_kernelsu_rules()
+          {
+              struct selinux_policy *pol, *base;
+              struct policydb *db;
+              if (!selinux_state.ss) { pr_err("KernelSU SELinux: ss is NULL\\n"); return; }
+              write_lock_irq(&selinux_state.ss->policy_rwlock);
+              base=kzalloc(sizeof(*base),GFP_KERNEL);
+              if(!base){write_unlock_irq(&selinux_state.ss->policy_rwlock);return;}
+              base->policydb=selinux_state.ss->policydb;
+              base->sidtab=&selinux_state.ss->sidtab;
+              base->latest_granting=selinux_state.ss->latest_granting;
+              backup_sepolicy=ksu_dup_sepolicy(base);
+              if(IS_ERR(backup_sepolicy)){backup_sepolicy=NULL;} else {
+                  backup_sepolicy->sidtab=kzalloc(sizeof(*backup_sepolicy->sidtab),GFP_KERNEL);
+                  if(!backup_sepolicy->sidtab || policydb_load_isids(&backup_sepolicy->policydb,backup_sepolicy->sidtab)){
+            if(backup_sepolicy->sidtab) kfree(backup_sepolicy->sidtab);
+            backup_sepolicy->sidtab=NULL; ksu_destroy_sepolicy(backup_sepolicy); backup_sepolicy=NULL;
+                  }
+              }
+              pol=ksu_dup_sepolicy(base); kfree(base);
+              if(IS_ERR(pol)){write_unlock_irq(&selinux_state.ss->policy_rwlock);return;}
+              db=&pol->policydb;
+              ksu_type(db,KERNEL_SU_DOMAIN,"domain"); ksu_permissive(db,KERNEL_SU_DOMAIN);
+              ksu_typeattribute(db,KERNEL_SU_DOMAIN,"mlstrustedsubject");
+              ksu_typeattribute(db,KERNEL_SU_DOMAIN,"netdomain");
+              ksu_typeattribute(db,KERNEL_SU_DOMAIN,"bluetoothdomain");
+              ksu_type(db,KERNEL_SU_FILE,"file_type"); ksu_typeattribute(db,KERNEL_SU_FILE,"mlstrustedobject");
+              ksu_allow(db,"domain",KERNEL_SU_FILE,ALL,ALL); ksu_allow(db,KERNEL_SU_DOMAIN,ALL,ALL,ALL);
+              if(db->policyvers>=POLICYDB_VERSION_XPERMS_IOCTL){
+                  ksu_allowxperm(db,KERNEL_SU_DOMAIN,ALL,"blk_file",ALL); ksu_allowxperm(db,KERNEL_SU_DOMAIN,ALL,"fifo_file",ALL);
+                  ksu_allowxperm(db,KERNEL_SU_DOMAIN,ALL,"chr_file",ALL); ksu_allowxperm(db,KERNEL_SU_DOMAIN,ALL,"file",ALL);
+              }
+              ksu_allow(db,"init",KERNEL_SU_DOMAIN,ALL,ALL);
+              ksu_allow(db,"servicemanager",KERNEL_SU_DOMAIN,"dir","search"); ksu_allow(db,"servicemanager",KERNEL_SU_DOMAIN,"dir","read");
+              ksu_allow(db,"servicemanager",KERNEL_SU_DOMAIN,"file","open"); ksu_allow(db,"servicemanager",KERNEL_SU_DOMAIN,"file","read");
+              ksu_allow(db,"servicemanager",KERNEL_SU_DOMAIN,"process","getattr"); ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"process","sigchld");
+              ksu_allow(db,"logd",KERNEL_SU_DOMAIN,"dir","search"); ksu_allow(db,"logd",KERNEL_SU_DOMAIN,"file","read");
+              ksu_allow(db,"logd",KERNEL_SU_DOMAIN,"file","open"); ksu_allow(db,"logd",KERNEL_SU_DOMAIN,"file","getattr");
+              ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"fd","use"); ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"fifo_file","write");
+              ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"fifo_file","read"); ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"fifo_file","open"); ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"fifo_file","getattr");
+              ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"unix_stream_socket","read"); ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"unix_stream_socket","write");
+              ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"unix_stream_socket","connectto"); ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"unix_stream_socket","getopt");
+              ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"unix_stream_socket","getattr");
+              ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"memfd_file","execute"); ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"memfd_file","getattr");
+              ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"memfd_file","map"); ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"memfd_file","read"); ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"memfd_file","write");
+              ksu_allow(db,"hwservicemanager",KERNEL_SU_DOMAIN,"dir","search"); ksu_allow(db,"hwservicemanager",KERNEL_SU_DOMAIN,"file","read");
+              ksu_allow(db,"hwservicemanager",KERNEL_SU_DOMAIN,"file","open"); ksu_allow(db,"hwservicemanager",KERNEL_SU_DOMAIN,"process","getattr");
+              ksu_allow(db,"domain",KERNEL_SU_DOMAIN,"binder",ALL); ksu_allow(db,"system_server",KERNEL_SU_DOMAIN,"process","getpgid"); ksu_allow(db,"system_server",KERNEL_SU_DOMAIN,"process","sigkill");
+              { struct policydb olddb=selinux_state.ss->policydb; selinux_state.ss->policydb=pol->policydb; memset(&pol->policydb,0,sizeof(pol->policydb)); selinux_state.ss->latest_granting++; policydb_destroy(&olddb); }
+              ksu_destroy_sepolicy(pol);
+              write_unlock_irq(&selinux_state.ss->policy_rwlock);
+          }
+          #else
+          '''+old+'''#endif
+          '''
+              s=s[:a]+compat+s[b:]
+              r.write_text(s)
+          PY_KSU_SELINUX_419
+          echo "[CHECK] V37 Linux 4.19 SELinux policy-state compatibility installed."
+
           # V36 FIX 2 — Repair the V33 touch include change without altering any touch data.
           # The upstream common-touch.dtsi has no preprocessor guard. V33 injected one but the
           # build log proves it was left unterminated. The actual duplicate-inclusion fix is simply
@@ -1495,7 +1579,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V36-LM-G900-KARNAL
+          kernel.string=V37-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1521,7 +1605,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V36-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V37-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1562,8 +1646,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V36-LM-G900-KARNAL-output
-          path: V36-LM-G900-KARNAL-output.zip
+          name: V37-LM-G900-KARNAL-output
+          path: V37-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1571,7 +1655,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V36-LM-G900-KARNAL-flashable-zips
+          name: V37-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1694,9 +1778,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V36-LM-G900-KARNAL-complete-logs
+          name: V37-LM-G900-KARNAL-complete-logs
           path: |
-            V36-LM-G900-KARNAL-complete-logs.zip
+            V37-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
