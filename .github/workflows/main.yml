@@ -1,4 +1,4 @@
-name: V27-LM-G900-KARNAL-BUILT
+name: V28-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V27
-  OUTPUT_PREFIX: V27-LM-G900-KARNAL
+  WORKFLOW_VERSION: V28
+  OUTPUT_PREFIX: V28-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -102,7 +102,7 @@ env:
 
 jobs:
   build:
-    name: Build V27
+    name: Build V28
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -871,7 +871,7 @@ jobs:
           if leftovers:
               raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
           
-          print("[OK] V27 exact four-file SUSFS reconciliation completed.")
+          print("[OK] V28 exact four-file SUSFS reconciliation completed.")
           print("[OK] task_mmu uses the captured kernel's mmap_read_lock_killable/mmap_read_unlock API.")
           PY
 
@@ -1031,7 +1031,7 @@ jobs:
           require_grep '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux
           require_grep 'KSU_SUSFS' kernel/fs/Makefile
           {
-            echo "=== V27 POST-INLINE SUSFS VALIDATION ==="
+            echo "=== V28 POST-INLINE SUSFS VALIDATION ==="
             echo "kernel_head=$(git -C kernel rev-parse HEAD)"
             echo "ksu_head=$(git -C kernel/KernelSU-Next rev-parse HEAD)"
             echo "ksu_tag=$(git -C kernel/KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
@@ -1138,11 +1138,16 @@ jobs:
               cat "$FW"
             } > "${FW}.ksu_compat_tmp"
             mv "${FW}.ksu_compat_tmp" "$FW"
-            # The 4 lines above shift every original line number down by 4.
+            # The 4 lines above shift every original line number down by 4. The two
+            # remap_file_range() call statements each wrap onto a second line (the closing
+            # ")" and trailing args); both lines of each statement must be handled together,
+            # or the leftover continuation line becomes a dangling "...);" syntax error.
             sed -i \
               -e '113s#.*#    return -EOPNOTSUPP;#' \
               -e '346s#.*#        return -EOPNOTSUPP;#' \
+              -e '347d' \
               -e '351s#.*#        return -EOPNOTSUPP;#' \
+              -e '352d' \
               -e '397d' \
               -e '434,435d' \
               "$FW"
@@ -1173,7 +1178,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V27-LM-G900-KARNAL
+          kernel.string=V28-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1199,7 +1204,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V27-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V28-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1236,20 +1241,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V27 final output"
+      - name: "12. Upload V28 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V27-LM-G900-KARNAL-output
-          path: V27-LM-G900-KARNAL-output.zip
+          name: V28-LM-G900-KARNAL-output
+          path: V28-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V27 flashable ZIPs"
+      - name: "13. Upload V28 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V27-LM-G900-KARNAL-flashable-zips
+          name: V28-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1301,7 +1306,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V27 ==="
+            echo "=== A-Z BUILD RECORD V28 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -1365,16 +1370,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V27 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V28 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V27 complete diagnostics (always)"
+      - name: "15. Upload V28 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V27-LM-G900-KARNAL-complete-logs
+          name: V28-LM-G900-KARNAL-complete-logs
           path: |
-            V27-LM-G900-KARNAL-complete-logs.zip
+            V28-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
