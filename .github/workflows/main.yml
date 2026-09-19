@@ -1,4 +1,4 @@
-name: V12-LM-G900-KARNAL-BUILT
+name: V16-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -35,9 +35,9 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V12
-  OUTPUT_PREFIX: V12-LM-G900-KARNAL
-  # V11 fixes the V9 remote-fetch failure and corrects the SUSFS version/source mismatch:
+  WORKFLOW_VERSION: V16
+  OUTPUT_PREFIX: V16-LM-G900-KARNAL
+  # V16 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
   # 3) discover the actual 4.19 backport filename used by that source
@@ -50,7 +50,7 @@ env:
 
 jobs:
   build:
-    name: Build V12
+    name: Build V16
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -362,19 +362,12 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[7/15] SUSFS ${SUSFS_VERSION} 4.19 backport"
-          rm -rf susfs-backport
-          mkdir -p susfs-backport
-          git -C susfs-backport init -q
-          git -C susfs-backport remote add origin "${SUSFS_BACKPORT_REPO}"
-          : > logs/07-susfs-clone.log
+          echo "::group::[7/15] Integrate SUSFS ${SUSFS_VERSION} + 4.19 backport"
+          mkdir -p logs
 
-          # V10 stopped at a one-shot `git clone` after the runner printed only
-          # "Cloning into 'susfs-backport'...". That is a transport/acquisition
-          # failure, not evidence that the 4.19 patch is incompatible. V15 uses
-          # protocol v2 + complete shallow blob fetches + bounded retries, then fetches
-          # the exact audited commit separately. The patch blob is explicitly
-          # materialized below before any compatibility test.
+          # Exact source pin; no blob filter. Previous runs proved acquisition and
+          # version verification; the remaining issue is source-context adaptation.
+          : > logs/07-susfs-clone.log
           FETCH_OK=0
           for attempt in 1 2 3 4 5; do
             echo "[SUSFS] branch fetch attempt ${attempt}/5" | tee -a logs/07-susfs-clone.log
@@ -385,118 +378,57 @@ jobs:
               FETCH_OK=1
               break
             fi
-            echo "[WARN] SUSFS branch fetch failed on attempt ${attempt}." | tee -a logs/07-susfs-clone.log
             sleep $((attempt * 5))
           done
-          if [ "${FETCH_OK}" -ne 1 ]; then
-            {
-              echo "[ERROR] Unable to fetch SUSFS backport branch ${SUSFS_BACKPORT_REF} after 5 attempts."
-              echo "Remote=${SUSFS_BACKPORT_REPO}"
-              echo "The failure occurred before any SUSFS patch compatibility test."
-              git -C susfs-backport -c protocol.version=2 ls-remote --heads "${SUSFS_BACKPORT_REPO}" "${SUSFS_BACKPORT_REF}" || true
-              tail -n 120 logs/07-susfs-clone.log || true
-            } | tee logs/07-susfs-failure.log
-            exit 1
-          fi
-
+          test "${FETCH_OK}" -eq 1 || { tail -n 160 logs/07-susfs-clone.log; exit 1; }
           git -C susfs-backport checkout --detach "refs/remotes/origin/${SUSFS_BACKPORT_REF}" >> logs/07-susfs-clone.log 2>&1
           SUSFS_BACKPORT_HEAD="$(git -C susfs-backport rev-parse HEAD)"
           echo "branch_head=${SUSFS_BACKPORT_HEAD}" | tee logs/07-susfs-backport-commit.log
-          git -C susfs-backport ls-tree -r --name-only HEAD Patches | tee logs/07-susfs-patches-list.txt
 
-          # V7 searched for "2.2.0" in the filename. The pinned backport repository
-          # actually uses the stable filename Patches/Patch/susfs_patch_to_4.19.patch,
-          # so V7 found zero candidates and stopped before testing the patch.
-          # Pin the audited backport commit so a moving branch cannot silently change
-          # the patch set between runs.
           : > logs/07-susfs-pin-fetch.log
           PIN_OK=0
           for attempt in 1 2 3 4 5; do
             echo "[SUSFS] pinned commit fetch attempt ${attempt}/5" | tee -a logs/07-susfs-pin-fetch.log
             if git -C susfs-backport -c protocol.version=2 -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
-                 fetch --filter=blob:none origin "${SUSFS_BACKPORT_COMMIT}" \
+                 fetch --depth=1 origin "${SUSFS_BACKPORT_COMMIT}" \
                  >> logs/07-susfs-pin-fetch.log 2>&1; then
               PIN_OK=1
               break
             fi
-            echo "[WARN] SUSFS pinned commit fetch failed on attempt ${attempt}." | tee -a logs/07-susfs-pin-fetch.log
             sleep $((attempt * 5))
           done
-          if [ "${PIN_OK}" -ne 1 ]; then
-            echo "[ERROR] Could not fetch pinned SUSFS commit ${SUSFS_BACKPORT_COMMIT}." | tee logs/07-susfs-failure.log
-            tail -n 160 logs/07-susfs-pin-fetch.log | tee -a logs/07-susfs-failure.log || true
-            exit 1
-          fi
+          test "${PIN_OK}" -eq 1 || { tail -n 160 logs/07-susfs-pin-fetch.log; exit 1; }
           git -C susfs-backport checkout --detach "${SUSFS_BACKPORT_COMMIT}" 2>&1 | tee logs/07-susfs-pin-checkout.log
           SUSFS_BACKPORT_RESOLVED="$(git -C susfs-backport rev-parse HEAD)"
           test "${SUSFS_BACKPORT_RESOLVED}" = "${SUSFS_BACKPORT_COMMIT}"
           echo "pinned_commit=${SUSFS_BACKPORT_RESOLVED}" >> logs/07-susfs-backport-commit.log
+          git -C susfs-backport ls-tree -r --name-only HEAD Patches | tee logs/07-susfs-patches-list.txt
 
           mapfile -t CANDIDATES < <(
             git -C susfs-backport ls-tree -r --name-only HEAD Patches |
               grep -Ei '(^|/)susfs_patch_to_4[._-]?19\.patch$|(^|/)50_add_susfs_in_kernel[-_]?4[._-]?19\.patch$|(^|/)susfs.*4[._-]?19.*\.patch$|(^|/)4[._-]?19.*susfs.*\.patch$' |
               sort -u || true
           )
-
-          if [ "${#CANDIDATES[@]}" -eq 0 ]; then
-            echo "[ERROR] No SUSFS 4.19 backport patch was found in the pinned repository." | tee logs/07-susfs-failure.log
-            exit 1
-          fi
-          printf '%s\n' "${CANDIDATES[@]}" | tee logs/07-susfs-candidates.txt
           test "${#CANDIDATES[@]}" -eq 1
           test "${CANDIDATES[0]}" = "${SUSFS_PATCH_PATH}"
+          printf '%s\n' "${CANDIDATES[@]}" | tee logs/07-susfs-candidates.txt
 
-          # The 4.19 patch file itself does not define a SUSFS_VERSION macro.
-          # The authoritative version marker in this backport is the matching
-          # inline-hook script (PATCH_LEVEL=2.3.00). For the kernel patch, pin
-          # the exact audited Git blob SHA so a same-named replacement cannot be
-          # silently accepted.
           TEST_VERSION_PATCH="${CANDIDATES[0]}"
           PATCH_BLOB_SHA256="$(git -C susfs-backport rev-parse "HEAD:${TEST_VERSION_PATCH}")"
-          INLINE_SUSFS_VERSION="$(git -C susfs-backport show 'HEAD:Patches/susfs_inline_hook_patches.sh' | grep -E '^PATCH_LEVEL="[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/; s/\.00$/\.0/' || true)"
-          echo "patch_blob_sha=${PATCH_BLOB_SHA256}" | tee logs/07-susfs-version-check.log
-          echo "expected_patch_blob_sha=${SUSFS_PATCH_BLOB_SHA256}" | tee -a logs/07-susfs-version-check.log
-          echo "inline_hook_declared_susfs=${INLINE_SUSFS_VERSION}" | tee -a logs/07-susfs-version-check.log
+          INLINE_SUSFS_VERSION="$(git -C susfs-backport show 'HEAD:Patches/susfs_inline_hook_patches.sh' | grep -E '^PATCH_LEVEL="[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/; s/\.00$/.0/' || true)"
+          {
+            echo "patch_blob_sha=${PATCH_BLOB_SHA256}"
+            echo "expected_patch_blob_sha=${SUSFS_PATCH_BLOB_SHA256}"
+            echo "inline_hook_declared_susfs=${INLINE_SUSFS_VERSION}"
+          } | tee logs/07-susfs-version-check.log
           test "${PATCH_BLOB_SHA256}" = "${SUSFS_PATCH_BLOB_SHA256}"
           test "${INLINE_SUSFS_VERSION}" = "${SUSFS_VERSION}"
           test "${SUSFS_VERSION}" = "2.3.0"
 
-          # V15: V14 proved the remaining problem is a REAL source-context
-          # mismatch, not acquisition, Git-directory, or blob materialization.
-          #
-          # Direct apply fails in six locations. Git's 3-way merge can apply the
-          # majority of the patch but reports conflicts in:
-          #   fs/namespace.c
-          #   fs/proc/cmdline.c
-          #   fs/proc/task_mmu.c
-          #   fs/super.c
-          #
-          # SUSFS itself documents that kernel patches can differ even for the same
-          # kernel version, so these vendor/CIP changes must be ported rather than
-          # falsely declaring the candidate "compatible".
-          #
-          # V15 strategy:
-          #   1. strict direct check (diagnostic only)
-          #   2. real 3-way apply to retain all clean SUSFS hunks
-          #   3. restore ONLY the conflicted files to the kernel's current version
-          #   4. run GNU patch with a bounded fuzz=2 fallback ONLY on those missing
-          #      SUSFS hunks
-          #   5. reject .rej/.orig/conflict markers and verify the complete SUSFS
-          #      implementation is present before continuing.
           SELECTED_PATCH="${SUSFS_PATCH_PATH}"
-          APPLY_MODE=""
           TEST_PATCH="logs/07-susfs-materialized.patch"
           : > logs/07-susfs-compatibility.log
-
-          # V15 critical fix: V14 verified the Git object but never materialized
-          # the patch file before `cp` tried to read it. That caused:
-          #   cp: cannot stat 'logs/07-susfs-materialized.patch'
-          #
-          # Materialize directly from the pinned Git blob, after proving that the
-          # exact path exists and recording its byte size and content SHA256.
-          # This is intentionally done before ANY compatibility test.
-          echo "[SUSFS] materializing exact pinned 4.19 patch" | tee -a logs/07-susfs-compatibility.log
-          git -C susfs-backport cat-file -e "HEAD:${TEST_VERSION_PATCH}"             2>&1 | tee logs/07-susfs-materialize-check.log
+          git -C susfs-backport cat-file -e "HEAD:${TEST_VERSION_PATCH}" > logs/07-susfs-materialize-check.log 2>&1
           PATCH_BLOB_SIZE="$(git -C susfs-backport cat-file -s "HEAD:${TEST_VERSION_PATCH}")"
           test "${PATCH_BLOB_SIZE}" -gt 0
           git -C susfs-backport cat-file blob "HEAD:${TEST_VERSION_PATCH}" > "${TEST_PATCH}"
@@ -509,22 +441,18 @@ jobs:
             echo "patch_file_sha256=${PATCH_FILE_SHA256}"
           } | tee logs/07-susfs-materialized-info.txt
           cp "${TEST_PATCH}" "logs/07-susfs-candidate-${SUSFS_PATCH_PATH//\//__}.patch"
-          echo "[OK] Exact SUSFS patch materialized: ${PATCH_BLOB_SIZE} bytes"             | tee -a logs/07-susfs-compatibility.log
 
           echo "[SUSFS] strict direct preflight" | tee -a logs/07-susfs-compatibility.log
-          if (cd kernel && git apply --check --whitespace=nowarn "../${TEST_PATCH}") \
-              > logs/07-susfs-direct-check.log 2>&1; then
+          if (cd kernel && git apply --check --whitespace=nowarn "../${TEST_PATCH}") > logs/07-susfs-direct-check.log 2>&1; then
             APPLY_MODE="direct"
-            git -C kernel apply --whitespace=nowarn "../${TEST_PATCH}" \
-              2>&1 | tee logs/07-susfs-apply.log
+            git -C kernel apply --whitespace=nowarn "../${TEST_PATCH}" 2>&1 | tee logs/07-susfs-apply.log
           else
             echo "DIRECT_INCOMPATIBLE=${SUSFS_PATCH_PATH}" | tee -a logs/07-susfs-compatibility.log
             cat logs/07-susfs-direct-check.log | tee -a logs/07-susfs-compatibility.log
 
-            echo "[SUSFS] applying content-aware 3-way merge" | tee -a logs/07-susfs-compatibility.log
+            echo "[SUSFS] content-aware 3-way apply" | tee -a logs/07-susfs-compatibility.log
             set +e
-            git -C kernel apply --3way --whitespace=nowarn "../${TEST_PATCH}" \
-              > logs/07-susfs-3way-apply.log 2>&1
+            git -C kernel apply --3way --whitespace=nowarn "../${TEST_PATCH}" > logs/07-susfs-3way-apply.log 2>&1
             THREEWAY_RC=$?
             set -e
             echo "threeway_rc=${THREEWAY_RC}" | tee -a logs/07-susfs-compatibility.log
@@ -532,77 +460,166 @@ jobs:
 
             mapfile -t CONFLICT_FILES < <(git -C kernel diff --name-only --diff-filter=U)
             printf '%s\n' "${CONFLICT_FILES[@]:-}" | tee logs/07-susfs-conflicted-files.txt
+            EXPECTED_CONFLICTS=(fs/namespace.c fs/proc/cmdline.c fs/proc/task_mmu.c fs/super.c)
 
             if [ "${#CONFLICT_FILES[@]}" -eq 0 ]; then
-              if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git \
-                   > logs/07-susfs-conflict-markers.log 2>&1; then
-                echo "[ERROR] 3-way reported no unmerged index entries but conflict markers remain." \
-                  | tee logs/07-susfs-failure.log
+              if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git > logs/07-susfs-conflict-markers.log 2>&1; then
+                echo "[ERROR] 3-way reported no index conflicts but conflict markers remain." | tee logs/07-susfs-failure.log
                 exit 1
               fi
               APPLY_MODE="3way"
-              cp logs/07-susfs-3way-apply.log logs/07-susfs-selected-3way-check.log
             else
-              echo "[SUSFS] bounded source-port fallback for ${#CONFLICT_FILES[@]} conflicted file(s)" \
-                | tee -a logs/07-susfs-compatibility.log
+              # V16 root fix: NEVER run the entire SUSFS patch again after 3-way.
+              # the prior revision did that and re-patched clean files, producing reversed hunks and
+              # a cascade of .rej/.orig files. Only the four conflicted file sections
+              # are re-applied, then their known source-version differences are ported.
+              if [ "${#CONFLICT_FILES[@]}" -ne 4 ]; then
+                echo "[ERROR] Unexpected SUSFS conflict-file count: ${#CONFLICT_FILES[@]}" | tee logs/07-susfs-failure.log
+                printf '%s\n' "${CONFLICT_FILES[@]}" | tee -a logs/07-susfs-failure.log
+                exit 1
+              fi
+              for f in "${EXPECTED_CONFLICTS[@]}"; do
+                printf '%s\n' "${CONFLICT_FILES[@]}" | grep -Fxq "${f}" || {
+                  echo "[ERROR] Expected conflict file missing: ${f}" | tee logs/07-susfs-failure.log
+                  exit 1
+                }
+              done
 
-              # Preserve the exact conflicted files before resolution.
               for f in "${CONFLICT_FILES[@]}"; do
-                safe="$(printf '%s' "$f" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
-                git -C kernel show ":2:${f}" > "logs/07-susfs-ours-${safe}.txt" 2>&1 || true
-                git -C kernel show ":3:${f}" > "logs/07-susfs-theirs-${safe}.txt" 2>&1 || true
+                safe="$(printf '%s' "${f}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
+                git -C kernel show ":1:${f}" > "logs/07-susfs-base-${safe}.txt" 2>/dev/null || true
+                git -C kernel show ":2:${f}" > "logs/07-susfs-ours-${safe}.txt" 2>/dev/null || true
+                git -C kernel show ":3:${f}" > "logs/07-susfs-theirs-${safe}.txt" 2>/dev/null || true
                 git -C kernel checkout --ours -- "${f}"
                 git -C kernel add -- "${f}"
               done
 
-              # The clean portions of the SUSFS patch are already in the tree.
-              # GNU patch is used only as a bounded context-port mechanism for
-              # the remaining SUSFS hunks. It is NOT allowed to leave rejects.
-              set +e
-              (
-                cd kernel
-                patch -p1 --forward --batch --fuzz=2 \
-                  < "../${TEST_PATCH}"
-              ) > logs/07-susfs-fuzzy-port.log 2>&1
-              PATCH_RC=$?
-              set -e
-              echo "bounded_patch_rc=${PATCH_RC}" | tee -a logs/07-susfs-compatibility.log
-              cat logs/07-susfs-fuzzy-port.log | tee -a logs/07-susfs-compatibility.log
+              : > logs/07-susfs-semantic-port.log
+              for f in "${CONFLICT_FILES[@]}"; do
+                safe="$(printf '%s' "${f}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
+                python3 - "${TEST_PATCH}" "${f}" "logs/07-susfs-file-${safe}.patch" <<'PY'
+          import pathlib, sys
+          patch = pathlib.Path(sys.argv[1]).read_text()
+          target = sys.argv[2]
+          out = pathlib.Path(sys.argv[3])
+          parts = patch.split('diff --git ')
+          needle = f'a/{target} b/{target}'
+          for part in parts[1:]:
+              if part.startswith(needle):
+                  out.write_text('diff --git ' + part)
+                  break
+          else:
+              raise SystemExit(f'No patch section for {target}')
+          PY
+                set +e
+                (cd kernel && patch -p1 --forward --batch --fuzz=2 < "../logs/07-susfs-file-${safe}.patch") > "logs/07-susfs-file-${safe}.apply.log" 2>&1
+                FILE_PATCH_RC=$?
+                set -e
+                cat "logs/07-susfs-file-${safe}.apply.log" | tee -a logs/07-susfs-semantic-port.log
+                echo "${f}: patch_rc=${FILE_PATCH_RC}" | tee -a logs/07-susfs-semantic-port.log
+              done
 
-              if find kernel -type f \( -name '*.rej' -o -name '*.orig' \) \
-                   -print -quit | grep -q .; then
-                echo "[ERROR] SUSFS bounded source-port produced reject/original files." \
-                  | tee logs/07-susfs-failure.log
-                find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print \
-                  | tee -a logs/07-susfs-failure.log
-                exit 1
-              fi
-
-              if [ "${PATCH_RC}" -gt 1 ]; then
-                echo "[ERROR] GNU patch returned fatal status ${PATCH_RC}." \
-                  | tee logs/07-susfs-failure.log
-                exit 1
-              fi
-
-              APPLY_MODE="3way+bounded-port"
+              # These exact adaptations are derived from the backport's own 4.19+ porting
+              # guidance: this LG tree has fs_context mount creation and mmap lock APIs that
+              # differ from the generic patch context. We port only the four known conflicts.
+              python3 - "${GITHUB_WORKSPACE}/kernel" <<'PY' | tee -a logs/07-susfs-semantic-port.log
+          import pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          
+          def rw(rel, fn):
+              p = root / rel
+              p.write_text(fn(p.read_text()))
+          
+          def once(s, marker, block):
+              if block.strip() in s: return s
+              i=s.find(marker)
+              if i<0: raise SystemExit(f'anchor missing: {marker!r}')
+              return s[:i+len(marker)] + block + s[i+len(marker):]
+          
+          def namespace(s):
+              if '#include <linux/susfs_def.h>' not in s:
+                  anchor='#include <linux/fs_context.h>\n' if '#include <linux/fs_context.h>\n' in s else '#include <linux/sched/task.h>\n'
+                  s=once(s,anchor,'#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS\n\n')
+              if '#define CL_COPY_MNT_NS BIT(25)' not in s:
+                  s=once(s,'#include "internal.h"\n','#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n\n#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n')
+              if 'susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none")' not in s:
+                  old='\tsb = fc->root->d_sb;\n\n\tmnt = alloc_vfsmnt(fc->source ?: "none");\n'
+                  new="""\tsb = fc->root->d_sb;\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {\n\t\tif (susfs_is_current_ksu_domain()) {\n\t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none");\n\t\t\tgoto bypass_orig_flow;\n\t\t}\n\t}\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n\tmnt = alloc_vfsmnt(fc->source ?: "none");\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nbypass_orig_flow:\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"""
+                  if old not in s: raise SystemExit('fs/namespace.c: vfs_create_mount anchor missing')
+                  s=s.replace(old,new,1)
+              return s
+          
+          def cmdline(s):
+              if 'extern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);' not in s:
+                  s=once(s,'#include <linux/slab.h>\n','#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\nextern struct static_key_false susfs_is_fake_cmdline_or_bootconfig_buffer_set;\nextern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);\n#endif\n\n')
+              fn='static int cmdline_proc_show(struct seq_file *m, void *v)\n{\n'
+              if 'susfs_is_fake_cmdline_or_bootconfig_buffer_set' not in s[s.find(fn):]:
+                  s=once(s,fn,'#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n\tif (static_branch_likely(&susfs_is_fake_cmdline_or_bootconfig_buffer_set)) {\n\t\tsusfs_spoof_cmdline_or_bootconfig(m);\n\t\tseq_putc(m, \'\\n\');\n\t\treturn 0;\n\t}\n#endif\n')
+              return s
+          
+          def task(s):
+              if 'bypass_orig_flow:' not in s[s.find('static ssize_t pagemap_read'):]:
+                  old="""\t\tret = mmap_read_lock_killable(mm);\n\t\tif (ret)\n\t\t\tgoto out_free;\n\t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);\n\t\tmmap_read_unlock(mm);\n\t\tstart_vaddr = end;"""
+                  new="""\t\tret = mmap_read_lock_killable(mm);\n\t\tif (ret)\n\t\t\tgoto out_free;\n#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\t\tvma = find_vma(mm, start_vaddr);\n\t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\tgoto bypass_orig_flow;\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);\n#ifdef CONFIG_KSU_SUSFS_SUS_MAP\nbypass_orig_flow:\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\t\tmmap_read_unlock(mm);\n\t\tstart_vaddr = end;"""
+                  if old not in s: raise SystemExit('fs/proc/task_mmu.c: pagemap lock/walk anchor missing')
+                  s=s.replace(old,new,1)
+              return s
+          
+          def superc(s):
+              if '#include <linux/susfs_def.h>' not in s:
+                  s=once(s,'#include <linux/user_namespace.h>\n','#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS\n')
+              if 'extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;' not in s:
+                  s=s.replace('#include "internal.h"\n','#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n#include "internal.h"\n',1)
+              return s
+          
+          rw('fs/namespace.c',namespace)
+          rw('fs/proc/cmdline.c',cmdline)
+          rw('fs/proc/task_mmu.c',task)
+          rw('fs/super.c',superc)
+          
+          expected={
+           'fs/namespace.c':['@@ -26,10 +26,21 @@','@@ -1098,7 +1254,22 @@'],
+           'fs/proc/cmdline.c':['@@ -4,8 +4,20 @@'],
+           'fs/proc/task_mmu.c':['@@ -1670,7 +1728,15 @@'],
+           'fs/super.c':['@@ -36,8 +36,16 @@'],
+          }
+          for rel,hs in expected.items():
+              p=root/rel; rej=pathlib.Path(str(p)+'.rej'); orig=pathlib.Path(str(p)+'.orig')
+              if rej.exists():
+                  got=[x.strip() for x in rej.read_text(errors='replace').splitlines() if x.startswith('@@ ')]
+                  for h in hs:
+                      if not any(x.startswith(h) for x in got): raise SystemExit(f'unexpected reject in {rel}: {got}')
+                  rej.unlink()
+              if orig.exists(): orig.unlink()
+          checks={
+           'fs/namespace.c':['#include <linux/susfs_def.h>','CL_COPY_MNT_NS','susfs_alloc_non_unshare_ksu_vfsmnt','copy_flags |= CL_COPY_MNT_NS','susfs_get_non_sus_mnt_id_from_mnt','susfs_get_non_sus_vfsmnt_from_vfsmnt'],
+           'fs/proc/cmdline.c':['susfs_spoof_cmdline_or_bootconfig','susfs_is_fake_cmdline_or_bootconfig_buffer_set'],
+           'fs/proc/task_mmu.c':['susfs_sus_kstat_spoof_show_map_vma','SUSFS_IS_INODE_OPEN_REDIRECT','SUSFS_IS_INODE_SUS_MAP','find_vma(mm, start_vaddr)'],
+           'fs/super.c':['#include <linux/susfs_def.h>','susfs_is_current_ksu_domain','DEFAULT_KSU_MNT_MINOR_DEV'],
+          }
+          for rel,needles in checks.items():
+              s=(root/rel).read_text()
+              for n in needles:
+                  if n not in s: raise SystemExit(f'missing semantic SUSFS marker: {rel}: {n}')
+          print('[OK] V16 semantic source-port resolved all four known conflicts.')
+          PY
+              APPLY_MODE="3way+semantic-port"
+              git -C kernel add -A
             fi
           fi
 
-          # Hard post-apply integrity gates.
           if git -C kernel ls-files -u | grep -q .; then
             echo "[ERROR] SUSFS application left unmerged index entries." | tee logs/07-susfs-failure.log
             git -C kernel status --short | tee -a logs/07-susfs-failure.log
             exit 1
           fi
           if find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "[ERROR] SUSFS application left .rej/.orig files." | tee logs/07-susfs-failure.log
+            echo "[ERROR] SUSFS application left reject/original files." | tee logs/07-susfs-failure.log
             find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
             exit 1
           fi
-          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git \
-               > logs/07-susfs-conflict-markers.log 2>&1; then
-            echo "[ERROR] SUSFS application left merge conflict markers." | tee logs/07-susfs-failure.log
-            cat logs/07-susfs-conflict-markers.log | tee -a logs/07-susfs-failure.log
+          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git > logs/07-susfs-conflict-markers.log 2>&1; then
+            echo "[ERROR] SUSFS application left conflict markers." | tee logs/07-susfs-failure.log
             exit 1
           fi
 
@@ -614,7 +631,6 @@ jobs:
           grep -Rqs 'susfs_is_inode_sus_path\|susfs_fake_qstr_name' kernel/fs/namei.c
           grep -Rqs 'KSU_SUSFS' kernel/fs/Makefile
           git -C kernel diff --check | tee logs/07-susfs-diff-check.log
-          git -C kernel add -A
 
           {
             echo "selected_patch=${SELECTED_PATCH}"
@@ -623,54 +639,32 @@ jobs:
             echo "requested_susfs_version=${SUSFS_VERSION}"
             echo "kernel_version=$(make -s -C kernel kernelversion)"
             echo "kernel_head=$(git -C kernel rev-parse HEAD)"
-            echo "susfs_diffstat:"
-            git -C kernel diff --cached --stat
+            echo "susfs_semantic_port=4-file-v16"
           } | tee logs/07-susfs-selected.txt
 
-          echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE} source-port flow."
-
-          # JackA1ltman's audited non-GKI flow requires the SUSFS inline-hook patch
-          # script in addition to the filesystem backport. This is the missing layer
-          # in V8: the kernel patch alone does not finish the KernelSU/SUSFS hook wiring.
           INLINE_SCRIPT="Patches/susfs_inline_hook_patches.sh"
           test -f "susfs-backport/${INLINE_SCRIPT}"
           cp "susfs-backport/${INLINE_SCRIPT}" logs/07-susfs-inline-hook-patches.sh
           chmod +x logs/07-susfs-inline-hook-patches.sh
           (cd kernel && bash ../logs/07-susfs-inline-hook-patches.sh) 2>&1 | tee logs/07-susfs-inline-hooks.log
 
-          # Never accept an unresolved 3-way merge or patch leftovers.
           if git -C kernel ls-files -u | grep -q .; then
-            echo "[ERROR] SUSFS 3-way merge left unmerged index entries." | tee logs/07-susfs-failure.log
-            git -C kernel status --short | tee -a logs/07-susfs-failure.log
+            echo "[ERROR] Inline SUSFS hook stage left unmerged index entries." | tee logs/07-susfs-failure.log
             exit 1
           fi
           if find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "[ERROR] SUSFS application produced reject/original files." | tee logs/07-susfs-failure.log
+            echo "[ERROR] Inline SUSFS hook stage produced reject/original files." | tee logs/07-susfs-failure.log
             find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
             exit 1
           fi
-          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git > logs/07-susfs-conflict-markers.log 2>&1; then
-            echo "[ERROR] SUSFS application left merge conflict markers." | tee logs/07-susfs-failure.log
-            cat logs/07-susfs-conflict-markers.log | tee -a logs/07-susfs-failure.log
+          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git > logs/07-susfs-conflict-markers-post-inline.log 2>&1; then
+            echo "[ERROR] Inline SUSFS hook stage left conflict markers." | tee logs/07-susfs-failure.log
             exit 1
           fi
-
-          test -f kernel/fs/susfs.c
-          test -f kernel/include/linux/susfs.h
-          test -f kernel/include/linux/susfs_def.h
-          grep -Rqs 'KSU_SUSFS' kernel/fs/susfs.c kernel/include/linux/susfs.h kernel/include/linux/susfs_def.h kernel/drivers/kernelsu
-          grep -Rqs 'config KSU_SUSFS' kernel/drivers/kernelsu kernel/fs kernel/include/linux
-          git -C kernel diff --check | tee logs/07-susfs-diff-check.log
+          git -C kernel diff --check | tee logs/07-susfs-diff-check-post-inline.log
           git -C kernel add -A
-          {
-            echo "selected_patch=${SELECTED_PATCH}"
-            echo "apply_mode=${APPLY_MODE}"
-            echo "susfs_backport_commit=${SUSFS_BACKPORT_RESOLVED}"
-            echo "requested_susfs_version=${SUSFS_VERSION}"
-            echo "kernel_version=$(make -s -C kernel kernelversion)"
-            echo "kernel_head=$(git -C kernel rev-parse HEAD)"
-          } | tee logs/07-susfs-selected.txt
-          echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE} mode without fuzz."
+
+          echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE}."
           echo "::endgroup::"
 
       - name: "8. Configure features and enforce no-removal policy"
@@ -740,7 +734,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V12-LM-G900-KARNAL
+          kernel.string=V16-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -766,7 +760,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V12-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V16-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -803,20 +797,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V15 final output"
+      - name: "12. Upload V16 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V12-LM-G900-KARNAL-output
-          path: V12-LM-G900-KARNAL-output.zip
+          name: V16-LM-G900-KARNAL-output
+          path: V16-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V15 flashable ZIPs"
+      - name: "13. Upload V16 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V12-LM-G900-KARNAL-flashable-zips
+          name: V16-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -831,7 +825,7 @@ jobs:
         run: |
           # Diagnostics must never fail the job a second time. In earlier versions the diagnostic
           # collector itself failed with "sort: write error: Broken pipe", masking
-          # the original CIP failure. V10 writes large inventories to files and only
+          # the original CIP failure. V16 writes large inventories to files and only
           # prints bounded summaries to the Actions console.
           set +e
           mkdir -p diagnostics diagnostics/logs diagnostics/cip-checks
@@ -868,7 +862,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V11 ==="
+            echo "=== A-Z BUILD RECORD V16 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -932,16 +926,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V15 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
+          echo "::notice::V16 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V15 complete diagnostics (always)"
+      - name: "15. Upload V16 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V12-LM-G900-KARNAL-complete-logs
+          name: V16-LM-G900-KARNAL-complete-logs
           path: |
-            V12-LM-G900-KARNAL-complete-logs.zip
+            V16-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
