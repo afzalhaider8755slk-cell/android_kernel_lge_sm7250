@@ -1,4 +1,4 @@
-name: V31-LM-G900-KARNAL-BUILT
+name: V32-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V31
-  OUTPUT_PREFIX: V31-LM-G900-KARNAL
+  WORKFLOW_VERSION: V32
+  OUTPUT_PREFIX: V32-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -102,7 +102,7 @@ env:
 
 jobs:
   build:
-    name: Build V31
+    name: Build V32
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -871,7 +871,7 @@ jobs:
           if leftovers:
               raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
           
-          print("[OK] V31 exact four-file SUSFS reconciliation completed.")
+          print("[OK] V32 exact four-file SUSFS reconciliation completed.")
           print("[OK] task_mmu uses the captured kernel's mmap_read_lock_killable/mmap_read_unlock API.")
           PY
 
@@ -1031,7 +1031,7 @@ jobs:
           require_grep '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux
           require_grep 'KSU_SUSFS' kernel/fs/Makefile
           {
-            echo "=== V31 POST-INLINE SUSFS VALIDATION ==="
+            echo "=== V32 POST-INLINE SUSFS VALIDATION ==="
             echo "kernel_head=$(git -C kernel rev-parse HEAD)"
             echo "ksu_head=$(git -C kernel/KernelSU-Next rev-parse HEAD)"
             echo "ksu_tag=$(git -C kernel/KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
@@ -1153,7 +1153,7 @@ jobs:
               "$FW"
             echo "[FIX] Patched file_wrapper.c: stubbed iopoll/remap_file_range fops for pre-4.20 VFS API"
           fi
-          # V31 FIX 1 — KernelSU-Next v3.3.0 compatibility with this 4.19.325 arm64 tree.
+          # V32 FIX 1 — KernelSU-Next v3.3.0 compatibility with this 4.19.325 arm64 tree.
           # The KSU seccomp cache source references SECCOMP_ARCH_NATIVE_NR (and, with
           # CONFIG_COMPAT, SECCOMP_ARCH_COMPAT_NR), while this older arm64 seccomp header
           # does not provide those architecture definitions. This is a compatibility
@@ -1184,35 +1184,51 @@ jobs:
             echo "[OK] arm64 seccomp architecture/count definitions already present."
           fi
 
-          # V31 FIX 2 — Preserve every Caymanlm touch revision and fix only the duplicate
-          # inclusion that breaks the CN HW Rev 1.0 DT overlay.
-          # lito-caymanlm_lao_com.dtsi already includes lito-caymanlm_lao_com-touch.dtsi,
-          # while lito-caymanlm_lao_com-touch_rev-1.0.dtsi includes common-touch.dtsi again.
-          # common-touch.dtsi defines touch_pm8150l_gpio_default, so the second inclusion
-          # is invalid for DTC. An include guard prevents only the duplicate definitions;
-          # revision-specific nodes in touch_rev-1.0 remain untouched.
-          TOUCH_COMMON="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"
-          TOUCH_GUARD="__LGE_CAYMANLM_COMMON_TOUCH_DTSI__"
-          if ! grep -q "^#ifndef ${TOUCH_GUARD}$" "$TOUCH_COMMON"; then
-            {
-              echo "#ifndef ${TOUCH_GUARD}"
-              echo "#define ${TOUCH_GUARD}"
-              cat "$TOUCH_COMMON"
-              echo
-              echo "#endif /* ${TOUCH_GUARD} */"
-            } > "${TOUCH_COMMON}.compat.tmp"
-            mv "${TOUCH_COMMON}.compat.tmp" "$TOUCH_COMMON"
-            echo "[FIX] Added guarded common-touch.dtsi inclusion; no touch revision was removed."
+          # V32 FIX 1 — Fix the actual DTC failure without removing any touch revision.
+          # The CN Rev-1.0 overlay includes lito-caymanlm_lao_com.dtsi, which already
+          # includes lito-caymanlm_lao_com-touch.dtsi. That file includes
+          # lito-caymanlm_common-touch.dtsi. The Rev-1.0 touch wrapper then included the
+          # same common-touch.dtsi a second time. The common file defines
+          # touch_pm8150l_gpio_default, so the overlay remained invalid in V32.
+          # V32's guard attempt did not clear the actual DTC failure. V32 therefore
+          # removes ONLY the redundant include directive from the Rev-1.0 wrapper.
+          # The common touch definitions remain included once through the normal touch
+          # file, and every Rev-1.0 node/status change remains untouched.
+          TOUCH_REV="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-touch_rev-1.0.dtsi"
+          if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV"; then
+            sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$TOUCH_REV"
+            echo "[FIX] Removed only the redundant common-touch include; no touch node/revision was removed."
           else
-            echo "[OK] common-touch.dtsi V31 include guard already present."
+            echo "[OK] Redundant common-touch include is already absent."
           fi
 
-          # Do not invoke a standalone DT overlay target here.
-          # The V28 failure occurred inside the real dtbs phase, and the source-level
-          # duplicate-include fix above must be exercised by that normal build path.
-          # A standalone target invocation is not exported by the vendor/lge Kbuild
-          # hierarchy and can fail with "No rule to make target" before Kbuild reaches DTC.
-          echo "[CHECK] DT overlay fix will be verified by the normal kernel dtbs build."
+          # V32 FIX 2 — KernelSU-Next v3.3.0 expects the newer UAPI mount.h header.
+          # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
+          # su_mount_ns.c includes <uapi/linux/mount.h> for MS_PRIVATE and MS_REC.
+          # Add only those missing compatibility definitions; no mount namespace code
+          # or KernelSU feature is disabled.
+          MOUNT_UAPI="include/uapi/linux/mount.h"
+          if [ ! -f "$MOUNT_UAPI" ]; then
+            mkdir -p include/uapi/linux
+            cat > "$MOUNT_UAPI" <<'EOF_MOUNT'
+          #ifndef _UAPI_LINUX_MOUNT_H
+          #define _UAPI_LINUX_MOUNT_H
+          #ifndef MS_REC
+          #define MS_REC 16384
+          #endif
+          #ifndef MS_PRIVATE
+          #define MS_PRIVATE (1 << 18)
+          #endif
+          #endif /* _UAPI_LINUX_MOUNT_H */
+          EOF_MOUNT
+            echo "[FIX] Added 4.19 UAPI mount.h compatibility definitions for KernelSU su_mount_ns.c"
+          else
+            echo "[OK] include/uapi/linux/mount.h already exists."
+          fi
+
+          # Do not invoke a standalone DT overlay target. The real dtbs phase below is
+          # the authoritative verification path and preserves all existing overlays.
+          echo "[CHECK] DT and KernelSU compatibility fixes will be verified by the normal kernel build."
 
           make O=out -j"$(nproc)" CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++ 2>&1 | tee ../logs/09-kernel-build.log
           test -s out/arch/arm64/boot/Image
@@ -1239,7 +1255,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V31-LM-G900-KARNAL
+          kernel.string=V32-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1265,7 +1281,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V31-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V32-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1302,20 +1318,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V31 final output"
+      - name: "12. Upload V32 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V31-LM-G900-KARNAL-output
-          path: V31-LM-G900-KARNAL-output.zip
+          name: V32-LM-G900-KARNAL-output
+          path: V32-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V31 flashable ZIPs"
+      - name: "13. Upload V32 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V31-LM-G900-KARNAL-flashable-zips
+          name: V32-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1367,7 +1383,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V31 ==="
+            echo "=== A-Z BUILD RECORD V32 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -1431,16 +1447,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V31 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V32 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V31 complete diagnostics (always)"
+      - name: "15. Upload V32 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V31-LM-G900-KARNAL-complete-logs
+          name: V32-LM-G900-KARNAL-complete-logs
           path: |
-            V31-LM-G900-KARNAL-complete-logs.zip
+            V32-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
