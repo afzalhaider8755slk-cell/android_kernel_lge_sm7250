@@ -1087,6 +1087,31 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
+          # FIX: KernelSU-Next's drivers/kernelsu/feature/sucompat.c does
+          # `#include <linux/minmax.h>`, a header that only exists in upstream kernels
+          # much newer than this 4.19.325 CIP tree, so the build failed with:
+          #   fatal error: 'linux/minmax.h' file not found
+          # This adds that header only if it is missing (pure addition, nothing existing
+          # is touched or removed). It pulls in the tree's own linux/kernel.h, which on
+          # 4.19 already defines min/max/min_t/max_t/clamp/etc., and adds the one helper
+          # (in_range) that 4.19's kernel.h does not have, matching upstream's definition.
+          if [ ! -f include/linux/minmax.h ]; then
+            mkdir -p include/linux
+            {
+              echo '#ifndef _LINUX_MINMAX_H'
+              echo '#define _LINUX_MINMAX_H'
+              echo ''
+              echo '#include <linux/kernel.h>'
+              echo ''
+              echo '#ifndef in_range'
+              echo '#define in_range(val, start, len) \'
+              echo '    ((unsigned long)(val) - (unsigned long)(start) < (unsigned long)(len))'
+              echo '#endif'
+              echo ''
+              echo '#endif /* _LINUX_MINMAX_H */'
+            } > include/linux/minmax.h
+            echo "[FIX] Added missing include/linux/minmax.h compatibility header for KernelSU-Next"
+          fi
           make O=out -j"$(nproc)" CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++ 2>&1 | tee ../logs/09-kernel-build.log
           test -s out/arch/arm64/boot/Image
           sha256sum out/arch/arm64/boot/Image | tee ../logs/output-image.sha256
