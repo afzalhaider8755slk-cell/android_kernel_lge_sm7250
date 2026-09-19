@@ -461,109 +461,151 @@ jobs:
           test "${INLINE_SUSFS_VERSION}" = "${SUSFS_VERSION}"
           test "${SUSFS_VERSION}" = "2.3.0"
 
-          # The V8 log proved that the patch is semantically the expected SUSFS patch,
-          # but direct patch(1) application fails after CIP because CIP legitimately
-          # changed several of the same VFS/proc/mm call sites. V10 therefore performs
-          # two safe modes in order:
-          #   A) strict direct git apply --check (no fuzz)
-          #   B) Git's content-aware 3-way merge using the current staged tree as ours
-          # A 3-way merge is still strict: unresolved conflicts are rejected and
-          # never accepted into the build.
-          SELECTED_PATCH=""
+          # V14: the V13 log proves the remaining problem is a REAL source-context
+          # mismatch, not acquisition, Git-directory, or blob materialization.
+          #
+          # Direct apply fails in six locations. Git's 3-way merge can apply the
+          # majority of the patch but reports conflicts in:
+          #   fs/namespace.c
+          #   fs/proc/cmdline.c
+          #   fs/proc/task_mmu.c
+          #   fs/super.c
+          #
+          # SUSFS itself documents that kernel patches can differ even for the same
+          # kernel version, so these vendor/CIP changes must be ported rather than
+          # falsely declaring the candidate "compatible".
+          #
+          # V14 strategy:
+          #   1. strict direct check (diagnostic only)
+          #   2. real 3-way apply to retain all clean SUSFS hunks
+          #   3. restore ONLY the conflicted files to the kernel's current version
+          #   4. run GNU patch with a bounded fuzz=2 fallback ONLY on those missing
+          #      SUSFS hunks
+          #   5. reject .rej/.orig/conflict markers and verify the complete SUSFS
+          #      implementation is present before continuing.
+          SELECTED_PATCH="${SUSFS_PATCH_PATH}"
           APPLY_MODE=""
-          rm -f logs/07-susfs-candidate-*.patch logs/07-susfs-candidate-*.check logs/07-susfs-candidate-*.3way
+          TEST_PATCH="logs/07-susfs-materialized.patch"
           : > logs/07-susfs-compatibility.log
+          cp "${TEST_PATCH}" logs/07-susfs-candidate-${SUSFS_PATCH_PATH//\//__}.patch
 
-          # Materialize the exact patch blob before compatibility testing.
-          # V11 used a blob:none partial clone. The commit/tree metadata was
-          # available, but `git show HEAD:<patch>` could require a lazy blob fetch
-          # at exactly this point and terminate the step before any compatibility
-          # log was written. V12 deliberately uses a full shallow blob fetch.
-          test -f susfs-backport/.git/HEAD
-          git -C susfs-backport cat-file -e "HEAD:${SUSFS_PATCH_PATH}" 2> logs/07-susfs-blob-check.log
-          git -C susfs-backport cat-file -s "HEAD:${SUSFS_PATCH_PATH}" | tee logs/07-susfs-blob-size.log
-          git -C susfs-backport show "HEAD:${SUSFS_PATCH_PATH}" > logs/07-susfs-materialized.patch
-          test -s logs/07-susfs-materialized.patch
-          sha256sum logs/07-susfs-materialized.patch | tee logs/07-susfs-materialized.sha256
-          grep -q '^diff --git a/fs/susfs.c b/fs/susfs.c' logs/07-susfs-materialized.patch
-          grep -q '^diff --git a/include/linux/susfs.h b/include/linux/susfs.h' logs/07-susfs-materialized.patch
-          grep -q 'CONFIG_KSU_SUSFS' logs/07-susfs-materialized.patch
+          echo "[SUSFS] strict direct preflight" | tee -a logs/07-susfs-compatibility.log
+          if (cd kernel && git apply --check --whitespace=nowarn "../${TEST_PATCH}") \
+              > logs/07-susfs-direct-check.log 2>&1; then
+            APPLY_MODE="direct"
+            git -C kernel apply --whitespace=nowarn "../${TEST_PATCH}" \
+              2>&1 | tee logs/07-susfs-apply.log
+          else
+            echo "DIRECT_INCOMPATIBLE=${SUSFS_PATCH_PATH}" | tee -a logs/07-susfs-compatibility.log
+            cat logs/07-susfs-direct-check.log | tee -a logs/07-susfs-compatibility.log
 
-          # IMPORTANT: the GitHub Actions workspace is NOT the kernel Git repository.
-          # The actual repository is ./kernel. V12 used `git add -A` from workspace root,
-          # which caused:
-          #   fatal: not a git repository (or any of the parent directories): .git
-          # immediately after the 143514-byte SUSFS blob check. That is the exact V12
-          # failure shown in the uploaded log.
-          # Stage the already validated CIP + KernelSU-Next source modifications in the
-          # actual kernel repository so git apply --3way has the correct "ours" index.
-          git -C kernel rev-parse --is-inside-work-tree | tee logs/07-kernel-repo-check.log
-          git -C kernel add -A
-          git -C kernel diff --cached --check | tee logs/07-kernel-staged-diff-check.log
-          git -C kernel status --short | tee logs/07-kernel-staged-status.log
+            echo "[SUSFS] applying content-aware 3-way merge" | tee -a logs/07-susfs-compatibility.log
+            set +e
+            git -C kernel apply --3way --whitespace=nowarn "../${TEST_PATCH}" \
+              > logs/07-susfs-3way-apply.log 2>&1
+            THREEWAY_RC=$?
+            set -e
+            echo "threeway_rc=${THREEWAY_RC}" | tee -a logs/07-susfs-compatibility.log
+            cat logs/07-susfs-3way-apply.log | tee -a logs/07-susfs-compatibility.log
 
-          for PATCH_PATH in "${CANDIDATES[@]}"; do
-            SAFE_NAME="$(printf '%s' "${PATCH_PATH}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
-            TEST_PATCH="logs/07-susfs-candidate-${SAFE_NAME}.patch"
-            TEST_LOG="logs/07-susfs-candidate-${SAFE_NAME}.check"
-            TEST_3WAY="logs/07-susfs-candidate-${SAFE_NAME}.3way"
-            cp logs/07-susfs-materialized.patch "${TEST_PATCH}"
+            mapfile -t CONFLICT_FILES < <(git -C kernel diff --name-only --diff-filter=U)
+            printf '%s\n' "${CONFLICT_FILES[@]:-}" | tee logs/07-susfs-conflicted-files.txt
 
-            # The patch must contain the core SUSFS implementation and public header.
-            echo "[SUSFS] testing ${PATCH_PATH}" | tee -a logs/07-susfs-compatibility.log
-            if ! grep -Eq 'diff --git a/fs/susfs\.c b/fs/susfs\.c' "${TEST_PATCH}" ||
-               ! grep -Eq 'diff --git a/include/linux/susfs\.h b/include/linux/susfs\.h' "${TEST_PATCH}" ||
-               ! grep -Eq 'CONFIG_KSU_SUSFS|config KSU_SUSFS' "${TEST_PATCH}"; then
-              echo "INCOMPATIBLE=${PATCH_PATH} reason=not-a-complete-susfs-patch" | tee -a logs/07-susfs-compatibility.log
-              continue
-            fi
-
-            # First: strict, zero-fuzz direct check.
-            if (cd kernel && git apply --check --whitespace=nowarn "../${TEST_PATCH}") > "${TEST_LOG}" 2>&1; then
-              SELECTED_PATCH="${PATCH_PATH}"
-              APPLY_MODE="direct"
-              cp "${TEST_PATCH}" logs/07-susfs-selected.patch
-              cp "${TEST_LOG}" logs/07-susfs-selected-check.log
-              echo "COMPATIBLE=${PATCH_PATH} mode=direct" | tee -a logs/07-susfs-compatibility.log
-              break
-            fi
-
-            echo "DIRECT_INCOMPATIBLE=${PATCH_PATH}" | tee -a logs/07-susfs-compatibility.log
-            cat "${TEST_LOG}" >> logs/07-susfs-compatibility.log
-
-            # Second: content-aware 3-way preflight. Git may return 0 from
-            # --check even when it reports "Applied patch ... with conflicts", so
-            # inspect the preflight log as well as the exit status.
-            if (cd kernel && git apply --3way --check --whitespace=nowarn "../${TEST_PATCH}") > "${TEST_3WAY}" 2>&1; then
-              if ! grep -Eiq "with conflicts|CONFLICT|error:" "${TEST_3WAY}"; then
-                SELECTED_PATCH="${PATCH_PATH}"
-                APPLY_MODE="3way"
-                cp "${TEST_PATCH}" logs/07-susfs-selected.patch
-                cp "${TEST_3WAY}" logs/07-susfs-selected-3way-check.log
-                echo "COMPATIBLE=${PATCH_PATH} mode=3way" | tee -a logs/07-susfs-compatibility.log
-                break
+            if [ "${#CONFLICT_FILES[@]}" -eq 0 ]; then
+              if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git \
+                   > logs/07-susfs-conflict-markers.log 2>&1; then
+                echo "[ERROR] 3-way reported no unmerged index entries but conflict markers remain." \
+                  | tee logs/07-susfs-failure.log
+                exit 1
               fi
+              APPLY_MODE="3way"
+              cp logs/07-susfs-3way-apply.log logs/07-susfs-selected-3way-check.log
+            else
+              echo "[SUSFS] bounded source-port fallback for ${#CONFLICT_FILES[@]} conflicted file(s)" \
+                | tee -a logs/07-susfs-compatibility.log
+
+              # Preserve the exact conflicted files before resolution.
+              for f in "${CONFLICT_FILES[@]}"; do
+                safe="$(printf '%s' "$f" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
+                git -C kernel show ":2:${f}" > "logs/07-susfs-ours-${safe}.txt" 2>&1 || true
+                git -C kernel show ":3:${f}" > "logs/07-susfs-theirs-${safe}.txt" 2>&1 || true
+                git -C kernel checkout --ours -- "${f}"
+                git -C kernel add -- "${f}"
+              done
+
+              # The clean portions of the SUSFS patch are already in the tree.
+              # GNU patch is used only as a bounded context-port mechanism for
+              # the remaining SUSFS hunks. It is NOT allowed to leave rejects.
+              set +e
+              (
+                cd kernel
+                patch -p1 --forward --batch --fuzz=2 \
+                  < "../${TEST_PATCH}"
+              ) > logs/07-susfs-fuzzy-port.log 2>&1
+              PATCH_RC=$?
+              set -e
+              echo "bounded_patch_rc=${PATCH_RC}" | tee -a logs/07-susfs-compatibility.log
+              cat logs/07-susfs-fuzzy-port.log | tee -a logs/07-susfs-compatibility.log
+
+              if find kernel -type f \( -name '*.rej' -o -name '*.orig' \) \
+                   -print -quit | grep -q .; then
+                echo "[ERROR] SUSFS bounded source-port produced reject/original files." \
+                  | tee logs/07-susfs-failure.log
+                find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print \
+                  | tee -a logs/07-susfs-failure.log
+                exit 1
+              fi
+
+              if [ "${PATCH_RC}" -gt 1 ]; then
+                echo "[ERROR] GNU patch returned fatal status ${PATCH_RC}." \
+                  | tee logs/07-susfs-failure.log
+                exit 1
+              fi
+
+              APPLY_MODE="3way+bounded-port"
             fi
+          fi
 
-            echo "THREEWAY_INCOMPATIBLE=${PATCH_PATH}" | tee -a logs/07-susfs-compatibility.log
-            cat "${TEST_3WAY}" >> logs/07-susfs-compatibility.log
-          done
-
-          if [ -z "${SELECTED_PATCH}" ]; then
-            {
-              echo "[ERROR] No SUSFS 4.19 candidate is compatible with the CIP + KernelSU-Next tree."
-              echo "Direct zero-fuzz apply and Git 3-way preflight were both rejected."
-              echo "The V8 failure was a genuine source-context mismatch, not a filename-discovery issue."
-              echo "See logs/07-susfs-candidate-*.check, logs/07-susfs-candidate-*.3way and logs/07-susfs-compatibility.log."
-            } | tee logs/07-susfs-failure.log
+          # Hard post-apply integrity gates.
+          if git -C kernel ls-files -u | grep -q .; then
+            echo "[ERROR] SUSFS application left unmerged index entries." | tee logs/07-susfs-failure.log
+            git -C kernel status --short | tee -a logs/07-susfs-failure.log
+            exit 1
+          fi
+          if find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+            echo "[ERROR] SUSFS application left .rej/.orig files." | tee logs/07-susfs-failure.log
+            find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
+            exit 1
+          fi
+          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git \
+               > logs/07-susfs-conflict-markers.log 2>&1; then
+            echo "[ERROR] SUSFS application left merge conflict markers." | tee logs/07-susfs-failure.log
+            cat logs/07-susfs-conflict-markers.log | tee -a logs/07-susfs-failure.log
             exit 1
           fi
 
-          if [ "${APPLY_MODE}" = "direct" ]; then
-            git -C kernel apply --whitespace=nowarn "../logs/07-susfs-selected.patch" 2>&1 | tee logs/07-susfs-apply.log
-          else
-            git -C kernel apply --3way --whitespace=nowarn "../logs/07-susfs-selected.patch" 2>&1 | tee logs/07-susfs-apply.log
-          fi
+          test -f kernel/fs/susfs.c
+          test -f kernel/include/linux/susfs.h
+          test -f kernel/include/linux/susfs_def.h
+          grep -Rqs 'KSU_SUSFS' kernel/fs/susfs.c kernel/include/linux/susfs.h kernel/include/linux/susfs_def.h kernel/drivers/kernelsu
+          grep -Rqs 'config KSU_SUSFS' kernel/drivers/kernelsu kernel/fs kernel/include/linux
+          grep -Rqs 'susfs_is_inode_sus_path\|susfs_fake_qstr_name' kernel/fs/namei.c
+          grep -Rqs 'KSU_SUSFS' kernel/fs/Makefile
+          git -C kernel diff --check | tee logs/07-susfs-diff-check.log
+          git -C kernel add -A
+
+          {
+            echo "selected_patch=${SELECTED_PATCH}"
+            echo "apply_mode=${APPLY_MODE}"
+            echo "susfs_backport_commit=${SUSFS_BACKPORT_RESOLVED}"
+            echo "requested_susfs_version=${SUSFS_VERSION}"
+            echo "kernel_version=$(make -s -C kernel kernelversion)"
+            echo "kernel_head=$(git -C kernel rev-parse HEAD)"
+            echo "susfs_diffstat:"
+            git -C kernel diff --cached --stat
+          } | tee logs/07-susfs-selected.txt
+
+          echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE} source-port flow."
 
           # JackA1ltman's audited non-GKI flow requires the SUSFS inline-hook patch
           # script in addition to the filesystem backport. This is the missing layer
@@ -739,7 +781,7 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V11 final output"
+      - name: "12. Upload V14 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
@@ -871,7 +913,7 @@ jobs:
           echo "::notice::V11 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, compatibility fallback and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V11 complete diagnostics (always)"
+      - name: "15. Upload V14 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
