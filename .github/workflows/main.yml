@@ -489,10 +489,18 @@ jobs:
           grep -q '^diff --git a/include/linux/susfs.h b/include/linux/susfs.h' logs/07-susfs-materialized.patch
           grep -q 'CONFIG_KSU_SUSFS' logs/07-susfs-materialized.patch
 
-          # Stage the already validated CIP + KernelSU-Next source modifications so
-          # git apply --3way has a correct 'ours' tree and can use the patch's blob
-          # identities for common-base reconstruction.
-          git add -A
+          # IMPORTANT: the GitHub Actions workspace is NOT the kernel Git repository.
+          # The actual repository is ./kernel. V12 used `git add -A` from workspace root,
+          # which caused:
+          #   fatal: not a git repository (or any of the parent directories): .git
+          # immediately after the 143514-byte SUSFS blob check. That is the exact V12
+          # failure shown in the uploaded log.
+          # Stage the already validated CIP + KernelSU-Next source modifications in the
+          # actual kernel repository so git apply --3way has the correct "ours" index.
+          git -C kernel rev-parse --is-inside-work-tree | tee logs/07-kernel-repo-check.log
+          git -C kernel add -A
+          git -C kernel diff --cached --check | tee logs/07-kernel-staged-diff-check.log
+          git -C kernel status --short | tee logs/07-kernel-staged-status.log
 
           for PATCH_PATH in "${CANDIDATES[@]}"; do
             SAFE_NAME="$(printf '%s' "${PATCH_PATH}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
