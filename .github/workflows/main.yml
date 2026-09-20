@@ -1,4 +1,4 @@
-name: V40-LM-G900-KARNAL-BUILT
+name: V41-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -67,8 +67,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V40
-  OUTPUT_PREFIX: V40-LM-G900-KARNAL
+  WORKFLOW_VERSION: V41
+  OUTPUT_PREFIX: V41-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -140,9 +140,24 @@ env:
   # 5) The last lines of a failed build are harmless CC lines; Step 9 now prints an error summary at the
   #    end of the log.
 
+  # V41 (built from the complete V40 run-479 logs; the V40 pre-compile did its job and listed everything):
+  # 1) ~7 of the "errors" were `'flask.h' file not found` in sucompat.c, file_wrapper.c, selinux.c, rules.c,
+  #    sepolicy.c and selinux_hide.c. They were NOT real: flask.h/av_permissions.h are generated while
+  #    security/selinux/ is built, and the V40 pre-compile built drivers/kernelsu before that (the same
+  #    files had compiled fine in the V39 full build). V41 builds security/selinux/ first. This also removes
+  #    the same ordering race from the real build.
+  # 2) supercall/dispatch.c (6 errors): tasklist_lock, init_task, task_pgrp(), task_session() are only
+  #    visible through <linux/sched/task.h> and <linux/sched/signal.h> on 4.19. V41 adds those includes.
+  # 3) supercall/supercall.c: TWA_RESUME does not exist before Linux 5.7 (4.19 task_work_add() takes a
+  #    bool). V41 uses the same KSU_TASK_WORK_RESUME compat macro V35 already added for allowlist.c.
+  # 4) DTC finally has a real message (logs/09b-dtc-verbose.txt): ERROR (duplicate_label) camera_therm_default
+  #    and bmr_w_therm_default, defined in both /fragment@18 and /fragment@153 of the CN overlay. It is not the
+  #    touch include. The Image build does not depend on it; Step 9b now also lists which .dtsi files
+  #    define those labels (logs/09b-dup-label-sources.txt) so the exact duplicate include can be removed.
+
 jobs:
   build:
-    name: Build V40
+    name: Build V41
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1652,7 +1667,7 @@ jobs:
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V40 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V41 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -1821,14 +1836,75 @@ jobs:
             echo "[INFO] sepolicy.c pre-5.7 compat not needed or file not present"
           fi
 
+          # V41 FIX 1: supercall/dispatch.c uses tasklist_lock, init_task, task_pgrp() and task_session().
+          # On 4.19 these are declared only in <linux/sched/task.h> / <linux/sched/signal.h>.
+          DP="drivers/kernelsu/supercall/dispatch.c"
+          if [ -f "$DP" ] && ! grep -q "V41 compat" "$DP"; then
+            python3 - "$DP" <<'PY_DISPATCH'
+          import re, sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          add = ("/* V41 compat: on 4.19 tasklist_lock/init_task and task_pgrp()/task_session() are only\n"
+                 " * visible through the split sched headers (newer kernels pull them in implicitly). */\n"
+                 "#include <linux/sched/signal.h>\n"
+                 "#include <linux/sched/task.h>\n")
+          s2, n = re.subn(r"^(#include\b)", lambda m: add + m.group(1), s, count=1, flags=re.M)
+          if n != 1:
+              raise SystemExit("no #include line found in dispatch.c")
+          p.write_text(s2)
+          print("[FIX] dispatch.c: added <linux/sched/signal.h> and <linux/sched/task.h>")
+          PY_DISPATCH
+          fi
+
+          # V41 FIX 2: supercall/supercall.c passes TWA_RESUME to task_work_add(); 4.19 has a bool instead.
+          SCP="drivers/kernelsu/supercall/supercall.c"
+          if [ -f "$SCP" ] && grep -q "TWA_RESUME" "$SCP" && ! grep -q "V41 compat" "$SCP"; then
+            python3 - "$SCP" <<'PY_SUPERCALL'
+          import re, sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          s = p.read_text().replace("TWA_RESUME", "KSU_TASK_WORK_RESUME")
+          add = """/* V41 compat: TWA_RESUME (Linux 5.7+) does not exist on 4.19, where task_work_add() takes a bool. */
+          #include <linux/version.h>
+          #include <linux/task_work.h>
+          #ifndef KSU_TASK_WORK_RESUME
+          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
+          #define KSU_TASK_WORK_RESUME TWA_RESUME
+          #else
+          #define KSU_TASK_WORK_RESUME true
+          #endif
+          #endif
+          """
+          s2, n = re.subn(r"^(#include\b)", lambda m: add + m.group(1), s, count=1, flags=re.M)
+          if n != 1:
+              raise SystemExit("no #include line found in supercall.c")
+          p.write_text(s2)
+          print("[FIX] supercall.c: TWA_RESUME -> KSU_TASK_WORK_RESUME compat")
+          PY_SUPERCALL
+          fi
+
           # V40 FIX 3: compile ALL of drivers/kernelsu with keep-going first so every remaining
           # KernelSU/4.19 incompatibility is listed in one run instead of one per 8-minute build.
-          echo "[V40] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
+          echo "[V41] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
           if ! make "${MAKE_ARGS[@]}" -j"$(nproc)" prepare > ../logs/09a-prepare.log 2>&1; then
             tail -60 ../logs/09a-prepare.log
             echo "[ERROR] make prepare failed (see logs/09a-prepare.log)"
             exit 1
           fi
+          # V41: flask.h/av_permissions.h are generated while security/selinux/ is built and drivers/kernelsu
+          # includes them. Without this step the pre-compile reported 7 false 'flask.h not found' errors.
+          echo "[V41] Building security/selinux first (generates flask.h and av_permissions.h)"
+          set +e
+          make "${MAKE_ARGS[@]}" -k -j"$(nproc)" security/selinux/ 2>&1 | tee ../logs/09a-selinux.log
+          SEL_RC=${PIPESTATUS[0]}
+          set -e
+          if [ "$SEL_RC" -ne 0 ]; then
+            summarize_errors ../logs/09a-selinux.log
+            echo "[ERROR] security/selinux failed to build (see logs/09a-selinux.log)"
+            exit 1
+          fi
+          test -f out/security/selinux/flask.h || echo "[WARN] out/security/selinux/flask.h not found after building security/selinux"
           set +e
           make "${MAKE_ARGS[@]}" -k -j"$(nproc)" drivers/kernelsu/ 2>&1 | tee ../logs/09a-kernelsu-precompile.log
           PRE_RC=${PIPESTATUS[0]}
@@ -1899,6 +1975,9 @@ jobs:
               -i arch/arm64/boot/dts/vendor/lge -i arch/arm64/boot/dts/vendor -i arch/arm64/boot/dts -i include \
               "$TMP" > ../logs/09b-dtc-verbose.txt 2>&1
             head -60 ../logs/09b-dtc-verbose.txt
+            echo "--- which files define the duplicated labels (cpp line markers) ---"
+            awk '/^# [0-9]+ "/{f=$3} /camera_therm_default:|bmr_w_therm_default:/{print f " : " $0}' "$TMP" | tee ../logs/09b-dup-label-sources.txt
+            grep -n '^# 1 ".*therm.*"' "$TMP" | head -40 | tee ../logs/09b-therm-includes.txt
           else
             echo "[INFO] preprocessed overlay .dts.tmp not found; see logs/09b-dtbs-diagnostic.log"
           fi
@@ -1919,7 +1998,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V40-LM-G900-KARNAL
+          kernel.string=V41-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1945,7 +2024,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V40-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V41-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1982,20 +2061,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V40 final output"
+      - name: "12. Upload V41 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V40-LM-G900-KARNAL-output
-          path: V40-LM-G900-KARNAL-output.zip
+          name: V41-LM-G900-KARNAL-output
+          path: V41-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V40 flashable ZIPs"
+      - name: "13. Upload V41 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V40-LM-G900-KARNAL-flashable-zips
+          name: V41-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2095,7 +2174,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V40 ==="
+            echo "=== A-Z BUILD RECORD V41 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -2159,16 +2238,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V40 diagnostics collected; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V41 diagnostics collected; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V40 complete diagnostics (always)"
+      - name: "15. Upload V41 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V40-LM-G900-KARNAL-complete-logs
+          name: V41-LM-G900-KARNAL-complete-logs
           path: |
-            V40-LM-G900-KARNAL-complete-logs.zip
+            V41-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
