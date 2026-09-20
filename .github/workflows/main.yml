@@ -1,4 +1,4 @@
-name: V48-LM-G900-KARNAL-BUILT
+name: V49-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -70,8 +70,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V48
-  OUTPUT_PREFIX: V48-LM-G900-KARNAL
+  WORKFLOW_VERSION: V49
+  OUTPUT_PREFIX: V49-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1931,10 +1931,10 @@ jobs:
           fi
           # V41: flask.h/av_permissions.h are generated while security/selinux/ is built and drivers/kernelsu
           # includes them. Without this step the pre-compile reported 7 false 'flask.h not found' errors.
-          # V48 DT PREFLIGHT — validate the exact CN Rev-1.0 overlay against the
+          # V49 DT PREFLIGHT — validate the exact CN Rev-1.0 overlay against the
           # post-fix workspace. The always-on diagnostic source snapshot can be captured
           # before the Step-9 source edits, so it is not authoritative for the final tree.
-          CN_DTBO_TARGET="arch/arm64/boot/dts/vendor/lge/lito-caymanlm_cn-rev-1.0_overlay.dtbo"
+          CN_DTBO_TARGET="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_cn-rev-1.0_overlay.dtbo"
           while IFS= read -r -d '' TOUCH_CHECK; do
             if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_CHECK"; then
               echo "[ERROR] V48 DT preflight: redundant common-touch include remains: $TOUCH_CHECK"
@@ -1947,18 +1947,24 @@ jobs:
             echo "[ERROR] V48 DT preflight: old board-specific thermal labels remain in $LAO_PM_PREFLIGHT"
             exit 1
           fi
-          echo "[OK] V48 DT source reconciliation passed before CN overlay compilation."
+          echo "[OK] V49 DT source reconciliation passed before CN overlay compilation."
+          CN_DTS_SOURCE="${CN_DTBO_TARGET%.dtbo}.dts"
+          if [ ! -f "$CN_DTS_SOURCE" ]; then
+            echo "[ERROR] V49 CN DT source not found: $CN_DTS_SOURCE"
+            exit 1
+          fi
+          echo "[OK] V49 CN DT source exists: $CN_DTS_SOURCE"
 
           set +e
           make "${MAKE_ARGS[@]}" -j1 V=1 "$CN_DTBO_TARGET" > ../logs/09a-dt-preflight.log 2>&1
           DT_PREFLIGHT_RC=$?
           set -e
           if [ "$DT_PREFLIGHT_RC" -ne 0 ]; then
-            echo "[ERROR] V48 CN Rev-1.0 DT overlay preflight failed."
+            echo "[ERROR] V49 CN Rev-1.0 DT overlay preflight failed."
             grep -nE 'duplicate_label|Input tree has errors|Error [0-9]+$|error:' ../logs/09a-dt-preflight.log | head -80 || true
             exit "$DT_PREFLIGHT_RC"
           fi
-          echo "[OK] V48 CN Rev-1.0 DT overlay preflight passed."
+          echo "[OK] V49 CN Rev-1.0 DT overlay preflight passed."
 
           echo "[V41] Building security/selinux first (generates flask.h and av_permissions.h)"
           set +e
@@ -2032,7 +2038,7 @@ jobs:
           timeout 900 make "${MAKE_ARGS[@]}" -k -j"$(nproc)" V=1 dtbs > ../logs/09b-dtbs-diagnostic.log 2>&1
           echo "dtbs_rc=$?" | tee ../logs/09b-dtbs-rc.txt
           grep -nE "Input tree has errors|Error [0-9]+$" ../logs/09b-dtbs-diagnostic.log | head -20
-          echo "--- V48 post-fix DT source checks ---" | tee ../logs/09b-post-fix-dt-check.log
+          echo "--- V49 post-fix DT source checks ---" | tee ../logs/09b-post-fix-dt-check.log
           grep -RInF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' \
             arch/arm64/boot/dts/vendor/lge/lito-caymanlm --include='*touch_rev-1.0.dtsi' \
             | tee -a ../logs/09b-post-fix-dt-check.log
@@ -2071,7 +2077,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V48-LM-G900-KARNAL
+          kernel.string=V49-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2109,7 +2115,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V48-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V49-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2150,8 +2156,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V48-LM-G900-KARNAL-output
-          path: V48-LM-G900-KARNAL-output.zip
+          name: V49-LM-G900-KARNAL-output
+          path: V49-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2159,7 +2165,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V48-LM-G900-KARNAL-flashable-zips
+          name: V49-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2323,16 +2329,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V48 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V49 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
       - name: "15. Upload V48 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V48-LM-G900-KARNAL-complete-logs
+          name: V49-LM-G900-KARNAL-complete-logs
           path: |
-            V48-LM-G900-KARNAL-complete-logs.zip
+            V49-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
