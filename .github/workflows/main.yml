@@ -1,4 +1,4 @@
-name: V40-LM-G900-KARNAL-BUILT
+name: V41-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V40
-  OUTPUT_PREFIX: V40-LM-G900-KARNAL
+  WORKFLOW_VERSION: V41
+  OUTPUT_PREFIX: V41-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1522,11 +1522,16 @@ jobs:
               s = s.replace('mutex_unlock(&selinux_state.policy_mutex);',
                             'write_unlock_irq(&selinux_state.ss->policy_rwlock);', 1)
           
-          if 'selinux_state.policy' in s or 'selinux_state.policy_mutex' in s:
-              raise SystemExit('[ERROR] V39: newer SELinux policy API remains in rules.c')
+          # Do not use a substring check here: selinux_state.policydb is the
+          # correct Linux 4.19 member and naturally contains the text
+          # "selinux_state.policy". Reject only the newer exact members.
+          import re
+          if (re.search(r'\\bselinux_state\\.policy(?!db)\\b', s)
+                  or re.search(r'\\bselinux_state\\.policy_mutex\\b', s)):
+              raise SystemExit('[ERROR] V41: newer SELinux policy API remains in rules.c')
           r.write_text(s)
           PY_KSU_SELINUX_419
-          echo "[CHECK] V40 Linux 4.19 SELinux policy-state compatibility installed."
+          echo "[CHECK] V41 Linux 4.19 SELinux policy-state compatibility installed (exact API guard; policydb is allowed)."
           # V39 guard: the build step itself must be valid bash before we attempt the kernel build.
           # This catches malformed heredoc boundaries without changing any kernel source.
           echo "[CHECK] V40 Setup 9 shell syntax guard will run before compilation."
@@ -1609,7 +1614,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V40-LM-G900-KARNAL
+          kernel.string=V41-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1635,7 +1640,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V40-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V41-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1676,8 +1681,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V40-LM-G900-KARNAL-output
-          path: V40-LM-G900-KARNAL-output.zip
+          name: V41-LM-G900-KARNAL-output
+          path: V41-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1685,7 +1690,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V40-LM-G900-KARNAL-flashable-zips
+          name: V41-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1808,9 +1813,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V40-LM-G900-KARNAL-complete-logs
+          name: V41-LM-G900-KARNAL-complete-logs
           path: |
-            V40-LM-G900-KARNAL-complete-logs.zip
+            V41-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
