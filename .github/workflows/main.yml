@@ -1,4 +1,4 @@
-name: V37-LM-G900-KARNAL-BUILT
+name: V38-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V37
-  OUTPUT_PREFIX: V37-LM-G900-KARNAL
+  WORKFLOW_VERSION: V38
+  OUTPUT_PREFIX: V38-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -108,7 +108,7 @@ env:
 
 jobs:
   build:
-    name: Build V37
+    name: Build V38
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1522,7 +1522,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V37-LM-G900-KARNAL
+          kernel.string=V38-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1548,7 +1548,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V37-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V38-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1589,8 +1589,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V37-LM-G900-KARNAL-output
-          path: V37-LM-G900-KARNAL-output.zip
+          name: V38-LM-G900-KARNAL-output
+          path: V38-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1598,7 +1598,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V37-LM-G900-KARNAL-flashable-zips
+          name: V38-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1642,6 +1642,54 @@ jobs:
           cp baseline-info.txt baseline-defconfig.txt baseline-enabled-config.txt \
              post-integration-enabled-config.txt source-info.txt toolchain-version.txt \
              baseline-git-status.txt diagnostics/ 2>/dev/null || true
+
+          # V38: two deep, still-open build blockers need the ACTUAL source to fix safely
+          # rather than guessing from truncated compiler output -- capture it here every run,
+          # success or failure, so it is always in the uploaded logs bundle:
+          #
+          # 1) drivers/kernelsu/selinux/rules.c (via the drivers/kernelsu symlink into
+          #    KernelSU-Next/kernel/selinux/) fails with ~20 errors before clang's
+          #    -ferror-limit cuts it off, so the file's full content past line ~182 has
+          #    never actually been seen. It manipulates struct selinux_state/selinux_policy
+          #    fields that only exist after Linux 5.7's SELinux RCU-policy rewrite; on this
+          #    4.19 tree the equivalent state (sidtab/policydb) isn't even in the same place,
+          #    so this is not a simple version-guard fix like the earlier ones and should not
+          #    be attempted without seeing the whole file and its Kbuild wiring.
+          mkdir -p diagnostics/ksu-selinux-source
+          for f in kernel/selinux/rules.c kernel/selinux/rules.h kernel/selinux/sepolicy.c \
+                   kernel/selinux/sepolicy.h kernel/selinux/selinux.c kernel/selinux/selinux.h \
+                   kernel/selinux/Kbuild kernel/Kbuild kernel/Kconfig; do
+            src="kernel/KernelSU-Next/${f}"
+            if [ -f "$src" ]; then
+              mkdir -p "diagnostics/ksu-selinux-source/$(dirname "$f")"
+              cp "$src" "diagnostics/ksu-selinux-source/${f}"
+            fi
+          done
+          grep -RnF 'selinux/rules' kernel/KernelSU-Next/kernel --include=Kbuild --include=Makefile \
+            > diagnostics/ksu-selinux-source/kbuild-references.txt 2>/dev/null || true
+          #
+          # 2) The lito-caymanlm_cn-rev-1.0_overlay.dtbo DTC failure ("ERROR: Input tree has
+          #    errors, aborting") has no supporting warning line in Kbuild's own dtc output, so
+          #    the actual defect is still unconfirmed -- V32's fix (a verified duplicate
+          #    common-touch.dtsi include) targeted the lao_com region and V37 generalized that
+          #    same fix to every *touch_rev-1.0.dtsi wrapper, but the CN overlay still fails
+          #    identically, so the real defect must be something else in this overlay's own
+          #    include chain. Capture the small raw source files directly (cheap; each is under
+          #    1 KB) and, if the build got far enough to generate it, the fully preprocessed
+          #    dts Kbuild actually fed to dtc -- that preprocessed file is the ground truth.
+          mkdir -p diagnostics/cn-overlay-source
+          find kernel/arch/arm64/boot/dts/vendor/lge/lito-caymanlm -iname '*cn-rev-1.0*' \
+            -o -iname '*cn-nfc*' 2>/dev/null | while read -r f; do
+            cp --parents "$f" diagnostics/cn-overlay-source/ 2>/dev/null || true
+          done
+          find kernel/arch/arm64/boot/dts/vendor/lge/lito-caymanlm -iname '*touch_rev-1.0.dtsi' \
+            -o -iname '*common-touch.dtsi' 2>/dev/null | while read -r f; do
+            cp --parents "$f" diagnostics/cn-overlay-source/ 2>/dev/null || true
+          done
+          find kernel/out/arch/arm64/boot/dts/vendor/lge -iname '.lito-caymanlm_cn-rev-1.0_overlay.dtbo.dts.tmp' \
+            2>/dev/null | while read -r f; do
+            cp "$f" diagnostics/cn-overlay-source/preprocessed-cn-rev-1.0.dts.tmp 2>/dev/null || true
+          done
 
           # Full workspace inventory goes to a file, not the Actions stdout pipe.
           find "$GITHUB_WORKSPACE" -type f \
@@ -1721,9 +1769,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V37-LM-G900-KARNAL-complete-logs
+          name: V38-LM-G900-KARNAL-complete-logs
           path: |
-            V37-LM-G900-KARNAL-complete-logs.zip
+            V38-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
