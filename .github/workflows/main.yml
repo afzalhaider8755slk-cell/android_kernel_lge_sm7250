@@ -1,4 +1,4 @@
-name: V45-LM-G900-KARNAL-BUILT
+name: V46-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -71,7 +71,7 @@ env:
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
   WORKFLOW_VERSION: V45
-  OUTPUT_PREFIX: V45-LM-G900-KARNAL
+  OUTPUT_PREFIX: V46-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1209,6 +1209,13 @@ jobs:
             ./scripts/config --file out/.config --enable "${sym}" || true
           done
           ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_SU || true
+          # V46: legacy-susfs-v2 declares the old KSU_SUSFS_TRY_UMOUNT command path,
+          # but the separate SUSFS 2.3.0 4.19 backport used in this tree intentionally
+          # does not provide susfs_add_try_umount(). Leaving the legacy symbol enabled
+          # therefore causes supercall.c to fail with an implicit declaration. V44 did
+          # not have this symbol in its enabled feature set, so disable only this stale
+          # legacy command and keep all V44 KSU/SUSFS features intact.
+          ./scripts/config --file out/.config --disable KSU_SUSFS_TRY_UMOUNT || true
           make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
           while IFS= read -r line; do
@@ -1234,6 +1241,10 @@ jobs:
           set -Eeuo pipefail
           echo "::group::[9/15] Build kernel"
           cd kernel
+          # V46 source-integrity gate: catch accidental text corruption before clang.
+          test "$(grep -c '^static int ksu_wrapper_iterate ' drivers/kernelsu/infra/file_wrapper.c)" -eq 1
+          test "$(grep -c '^static int ksu_wrapper_release ' drivers/kernelsu/infra/file_wrapper.c)" -eq 1
+          ! grep -q 'C does not support default arguments' drivers/kernelsu/infra/file_wrapper.c || true
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
@@ -1262,46 +1273,17 @@ jobs:
             } > include/linux/minmax.h
             echo "[FIX] Added missing include/linux/minmax.h compatibility header for KernelSU-Next"
           fi
-          # FIX: drivers/kernelsu/infra/file_wrapper.c (KernelSU-Next) unconditionally uses
-          # struct file_operations.iopoll and .remap_file_range, and the REMAP_FILE_DEDUP
-          # flag. None of the three exist on this 4.19.325 CIP tree (they were introduced by
-          # upstream commits from Linux 4.20+), so the build failed with 8 compile errors:
-          #   error: no member named 'iopoll' in 'struct file_operations'
-          #   error: use of undeclared identifier 'REMAP_FILE_DEDUP'
-          #   error: no member named 'remap_file_range' in 'struct file_operations'
-          # This only touches those exact statements (by line number, verified against the
-          # failing build log) so the file compiles; nothing else in the driver is changed:
-          #   - REMAP_FILE_DEDUP is given its standard upstream value via a guarded #define,
-          #     so the existing dedupe-detection branch keeps compiling as written.
-          #   - The two calls into ->iopoll()/->remap_file_range() (which can never be taken
-          #     on a kernel that has no such op) are replaced with `return -EOPNOTSUPP;`.
-          #   - The two assignments that set p->ops.iopoll / p->ops.remap_file_range are
-          #     dropped, since those destination fields don't exist on this kernel's
-          #     struct file_operations either.
+          # V46 FIX: do NOT line-edit KernelSU-Next legacy file_wrapper.c.
+          # The legacy-susfs-v2 source already guards iopoll behind >=5.1 and
+          # remap_file_range behind >=4.20. The V45 line-number sed patch was written
+          # for a different file layout and corrupted the C file, producing cascading
+          # syntax errors (missing function scopes, stray braces, and undeclared orig).
+          # Leave the audited legacy source intact and only verify those version guards.
           FW="drivers/kernelsu/infra/file_wrapper.c"
-          if [ -f "$FW" ] && ! grep -q '^#define REMAP_FILE_DEDUP' "$FW"; then
-            {
-              echo '#pragma clang diagnostic ignored "-Wunused-function"'
-              echo '#ifndef REMAP_FILE_DEDUP'
-              echo '#define REMAP_FILE_DEDUP (1 << 0)'
-              echo '#endif'
-              cat "$FW"
-            } > "${FW}.ksu_compat_tmp"
-            mv "${FW}.ksu_compat_tmp" "$FW"
-            # The 4 lines above shift every original line number down by 4. The two
-            # remap_file_range() call statements each wrap onto a second line (the closing
-            # ")" and trailing args); both lines of each statement must be handled together,
-            # or the leftover continuation line becomes a dangling "...);" syntax error.
-            sed -i \
-              -e '113s#.*#    return -EOPNOTSUPP;#' \
-              -e '346s#.*#        return -EOPNOTSUPP;#' \
-              -e '347d' \
-              -e '351s#.*#        return -EOPNOTSUPP;#' \
-              -e '352d' \
-              -e '397d' \
-              -e '434,435d' \
-              "$FW"
-            echo "[FIX] Patched file_wrapper.c: stubbed iopoll/remap_file_range fops for pre-4.20 VFS API"
+          if [ -f "$FW" ]; then
+            grep -q 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)' "$FW" || { echo "[ERROR] legacy file_wrapper.c lost iopoll version guard"; exit 1; }
+            grep -q 'LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)' "$FW" || { echo "[ERROR] legacy file_wrapper.c lost remap_file_range version guard"; exit 1; }
+            echo "[OK] Legacy file_wrapper.c left unmodified; 4.19 VFS guards are source-native."
           fi
           # V32 FIX 1 — KernelSU-Next v3.3.0 compatibility with this 4.19.325 arm64 tree.
           # The KSU seccomp cache source references SECCOMP_ARCH_NATIVE_NR (and, with
@@ -2014,7 +1996,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V45-LM-G900-KARNAL
+          kernel.string=V46-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2052,7 +2034,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V45-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V46-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2093,8 +2075,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V45-LM-G900-KARNAL-output
-          path: V45-LM-G900-KARNAL-output.zip
+          name: V46-LM-G900-KARNAL-output
+          path: V46-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2102,7 +2084,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V45-LM-G900-KARNAL-flashable-zips
+          name: V46-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2266,16 +2248,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V45 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V46 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
       - name: "15. Upload V44 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V45-LM-G900-KARNAL-complete-logs
+          name: V46-LM-G900-KARNAL-complete-logs
           path: |
-            V45-LM-G900-KARNAL-complete-logs.zip
+            V46-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
