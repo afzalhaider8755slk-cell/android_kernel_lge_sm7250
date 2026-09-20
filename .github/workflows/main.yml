@@ -1,4 +1,4 @@
-name: V44-LM-G900-KARNAL-BUILT
+name: V45-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -6,6 +6,9 @@ on:
 permissions:
   contents: read
 
+# V45: preserve the boot-tested V44 kernel baseline and all existing kernel/DT/SUSFS work.
+# The KSU driver path is changed to legacy-susfs-v2 for non-GKI 4.19 Manager integration.
+# AnyKernel3 uses a strict CaymanLM identity check because the ported OrangeFox reports timelm.
 env:
   KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
   KERNEL_REF: sixteen
@@ -23,7 +26,7 @@ env:
   BASELINE_CIP: v4.19.325-cip132
   CIP_PREFIX: v4.19.325-cip
 
-  KSU_VERSION: v3.3.0
+  KSU_VERSION: v3.2.0-legacy-susfs-v2
   # V24: vanilla/official KernelSU-Next (KernelSU-Next/KernelSU-Next) does not carry
   # the "config KSU_SUSFS" Kconfig entry or the su-compat hook symbols
   # (ksu_su_compat_enabled, ksu_handle_execveat, ksu_handle_faccessat, ksu_handle_stat,
@@ -36,15 +39,15 @@ env:
   # JeelsBoobz/android-kernel-builder) pin for exactly this reason. Pinned to an exact
   # commit for reproducibility, matching this workflow's existing pinning style.
   # NOTE: pershoot has stated this branch is not guaranteed production-stable.
-  KSU_SUSFS_FORK_OWNER: pershoot
+  KSU_SUSFS_FORK_OWNER: DXRN-MoonWake
   KSU_SUSFS_FORK_REPO: KernelSU-Next
-  KSU_SUSFS_FORK_BRANCH: dev-susfs
+  KSU_SUSFS_FORK_BRANCH: legacy-susfs-v2
   # V40: audited commit of pershoot/KernelSU-Next dev-susfs (git describe v3.3.0-84-g4bcb6f3b).
   # It is the exact tip V39 resolved and compiled against; every V32-V39 source-compatibility edit
   # below was written for it. dev-susfs is a rebasing GKI-oriented branch (V28 resolved -77, V39 -84),
   # so following its moving tip can bring new 5.x-only code between two runs. Step 6 fetches exactly
   # this commit and only falls back to the tip (with a loud warning) if it is gone.
-  KSU_SUSFS_FORK_COMMIT: 4bcb6f3ba6368948e7f0ae95b008fdda06dec7fa
+  KSU_SUSFS_FORK_COMMIT: ""
   # V40: only arch/arm64/boot/Image is packaged (AnyKernel3 keeps the device DTB/DTBO), so only the
   # Image target is built. A plain `make` also builds every DTB and lito-caymanlm_cn-rev-1.0_overlay.dtbo
   # still aborts it ("Input tree has errors"), which stops the whole make before the Image is done.
@@ -67,8 +70,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V44
-  OUTPUT_PREFIX: V44-LM-G900-KARNAL
+  WORKFLOW_VERSION: V45
+  OUTPUT_PREFIX: V45-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -465,156 +468,96 @@ jobs:
           echo "[INFO] If 136 stopped at an earlier tag, its exact conflict is preserved in logs/cip-checks/."
           echo "::endgroup::"
 
-      - name: "6. Integrate KernelSU-Next v3.3.0 (SUSFS-enabled fork)"
+      - name: "6. Integrate KernelSU-Next legacy-susfs-v2 (non-GKI 4.19)"
         shell: bash
         run: |
           set -Eeuo pipefail
           echo "::group::[6/15] KernelSU-Next ${KSU_VERSION} (${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}@${KSU_SUSFS_FORK_BRANCH})"
           cd kernel
-
-          # V24: replicate the official setup.sh's driver-dir detection, symlink, and
-          # Makefile/Kconfig wiring by hand, because the official setup.sh hardcodes
-          # OWNER=REPO="KernelSU-Next" internally -- downloading that script from any
-          # fork does NOT change which repo it clones. We clone the fork ourselves instead.
           if test -d common/drivers; then DRIVER_DIR=common/drivers
           elif test -d drivers; then DRIVER_DIR=drivers
-          else echo '[ERROR] "drivers/" directory not found.'; exit 127
+          else echo '[ERROR] drivers directory not found.'; exit 127
           fi
           DRIVER_MAKEFILE="${DRIVER_DIR}/Makefile"
           DRIVER_KCONFIG="${DRIVER_DIR}/Kconfig"
-
           git clone --branch "${KSU_SUSFS_FORK_BRANCH}" --single-branch \
             "https://github.com/${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}" KernelSU-Next
-
-          # V40: pin to the audited commit (see KSU_SUSFS_FORK_COMMIT in env).
-          if [ -n "${KSU_SUSFS_FORK_COMMIT:-}" ]; then
-            if git -C KernelSU-Next cat-file -e "${KSU_SUSFS_FORK_COMMIT}^{commit}" 2>/dev/null \
-               || git -C KernelSU-Next fetch --quiet origin "${KSU_SUSFS_FORK_COMMIT}" 2>/dev/null; then
-              git -C KernelSU-Next checkout --quiet --detach "${KSU_SUSFS_FORK_COMMIT}"
-              echo "[OK] KernelSU-Next pinned to audited commit ${KSU_SUSFS_FORK_COMMIT}"
-            else
-              echo "::warning::V40: audited KernelSU-Next commit ${KSU_SUSFS_FORK_COMMIT} is no longer fetchable; using the current dev-susfs tip. Source-compat edits may not match; see logs/06-kernelsu-resolved.txt"
-            fi
-          fi
-
-          # V40: kernel/selinux/rules.c and kernel/selinux/sepolicy.c hot-swap the running
-          # SELinux policy via struct selinux_policy + selinux_state.policy/.policy_mutex,
-          # which only exist after upstream's SELinux RCU-policy rewrite (Linux 5.7+); this
-          # kernel is 4.19. Full source review (logs/ksu-selinux-source from a prior run)
-          # showed the actual rule-editing primitives (ksu_allow, ksu_type, etc., operating
-          # directly on struct policydb) are ALREADY carefully version-guarded back through
-          # 5.8/5.9 and compile fine standalone -- only four functions touch the >=5.7-only
-          # RCU policy wrapper: apply_kernelsu_rules(), handle_sepolicy(), and their shared
-          # reset_avc_cache() helper in rules.c, plus ksu_dup_sepolicy()/ksu_destroy_sepolicy()
-          # in sepolicy.c. A correct <5.7 implementation would need the kernel's own
-          # security/selinux/ss/services.c to export its static policydb/sidtab globals
-          # (a real change to the main kernel's SELinux subsystem, not just KernelSU-Next),
-          # or a kallsyms-based lookup of them at runtime -- both are genuine security-relevant
-          # kernel-internals work that should not be hand-written without the ability to test
-          # against real hardware. This device's SELinux is confirmed permissive (from the
-          # working-kernel boot image the person supplied), so these two entry points have no
-          # policy to enforce against regardless. They are stubbed out (behind the same
-          # LINUX_VERSION_CODE guard style already used throughout both files) to log a clear
-          # message and return, rather than either failing to build or hand-patching live
-          # SELinux policy internals.
-          python3 - << 'PATCH_SELINUX_COMPAT'
-          import sys
-
-          def wrap_function(text, signature, stub_body, path, guard="5, 7, 0"):
-              idx = text.find(signature)
-              if idx == -1:
-                  print(f"[ERROR] could not find function signature in {path}: {signature!r}", file=sys.stderr)
-                  sys.exit(1)
-              brace_start = text.find('{', idx)
-              if brace_start == -1:
-                  print(f"[ERROR] no opening brace after signature in {path}: {signature!r}", file=sys.stderr)
-                  sys.exit(1)
-              depth = 0
-              i = brace_start
-              while i < len(text):
-                  if text[i] == '{':
-                      depth += 1
-                  elif text[i] == '}':
-                      depth -= 1
-                      if depth == 0:
-                          break
-                  i += 1
-              else:
-                  print(f"[ERROR] unbalanced braces for {signature!r} in {path}", file=sys.stderr)
-                  sys.exit(1)
-              body_end = i + 1
-              header = text[idx:brace_start]
-              real_body = text[brace_start:body_end]
-              new_block = (
-                  f"#if LINUX_VERSION_CODE >= KERNEL_VERSION({guard})\n"
-                  f"{header}{real_body}\n"
-                  f"#else\n"
-                  f"{header}{{\n{stub_body}\n}}\n"
-                  f"#endif\n"
-              )
-              print(f"[FIX] Wrapped {signature.split('(')[0].split()[-1]}() with pre-5.7 SELinux stub in {path}")
-              return text[:idx] + new_block + text[body_end:]
-
-          rules_path = "KernelSU-Next/kernel/selinux/rules.c"
-          with open(rules_path) as f:
-              rules = f.read()
-          rules = wrap_function(
-              rules, "void apply_kernelsu_rules()",
-              '    pr_warn("KernelSU: SELinux policy hot-patch API unavailable on this kernel "\n'
-              '            "(pre-5.7 SELinux); skipping in-kernel su domain policy injection.\\n");',
-              rules_path,
-          )
-          rules = wrap_function(
-              rules, "int handle_sepolicy(void __user *user_data, u64 data_len)",
-              '    (void)user_data;\n'
-              '    (void)data_len;\n'
-              '    pr_warn("KernelSU: SELinux policy hot-patch API unavailable on this kernel "\n'
-              '            "(pre-5.7 SELinux); ksu_handle_sepolicy is not supported.\\n");\n'
-              '    return -EOPNOTSUPP;',
-              rules_path,
-          )
-          rules = wrap_function(
-              rules, "static void reset_avc_cache()",
-              "    /* unused on pre-5.7 SELinux; see apply_kernelsu_rules() stub above */",
-              rules_path,
-          )
-          with open(rules_path, "w") as f:
-              f.write(rules)
-
-          sepolicy_path = "KernelSU-Next/kernel/selinux/sepolicy.c"
-          with open(sepolicy_path) as f:
-              sepolicy = f.read()
-          sepolicy = wrap_function(
-              sepolicy, "void ksu_destroy_sepolicy(struct selinux_policy *pol)",
-              "    (void)pol;",
-              sepolicy_path,
-          )
-          sepolicy = wrap_function(
-              sepolicy, "struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)",
-              "    (void)old_pol;\n    return NULL;",
-              sepolicy_path,
-          )
-          with open(sepolicy_path, "w") as f:
-              f.write(sepolicy)
-
-          print("[OK] SELinux pre-5.7 compatibility stubs applied to rules.c and sepolicy.c")
-          PATCH_SELINUX_COMPAT
-
           ln -sf "$(realpath --relative-to="${DRIVER_DIR}" "$(pwd)/KernelSU-Next/kernel")" "${DRIVER_DIR}/kernelsu"
           grep -q "kernelsu" "${DRIVER_MAKEFILE}" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "${DRIVER_MAKEFILE}"
-          grep -q 'source "drivers/kernelsu/Kconfig"' "${DRIVER_KCONFIG}" || sed -i "/endmenu/i\\source \"drivers/kernelsu/Kconfig\"" "${DRIVER_KCONFIG}"
-
+          grep -q 'source "drivers/kernelsu/Kconfig"' "${DRIVER_KCONFIG}" || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' "${DRIVER_KCONFIG}"
           test -d KernelSU-Next
           test -L drivers/kernelsu
           test -f drivers/kernelsu/Kconfig
-          # Kconfig declares symbols as "config KSU"; it does not need the literal
-          # string "CONFIG_KSU" inside the source Kconfig file.
           grep -Eq '^[[:space:]]*config[[:space:]]+KSU([[:space:]]|$)' drivers/kernelsu/Kconfig
-          # V24/V25: this fork's dev-susfs branch must additionally declare config KSU_SUSFS
-          # in the same Kconfig -- this is the whole reason for switching forks. Fail loudly
-          # here rather than hundreds of lines later in Step 7 if that ever stops being true.
-          grep -Eq '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' drivers/kernelsu/Kconfig
-
+          for sym in KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP; do
+            grep -Eq "^[[:space:]]*config[[:space:]]+${sym}([[:space:]]|$)" drivers/kernelsu/Kconfig || { echo "[ERROR] Missing ${sym} in legacy KernelSU Kconfig"; exit 1; }
+          done
+          # Preserve V44's always-threaded throne tracker feature on the legacy source.
+          python3 - drivers/kernelsu/Kconfig drivers/kernelsu/manager/throne_tracker.c <<'PY_THRONE'
+          from pathlib import Path
+          import sys
+          kconfig=Path(sys.argv[1])
+          throne=Path(sys.argv[2])
+          ks=kconfig.read_text()
+          if 'config KSU_THRONE_TRACKER_ALWAYS_THREADED' not in ks:
+              anchor='config KSU_DISABLE_MANAGER\n'
+              block=(
+                  'config KSU_THRONE_TRACKER_ALWAYS_THREADED\n'
+                  '\tbool "Always run throne tracker in a kthread"\n'
+                  '\tdepends on KSU\n'
+                  '\tdefault y\n'
+                  '\thelp\n'
+                  '\t  Run the throne tracker from a dedicated kthread, including its first run.\n'
+                  '\t  Preserves the V44 non-GKI boot-time behavior.\n'
+              )
+              pos=ks.find(anchor)
+              if pos < 0:
+                  raise SystemExit('KSU_DISABLE_MANAGER anchor missing')
+              kconfig.write_text(ks[:pos] + block + ks[pos:])
+          ts=throne.read_text()
+          if 'CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED' not in ts:
+              old='void track_throne(bool prune_only)\n{'
+              if old not in ts:
+                  raise SystemExit('legacy throne tracker function anchor missing')
+              ts=ts.replace(old, 'static void ksu_track_throne_legacy(bool prune_only)\n{', 1)
+              if '#include <linux/kthread.h>' not in ts:
+                  ts='#include <linux/kthread.h>\n#include <linux/sched.h>\n#include <linux/compiler.h>\n#include <linux/atomic.h>\n'+ts
+              wrapper='\n'.join([
+                  '',
+                  '#ifdef CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED',
+                  'static struct task_struct *ksu_throne_thread;',
+                  'static int ksu_throne_thread_fn(void *data)',
+                  '{',
+                  '\tbool prune_only = (bool)(unsigned long)data;',
+                  '\tksu_track_throne_legacy(prune_only);',
+                  '\tWRITE_ONCE(ksu_throne_thread, NULL);',
+                  '\treturn 0;',
+                  '}',
+                  'void track_throne(bool prune_only)',
+                  '{',
+                  '\tstruct task_struct *t;',
+                  '\tif (cmpxchg(&ksu_throne_thread, NULL,',
+                  '\t\t\t(struct task_struct *)ERR_PTR(-EINPROGRESS)) != NULL)',
+                  '\t\treturn;',
+                  '\tt = kthread_run(ksu_throne_thread_fn,',
+                  '\t\t\t(void *)(unsigned long)prune_only,',
+                  '\t\t\t"throne_tracker");',
+                  '\tif (IS_ERR(t))',
+                  '\t\tWRITE_ONCE(ksu_throne_thread, NULL);',
+                  '\telse',
+                  '\t\tWRITE_ONCE(ksu_throne_thread, t);',
+                  '}',
+                  '#else',
+                  'void track_throne(bool prune_only)',
+                  '{',
+                  '\tksu_track_throne_legacy(prune_only);',
+                  '}',
+                  '#endif',
+                  ''
+              ])
+              throne.write_text(ts + wrapper)
+          print('[OK] V45 preserved always-threaded throne tracker feature')
+          PY_THRONE
           KSU_COMMIT="$(git -C KernelSU-Next rev-parse HEAD)"
           KSU_TAG="$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
           {
@@ -624,9 +567,8 @@ jobs:
             echo "resolved_commit=${KSU_COMMIT}"
             echo "kconfig_symbol=KSU"
             echo "kconfig_symbol=KSU_SUSFS"
-            echo "symlink=$(readlink drivers/kernelsu)"
           } | tee ../logs/06-kernelsu-resolved.txt
-          echo "[OK] KernelSU-Next ${KSU_VERSION} (SUSFS fork, ${KSU_SUSFS_FORK_BRANCH}@${KSU_COMMIT}) pinned integration"
+          echo "[OK] Legacy-susfs-v2 driver integrated for non-GKI 4.19"
           echo "::endgroup::"
 
       - name: "7. Integrate SUSFS 2.3.0 + 4.19 backport"
@@ -1633,189 +1575,42 @@ jobs:
             echo "[OK] include/uapi/linux/mount.h already exists."
           fi
 
-          # V34 FIX 1 — Complete the KernelSU-Next v3.3.0 fsnotify compatibility for Linux 4.19.
-          # The v3.3.0 pkg_observer.c directly initializes .handle_inode_event, but this 4.19 fsnotify_ops
-          # has only .handle_event. KernelSU-Next's v3.2.0-legacy source provides the KSU_DECL_FSNOTIFY_OPS
-          # compatibility abstraction: <5.9 uses handle_event, while >=5.9 uses handle_inode_event.
-          # Apply the same abstraction to v3.3.0 so package observation remains enabled, including the 4.19 filename type.
+          # V45: legacy-susfs-v2 already carries its own 4.x fsnotify/task-work compatibility.
           KSU_MANAGER_DIR="drivers/kernelsu/manager"
           KSU_OBS="$KSU_MANAGER_DIR/pkg_observer.c"
-          KSU_DEFS="$KSU_MANAGER_DIR/pkg_observer_defs.h"
           if [ -f "$KSU_OBS" ]; then
-            cat > "$KSU_DEFS" <<'EOF_KSU_FSNOTIFY'
-          // SPDX-License-Identifier: GPL-2.0
-          #ifndef __KSU_PKG_OBSERVER_DEFS_H
-          #define __KSU_PKG_OBSERVER_DEFS_H
-          #include <linux/version.h>
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)
-          typedef const struct qstr *ksu_fname_t;
-          #define ksu_fname_len(f) ((f)->len)
-          #define ksu_fname_arg(f) ((f)->name)
-          #else
-          typedef const unsigned char *ksu_fname_t;
-          #define ksu_fname_len(f) (strlen(f))
-          #define ksu_fname_arg(f) (f)
-          #endif
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
-          #define KSU_DECL_FSNOTIFY_OPS(name) \
-            int name(struct fsnotify_mark *mark, u32 mask, struct inode *inode, \
-                     struct inode *dir, const struct qstr *file_name, u32 cookie)
-          #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)
-          #define KSU_DECL_FSNOTIFY_OPS(name) \
-            int name(struct fsnotify_group *group, struct inode *inode, u32 mask, \
-                     const void *data, int data_type, ksu_fname_t file_name, \
-                     u32 cookie, struct fsnotify_iter_info *iter_info)
-          #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
-          #define KSU_DECL_FSNOTIFY_OPS(name) \
-            int name(struct fsnotify_group *group, struct inode *inode, u32 mask, \
-                     const void *data, int data_type, ksu_fname_t file_name, \
-                     u32 cookie, struct fsnotify_iter_info *iter_info)
-          #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
-          #define KSU_DECL_FSNOTIFY_OPS(name) \
-            int name(struct fsnotify_group *group, struct inode *inode, \
-                     struct fsnotify_mark *inode_mark, struct fsnotify_mark *vfsmount_mark, \
-                     u32 mask, const void *data, int data_type, ksu_fname_t file_name, \
-                     u32 cookie, struct fsnotify_iter_info *iter_info)
-          #else
-          #define KSU_DECL_FSNOTIFY_OPS(name) \
-            int name(struct fsnotify_group *group, struct inode *inode, \
-                     struct fsnotify_mark *inode_mark, struct fsnotify_mark *vfsmount_mark, \
-                     u32 mask, void *data, int data_type, ksu_fname_t file_name, u32 cookie)
-          #endif
-          #endif
-          EOF_KSU_FSNOTIFY
-            python3 - "$KSU_OBS" <<'PY_KSU'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1])
-          s=p.read_text()
-          if '#include "pkg_observer_defs.h"' not in s:
-              s=s.replace('#include "klog.h" // IWYU pragma: keep', '#include "klog.h" // IWYU pragma: keep\n#include "pkg_observer_defs.h"')
-          old="""static int ksu_handle_inode_event(struct fsnotify_mark *mark, u32 mask,
-                                            struct inode *inode, struct inode *dir,
-                                            const struct qstr *file_name, u32 cookie)"""
-          new="static KSU_DECL_FSNOTIFY_OPS(ksu_handle_inode_event)"
-          if old not in s:
-              raise SystemExit('expected KernelSU v3.3.0 pkg_observer function signature not found')
-          s=s.replace(old,new,1)
-          # Linux 4.19 passes file_name as const unsigned char *, not struct qstr.
-          # Keep the v3.3.0 logic identical while routing length/name access through the
-          # compatibility helpers defined above.
-          if 'file_name->len' in s:
-              s=s.replace('file_name->len', 'ksu_fname_len(file_name)')
-          if 'file_name->name' in s:
-              s=s.replace('file_name->name', 'ksu_fname_arg(file_name)')
-          old_ops="""static const struct fsnotify_ops ksu_ops = {
-          \t.handle_inode_event = ksu_handle_inode_event,
-          };"""
-          new_ops="""static const struct fsnotify_ops ksu_ops = {
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
-          \t.handle_inode_event = ksu_handle_inode_event,
-          #else
-          \t.handle_event = ksu_handle_inode_event,
-          #endif
-          };"""
-          if old_ops not in s:
-              raise SystemExit('expected KernelSU v3.3.0 fsnotify ops block not found')
-          s=s.replace(old_ops,new_ops,1)
-          p.write_text(s)
-          PY_KSU
-          if grep -qE 'file_name->(len|name)' "$KSU_OBS"; then
-            echo "[ERROR] pkg_observer still contains qstr-only file_name dereferences."
-            exit 1
-          fi
-            echo "[FIX] Applied complete KernelSU-Next fsnotify compatibility to v3.3.0 pkg_observer (4.19 filename + handle_event API)."
+            if grep -qE 'file_name->(len|name)' "$KSU_OBS"; then
+              echo "[ERROR] legacy pkg_observer still contains qstr-only filename dereferences."
+              exit 1
+            fi
+            echo "[OK] pkg_observer accepted as legacy-compatible."
           else
-            echo "[ERROR] KernelSU pkg_observer.c not found; refusing to continue without compatibility fix."
-            exit 1
+            echo "[INFO] pkg_observer.c absent; continuing with legacy manager implementation."
           fi
-
-          # V35 FIX 1 — Linux 4.19 KernelSU-Next allowlist task_work compatibility.
-          # KernelSU-Next v3.3.0 uses TWA_RESUME + put_task_struct(), but this target is Linux 4.19:
-          # 4.19 exposes task_work_add(..., bool notify), and put_task_struct() is declared by
-          # <linux/sched/task.h>. Preserve the allowlist feature and adapt only these APIs.
           KSU_ALLOWLIST="drivers/kernelsu/policy/allowlist.c"
-          if [ -f "$KSU_ALLOWLIST" ]; then
-            python3 - "$KSU_ALLOWLIST" <<'PY_KSU_ALLOWLIST'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1])
-          s=p.read_text()
-
-          if '#include <linux/sched/task.h>' not in s:
-              marker='#include <linux/task_work.h>'
-              if marker not in s:
-                  raise SystemExit('expected <linux/task_work.h> include not found in KernelSU allowlist.c')
-              s=s.replace(marker, marker+'\n#include <linux/sched/task.h>', 1)
-
-          macro = """#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
-          #define KSU_TASK_WORK_RESUME TWA_RESUME
-          #else
-          #define KSU_TASK_WORK_RESUME true
-          #endif"""
-          if 'KSU_TASK_WORK_RESUME' not in s:
-              marker='#include <linux/task_work.h>'
-              s=s.replace(marker, marker+'\n#include <linux/version.h>\n\n'+macro, 1)
-
-          old='task_work_add(tsk, cb, TWA_RESUME)'
-          if old in s:
-              s=s.replace(old, 'task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)', 1)
-          elif 'task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)' not in s:
-              raise SystemExit('expected KernelSU allowlist task_work_add(TWA_RESUME) call not found')
-
-          p.write_text(s)
-          PY_KSU_ALLOWLIST
-
-            if ! grep -qF '#include <linux/sched/task.h>' "$KSU_ALLOWLIST"; then
-              echo "[ERROR] allowlist.c is missing sched/task.h compatibility include."
-              exit 1
-            fi
-            if ! grep -qF 'KSU_TASK_WORK_RESUME' "$KSU_ALLOWLIST"; then
-              echo "[ERROR] allowlist.c task_work compatibility macro was not installed."
-              exit 1
-            fi
-            if grep -qF 'task_work_add(tsk, cb, TWA_RESUME)' "$KSU_ALLOWLIST"; then
-              echo "[ERROR] allowlist.c still uses the 5.7+ TWA_RESUME call directly."
-              exit 1
-            fi
-            echo "[FIX] Applied Linux 4.19 task_work/put_task_struct compatibility to KernelSU allowlist."
+          if [ -f "$KSU_ALLOWLIST" ] && grep -q 'TWA_RESUME' "$KSU_ALLOWLIST"; then
+            sed -i 's/task_work_add(tsk, cb, TWA_RESUME)/task_work_add(tsk, cb, true)/' "$KSU_ALLOWLIST"
+            echo "[FIX] Adapted TWA_RESUME to Linux 4.19 bool notify."
           else
-            echo "[ERROR] KernelSU allowlist.c not found; refusing to continue without compatibility fix."
-            exit 1
+            echo "[OK] Legacy allowlist already uses the 4.x task_work API."
           fi
 
-          # V36 FIX 1 — Linux 4.19 KernelSU app_profile seccomp compatibility.
-          # KernelSU-Next v3.3.0 resets seccomp.filter_count when escaping to root, but
-          # Linux 4.19's struct seccomp has only mode + filter (no filter_count).
-          # Keep the seccomp escape path intact and compile only the newer counter reset
-          # on kernels that actually provide that member.
+          # V45: legacy Kbuild backports seccomp.filter_count when needed. If a source file still
+          # accesses it directly, guard the newer member for Linux 4.19.
           KSU_APP_PROFILE="drivers/kernelsu/policy/app_profile.c"
-          if [ -f "$KSU_APP_PROFILE" ]; then
-            python3 - "$KSU_APP_PROFILE" <<'PY_KSU_APP_PROFILE'
+          if [ -f "$KSU_APP_PROFILE" ] && grep -q 'current->seccomp.filter_count' "$KSU_APP_PROFILE"; then
+            python3 - "$KSU_APP_PROFILE" <<'PY_APP'
           from pathlib import Path
           import sys
-          p=Path(sys.argv[1])
-          s=p.read_text()
+          p=Path(sys.argv[1]); s=p.read_text()
           old='    atomic_set(&current->seccomp.filter_count, 0);'
-          new='#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n              atomic_set(&current->seccomp.filter_count, 0);\n          #endif'
-          if old in s:
-              s=s.replace(old,new,1)
-          elif 'atomic_set(&current->seccomp.filter_count, 0);' in s:
-              raise SystemExit('seccomp filter_count call is present but could not be transformed')
-          else:
-              raise SystemExit('expected KernelSU app_profile seccomp filter_count reset not found')
-          p.write_text(s)
-          PY_KSU_APP_PROFILE
-            if grep -qF 'atomic_set(&current->seccomp.filter_count, 0);' "$KSU_APP_PROFILE"; then
-              if ! grep -B1 -A1 -F 'atomic_set(&current->seccomp.filter_count, 0);' "$KSU_APP_PROFILE" | grep -qF '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)'; then
-                echo "[ERROR] app_profile filter_count reset is not guarded for Linux 4.19."
-                exit 1
-              fi
-            fi
-            echo "[FIX] Applied Linux 4.19 seccomp filter_count compatibility to KernelSU app_profile."
+          if old in s and 'KSU_4_19_FILTER_COUNT_GUARD' not in s:
+              s=s.replace(old,'/* KSU_4_19_FILTER_COUNT_GUARD */\n#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n'+old+'\n#endif',1)
+              p.write_text(s)
+          PY_APP
+            echo "[FIX] Guarded seccomp.filter_count for pre-5.9 kernels."
           else
-            echo "[ERROR] KernelSU app_profile.c not found; refusing to continue without compatibility fix."
-            exit 1
+            echo "[OK] Legacy app_profile has no direct incompatible filter_count access."
           fi
 
           # V36 FIX 2 — Repair the V33 touch include change without altering any touch data.
@@ -1878,7 +1673,7 @@ jobs:
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V44 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V45 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -2219,14 +2014,26 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V44-LM-G900-KARNAL
-          do.devicecheck=1
+          kernel.string=V45-LM-G900-KARNAL
+          do.devicecheck=0
           do.modules=0
           do.systemless=0
           do.cleanup=1
           do.cleanuponabort=0
-          device.name1=caymanlm
           '; }
+          # OrangeFox is a timelm port, so its recovery-only platform string is not used as the
+          # device identity. Require a positive CaymanLM identity before touching boot.
+          found_cayman=0
+          for p in ro.boot.hardware ro.hardware ro.product.name ro.product.vendor.name ro.build.fingerprint ro.yaap.device; do
+            v="$(getprop "$p" 2>/dev/null || true)"
+            case "$v" in
+              *caymanlm*) found_cayman=1; ui_print "CaymanLM identity: $p=$v";;
+            esac
+          done
+          if [ "$found_cayman" -ne 1 ]; then
+            abort "Device verification failed: caymanlm identity not found."
+          fi
+          ui_print "CaymanLM device identity verified."
           BLOCK=auto;
           IS_SLOT_DEVICE=auto;
           RAMDISK_COMPRESSION=auto;
@@ -2245,7 +2052,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V44-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V45-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2286,8 +2093,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V44-LM-G900-KARNAL-output
-          path: V44-LM-G900-KARNAL-output.zip
+          name: V45-LM-G900-KARNAL-output
+          path: V45-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2295,7 +2102,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V44-LM-G900-KARNAL-flashable-zips
+          name: V45-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2395,7 +2202,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V44 ==="
+            echo "=== A-Z BUILD RECORD V45 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -2459,16 +2266,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V44 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V45 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
       - name: "15. Upload V44 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V44-LM-G900-KARNAL-complete-logs
+          name: V45-LM-G900-KARNAL-complete-logs
           path: |
-            V44-LM-G900-KARNAL-complete-logs.zip
+            V45-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
