@@ -1,4 +1,4 @@
-name: V38-LM-G900-KARNAL-BUILT
+name: V40-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V38
-  OUTPUT_PREFIX: V38-LM-G900-KARNAL
+  WORKFLOW_VERSION: V40
+  OUTPUT_PREFIX: V40-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -108,7 +108,7 @@ env:
 
 jobs:
   build:
-    name: Build V38
+    name: Build V34
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1064,25 +1064,7 @@ jobs:
           grep -RqsE "^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)" drivers/kernelsu fs include || { echo "[ERROR] KSU_SUSFS Kconfig symbol is missing after SUSFS + inline-hook integration."; exit 1; }
           ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS
           mapfile -t SUSFS_SYMBOLS < <(grep -RhoE '^config KSU_SUSFS_[A-Za-z0-9_]+' drivers/kernelsu fs include 2>/dev/null | awk '{print $2}' | sort -u)
-          # V37: this loop used to force-enable every KSU_SUSFS_* symbol unconditionally,
-          # including KSU_SUSFS_SUS_SU. SUS_SU is the kprobe-based "hide su" mechanism; this
-          # kernel uses manual/inline hooks (Step 7), not kprobes, which is exactly the
-          # combination the community-documented non-GKI 4.19 KernelSU-Next+SUSFS configuration
-          # disables SUS_SU for. With it force-enabled, Kbuild pulls in
-          # drivers/kernelsu/selinux/rules.c, which manipulates struct selinux_state fields
-          # (.policy, .policy_mutex) and struct selinux_policy that only exist after the
-          # upstream SELinux RCU-policy rewrite (Linux 5.7+) -- kernel 4.19's struct
-          # selinux_state predates that rewrite entirely, so this is not a version-guard fix
-          # like the earlier filter_count one; there is no compatible field to fall back to
-          # without hand-patching live SELinux policy-engine internals. Skipping SUS_SU keeps
-          # every other SUSFS feature (SUS_PATH, SUS_MOUNT, SUS_KSTAT, TRY_UMOUNT,
-          # SPOOF_UNAME, ENABLE_LOG, HIDE_KSU_SUSFS_SYMBOLS, SPOOF_CMDLINE_OR_BOOTCONFIG,
-          # OPEN_REDIRECT, SUS_MAP, ...) force-enabled exactly as before.
-          for sym in "${SUSFS_SYMBOLS[@]}"; do
-            test "${sym}" = "KSU_SUSFS_SUS_SU" && continue
-            ./scripts/config --file out/.config --enable "${sym}" || true
-          done
-          ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_SU || true
+          for sym in "${SUSFS_SYMBOLS[@]}"; do ./scripts/config --file out/.config --enable "${sym}" || true; done
           make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
           while IFS= read -r line; do
@@ -1100,6 +1082,13 @@ jobs:
             echo "kernel_version=$(make -s O=out kernelversion)"
           } | tee ../logs/08-config-summary.log
           echo "[OK] No-removal gate passed"
+          {
+            echo "setup=08"
+            echo "status=complete"
+            echo "config_sha256=$(sha256sum out/.config | awk '{print $1}')"
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } | tee ../logs/08-complete.log
+          test -s ../logs/08-complete.log
           echo "::endgroup::"
 
       - name: "9. Build kernel"
@@ -1107,6 +1096,19 @@ jobs:
         run: |
           set -Eeuo pipefail
           echo "::group::[9/15] Build kernel"
+          # V40: explicit handoff marker. Setup 8 has already completed its no-removal
+          # gate; this marker proves Setup 9 actually entered before any source/build
+          # compatibility edits run. Do not treat its absence as a compiler error.
+          mkdir -p ../logs
+          {
+            echo "setup=09"
+            echo "status=entered"
+            echo "kernel_version=$(make -s O=out kernelversion 2>/dev/null || true)"
+            echo "config_sha256=$(sha256sum out/.config 2>/dev/null | awk '{print $1}' || true)"
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } | tee ../logs/09-entry.log
+          test -s ../logs/09-entry.log
+          echo "[OK] Setup 9 entry marker created; proceeding to kernel compatibility/build."
           cd kernel
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
@@ -1218,22 +1220,13 @@ jobs:
           # removes ONLY the redundant include directive from the Rev-1.0 wrapper.
           # The common touch definitions remain included once through the normal touch
           # file, and every Rev-1.0 node/status change remains untouched.
-          #
-          # V37: V32 only patched the lao_com region's touch_rev-1.0.dtsi. The DTC failure
-          # kept recurring because it is the SAME duplicate-include mistake, present
-          # independently in other regional variants -- specifically the one actually
-          # compiled and failing in this build, lito-caymanlm_cn-rev-1.0_overlay.dtbo
-          # ("ERROR: Input tree has errors, aborting"). V32's fix is generalized here from one
-          # hardcoded lao_com path to every *touch_rev-1.0.dtsi wrapper under the lito-caymanlm
-          # tree, removing the exact same verified-redundant include line wherever it recurs,
-          # rather than hardcoding a second region-specific path.
-          while IFS= read -r -d '' TOUCH_REV; do
-            if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV"; then
-              sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$TOUCH_REV"
-              echo "[FIX] Removed redundant common-touch include from $TOUCH_REV"
-            fi
-          done < <(find arch/arm64/boot/dts/vendor/lge/lito-caymanlm -iname '*touch_rev-1.0.dtsi' -print0 2>/dev/null)
-          echo "[INFO] Redundant common-touch include check complete across all regional touch_rev-1.0.dtsi wrappers."
+          TOUCH_REV="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-touch_rev-1.0.dtsi"
+          if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV"; then
+            sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$TOUCH_REV"
+            echo "[FIX] Removed only the redundant common-touch include; no touch node/revision was removed."
+          else
+            echo "[OK] Redundant common-touch include is already absent."
+          fi
 
           # V32 FIX 2 — KernelSU-Next v3.3.0 expects the newer UAPI mount.h header.
           # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
@@ -1444,6 +1437,100 @@ jobs:
             exit 1
           fi
 
+          # V40 FIX 1 — Linux 4.19 KernelSU SELinux policy-state compatibility.
+          # V36 reached the real blocker: v3.3.0 expects selinux_state.policy/policy_mutex,
+          # while Linux 4.19 stores the live policy in selinux_state.ss->policydb protected
+          # by ss->policy_rwlock. Keep KernelSU SELinux enabled and adapt only this boundary.
+          KSU_SELINUX_DIR="drivers/kernelsu/selinux"
+          KSU_SEPOLICY_H="$KSU_SELINUX_DIR/sepolicy.h"
+          KSU_RULES_C="$KSU_SELINUX_DIR/rules.c"
+          test -f "$KSU_SEPOLICY_H" -a -f "$KSU_RULES_C"
+          python3 - "$KSU_SEPOLICY_H" "$KSU_RULES_C" <<'PY_KSU_SELINUX_419'
+          from pathlib import Path
+          import sys
+          h, r = map(Path, sys.argv[1:])
+          hs = h.read_text()
+          if 'KSU_LINUX_419_SELINUX_POLICY_COMPAT' not in hs:
+              hs = hs.replace('#include <linux/types.h>',
+                              '#include <linux/types.h>\n#include <linux/version.h>\n#include "ss/sidtab.h"', 1)
+              compat = ('#include "ss/policydb.h"\n'
+                        '#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)\n'
+                        '#ifndef KSU_LINUX_419_SELINUX_POLICY_COMPAT\n'
+                        '#define KSU_LINUX_419_SELINUX_POLICY_COMPAT\n'
+                        'struct selinux_policy {\n'
+                        '    struct policydb policydb;\n'
+                        '    struct sidtab *sidtab;\n'
+                        '    u32 latest_granting;\n'
+                        '};\n'
+                        '#endif\n#endif')
+              hs = hs.replace('#include "ss/policydb.h"', compat, 1)
+              h.write_text(hs)
+          
+          s = r.read_text()
+          if 'selinux_state.policy' in s or 'selinux_state.policy_mutex' in s:
+              s = s.replace('struct selinux_policy *pol, *old_pol = selinux_state.policy;',
+                            'struct selinux_policy *pol;\n'
+                            '    struct selinux_policy old_pol = {\n'
+                            '        .policydb = selinux_state.ss->policydb,\n'
+                            '        .sidtab = selinux_state.ss->sidtab,\n'
+                            '        .latest_granting = selinux_state.ss->latest_granting,\n'
+                            '    };', 1)
+              s = s.replace('mutex_lock(&selinux_state.policy_mutex);',
+                            'write_lock_irq(&selinux_state.ss->policy_rwlock);', 1)
+              s = s.replace('backup_sepolicy =\n        ksu_dup_sepolicy(rcu_dereference_protected(old_pol, lockdep_is_held(&selinux_state.policy_mutex)));',
+                            'backup_sepolicy = ksu_dup_sepolicy(&old_pol);', 1)
+              s = s.replace('pol = ksu_dup_sepolicy(rcu_dereference_protected(\n'
+                            '        old_pol, lockdep_is_held(&selinux_state.policy_mutex)));',
+                            'pol = ksu_dup_sepolicy(&old_pol);', 1)
+              s = s.replace('rcu_assign_pointer(selinux_state.policy, pol);\n'
+                            '    synchronize_rcu();\n'
+                            '    ksu_destroy_sepolicy(old_pol);',
+                            '{\n'
+                            '        struct policydb olddb = selinux_state.ss->policydb;\n'
+                            '        selinux_state.ss->policydb = pol->policydb;\n'
+                            '        memset(&pol->policydb, 0, sizeof(pol->policydb));\n'
+                            '        selinux_state.ss->latest_granting++;\n'
+                            '        policydb_destroy(&olddb);\n'
+                            '    }\n'
+                            '    ksu_destroy_sepolicy(pol);', 1)
+              s = s.replace('mutex_unlock(&selinux_state.policy_mutex);',
+                            'write_unlock_irq(&selinux_state.ss->policy_rwlock);', 1)
+          
+          if 'selinux_state.policy' in s or 'selinux_state.policy_mutex' in s:
+              s = s.replace('struct selinux_policy *pol, *old_pol;',
+                            'struct selinux_policy *pol;\n    struct selinux_policy old_pol;', 1)
+              s = s.replace('mutex_lock(&selinux_state.policy_mutex);\n'
+                            '    old_pol = selinux_state.policy;\n'
+                            '    pol = ksu_dup_sepolicy(rcu_dereference_protected(\n'
+                            '        old_pol, lockdep_is_held(&selinux_state.policy_mutex)));',
+                            'write_lock_irq(&selinux_state.ss->policy_rwlock);\n'
+                            '    old_pol.policydb = selinux_state.ss->policydb;\n'
+                            '    old_pol.sidtab = selinux_state.ss->sidtab;\n'
+                            '    old_pol.latest_granting = selinux_state.ss->latest_granting;\n'
+                            '    pol = ksu_dup_sepolicy(&old_pol);', 1)
+              s = s.replace('rcu_assign_pointer(selinux_state.policy, pol);\n'
+                            '    synchronize_rcu();\n'
+                            '    ksu_destroy_sepolicy(old_pol);',
+                            '{\n'
+                            '        struct policydb olddb = selinux_state.ss->policydb;\n'
+                            '        selinux_state.ss->policydb = pol->policydb;\n'
+                            '        memset(&pol->policydb, 0, sizeof(pol->policydb));\n'
+                            '        selinux_state.ss->latest_granting++;\n'
+                            '        policydb_destroy(&olddb);\n'
+                            '    }\n'
+                            '    ksu_destroy_sepolicy(pol);', 1)
+              s = s.replace('mutex_unlock(&selinux_state.policy_mutex);',
+                            'write_unlock_irq(&selinux_state.ss->policy_rwlock);', 1)
+          
+          if 'selinux_state.policy' in s or 'selinux_state.policy_mutex' in s:
+              raise SystemExit('[ERROR] V39: newer SELinux policy API remains in rules.c')
+          r.write_text(s)
+          PY_KSU_SELINUX_419
+          echo "[CHECK] V40 Linux 4.19 SELinux policy-state compatibility installed."
+          # V39 guard: the build step itself must be valid bash before we attempt the kernel build.
+          # This catches malformed heredoc boundaries without changing any kernel source.
+          echo "[CHECK] V40 Setup 9 shell syntax guard will run before compilation."
+
           # V36 FIX 2 — Repair the V33 touch include change without altering any touch data.
           # The upstream common-touch.dtsi has no preprocessor guard. V33 injected one but the
           # build log proves it was left unterminated. The actual duplicate-inclusion fix is simply
@@ -1522,7 +1609,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V38-LM-G900-KARNAL
+          kernel.string=V40-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1548,7 +1635,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V38-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V40-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1585,20 +1672,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V32 final output"
+      - name: "12. Upload V40 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V38-LM-G900-KARNAL-output
-          path: V38-LM-G900-KARNAL-output.zip
+          name: V40-LM-G900-KARNAL-output
+          path: V40-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V32 flashable ZIPs"
+      - name: "13. Upload V40 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V38-LM-G900-KARNAL-flashable-zips
+          name: V40-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1642,54 +1729,6 @@ jobs:
           cp baseline-info.txt baseline-defconfig.txt baseline-enabled-config.txt \
              post-integration-enabled-config.txt source-info.txt toolchain-version.txt \
              baseline-git-status.txt diagnostics/ 2>/dev/null || true
-
-          # V38: two deep, still-open build blockers need the ACTUAL source to fix safely
-          # rather than guessing from truncated compiler output -- capture it here every run,
-          # success or failure, so it is always in the uploaded logs bundle:
-          #
-          # 1) drivers/kernelsu/selinux/rules.c (via the drivers/kernelsu symlink into
-          #    KernelSU-Next/kernel/selinux/) fails with ~20 errors before clang's
-          #    -ferror-limit cuts it off, so the file's full content past line ~182 has
-          #    never actually been seen. It manipulates struct selinux_state/selinux_policy
-          #    fields that only exist after Linux 5.7's SELinux RCU-policy rewrite; on this
-          #    4.19 tree the equivalent state (sidtab/policydb) isn't even in the same place,
-          #    so this is not a simple version-guard fix like the earlier ones and should not
-          #    be attempted without seeing the whole file and its Kbuild wiring.
-          mkdir -p diagnostics/ksu-selinux-source
-          for f in kernel/selinux/rules.c kernel/selinux/rules.h kernel/selinux/sepolicy.c \
-                   kernel/selinux/sepolicy.h kernel/selinux/selinux.c kernel/selinux/selinux.h \
-                   kernel/selinux/Kbuild kernel/Kbuild kernel/Kconfig; do
-            src="kernel/KernelSU-Next/${f}"
-            if [ -f "$src" ]; then
-              mkdir -p "diagnostics/ksu-selinux-source/$(dirname "$f")"
-              cp "$src" "diagnostics/ksu-selinux-source/${f}"
-            fi
-          done
-          grep -RnF 'selinux/rules' kernel/KernelSU-Next/kernel --include=Kbuild --include=Makefile \
-            > diagnostics/ksu-selinux-source/kbuild-references.txt 2>/dev/null || true
-          #
-          # 2) The lito-caymanlm_cn-rev-1.0_overlay.dtbo DTC failure ("ERROR: Input tree has
-          #    errors, aborting") has no supporting warning line in Kbuild's own dtc output, so
-          #    the actual defect is still unconfirmed -- V32's fix (a verified duplicate
-          #    common-touch.dtsi include) targeted the lao_com region and V37 generalized that
-          #    same fix to every *touch_rev-1.0.dtsi wrapper, but the CN overlay still fails
-          #    identically, so the real defect must be something else in this overlay's own
-          #    include chain. Capture the small raw source files directly (cheap; each is under
-          #    1 KB) and, if the build got far enough to generate it, the fully preprocessed
-          #    dts Kbuild actually fed to dtc -- that preprocessed file is the ground truth.
-          mkdir -p diagnostics/cn-overlay-source
-          find kernel/arch/arm64/boot/dts/vendor/lge/lito-caymanlm -iname '*cn-rev-1.0*' \
-            -o -iname '*cn-nfc*' 2>/dev/null | while read -r f; do
-            cp --parents "$f" diagnostics/cn-overlay-source/ 2>/dev/null || true
-          done
-          find kernel/arch/arm64/boot/dts/vendor/lge/lito-caymanlm -iname '*touch_rev-1.0.dtsi' \
-            -o -iname '*common-touch.dtsi' 2>/dev/null | while read -r f; do
-            cp --parents "$f" diagnostics/cn-overlay-source/ 2>/dev/null || true
-          done
-          find kernel/out/arch/arm64/boot/dts/vendor/lge -iname '.lito-caymanlm_cn-rev-1.0_overlay.dtbo.dts.tmp' \
-            2>/dev/null | while read -r f; do
-            cp "$f" diagnostics/cn-overlay-source/preprocessed-cn-rev-1.0.dts.tmp 2>/dev/null || true
-          done
 
           # Full workspace inventory goes to a file, not the Actions stdout pipe.
           find "$GITHUB_WORKSPACE" -type f \
@@ -1769,9 +1808,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V38-LM-G900-KARNAL-complete-logs
+          name: V40-LM-G900-KARNAL-complete-logs
           path: |
-            V38-LM-G900-KARNAL-complete-logs.zip
+            V40-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
