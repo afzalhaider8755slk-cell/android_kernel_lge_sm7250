@@ -1,4 +1,4 @@
-name: V41-LM-G900-KARNAL-BUILT
+name: V42-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -57,8 +57,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V41
-  OUTPUT_PREFIX: V41-LM-G900-KARNAL
+  WORKFLOW_VERSION: V42
+  OUTPUT_PREFIX: V42-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1528,13 +1528,222 @@ jobs:
           import re
           if (re.search(r'\\bselinux_state\\.policy(?!db)\\b', s)
                   or re.search(r'\\bselinux_state\\.policy_mutex\\b', s)):
-              raise SystemExit('[ERROR] V41: newer SELinux policy API remains in rules.c')
+              raise SystemExit('[ERROR] V42: newer SELinux policy API remains in rules.c')
           r.write_text(s)
           PY_KSU_SELINUX_419
-          echo "[CHECK] V41 Linux 4.19 SELinux policy-state compatibility installed (exact API guard; policydb is allowed)."
+          echo "[CHECK] V42 Linux 4.19 SELinux policy-state compatibility installed (exact API guard; policydb is allowed)."
           # V39 guard: the build step itself must be valid bash before we attempt the kernel build.
           # This catches malformed heredoc boundaries without changing any kernel source.
           echo "[CHECK] V40 Setup 9 shell syntax guard will run before compilation."
+
+          # V42 FIX — Linux 4.19 KernelSU SELinux policy container compatibility.
+          KSU_SELINUX_DIR="drivers/kernelsu/selinux"
+          KSU_SEPOLICY_H="$KSU_SELINUX_DIR/sepolicy.h"
+          KSU_RULES_C="$KSU_SELINUX_DIR/rules.c"
+          test -f "$KSU_SEPOLICY_H" -a -f "$KSU_RULES_C"
+
+          python3 - "$KSU_SEPOLICY_H" "$KSU_RULES_C" <<'PY_KSU_SELINUX_419_V42'
+          
+          from pathlib import Path
+          import re, sys
+          
+          h = Path(sys.argv[1])
+          r = Path(sys.argv[2])
+          hs = h.read_text()
+          anchor = '#include "ss/policydb.h"'
+          if 'KSU_LINUX_419_SELINUX_POLICY_COMPAT_V42' not in hs:
+              compat = (
+                  anchor + '\n'
+                  '#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)\n'
+                  '#ifndef KSU_LINUX_419_SELINUX_POLICY_COMPAT_V42\n'
+                  '#define KSU_LINUX_419_SELINUX_POLICY_COMPAT_V42\n'
+                  'struct selinux_policy {\n'
+                  '    struct policydb policydb;\n'
+                  '    struct sidtab *sidtab;\n'
+                  '    u32 latest_granting;\n'
+                  '};\n'
+                  '#endif\n'
+                  '#endif'
+              )
+              if anchor not in hs:
+                  raise SystemExit('sepolicy.h policydb include anchor not found')
+              h.write_text(hs.replace(anchor, compat, 1))
+          
+          s = r.read_text()
+          
+          def extract_func(src, name):
+              m = re.search(r'\b(?:static\s+)?(?:void|int)\s+' + re.escape(name) +
+                            r'\s*\([^;]*\)\s*\{', src)
+              if not m:
+                  raise SystemExit('function not found: ' + name)
+              start = m.start()
+              brace = src.find('{', m.start())
+              depth = 0
+              in_str = None
+              esc = False
+              for i in range(brace, len(src)):
+                  c = src[i]
+                  if in_str:
+                      if esc:
+                          esc = False
+                      elif c == '\\':
+                          esc = True
+                      elif c == in_str:
+                          in_str = None
+                  else:
+                      if c in ('"', "'"):
+                          in_str = c
+                      elif c == '{':
+                          depth += 1
+                      elif c == '}':
+                          depth -= 1
+                          if depth == 0:
+                              return start, i + 1, src[start:i+1]
+              raise SystemExit('unterminated function: ' + name)
+          
+          def patch_apply(fn):
+              fn = re.sub(
+                  r'struct selinux_policy\s*\*pol,\s*\*old_pol\s*=\s*selinux_state\.policy\s*;',
+                  'struct selinux_policy *pol;\n    struct selinux_policy old_pol;',
+                  fn, count=1)
+          
+              acq = re.search(
+                  r'\s*mutex_lock\(&selinux_state\.policy_mutex\);.*?\n\s*db\s*=\s*&pol->policydb;',
+                  fn, re.S)
+              if not acq:
+                  raise SystemExit('V42 apply policy acquisition block not found')
+              acq_replacement = '''
+              write_lock_irq(&selinux_state.ss->policy_rwlock);
+              old_pol.policydb = selinux_state.ss->policydb;
+              old_pol.sidtab = &selinux_state.ss->sidtab;
+              old_pol.latest_granting = selinux_state.ss->latest_granting;
+          
+              backup_sepolicy = ksu_dup_sepolicy(&old_pol);
+              if (IS_ERR(backup_sepolicy)) {
+                  pr_err("failed to create backup sepolicy: %ld\\n", PTR_ERR(backup_sepolicy));
+                  backup_sepolicy = NULL;
+              } else {
+                  backup_sepolicy->sidtab = kzalloc(sizeof(*backup_sepolicy->sidtab), GFP_KERNEL);
+                  if (!backup_sepolicy->sidtab) {
+                      pr_err("failed to alloc backup sidtab\\n");
+                      ksu_destroy_sepolicy(backup_sepolicy);
+                      backup_sepolicy = NULL;
+                  } else {
+                      int ret = policydb_load_isids(&backup_sepolicy->policydb, backup_sepolicy->sidtab);
+                      if (ret) {
+                          pr_err("failed to load isids for backup sepolicy: %d!\\n", ret);
+                          kfree(backup_sepolicy->sidtab);
+                          ksu_destroy_sepolicy(backup_sepolicy);
+                          backup_sepolicy = NULL;
+                      } else {
+                          pr_info("backup sepolicy success! latest_granting=%d\\n",
+                                  backup_sepolicy->latest_granting);
+                      }
+                  }
+              }
+          
+              pol = ksu_dup_sepolicy(&old_pol);
+              if (IS_ERR(pol)) {
+                  pr_err("failed to dup selinux_policy: %ld\\n", PTR_ERR(pol));
+                  goto out_unlock;
+              }
+              db = &pol->policydb;'''
+              fn = fn[:acq.start()] + acq_replacement + fn[acq.end():]
+              # Replace the policy commit section only, leaving all KernelSU rule calls untouched.
+              commit = re.search(
+                  r'\n\s*(?:rcu_assign_pointer\(selinux_state\.policy, pol\);|\{\s*struct policydb olddb\s*=\s*selinux_state\.ss->policydb;).*?\n\s*out_unlock:\s*.*?\n\s*\}',
+                  fn, re.S)
+              if not commit:
+                  raise SystemExit('V42 apply commit block not found')
+              replacement = '''
+              {
+                  struct policydb olddb = selinux_state.ss->policydb;
+                  selinux_state.ss->policydb = pol->policydb;
+                  memset(&pol->policydb, 0, sizeof(pol->policydb));
+                  selinux_state.ss->latest_granting++;
+                  policydb_destroy(&olddb);
+              }
+              ksu_destroy_sepolicy(pol);
+              reset_avc_cache();
+          
+          out_unlock:
+              write_unlock_irq(&selinux_state.ss->policy_rwlock);
+          }'''
+              fn = fn[:commit.start()] + '\n' + replacement
+              if re.search(r'\bselinux_state\.(policy|policy_mutex)\b', fn):
+                  raise SystemExit('V42 apply still contains newer selinux_state policy API')
+              return fn
+          
+          def patch_handle(fn):
+              fn = re.sub(
+                  r'struct selinux_policy\s*\*pol,\s*\*old_pol\s*;',
+                  'struct selinux_policy *pol;\n    struct selinux_policy old_pol;',
+                  fn, count=1)
+          
+              acq = re.search(
+                  r'\s*mutex_lock\(&selinux_state\.policy_mutex\);.*?\n\s*db\s*=\s*&pol->policydb;',
+                  fn, re.S)
+              if not acq:
+                  raise SystemExit('V42 handle policy acquisition block not found')
+              acq_replacement = '''
+              write_lock_irq(&selinux_state.ss->policy_rwlock);
+              old_pol.policydb = selinux_state.ss->policydb;
+              old_pol.sidtab = &selinux_state.ss->sidtab;
+              old_pol.latest_granting = selinux_state.ss->latest_granting;
+          
+              pol = ksu_dup_sepolicy(&old_pol);
+              if (IS_ERR(pol)) {
+                  ret = PTR_ERR(pol);
+                  pr_err("ksu_dup_sepolicy err: %d\\n", ret);
+                  goto out_unlock;
+              }
+              db = &pol->policydb;'''
+              fn = fn[:acq.start()] + acq_replacement + fn[acq.end():]
+              commit = re.search(
+                  r'\n\s*(?:rcu_assign_pointer\(selinux_state\.policy, pol\);|\{\s*struct policydb olddb\s*=\s*selinux_state\.ss->policydb;).*?\n\s*out_free:\s*.*?\n\s*\}',
+                  fn, re.S)
+              if not commit:
+                  raise SystemExit('V42 handle commit block not found')
+              replacement = '''
+              {
+                  struct policydb olddb = selinux_state.ss->policydb;
+                  selinux_state.ss->policydb = pol->policydb;
+                  memset(&pol->policydb, 0, sizeof(pol->policydb));
+                  selinux_state.ss->latest_granting++;
+                  policydb_destroy(&olddb);
+              }
+              ksu_destroy_sepolicy(pol);
+              reset_avc_cache();
+              ret = success_cmd_count;
+              goto out_unlock;
+          
+          out_drop_new_policy:
+              ksu_destroy_sepolicy(pol);
+          out_unlock:
+              write_unlock_irq(&selinux_state.ss->policy_rwlock);
+          out_free:
+              kvfree(payload);
+              return ret;
+          }'''
+              fn = fn[:commit.start()] + '\n' + replacement
+              if re.search(r'\bselinux_state\.(policy|policy_mutex)\b', fn):
+                  raise SystemExit('V42 handle still contains newer selinux_state policy API')
+              return fn
+          
+          a0, a1, af = extract_func(s, 'apply_kernelsu_rules')
+          s = s[:a0] + patch_apply(af) + s[a1:]
+          h0, h1, hf = extract_func(s, 'handle_sepolicy')
+          s = s[:h0] + patch_handle(hf) + s[h1:]
+          
+          if s.count('void apply_kernelsu_rules()') != 1 or s.count('int handle_sepolicy(void __user *user_data, u64 data_len)') != 1:
+              raise SystemExit('V42 function count validation failed')
+          if 'selinux_state.policy_mutex' in s or 'selinux_state.policy' in s:
+              raise SystemExit('V42 newer SELinux policy members remain in rules.c')
+          
+          r.write_text(s)
+          PY_KSU_SELINUX_419_V42
+          echo "[FIX] V42 installed Linux 4.19 SELinux policydb/rwlock compatibility without removing KernelSU SELinux rules."
+          echo "[CHECK] V42 SELinux compatibility validation passed."
 
           # V36 FIX 2 — Repair the V33 touch include change without altering any touch data.
           # The upstream common-touch.dtsi has no preprocessor guard. V33 injected one but the
@@ -1543,45 +1752,43 @@ jobs:
           COMMON_TOUCH="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"
           TOUCH_REV="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-touch_rev-1.0.dtsi"
           test -f "$COMMON_TOUCH"
+          test -f "$TOUCH_REV"
 
-          python3 - "$COMMON_TOUCH" <<'PY_TOUCH_REPAIR'
+          # V42: a real include guard prevents the known duplicate-label failure while
+          # preserving the complete common-touch file and all Rev-1.0 wrapper content.
+          python3 - "$COMMON_TOUCH" <<'PY_TOUCH_GUARD_V42'
           from pathlib import Path
           import sys
-          p=Path(sys.argv[1])
-          lines=p.read_text().splitlines()
-          guard='__LG_CAYMANLM_COMMON_TOUCH_DTSI__'
-          # Remove only the guard that earlier workflow revisions injected. The original
-          # upstream file starts with SPDX/comment lines, so match the guard anywhere in the
-          # first few lines rather than assuming it is line 1.
-          if any(guard in line for line in lines[:8]):
-              cleaned=[]
-              for line in lines:
-                  if guard in line or line.startswith('/* V33: idempotent include guard'):
-                      continue
-                  cleaned.append(line)
-              lines=cleaned
-          # If an earlier revision appended our matching final guard, remove that single line.
-          while lines and lines[-1].strip() in (f'#endif /* {guard} */', f'#endif // {guard}'):
-              lines.pop()
-          p.write_text('\n'.join(lines).rstrip()+'\n')
-          PY_TOUCH_REPAIR
+          p = Path(sys.argv[1])
+          guard = '__LG_CAYMANLM_COMMON_TOUCH_DTSI__'
+          lines = p.read_text().splitlines()
+          cleaned = []
+          for line in lines:
+              stripped = line.strip()
+              if stripped.startswith('/* V33: idempotent include guard'):
+                  continue
+              if stripped in (
+                  '#ifndef __LG_CAYMANLM_COMMON_TOUCH_DTSI__',
+                  '#define __LG_CAYMANLM_COMMON_TOUCH_DTSI__',
+                  '#endif /* __LG_CAYMANLM_COMMON_TOUCH_DTSI__ */',
+                  '#endif // __LG_CAYMANLM_COMMON_TOUCH_DTSI__'
+              ):
+                  continue
+              cleaned.append(line)
+          body = '\n'.join(cleaned).rstrip() + '\n'
+          p.write_text(
+              '/* V42: include-once guard; all original touch definitions preserved. */\n'
+              f'#ifndef {guard}\n'
+              f'#define {guard}\n'
+              + body +
+              f'#endif /* {guard} */\n'
+          )
+          PY_TOUCH_GUARD_V42
 
-          if [ -f "$TOUCH_REV" ] && grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV"; then
-            sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$TOUCH_REV"
-            echo "[FIX] Removed only the redundant Rev-1.0 common-touch include; all Rev-1.0 nodes remain intact."
-          fi
-
-          # The source file itself must remain byte-for-byte equivalent to the upstream structure
-          # apart from any pre-existing local changes; specifically, it must not contain our broken guard.
-          if grep -q '__LG_CAYMANLM_COMMON_TOUCH_DTSI__' "$COMMON_TOUCH"; then
-            echo "[ERROR] Broken common-touch guard still present after reconciliation."
-            exit 1
-          fi
-          if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV"; then
-            echo "[ERROR] Redundant Rev-1.0 common-touch include still present."
-            exit 1
-          fi
-          echo "[CHECK] V34 touch reconciliation complete: common-touch definitions preserved, redundant include removed."
+          grep -qF '#ifndef __LG_CAYMANLM_COMMON_TOUCH_DTSI__' "$COMMON_TOUCH"
+          grep -qF '#define __LG_CAYMANLM_COMMON_TOUCH_DTSI__' "$COMMON_TOUCH"
+          tail -n 3 "$COMMON_TOUCH" | grep -qF '#endif /* __LG_CAYMANLM_COMMON_TOUCH_DTSI__ */'
+          echo "[CHECK] V42 common-touch include-once guard installed; touch definitions preserved."
 
           echo "[CHECK] KernelSU fsnotify compatibility and DT touch reconciliation are installed."
 
@@ -1614,7 +1821,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V41-LM-G900-KARNAL
+          kernel.string=V42-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1640,7 +1847,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V41-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V42-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1681,8 +1888,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V41-LM-G900-KARNAL-output
-          path: V41-LM-G900-KARNAL-output.zip
+          name: V42-LM-G900-KARNAL-output
+          path: V42-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1690,7 +1897,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V41-LM-G900-KARNAL-flashable-zips
+          name: V42-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1813,9 +2020,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V41-LM-G900-KARNAL-complete-logs
+          name: V42-LM-G900-KARNAL-complete-logs
           path: |
-            V41-LM-G900-KARNAL-complete-logs.zip
+            V42-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
