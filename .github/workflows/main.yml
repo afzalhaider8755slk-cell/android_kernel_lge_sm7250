@@ -1,4 +1,4 @@
-name: V52-LM-G900-KARNAL-BUILT
+name: V53-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -70,8 +70,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V52
-  OUTPUT_PREFIX: V52-LM-G900-KARNAL
+  WORKFLOW_VERSION: V53
+  OUTPUT_PREFIX: V53-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -181,7 +181,7 @@ env:
 
 jobs:
   build:
-    name: Build V52
+    name: Build V53
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1109,7 +1109,78 @@ jobs:
           test -f "susfs-backport/${INLINE_SCRIPT}"
           cp "susfs-backport/${INLINE_SCRIPT}" logs/07-susfs-inline-hook-patches.sh
           chmod +x logs/07-susfs-inline-hook-patches.sh
+
+          # V53: adapt SUSFS 2.3 inline hooks to the pinned legacy 4.19 KSU API.
+          # The legacy driver uses boolean hook-state variables and does not implement
+          # the newer post-exec session helper. No existing KSU/SUSFS feature is removed.
+          python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V53_HOOK_COMPAT'
+          from pathlib import Path
+          import sys, re
+          p=Path(sys.argv[1]); s=p.read_text()
+          s=s.replace('extern struct static_key_true ksu_is_init_rc_hook_enabled;', 'extern bool ksu_init_rc_hook;')
+          s=s.replace(r'static_branch_unlikely(\&ksu_is_init_rc_hook_enabled)', 'READ_ONCE(ksu_init_rc_hook)')
+          s=s.replace('extern struct static_key_true ksu_is_input_hook_enabled;', 'extern bool ksu_input_hook;')
+          s=s.replace(r'static_branch_unlikely(\&ksu_is_input_hook_enabled)', 'READ_ONCE(ksu_input_hook)')
+          s=s.replace('extern struct static_key_true ksu_su_compat_enabled;', 'extern bool ksu_su_compat_enabled;')
+          s=s.replace(r'static_branch_likely(\&ksu_su_compat_enabled)', 'READ_ONCE(ksu_su_compat_enabled)')
+          # The legacy branch does not implement the post-exec session helper; remove the
+          # complete declaration/callback command from the copied shell patcher.
+          s='\n'.join(line for line in s.splitlines() if 'ksu_handle_post_execveat_sucompat' not in line) + '\n'
+          p.write_text(s)
+          print('[FIX] V53: inline-hook script reconciled with legacy KSU')
+          PY_V53_HOOK_COMPAT
+
           (cd kernel && bash ../logs/07-susfs-inline-hook-patches.sh) 2>&1 | tee logs/07-susfs-inline-hooks.log
+
+          # V53: expose the fstat helper expected by SUSFS 2.3 while reusing the
+          # legacy driver's existing init.rc detection and ksu_rc_len accounting.
+          python3 - kernel/drivers/kernelsu/runtime/ksud_integration.c <<'PY_V53_KSUD'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text()
+          sig='void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)'
+          if sig not in s:
+              anchor='void __maybe_unused ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,'
+              idx=s.find(anchor)
+              if idx < 0:
+                  raise SystemExit('ksu_handle_vfs_read anchor not found')
+              fn=(
+                  '/* V53: SUSFS 2.3 manual fstat compatibility for legacy 4.19. */\n'
+                  'void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)\n'
+                  '{\n'
+                  '    struct file *file;\n'
+                  '    loff_t orig_size;\n\n'
+                  '    if (!kstat_size_ptr)\n'
+                  '        return;\n'
+                  '    orig_size = *kstat_size_ptr;\n'
+                  '    file = fget(fd);\n'
+                  '    if (!file)\n'
+                  '        return;\n'
+                  '    if (is_init_rc(file)) {\n'
+                  '        *kstat_size_ptr = orig_size + ksu_rc_len;\n'
+                  '        pr_info("V53: adding ksu_rc_len to init.rc fstat: %lld -> %lld\\n",\n'
+                  '                orig_size, *kstat_size_ptr);\n'
+                  '    }\n'
+                  '    fput(file);\n'
+                  '}\n\n'
+              )
+              s=s[:idx]+fn+s[idx:]
+              p.write_text(s)
+          print('[OK] V53: ksu_handle_vfs_fstat compatibility present')
+          PY_V53_KSUD
+
+          SUSFS_C="kernel/fs/susfs.c"
+          if grep -q '^static void susfs_run_sus_path_loop(void)' "$SUSFS_C"; then
+            sed -i 's/^static void susfs_run_sus_path_loop(void)/void susfs_run_sus_path_loop(void)/' "$SUSFS_C"
+            echo '[FIX] V53: made susfs_run_sus_path_loop externally visible.'
+          fi
+          grep -q '^void susfs_run_sus_path_loop(void)' "$SUSFS_C"
+          grep -q '^void ksu_handle_vfs_fstat(int fd, loff_t \*kstat_size_ptr)' kernel/drivers/kernelsu/runtime/ksud_integration.c
+          if grep -q 'ksu_handle_post_execveat_sucompat' logs/07-susfs-inline-hook-patches.sh; then
+            echo '[ERROR] V53: unsupported post-exec helper remains referenced.'
+            exit 1
+          fi
+          echo '[OK] V53 KSU/SUSFS compatibility reconciliation passed.'
 
           if git -C kernel ls-files -u | grep -q .; then
             echo "[ERROR] Inline SUSFS hook stage left unmerged index entries." | tee logs/07-susfs-failure.log
@@ -1553,7 +1624,7 @@ jobs:
             exit 1
           fi
           echo "[OK] V44: CN duplicate camera/bmr thermal labels reconciled without removing nodes."
-          # V52 FIX — V50 dtbs diagnostics show the CN overlay is no longer the
+          # V53 FIX — V50 dtbs diagnostics show the CN overlay is no longer the
           # blocker. HDK and VZW regional PM files still define generic thermal labels
           # that collide with the Qualcomm lito-pmic overlay. Keep every node/settings;
           # namespace only the variant-local labels and update their references.
@@ -1561,10 +1632,10 @@ jobs:
             arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-pm_hdk.dtsi \
             arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_vzw-pm.dtsi; do
             if [ ! -f "$VARIANT_PM" ]; then
-              echo "[ERROR] V52: expected variant PM DTSI not found: $VARIANT_PM"
+              echo "[ERROR] V53: expected variant PM DTSI not found: $VARIANT_PM"
               exit 1
             fi
-            python3 - "$VARIANT_PM" <<'PY_V52_VARIANT_DT'
+            python3 - "$VARIANT_PM" <<'PY_V53_VARIANT_DT'
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
@@ -1578,19 +1649,19 @@ jobs:
           s = s.replace('&camera_therm_default', f'&camera_therm_default{suffix}')
           s = s.replace('&bmr_w_therm_default', f'&bmr_w_therm_default{suffix}')
           if s == old:
-              raise SystemExit(f'[ERROR] V52: expected variant thermal labels were not found in {p}')
+              raise SystemExit(f'[ERROR] V53: expected variant thermal labels were not found in {p}')
           p.write_text(s)
-          print(f'[FIX] V52: namespaced variant thermal labels in {p}')
-          PY_V52_VARIANT_DT
+          print(f'[FIX] V53: namespaced variant thermal labels in {p}')
+          PY_V53_VARIANT_DT
           done
 
           if grep -RInE '^[[:space:]]*(camera_therm_default|bmr_w_therm_default):' \
               arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com \
               --include='*pm*.dtsi'; then
-            echo "[ERROR] V52: unnamespaced CaymanLM variant thermal labels remain."
+            echo "[ERROR] V53: unnamespaced CaymanLM variant thermal labels remain."
             exit 1
           fi
-          echo "[OK] V52: all CaymanLM variant PM thermal labels are uniquely namespaced; no nodes removed."
+          echo "[OK] V53: all CaymanLM variant PM thermal labels are uniquely namespaced; no nodes removed."
 
 
           # V32 FIX 2 — KernelSU-Next v3.3.0 expects the newer UAPI mount.h header.
@@ -1970,12 +2041,12 @@ jobs:
           fi
           # V41: flask.h/av_permissions.h are generated while security/selinux/ is built and drivers/kernelsu
           # includes them. Without this step the pre-compile reported 7 false 'flask.h not found' errors.
-          # V52: V51 proved the complete dtbs phase returns dtbs_rc=0, so the prior
+          # V53: V51 proved the complete dtbs phase returns dtbs_rc=0, so the prior
           # CN-only preflight is no longer a blocker. It was a redundant second DTC invocation
           # before the real build and V51 stopped before producing its preflight/build logs.
           # Keep the source-integrity checks above, then let the real kernel build proceed.
           # Step 9b runs the authoritative full dtbs diagnostic afterwards.
-          echo "[OK] V52 DT source reconciliation passed; deferring DTC verification to the real dtbs phase."
+          echo "[OK] V53 DT source reconciliation passed; deferring DTC verification to the real dtbs phase."
 
           echo "[V41] Building security/selinux first (generates flask.h and av_permissions.h)"
           set +e
@@ -2049,7 +2120,7 @@ jobs:
           timeout 900 make "${MAKE_ARGS[@]}" -k -j"$(nproc)" V=1 dtbs > ../logs/09b-dtbs-diagnostic.log 2>&1
           echo "dtbs_rc=$?" | tee ../logs/09b-dtbs-rc.txt
           grep -nE "Input tree has errors|Error [0-9]+$" ../logs/09b-dtbs-diagnostic.log | head -20
-          echo "--- V52 post-fix DT source checks ---" | tee ../logs/09b-post-fix-dt-check.log
+          echo "--- V53 post-fix DT source checks ---" | tee ../logs/09b-post-fix-dt-check.log
           grep -RInF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' \
             arch/arm64/boot/dts/vendor/lge/lito-caymanlm --include='*touch_rev-1.0.dtsi' \
             | tee -a ../logs/09b-post-fix-dt-check.log
@@ -2088,7 +2159,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V52-LM-G900-KARNAL
+          kernel.string=V53-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2126,7 +2197,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V52-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V53-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2167,8 +2238,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V52-LM-G900-KARNAL-output
-          path: V52-LM-G900-KARNAL-output.zip
+          name: V53-LM-G900-KARNAL-output
+          path: V53-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2176,7 +2247,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V52-LM-G900-KARNAL-flashable-zips
+          name: V53-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2340,16 +2411,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V52 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V53 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
       - name: "15. Upload V48 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V52-LM-G900-KARNAL-complete-logs
+          name: V53-LM-G900-KARNAL-complete-logs
           path: |
-            V52-LM-G900-KARNAL-complete-logs.zip
+            V53-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
