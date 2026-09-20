@@ -1,4 +1,4 @@
-name: V41-LM-G900-KARNAL-BUILT
+name: V42-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -67,8 +67,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V41
-  OUTPUT_PREFIX: V41-LM-G900-KARNAL
+  WORKFLOW_VERSION: V42
+  OUTPUT_PREFIX: V42-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -155,9 +155,20 @@ env:
   #    touch include. The Image build does not depend on it; Step 9b now also lists which .dtsi files
   #    define those labels (logs/09b-dup-label-sources.txt) so the exact duplicate include can be removed.
 
+  # V42 (built from the complete V41 run logs): V41 fixed everything except one file. The pre-compile now
+  # reports exactly 11 errors, all in drivers/kernelsu/feature/selinux_hide.c: struct selinux_state has no
+  # status_lock/status_page/policy and struct selinux_policy is incomplete. Those members/types exist only
+  # since the Linux 5.7 SELinux rewrite (4.19 keeps the status page in ss/status.c globals and the policy in
+  # services.c), so this SELinux-hiding feature cannot work on this kernel. V42 wraps the file like
+  # sepolicy.c: original code for >=5.7, safe no-op stubs below. Nothing else in KernelSU changes.
+  # The final build also uses `make -k`, so if anything else in the WHOLE kernel (SUSFS files, etc.) fails,
+  # every error is listed in one run instead of only the first.
+  # DTC (non-blocking): logs/09b-dup-label-sources.txt shows camera_therm_default and bmr_w_therm_default are
+  # defined both in qcom/lito-pmic-overlay.dtsi and in lito-caymanlm_lao_com-pm.dtsi.
+
 jobs:
   build:
-    name: Build V41
+    name: Build V42
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1667,7 +1678,7 @@ jobs:
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V41 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V42 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -1836,6 +1847,16 @@ jobs:
             echo "[INFO] sepolicy.c pre-5.7 compat not needed or file not present"
           fi
 
+          # V42 FIX: feature/selinux_hide.c reads/writes selinux_state.status_lock/status_page/policy and
+          # struct selinux_policy, which exist only since the Linux 5.7 SELinux rewrite. Keep the original
+          # code for >=5.7 and provide safe no-op stubs below that (same method as sepolicy.c).
+          SH="drivers/kernelsu/feature/selinux_hide.c"
+          if [ -f "$SH" ] && ! grep -rqs "struct selinux_policy" security/selinux/include; then
+            python3 ../ksu_compat.py guard "$SH" ../logs/09-selinux_hide.c.orig ../logs/09-selinux_hide.c.generated "5, 7, 0"
+          else
+            echo "[INFO] selinux_hide.c pre-5.7 compat not needed or file not present"
+          fi
+
           # V41 FIX 1: supercall/dispatch.c uses tasklist_lock, init_task, task_pgrp() and task_session().
           # On 4.19 these are declared only in <linux/sched/task.h> / <linux/sched/signal.h>.
           DP="drivers/kernelsu/supercall/dispatch.c"
@@ -1886,7 +1907,7 @@ jobs:
 
           # V40 FIX 3: compile ALL of drivers/kernelsu with keep-going first so every remaining
           # KernelSU/4.19 incompatibility is listed in one run instead of one per 8-minute build.
-          echo "[V41] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
+          echo "[V42] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
           if ! make "${MAKE_ARGS[@]}" -j"$(nproc)" prepare > ../logs/09a-prepare.log 2>&1; then
             tail -60 ../logs/09a-prepare.log
             echo "[ERROR] make prepare failed (see logs/09a-prepare.log)"
@@ -1933,7 +1954,7 @@ jobs:
 
           # V40 FIX 4: build only the kernel Image (what is packaged). See KERNEL_BUILD_TARGETS in env.
           set +e
-          make "${MAKE_ARGS[@]}" -j"$(nproc)" ${KERNEL_BUILD_TARGETS:-Image} 2>&1 | tee ../logs/09-kernel-build.log
+          make "${MAKE_ARGS[@]}" -k -j"$(nproc)" ${KERNEL_BUILD_TARGETS:-Image} 2>&1 | tee ../logs/09-kernel-build.log
           BUILD_RC=${PIPESTATUS[0]}
           set -e
           if [ "$BUILD_RC" -ne 0 ]; then
@@ -1998,7 +2019,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V41-LM-G900-KARNAL
+          kernel.string=V42-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2024,7 +2045,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V41-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V42-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2061,20 +2082,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V41 final output"
+      - name: "12. Upload V42 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V41-LM-G900-KARNAL-output
-          path: V41-LM-G900-KARNAL-output.zip
+          name: V42-LM-G900-KARNAL-output
+          path: V42-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V41 flashable ZIPs"
+      - name: "13. Upload V42 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V41-LM-G900-KARNAL-flashable-zips
+          name: V42-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2174,7 +2195,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V41 ==="
+            echo "=== A-Z BUILD RECORD V42 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -2238,16 +2259,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V41 diagnostics collected; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V42 diagnostics collected; V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V41 complete diagnostics (always)"
+      - name: "15. Upload V42 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V41-LM-G900-KARNAL-complete-logs
+          name: V42-LM-G900-KARNAL-complete-logs
           path: |
-            V41-LM-G900-KARNAL-complete-logs.zip
+            V42-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
