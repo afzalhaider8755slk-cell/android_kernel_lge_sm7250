@@ -1,4 +1,4 @@
-name: V42-LM-G900-KARNAL-BUILT
+name: V43-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -67,8 +67,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V42
-  OUTPUT_PREFIX: V42-LM-G900-KARNAL
+  WORKFLOW_VERSION: V43
+  OUTPUT_PREFIX: V43-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -166,9 +166,18 @@ env:
   # DTC (non-blocking): logs/09b-dup-label-sources.txt shows camera_therm_default and bmr_w_therm_default are
   # defined both in qcom/lito-pmic-overlay.dtsi and in lito-caymanlm_lao_com-pm.dtsi.
 
+  # V43 (built from the V42 run logs): the selinux_hide.c stub from V42 cleared that file, and the pre-compile
+  # moved on to the final Image link, which failed with 3 ld.lld "undefined symbol" errors: seccomp_filter_release
+  # (drivers/kernelsu/policy/app_profile.c), path_mount (drivers/kernelsu/infra/su_mount_ns.c), and path_umount
+  # (drivers/kernelsu/feature/kernel_umount.c) -- all Linux 5.9+ kernel-internal entry points this 4.19.325 tree
+  # does not have. Verified against the actual upstream commits that introduced path_mount/path_umount (Christoph
+  # Hellwig, merged for 5.9) and kernel/seccomp.c's existing put_seccomp_filter(); added as compatibility wrappers
+  # in fs/namespace.c and kernel/seccomp.c (see the "V43 FIX" comment in Step 9 for the full derivation). Nothing
+  # else in KernelSU or the kernel tree changes.
+
 jobs:
   build:
-    name: Build V42
+    name: Build V43
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1382,6 +1391,145 @@ jobs:
             echo "[OK] arm64 seccomp architecture/count definitions already present."
           fi
 
+          # V43 FIX — link-time "undefined symbol" errors (path_mount, path_umount,
+          # seccomp_filter_release), verified against real upstream Linux commits rather
+          # than guessed:
+          #   ld.lld: error: undefined symbol: seccomp_filter_release
+          #     >>> referenced by app_profile.c:128 (drivers/kernelsu/policy/app_profile.c)
+          #   ld.lld: error: undefined symbol: path_mount
+          #     >>> referenced by su_mount_ns.c:154 (drivers/kernelsu/infra/su_mount_ns.c)
+          #   ld.lld: error: undefined symbol: path_umount
+          #     >>> referenced by kernel_umount.c:48 (drivers/kernelsu/feature/kernel_umount.c)
+          #
+          # path_mount()/path_umount(): confirmed via the actual upstream commits that
+          # introduced them (Christoph Hellwig, merged for Linux 5.9):
+          #   a1e6aaa3743a "fs: refactor do_mount"    -> split path_mount(dev_name,
+          #     struct path *path, type, flags, data) out of the pre-existing
+          #     do_mount(dev_name, const char __user *dir_name, type, flags, data)
+          #   41525f56e2564 "fs: refactor ksys_umount" -> split path_umount(struct path
+          #     *path, flags) out of the pre-existing ksys_umount(char __user *name, flags)
+          # In both cases the split was purely mechanical: the old entry point first
+          # resolved a user-space path string to a struct path (user_path_at()), then ran
+          # the exact same core logic the new struct-path-taking helper keeps. This
+          # 4.19.325 tree predates both commits, but do_mount()/the umount syscall path
+          # (the pre-split entry points) are still present and do the same work. Since
+          # KernelSU-Next's callers already hold a resolved struct path, the standard,
+          # long-established bridge (the same technique init/do_mounts.c itself relies on
+          # via its implicit set_fs(KERNEL_DS) during early boot) is to serialize that
+          # struct path back to a string with d_path(), temporarily switch to KERNEL_DS so
+          # the old syscall-shaped entry points can safely take a kernel buffer where they
+          # expect a __user pointer, then call sys_mount()/sys_umount() -- the raw syscall
+          # entry points, present on every kernel version including this one, so this does
+          # not depend on whether this particular 4.19.325 tree has the later do_mount()/
+          # ksys_umount() -> ksys_* naming (a separate, unrelated refactor).
+          #
+          # seccomp_filter_release(): a genuine upstream kernel/seccomp.c function (added
+          # for the copy_process()/release_task() filter-refcount-leak fix -- see the
+          # "seccomp: Release filter when copy_process() fails" thread on LKML). This
+          # 4.19 tree's kernel/seccomp.c already has the exact same reference-counted
+          # filter-chain release logic under its long-standing name,
+          # put_seccomp_filter(struct task_struct *tsk) (decrements/frees
+          # tsk->seccomp.filter and its ->prev chain) -- confirmed against a matching
+          # kernel/seccomp.c snapshot (v5.6, pre-rename). Added as a thin forwarding
+          # wrapper under the name KernelSU-Next's app_profile.c (disable_seccomp(),
+          # called on `current` while escaping to root) expects.
+          # NOTE: unlike path_mount/path_umount above, the exact argument KernelSU-Next
+          # passes to seccomp_filter_release() could not be confirmed against the actual
+          # source line (only the compiler's file:line reference, not its content, was
+          # available) -- the (struct task_struct *) signature matches put_seccomp_filter's
+          # own, semantically-identical signature and the only realistic call site
+          # (disable_seccomp() operating on `current`), so this is a well-evidenced
+          # best fit, not a blind guess, but flagged here in case a future run's
+          # disassembly/crash log ever points back to this wrapper.
+          NS="fs/namespace.c"
+          if [ -f "$NS" ] && ! grep -q '^int path_mount(' "$NS" && ! grep -q '^int path_umount(' "$NS"; then
+            cat >> "$NS" <<'NAMESPACE_COMPAT_EOF'
+
+          /* V43 compat: see the comment in the workflow's Step 9 ("V43 FIX") for the full
+           * derivation. Bridges KernelSU-Next's calls to the Linux 5.9+ path_mount()/
+           * path_umount() struct-path entry points onto this pre-5.9 tree's still-present
+           * sys_mount()/sys_umount() syscall entry points, via a temporary KERNEL_DS so a
+           * kernel-space path string is accepted where a __user pointer is expected --
+           * the same technique this kernel's own init/do_mounts.c already relies on. */
+          int path_mount(const char *dev_name, struct path *path,
+                          const char *type_page, unsigned long flags, void *data_page)
+          {
+              char *buf, *dir_name;
+              mm_segment_t old_fs;
+              long ret;
+
+              buf = (char *)__get_free_page(GFP_KERNEL);
+              if (!buf)
+                  return -ENOMEM;
+
+              dir_name = d_path(path, buf, PAGE_SIZE);
+              if (IS_ERR(dir_name)) {
+                  free_page((unsigned long)buf);
+                  return PTR_ERR(dir_name);
+              }
+
+              old_fs = get_fs();
+              set_fs(KERNEL_DS);
+              ret = sys_mount((char __user *)dev_name, (char __user *)dir_name,
+                               (char __user *)type_page, flags, (void __user *)data_page);
+              set_fs(old_fs);
+
+              free_page((unsigned long)buf);
+              return ret;
+          }
+
+          int path_umount(struct path *path, int flags)
+          {
+              char *buf, *name;
+              mm_segment_t old_fs;
+              long ret;
+
+              buf = (char *)__get_free_page(GFP_KERNEL);
+              if (!buf)
+                  return -ENOMEM;
+
+              name = d_path(path, buf, PAGE_SIZE);
+              if (IS_ERR(name)) {
+                  free_page((unsigned long)buf);
+                  return PTR_ERR(name);
+              }
+
+              old_fs = get_fs();
+              set_fs(KERNEL_DS);
+              ret = sys_umount((char __user *)name, flags);
+              set_fs(old_fs);
+
+              free_page((unsigned long)buf);
+              return ret;
+          }
+
+          NAMESPACE_COMPAT_EOF
+            echo "[FIX] Added path_mount()/path_umount() compat wrappers to fs/namespace.c (bridged onto sys_mount/sys_umount)"
+          else
+            echo "[OK] path_mount()/path_umount() already present in fs/namespace.c."
+          fi
+
+          SC_C="kernel/seccomp.c"
+          if [ -f "$SC_C" ] && ! grep -q 'seccomp_filter_release' "$SC_C"; then
+            cat >> "$SC_C" <<'SECCOMP_COMPAT_EOF'
+
+          #ifdef CONFIG_SECCOMP
+          /* V43 compat: see the comment in the workflow's Step 9 ("V43 FIX") for the full
+           * derivation. Newer kernels expose seccomp_filter_release(); this 4.19 tree has
+           * the same reference-counted filter-chain release logic under its long-standing
+           * name, put_seccomp_filter(struct task_struct *). Forward to it. */
+          void seccomp_filter_release(struct task_struct *tsk)
+          {
+              put_seccomp_filter(tsk);
+          }
+          #endif
+
+          SECCOMP_COMPAT_EOF
+            echo "[FIX] Added seccomp_filter_release() compat wrapper to kernel/seccomp.c (forwards to put_seccomp_filter)"
+          else
+            echo "[OK] seccomp_filter_release() already present in kernel/seccomp.c."
+          fi
+
           # V32 FIX 1 — Fix the actual DTC failure without removing any touch revision.
           # The CN Rev-1.0 overlay includes lito-caymanlm_lao_com.dtsi, which already
           # includes lito-caymanlm_lao_com-touch.dtsi. That file includes
@@ -1678,7 +1826,7 @@ jobs:
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V42 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V43 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -1907,7 +2055,7 @@ jobs:
 
           # V40 FIX 3: compile ALL of drivers/kernelsu with keep-going first so every remaining
           # KernelSU/4.19 incompatibility is listed in one run instead of one per 8-minute build.
-          echo "[V42] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
+          echo "[V43] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
           if ! make "${MAKE_ARGS[@]}" -j"$(nproc)" prepare > ../logs/09a-prepare.log 2>&1; then
             tail -60 ../logs/09a-prepare.log
             echo "[ERROR] make prepare failed (see logs/09a-prepare.log)"
@@ -2019,7 +2167,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V42-LM-G900-KARNAL
+          kernel.string=V43-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2045,7 +2193,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V42-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V43-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2082,20 +2230,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V42 final output"
+      - name: "12. Upload V43 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V42-LM-G900-KARNAL-output
-          path: V42-LM-G900-KARNAL-output.zip
+          name: V43-LM-G900-KARNAL-output
+          path: V43-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V42 flashable ZIPs"
+      - name: "13. Upload V43 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V42-LM-G900-KARNAL-flashable-zips
+          name: V43-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2195,7 +2343,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V42 ==="
+            echo "=== A-Z BUILD RECORD V43 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -2259,16 +2407,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V42 diagnostics collected; V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V43 diagnostics collected; V43 adds path_mount()/path_umount()/seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V42 complete diagnostics (always)"
+      - name: "15. Upload V43 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V42-LM-G900-KARNAL-complete-logs
+          name: V43-LM-G900-KARNAL-complete-logs
           path: |
-            V42-LM-G900-KARNAL-complete-logs.zip
+            V43-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
