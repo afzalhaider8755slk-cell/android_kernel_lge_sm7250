@@ -1,4 +1,4 @@
-name: V46-LM-G900-KARNAL-BUILT
+name: V47-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -70,8 +70,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V45
-  OUTPUT_PREFIX: V46-LM-G900-KARNAL
+  WORKFLOW_VERSION: V47
+  OUTPUT_PREFIX: V47-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1209,14 +1209,26 @@ jobs:
             ./scripts/config --file out/.config --enable "${sym}" || true
           done
           ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_SU || true
-          # V46: legacy-susfs-v2 declares the old KSU_SUSFS_TRY_UMOUNT command path,
+          # V47: legacy-susfs-v2 declares the old KSU_SUSFS_TRY_UMOUNT command path,
           # but the separate SUSFS 2.3.0 4.19 backport used in this tree intentionally
           # does not provide susfs_add_try_umount(). Leaving the legacy symbol enabled
           # therefore causes supercall.c to fail with an implicit declaration. V44 did
           # not have this symbol in its enabled feature set, so disable only this stale
           # legacy command and keep all V44 KSU/SUSFS features intact.
+          # V47: legacy-susfs-v2 still declares the historical TRY_UMOUNT command,
+          # but this kernel tree uses the separate SUSFS 2.3.0 backport, which does not
+          # implement susfs_add_try_umount(). Keep the feature set identical to the
+          # boot-tested V44 config: TRY_UMOUNT was not enabled there. Disable it before
+          # and after olddefconfig, then verify that Kconfig did not silently re-enable it.
           ./scripts/config --file out/.config --disable KSU_SUSFS_TRY_UMOUNT || true
           make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
+          ./scripts/config --file out/.config --disable KSU_SUSFS_TRY_UMOUNT || true
+          make O=out olddefconfig >> ../logs/08-olddefconfig.log 2>&1
+          if grep -q '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' out/.config; then
+            echo '[ERROR] KSU_SUSFS_TRY_UMOUNT was re-enabled after olddefconfig; disabling it would be unsafe without a matching SUSFS implementation.' | tee ../logs/08-no-removal-failure.log
+            exit 1
+          fi
+          grep -q '^# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set$' out/.config || true
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
           while IFS= read -r line; do
             sym="${line%%=*}"
@@ -1241,7 +1253,7 @@ jobs:
           set -Eeuo pipefail
           echo "::group::[9/15] Build kernel"
           cd kernel
-          # V46 source-integrity gate: catch accidental text corruption before clang.
+          # V47 source-integrity gate: catch accidental text corruption before clang.
           test "$(grep -c '^static int ksu_wrapper_iterate ' drivers/kernelsu/infra/file_wrapper.c)" -eq 1
           test "$(grep -c '^static int ksu_wrapper_release ' drivers/kernelsu/infra/file_wrapper.c)" -eq 1
           ! grep -q 'C does not support default arguments' drivers/kernelsu/infra/file_wrapper.c || true
@@ -1273,12 +1285,18 @@ jobs:
             } > include/linux/minmax.h
             echo "[FIX] Added missing include/linux/minmax.h compatibility header for KernelSU-Next"
           fi
-          # V46 FIX: do NOT line-edit KernelSU-Next legacy file_wrapper.c.
+          # V47 FIX: do NOT line-edit KernelSU-Next legacy file_wrapper.c.
           # The legacy-susfs-v2 source already guards iopoll behind >=5.1 and
           # remap_file_range behind >=4.20. The V45 line-number sed patch was written
           # for a different file layout and corrupted the C file, producing cascading
           # syntax errors (missing function scopes, stray braces, and undeclared orig).
           # Leave the audited legacy source intact and only verify those version guards.
+          # V47 KSU source integrity: the legacy branch's file_wrapper.c is already
+          # 4.19-aware. Never rewrite it by line number. The previous V45 attempt did so
+          # against a different source layout and produced cascading C syntax errors.
+          if grep -qE '^[[:space:]]*(struct file\* orig =|while \(|#endif without)' drivers/kernelsu/infra/file_wrapper.c; then
+            echo '[INFO] Legacy file_wrapper.c contains normal source constructs; no rewrite will be attempted.'
+          fi
           FW="drivers/kernelsu/infra/file_wrapper.c"
           if [ -f "$FW" ]; then
             grep -q 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)' "$FW" || { echo "[ERROR] legacy file_wrapper.c lost iopoll version guard"; exit 1; }
@@ -1594,6 +1612,24 @@ jobs:
           else
             echo "[OK] Legacy app_profile has no direct incompatible filter_count access."
           fi
+
+          # V47 DT TOUCH FIX: the CN overlay is a composite. lito-caymanlm_lao_com.dtsi
+          # already brings in the normal lao_com touch file, which in turn includes
+          # lito-caymanlm_common-touch.dtsi. A touch_rev-1.0 wrapper must therefore contain
+          # only its revision-specific status changes; including common-touch again creates
+          # the duplicate touch_pm8150l_gpio_default label seen by dtc. Remove only that
+          # redundant include from every revision wrapper; do not remove any touch node,
+          # firmware entry, GPIO, or status override.
+          while IFS= read -r -d '' TOUCH_REV_ALL; do
+            if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV_ALL"; then
+              sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$TOUCH_REV_ALL"
+              echo "[FIX] V47: removed redundant common-touch include from $TOUCH_REV_ALL"
+            fi
+            if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV_ALL"; then
+              echo "[ERROR] V47: redundant common-touch include remains in $TOUCH_REV_ALL"
+              exit 1
+            fi
+          done < <(find arch/arm64/boot/dts/vendor/lge/lito-caymanlm -type f -iname '*touch_rev-1.0.dtsi' -print0 2>/dev/null)
 
           # V36 FIX 2 — Repair the V33 touch include change without altering any touch data.
           # The upstream common-touch.dtsi has no preprocessor guard. V33 injected one but the
@@ -1996,7 +2032,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V46-LM-G900-KARNAL
+          kernel.string=V47-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2034,7 +2070,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V46-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V47-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2075,8 +2111,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V46-LM-G900-KARNAL-output
-          path: V46-LM-G900-KARNAL-output.zip
+          name: V47-LM-G900-KARNAL-output
+          path: V47-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2084,7 +2120,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V46-LM-G900-KARNAL-flashable-zips
+          name: V47-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2184,7 +2220,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V45 ==="
+            echo "=== A-Z BUILD RECORD V47 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -2255,9 +2291,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V46-LM-G900-KARNAL-complete-logs
+          name: V47-LM-G900-KARNAL-complete-logs
           path: |
-            V46-LM-G900-KARNAL-complete-logs.zip
+            V47-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
