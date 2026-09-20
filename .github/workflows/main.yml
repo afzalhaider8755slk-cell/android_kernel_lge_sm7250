@@ -1,4 +1,4 @@
-name: V39-LM-G900-KARNAL-BUILT
+name: V40-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -39,6 +39,16 @@ env:
   KSU_SUSFS_FORK_OWNER: pershoot
   KSU_SUSFS_FORK_REPO: KernelSU-Next
   KSU_SUSFS_FORK_BRANCH: dev-susfs
+  # V40: audited commit of pershoot/KernelSU-Next dev-susfs (git describe v3.3.0-84-g4bcb6f3b).
+  # It is the exact tip V39 resolved and compiled against; every V32-V39 source-compatibility edit
+  # below was written for it. dev-susfs is a rebasing GKI-oriented branch (V28 resolved -77, V39 -84),
+  # so following its moving tip can bring new 5.x-only code between two runs. Step 6 fetches exactly
+  # this commit and only falls back to the tip (with a loud warning) if it is gone.
+  KSU_SUSFS_FORK_COMMIT: 4bcb6f3ba6368948e7f0ae95b008fdda06dec7fa
+  # V40: only arch/arm64/boot/Image is packaged (AnyKernel3 keeps the device DTB/DTBO), so only the
+  # Image target is built. A plain `make` also builds every DTB and lito-caymanlm_cn-rev-1.0_overlay.dtbo
+  # still aborts it ("Input tree has errors"), which stops the whole make before the Image is done.
+  KERNEL_BUILD_TARGETS: Image
   # V25: dev-susfs is an actively-moving/rebasing experimental branch -- the commit V24
   # pinned ("fatal: unable to read tree") had already been rewritten off the branch by
   # the time the workflow ran. Pinning an exact commit on a branch like this trades
@@ -57,8 +67,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V39
-  OUTPUT_PREFIX: V39-LM-G900-KARNAL
+  WORKFLOW_VERSION: V40
+  OUTPUT_PREFIX: V40-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -106,9 +116,33 @@ env:
   # V34 repairs only those two source-compatibility mistakes; no setup, future, overlay,
   # touch definition, KernelSU feature, or SUSFS feature is removed.
 
+  # V40 (built from the complete V39 run-478 logs; every V39 feature/step is kept):
+  # 1) REAL ERROR 1, drivers/kernelsu/selinux/sepolicy.c (20+ errors, "too many errors emitted"):
+  #    struct flex_array vs avtab_node, struct filename_trans_key, policydb_filenametr_search,
+  #    type_val_to_struct... V39's Step-6 note assumed the policydb editing primitives compile on
+  #    older kernels; the log shows they do not. Linux 4.19 has the pre-5.7 policydb layout.
+  #    Only apply_kernelsu_rules()/handle_sepolicy() use these primitives and V39 already stubs both
+  #    for <5.7, so V40 wraps the rest of sepolicy.c: original code for >=5.7, safe no-op stubs below.
+  #    Stubs are generated from the real file (no hard-coded line numbers).
+  #    Consequence (already true in V39): KernelSU cannot inject its su SELinux rules on this kernel;
+  #    this device boots with androidboot.selinux=permissive so that is not blocking.
+  # 2) seccomp_cache.c: V32 made it compile by defining SECCOMP_ARCH_NATIVE_NR in the arm64 header. That
+  #    file mirrors the Linux 5.11+ per-filter action cache, which 4.19 does not have, so at runtime it
+  #    would write bits at offsets that are not part of a 4.19 struct seccomp_filter (kernel heap
+  #    corruption when root is granted). V40 keeps the header definitions but turns the exported cache
+  #    functions into no-ops (nothing to clear on a kernel without the cache).
+  # 3) REAL ERROR 2, DTC lito-caymanlm_cn-rev-1.0_overlay.dtbo, is STILL present in V39 (log line 2963),
+  #    so the duplicate-include theory did not clear it. It is independent of the Image, so V40 builds
+  #    the Image target only, and the non-blocking Step 9b re-runs the DTB build with V=1 and re-runs dtc
+  #    without -qq to capture the hidden dtc message in logs/09b-*.
+  # 4) All of drivers/kernelsu is compiled with `make -k` first (1-2 min): make otherwise stops at the
+  #    first failing file, so each 8-minute run revealed only one new error.
+  # 5) The last lines of a failed build are harmless CC lines; Step 9 now prints an error summary at the
+  #    end of the log.
+
 jobs:
   build:
-    name: Build V39
+    name: Build V40
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -416,7 +450,18 @@ jobs:
           git clone --branch "${KSU_SUSFS_FORK_BRANCH}" --single-branch \
             "https://github.com/${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}" KernelSU-Next
 
-          # V39: kernel/selinux/rules.c and kernel/selinux/sepolicy.c hot-swap the running
+          # V40: pin to the audited commit (see KSU_SUSFS_FORK_COMMIT in env).
+          if [ -n "${KSU_SUSFS_FORK_COMMIT:-}" ]; then
+            if git -C KernelSU-Next cat-file -e "${KSU_SUSFS_FORK_COMMIT}^{commit}" 2>/dev/null \
+               || git -C KernelSU-Next fetch --quiet origin "${KSU_SUSFS_FORK_COMMIT}" 2>/dev/null; then
+              git -C KernelSU-Next checkout --quiet --detach "${KSU_SUSFS_FORK_COMMIT}"
+              echo "[OK] KernelSU-Next pinned to audited commit ${KSU_SUSFS_FORK_COMMIT}"
+            else
+              echo "::warning::V40: audited KernelSU-Next commit ${KSU_SUSFS_FORK_COMMIT} is no longer fetchable; using the current dev-susfs tip. Source-compat edits may not match; see logs/06-kernelsu-resolved.txt"
+            fi
+          fi
+
+          # V40: kernel/selinux/rules.c and kernel/selinux/sepolicy.c hot-swap the running
           # SELinux policy via struct selinux_policy + selinux_state.policy/.policy_mutex,
           # which only exist after upstream's SELinux RCU-policy rewrite (Linux 5.7+); this
           # kernel is 4.19. Full source review (logs/ksu-selinux-source from a prior run)
@@ -1600,7 +1645,226 @@ jobs:
           # the authoritative verification path and preserves all existing overlays.
           echo "[CHECK] DT and KernelSU compatibility fixes will be verified by the normal kernel build."
 
-          make O=out -j"$(nproc)" CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++ 2>&1 | tee ../logs/09-kernel-build.log
+          MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
+
+          # V40: the real errors are NOT at the bottom of a `make -j` log (make keeps finishing running
+          # jobs after the first failure). Print them as the last lines and as annotations.
+          summarize_errors() {
+            local log="$1"
+            echo
+            echo "================= V40 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
+            grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
+            echo "===================================================================================="
+          }
+
+          # V40 generator for the two KernelSU files that need Linux 5.x kernel internals.
+          cat > ../ksu_compat.py <<'PYGEN'
+          import pathlib, re, sys
+
+          mode, path, orig_out, gen_out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+          guard_ver = sys.argv[5] if len(sys.argv) > 5 else "5, 7, 0"
+          target = pathlib.Path(path)
+          src = target.read_text()
+          pathlib.Path(orig_out).write_text(src)
+          MARK = "V40 compat"
+          if MARK in src:
+              print(f"[OK] {path} already carries the V40 compat marker; unchanged")
+              raise SystemExit(0)
+
+
+          def clean(text):
+              """Remove comments and preprocessor lines; blank string/char literals."""
+              out, i, n = [], 0, len(text)
+              line_start = True
+              while i < n:
+                  c = text[i]
+                  if line_start:
+                      j = i
+                      while j < n and text[j] in " \t":
+                          j += 1
+                      if j < n and text[j] == "#":
+                          while j < n:
+                              if text[j] == "\n" and text[j - 1] != "\\":
+                                  break
+                              j += 1
+                          i = j
+                          continue
+                  if text.startswith("/*", i):
+                      j = text.find("*/", i + 2)
+                      j = n if j < 0 else j + 2
+                      out.append(" ")
+                      i = j
+                      continue
+                  if text.startswith("//", i):
+                      j = text.find("\n", i)
+                      i = n if j < 0 else j
+                      continue
+                  if c in "\"'":
+                      q, j = c, i + 1
+                      while j < n and text[j] != q:
+                          j += 2 if text[j] == "\\" else 1
+                      out.append(q + "S" + q)
+                      i = j + 1
+                      line_start = False
+                      continue
+                  out.append(c)
+                  line_start = c == "\n"
+                  i += 1
+              return "".join(out)
+
+
+          def find_functions(text):
+              funcs, prefix, depth, i, n = [], [], 0, 0, len(text)
+              while i < n:
+                  c = text[i]
+                  if c == "{":
+                      if depth == 0:
+                          head = "".join(prefix).strip()
+                          m = re.match(
+                              r"^(?P<ret>[\w\s\*]+?)\b(?P<name>\w+)\s*\((?P<args>.*)\)\s*(?:__\w+\s*(?:\([^)]*\))?\s*)*$",
+                              head, re.S)
+                          if m and "=" not in head:
+                              funcs.append((head, m.group("ret"), m.group("name")))
+                      depth += 1
+                  elif c == "}":
+                      depth -= 1
+                      if depth == 0:
+                          prefix = []
+                  elif depth == 0:
+                      if c == ";":
+                          prefix = []
+                      else:
+                          prefix.append(c)
+                  i += 1
+              return funcs
+
+
+          funcs = find_functions(clean(src))
+          stubs, names, seen = [], [], set()
+          for head, ret, name in funcs:
+              if re.search(r"\bstatic\b", ret) or name in seen:
+                  continue  # file-local helpers are only used by the code being replaced; duplicates come from #if/#else pairs
+              seen.add(name)
+              head_one = " ".join(head.split())
+              if "*" in ret:
+                  body = "return NULL;"
+              elif re.search(r"\bvoid\b", ret):
+                  body = ""
+              elif re.search(r"\bbool\b", ret):
+                  body = "return false;"
+              else:
+                  body = "return 0;"
+              names.append(name)
+              stubs.append(f"{head_one}\n{{\n\t/* unsupported on this kernel: safe no-op */\n\t{body}\n}}\n")
+          if not stubs:
+              raise SystemExit(f"[ERROR] no exported function found in {path}; original saved to {orig_out}")
+
+          lines = src.splitlines()
+          includes = [l.rstrip() for l in lines if re.match(r"\s*#\s*include\b", l)]
+
+          if mode == "replace":
+              gen = ("/* V40 compat stub generated at build time (see workflow notes). */\n"
+                     + "\n".join(includes) + "\n\n" + "\n".join(stubs))
+          elif mode == "guard":
+              # keep the whole original body for newer kernels, stub it out below guard_ver
+              k, in_block = 0, False
+              while k < len(lines):
+                  t = lines[k].strip()
+                  if in_block:
+                      if "*/" in t:
+                          in_block = False
+                      k += 1
+                      continue
+                  if t.startswith("/*"):
+                      in_block = "*/" not in t
+                      k += 1
+                      continue
+                  if t == "" or t.startswith("//") or t.startswith("#"):
+                      while t.endswith("\\") and k + 1 < len(lines):  # continuation lines
+                          k += 1
+                          t = lines[k].strip()
+                      k += 1
+                      continue
+                  break
+              head = "\n".join(lines[:k])
+              body = "\n".join(lines[k:])
+              gen = (head + "\n#include <linux/version.h>\n"
+                     f"/* V40 compat: this file edits struct policydb, whose layout changed in Linux 5.7+ (flex_array\n"
+                     f" * avtab/type_val_to_struct, filename_trans hashtab). Below {guard_ver} every exported\n"
+                     f" * function is a safe no-op. */\n"
+                     f"#if LINUX_VERSION_CODE >= KERNEL_VERSION({guard_ver})\n"
+                     + body + "\n#else\n" + "\n".join(stubs) + "#endif /* V40 compat */\n")
+          else:
+              raise SystemExit("unknown mode " + mode)
+
+          target.write_text(gen)
+          pathlib.Path(gen_out).write_text(gen)
+          print(f"[FIX] {path}: {mode} mode, stubbed: " + ", ".join(names))
+          PYGEN
+
+          # V40 FIX 1: seccomp_cache.c mirrors the Linux 5.11+ per-filter seccomp action cache. 4.19 has
+          # no cache, so the exported functions become no-ops (V32's header definitions stay in place).
+          SC="drivers/kernelsu/infra/seccomp_cache.c"
+          if [ -f "$SC" ] && ! grep -q "action_cache" kernel/seccomp.c; then
+            python3 ../ksu_compat.py replace "$SC" ../logs/09-seccomp_cache.c.orig ../logs/09-seccomp_cache.c.generated
+          else
+            echo "[INFO] seccomp_cache.c no-op compat not needed or file not present"
+          fi
+
+          # V40 FIX 2: selinux/sepolicy.c edits struct policydb using the Linux 5.7+ layout. Keep the
+          # original code for >=5.7 and provide safe no-op stubs below that (rules.c is already stubbed).
+          SP="drivers/kernelsu/selinux/sepolicy.c"
+          if [ -f "$SP" ] && ! grep -q "struct filename_trans_key" security/selinux/ss/policydb.h; then
+            python3 ../ksu_compat.py guard "$SP" ../logs/09-sepolicy.c.orig ../logs/09-sepolicy.c.generated "5, 7, 0"
+          else
+            echo "[INFO] sepolicy.c pre-5.7 compat not needed or file not present"
+          fi
+
+          # V40 FIX 3: compile ALL of drivers/kernelsu with keep-going first so every remaining
+          # KernelSU/4.19 incompatibility is listed in one run instead of one per 8-minute build.
+          echo "[V40] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
+          if ! make "${MAKE_ARGS[@]}" -j"$(nproc)" prepare > ../logs/09a-prepare.log 2>&1; then
+            tail -60 ../logs/09a-prepare.log
+            echo "[ERROR] make prepare failed (see logs/09a-prepare.log)"
+            exit 1
+          fi
+          set +e
+          make "${MAKE_ARGS[@]}" -k -j"$(nproc)" drivers/kernelsu/ 2>&1 | tee ../logs/09a-kernelsu-precompile.log
+          PRE_RC=${PIPESTATUS[0]}
+          set -e
+          if [ "$PRE_RC" -ne 0 ]; then
+            if grep -qE "error:|fatal error:" ../logs/09a-kernelsu-precompile.log; then
+              summarize_errors ../logs/09a-kernelsu-precompile.log
+              echo "[ERROR] drivers/kernelsu has compile errors on this 4.19 kernel (all listed above)."
+              exit 1
+            fi
+            echo "[WARN] KernelSU pre-compile returned ${PRE_RC} without a compiler error; continuing to the full build"
+          else
+            echo "[OK] drivers/kernelsu pre-compiled cleanly"
+          fi
+          # Informational link check: KernelSU-internal symbols that are used but defined nowhere in KernelSU.
+          KSU_OBJS="$(find out/drivers/kernelsu -name '*.o' ! -name 'built-in*' 2>/dev/null || true)"
+          if [ -n "$KSU_OBJS" ] && command -v llvm-nm >/dev/null 2>&1; then
+            llvm-nm -g --defined-only $KSU_OBJS 2>/dev/null | awk 'NF==3{print $3}' | sort -u > ../logs/09a-ksu-defined.txt || true
+            llvm-nm -g -u $KSU_OBJS 2>/dev/null | awk 'NF==2{print $2}' | sort -u > ../logs/09a-ksu-undefined.txt || true
+            comm -13 ../logs/09a-ksu-defined.txt ../logs/09a-ksu-undefined.txt | grep -E '^(ksu_|apply_kernelsu|handle_sepolicy)' > ../logs/09a-ksu-unresolved.txt || true
+            if [ -s ../logs/09a-ksu-unresolved.txt ]; then
+              echo "[WARN] KernelSU symbols referenced but not defined inside KernelSU (may be provided by kernel patches; otherwise the final link fails):"
+              cat ../logs/09a-ksu-unresolved.txt
+            fi
+          fi
+
+          # V40 FIX 4: build only the kernel Image (what is packaged). See KERNEL_BUILD_TARGETS in env.
+          set +e
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" ${KERNEL_BUILD_TARGETS:-Image} 2>&1 | tee ../logs/09-kernel-build.log
+          BUILD_RC=${PIPESTATUS[0]}
+          set -e
+          if [ "$BUILD_RC" -ne 0 ]; then
+            summarize_errors ../logs/09-kernel-build.log
+            echo "[ERROR] Kernel build failed (make exit code ${BUILD_RC})"
+            exit "$BUILD_RC"
+          fi
           test -s out/arch/arm64/boot/Image
           sha256sum out/arch/arm64/boot/Image | tee ../logs/output-image.sha256
           strings out/arch/arm64/boot/Image > ../logs/09-image-strings.txt
@@ -1609,6 +1873,36 @@ jobs:
           fi
           echo "[OK] Kernel Image built"
           echo "::endgroup::"
+
+      - name: "9b. DTB diagnostic (non-blocking; captures the hidden dtc error text)"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f kernel/out/.config ]; then echo "[SKIP] kernel/out/.config not present"; exit 0; fi
+          cd kernel
+          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
+          export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
+          export PATH="${CLANG_BIN}:$PATH"
+          MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
+          # Only informational: the Image is built without DTBs, so this never affects the result.
+          timeout 900 make "${MAKE_ARGS[@]}" -k -j"$(nproc)" V=1 dtbs > ../logs/09b-dtbs-diagnostic.log 2>&1
+          echo "dtbs_rc=$?" | tee ../logs/09b-dtbs-rc.txt
+          grep -nE "Input tree has errors|Error [0-9]+$" ../logs/09b-dtbs-diagnostic.log | head -20
+          echo "--- dtc quiet flags in the real dtc command line ---"
+          grep -m3 -oE -- "-q+ " ../logs/09b-dtbs-diagnostic.log
+          TMP="$(find out -name '*caymanlm_cn-rev-1.0_overlay*dts.tmp' 2>/dev/null | head -1)"
+          if [ -n "$TMP" ] && [ -x out/scripts/dtc/dtc ]; then
+            echo "--- dtc re-run without -qq on $TMP ---"
+            out/scripts/dtc/dtc -@ -I dts -O dtb -o /dev/null \
+              -i arch/arm64/boot/dts/vendor/lge -i arch/arm64/boot/dts/vendor -i arch/arm64/boot/dts -i include \
+              "$TMP" > ../logs/09b-dtc-verbose.txt 2>&1
+            head -60 ../logs/09b-dtc-verbose.txt
+          else
+            echo "[INFO] preprocessed overlay .dts.tmp not found; see logs/09b-dtbs-diagnostic.log"
+          fi
+          exit 0
 
       - name: "10. Package AnyKernel3 and kernel.zip"
         if: success()
@@ -1625,7 +1919,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V39-LM-G900-KARNAL
+          kernel.string=V40-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1651,7 +1945,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V39-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V40-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1688,20 +1982,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V32 final output"
+      - name: "12. Upload V40 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V39-LM-G900-KARNAL-output
-          path: V39-LM-G900-KARNAL-output.zip
+          name: V40-LM-G900-KARNAL-output
+          path: V40-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V32 flashable ZIPs"
+      - name: "13. Upload V40 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V39-LM-G900-KARNAL-flashable-zips
+          name: V40-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1801,7 +2095,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V32 ==="
+            echo "=== A-Z BUILD RECORD V40 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -1865,16 +2159,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V32 diagnostics collected; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V40 diagnostics collected; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V32 complete diagnostics (always)"
+      - name: "15. Upload V40 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V39-LM-G900-KARNAL-complete-logs
+          name: V40-LM-G900-KARNAL-complete-logs
           path: |
-            V39-LM-G900-KARNAL-complete-logs.zip
+            V40-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
