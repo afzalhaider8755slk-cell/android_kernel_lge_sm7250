@@ -1,4 +1,4 @@
-name: V50-LM-G900-KARNAL-BUILT
+name: V51-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -70,8 +70,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V50
-  OUTPUT_PREFIX: V50-LM-G900-KARNAL
+  WORKFLOW_VERSION: V51
+  OUTPUT_PREFIX: V51-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1553,6 +1553,45 @@ jobs:
             exit 1
           fi
           echo "[OK] V44: CN duplicate camera/bmr thermal labels reconciled without removing nodes."
+          # V51 FIX — V50 dtbs diagnostics show the CN overlay is no longer the
+          # blocker. HDK and VZW regional PM files still define generic thermal labels
+          # that collide with the Qualcomm lito-pmic overlay. Keep every node/settings;
+          # namespace only the variant-local labels and update their references.
+          for VARIANT_PM in \
+            arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-pm_hdk.dtsi \
+            arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_vzw-pm.dtsi; do
+            if [ ! -f "$VARIANT_PM" ]; then
+              echo "[ERROR] V51: expected variant PM DTSI not found: $VARIANT_PM"
+              exit 1
+            fi
+            python3 - "$VARIANT_PM" <<'PY_V51_VARIANT_DT'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          old = s
+          suffix = "_hdk" if "pm_hdk.dtsi" in p.name else "_vzw"
+          s = s.replace('camera_therm_default: camera_therm_default {',
+                        f'camera_therm_default{suffix}: camera_therm_default{suffix} {{')
+          s = s.replace('bmr_w_therm_default: bmr_w_therm_default {',
+                        f'bmr_w_therm_default{suffix}: bmr_w_therm_default{suffix} {{')
+          s = s.replace('&camera_therm_default', f'&camera_therm_default{suffix}')
+          s = s.replace('&bmr_w_therm_default', f'&bmr_w_therm_default{suffix}')
+          if s == old:
+              raise SystemExit(f'[ERROR] V51: expected variant thermal labels were not found in {p}')
+          p.write_text(s)
+          print(f'[FIX] V51: namespaced variant thermal labels in {p}')
+          PY_V51_VARIANT_DT
+          done
+
+          if grep -RInE '^[[:space:]]*(camera_therm_default|bmr_w_therm_default):' \
+              arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com \
+              --include='*pm*.dtsi'; then
+            echo "[ERROR] V51: unnamespaced CaymanLM variant thermal labels remain."
+            exit 1
+          fi
+          echo "[OK] V51: all CaymanLM variant PM thermal labels are uniquely namespaced; no nodes removed."
+
 
           # V32 FIX 2 — KernelSU-Next v3.3.0 expects the newer UAPI mount.h header.
           # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
@@ -1931,10 +1970,10 @@ jobs:
           fi
           # V41: flask.h/av_permissions.h are generated while security/selinux/ is built and drivers/kernelsu
           # includes them. Without this step the pre-compile reported 7 false 'flask.h not found' errors.
-          # V50 DT PREFLIGHT — validate the exact CN Rev-1.0 overlay against the
+          # V51 DT PREFLIGHT — validate the exact CN Rev-1.0 overlay against the
           # post-fix workspace. The always-on diagnostic source snapshot can be captured
           # before the Step-9 source edits, so it is not authoritative for the final tree.
-          # V50 DT PREFLIGHT — reproduce the exact clang + dtc recipe captured from
+          # V51 DT PREFLIGHT — reproduce the exact clang + dtc recipe captured from
           # the repository's real Kbuild dtbs diagnostic. Do not call the nested .dtbo
           # target through Kbuild: this vendor 4.19 Makefile emits dtbo targets at the
           # arch/arm64/boot/dts/vendor/lge/ output level.
@@ -1946,10 +1985,10 @@ jobs:
           CN_DT_DEP="out/arch/arm64/boot/dts/vendor/lge/.${CN_DT_NAME}.dtbo.d.dtc.tmp"
           mkdir -p "$(dirname "$CN_DTS_TMP")"
           if [ ! -f "$CN_DTS_SOURCE" ]; then
-            echo "[ERROR] V50 CN DT source not found: $CN_DTS_SOURCE"
+            echo "[ERROR] V51 CN DT source not found: $CN_DTS_SOURCE"
             exit 1
           fi
-          echo "[OK] V50 CN DT source exists: $CN_DTS_SOURCE"
+          echo "[OK] V51 CN DT source exists: $CN_DTS_SOURCE"
 
           while IFS= read -r -d '' TOUCH_CHECK; do
             if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_CHECK"; then
@@ -1958,12 +1997,16 @@ jobs:
             fi
           done < <(find arch/arm64/boot/dts/vendor/lge/lito-caymanlm -type f -iname '*touch_rev-1.0.dtsi' -print0 2>/dev/null)
 
-          LAO_PM_PREFLIGHT="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-pm.dtsi"
-          if grep -qE '^[[:space:]]*(camera_therm_default|bmr_w_therm_default):' "$LAO_PM_PREFLIGHT"; then
-            echo "[ERROR] V50 DT preflight: old board-specific thermal labels remain in $LAO_PM_PREFLIGHT"
-            exit 1
-          fi
-          echo "[OK] V50 DT source reconciliation passed before CN overlay compilation."
+          for PM_CHECK in \
+            arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-pm.dtsi \
+            arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-pm_hdk.dtsi \
+            arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_vzw-pm.dtsi; do
+            if grep -qE '^[[:space:]]*(camera_therm_default|bmr_w_therm_default):' "$PM_CHECK"; then
+              echo "[ERROR] V51 DT preflight: unnamespaced thermal labels remain in $PM_CHECK"
+              exit 1
+            fi
+          done
+          echo "[OK] V51 DT source reconciliation passed before CN overlay compilation."
 
           set +e
           "$CLANG_BIN/clang" -E \
@@ -1973,7 +2016,7 @@ jobs:
           CN_CPP_RC=$?
           set -e
           if [ "$CN_CPP_RC" -ne 0 ]; then
-            echo "[ERROR] V50 CN Rev-1.0 DTS preprocessing failed."
+            echo "[ERROR] V51 CN Rev-1.0 DTS preprocessing failed."
             exit "$CN_CPP_RC"
           fi
 
@@ -1994,13 +2037,13 @@ jobs:
           CN_DTC_RC=$?
           set -e
           if [ "$CN_DTC_RC" -ne 0 ]; then
-            echo "[ERROR] V50 CN Rev-1.0 DT overlay preflight failed."
+            echo "[ERROR] V51 CN Rev-1.0 DT overlay preflight failed."
             grep -nE 'duplicate_label|ERROR|error:|Input tree has errors|Warning' ../logs/09a-dt-preflight.log | head -120 || true
             exit "$CN_DTC_RC"
           fi
 
           test -s "$CN_DTBO_OUT"
-          echo "[OK] V50 CN Rev-1.0 DT overlay compiled successfully: $CN_DTBO_OUT"
+          echo "[OK] V51 CN Rev-1.0 DT overlay compiled successfully: $CN_DTBO_OUT"
 
           echo "[V41] Building security/selinux first (generates flask.h and av_permissions.h)"
           set +e
@@ -2074,7 +2117,7 @@ jobs:
           timeout 900 make "${MAKE_ARGS[@]}" -k -j"$(nproc)" V=1 dtbs > ../logs/09b-dtbs-diagnostic.log 2>&1
           echo "dtbs_rc=$?" | tee ../logs/09b-dtbs-rc.txt
           grep -nE "Input tree has errors|Error [0-9]+$" ../logs/09b-dtbs-diagnostic.log | head -20
-          echo "--- V50 post-fix DT source checks ---" | tee ../logs/09b-post-fix-dt-check.log
+          echo "--- V51 post-fix DT source checks ---" | tee ../logs/09b-post-fix-dt-check.log
           grep -RInF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' \
             arch/arm64/boot/dts/vendor/lge/lito-caymanlm --include='*touch_rev-1.0.dtsi' \
             | tee -a ../logs/09b-post-fix-dt-check.log
@@ -2113,7 +2156,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V50-LM-G900-KARNAL
+          kernel.string=V51-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2151,7 +2194,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V50-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V51-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2192,8 +2235,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V50-LM-G900-KARNAL-output
-          path: V50-LM-G900-KARNAL-output.zip
+          name: V51-LM-G900-KARNAL-output
+          path: V51-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2201,7 +2244,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V50-LM-G900-KARNAL-flashable-zips
+          name: V51-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2365,16 +2408,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V50 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V51 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
       - name: "15. Upload V48 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V50-LM-G900-KARNAL-complete-logs
+          name: V51-LM-G900-KARNAL-complete-logs
           path: |
-            V50-LM-G900-KARNAL-complete-logs.zip
+            V51-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
