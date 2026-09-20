@@ -1,4 +1,4 @@
-name: V49-LM-G900-KARNAL-BUILT
+name: V50-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -70,8 +70,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V49
-  OUTPUT_PREFIX: V49-LM-G900-KARNAL
+  WORKFLOW_VERSION: V50
+  OUTPUT_PREFIX: V50-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1931,40 +1931,76 @@ jobs:
           fi
           # V41: flask.h/av_permissions.h are generated while security/selinux/ is built and drivers/kernelsu
           # includes them. Without this step the pre-compile reported 7 false 'flask.h not found' errors.
-          # V49 DT PREFLIGHT — validate the exact CN Rev-1.0 overlay against the
+          # V50 DT PREFLIGHT — validate the exact CN Rev-1.0 overlay against the
           # post-fix workspace. The always-on diagnostic source snapshot can be captured
           # before the Step-9 source edits, so it is not authoritative for the final tree.
-          CN_DTBO_TARGET="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_cn-rev-1.0_overlay.dtbo"
+          # V50 DT PREFLIGHT — reproduce the exact clang + dtc recipe captured from
+          # the repository's real Kbuild dtbs diagnostic. Do not call the nested .dtbo
+          # target through Kbuild: this vendor 4.19 Makefile emits dtbo targets at the
+          # arch/arm64/boot/dts/vendor/lge/ output level.
+          CN_DT_DIR="../arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com"
+          CN_DT_NAME="lito-caymanlm_cn-rev-1.0_overlay"
+          CN_DTS_SOURCE="${CN_DT_DIR}/${CN_DT_NAME}.dts"
+          CN_DTS_TMP="out/arch/arm64/boot/dts/vendor/lge/.${CN_DT_NAME}.dtbo.dts.tmp"
+          CN_DTBO_OUT="out/arch/arm64/boot/dts/vendor/lge/${CN_DT_NAME}.dtbo"
+          CN_DT_DEP="out/arch/arm64/boot/dts/vendor/lge/.${CN_DT_NAME}.dtbo.d.dtc.tmp"
+          mkdir -p "$(dirname "$CN_DTS_TMP")"
+          if [ ! -f "$CN_DTS_SOURCE" ]; then
+            echo "[ERROR] V50 CN DT source not found: $CN_DTS_SOURCE"
+            exit 1
+          fi
+          echo "[OK] V50 CN DT source exists: $CN_DTS_SOURCE"
+
           while IFS= read -r -d '' TOUCH_CHECK; do
             if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_CHECK"; then
-              echo "[ERROR] V48 DT preflight: redundant common-touch include remains: $TOUCH_CHECK"
+              echo "[ERROR] V50 DT preflight: redundant common-touch include remains: $TOUCH_CHECK"
               exit 1
             fi
           done < <(find arch/arm64/boot/dts/vendor/lge/lito-caymanlm -type f -iname '*touch_rev-1.0.dtsi' -print0 2>/dev/null)
 
           LAO_PM_PREFLIGHT="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-pm.dtsi"
           if grep -qE '^[[:space:]]*(camera_therm_default|bmr_w_therm_default):' "$LAO_PM_PREFLIGHT"; then
-            echo "[ERROR] V48 DT preflight: old board-specific thermal labels remain in $LAO_PM_PREFLIGHT"
+            echo "[ERROR] V50 DT preflight: old board-specific thermal labels remain in $LAO_PM_PREFLIGHT"
             exit 1
           fi
-          echo "[OK] V49 DT source reconciliation passed before CN overlay compilation."
-          CN_DTS_SOURCE="${CN_DTBO_TARGET%.dtbo}.dts"
-          if [ ! -f "$CN_DTS_SOURCE" ]; then
-            echo "[ERROR] V49 CN DT source not found: $CN_DTS_SOURCE"
-            exit 1
-          fi
-          echo "[OK] V49 CN DT source exists: $CN_DTS_SOURCE"
+          echo "[OK] V50 DT source reconciliation passed before CN overlay compilation."
 
           set +e
-          make "${MAKE_ARGS[@]}" -j1 V=1 "$CN_DTBO_TARGET" > ../logs/09a-dt-preflight.log 2>&1
-          DT_PREFLIGHT_RC=$?
+          "$CLANG_BIN/clang" -E \
+            -Wp,-MD,"${CN_DTS_TMP%.tmp}.pre.tmp" \
+            -nostdinc -I../scripts/dtc/include-prefixes -undef -D__DTS__ \
+            -x assembler-with-cpp -o "$CN_DTS_TMP" "$CN_DTS_SOURCE"
+          CN_CPP_RC=$?
           set -e
-          if [ "$DT_PREFLIGHT_RC" -ne 0 ]; then
-            echo "[ERROR] V49 CN Rev-1.0 DT overlay preflight failed."
-            grep -nE 'duplicate_label|Input tree has errors|Error [0-9]+$|error:' ../logs/09a-dt-preflight.log | head -80 || true
-            exit "$DT_PREFLIGHT_RC"
+          if [ "$CN_CPP_RC" -ne 0 ]; then
+            echo "[ERROR] V50 CN Rev-1.0 DTS preprocessing failed."
+            exit "$CN_CPP_RC"
           fi
-          echo "[OK] V49 CN Rev-1.0 DT overlay preflight passed."
+
+          set +e
+          ./scripts/dtc/dtc -O dtb -o "$CN_DTBO_OUT" -b 0 \
+            -i"${CN_DT_DIR}/" -i../scripts/dtc/include-prefixes \
+            -@ -q \
+            -Wno-unit_address_vs_reg \
+            -Wno-simple_bus_reg \
+            -Wno-unit_address_format \
+            -Wno-avoid_unnecessary_addr_size \
+            -Wno-alias_paths \
+            -Wno-graph_child_address \
+            -Wno-unique_unit_address \
+            -Wno-pci_device_reg \
+            -d "$CN_DT_DEP" "$CN_DTS_TMP" \
+            > ../logs/09a-dt-preflight.log 2>&1
+          CN_DTC_RC=$?
+          set -e
+          if [ "$CN_DTC_RC" -ne 0 ]; then
+            echo "[ERROR] V50 CN Rev-1.0 DT overlay preflight failed."
+            grep -nE 'duplicate_label|ERROR|error:|Input tree has errors|Warning' ../logs/09a-dt-preflight.log | head -120 || true
+            exit "$CN_DTC_RC"
+          fi
+
+          test -s "$CN_DTBO_OUT"
+          echo "[OK] V50 CN Rev-1.0 DT overlay compiled successfully: $CN_DTBO_OUT"
 
           echo "[V41] Building security/selinux first (generates flask.h and av_permissions.h)"
           set +e
@@ -2038,7 +2074,7 @@ jobs:
           timeout 900 make "${MAKE_ARGS[@]}" -k -j"$(nproc)" V=1 dtbs > ../logs/09b-dtbs-diagnostic.log 2>&1
           echo "dtbs_rc=$?" | tee ../logs/09b-dtbs-rc.txt
           grep -nE "Input tree has errors|Error [0-9]+$" ../logs/09b-dtbs-diagnostic.log | head -20
-          echo "--- V49 post-fix DT source checks ---" | tee ../logs/09b-post-fix-dt-check.log
+          echo "--- V50 post-fix DT source checks ---" | tee ../logs/09b-post-fix-dt-check.log
           grep -RInF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' \
             arch/arm64/boot/dts/vendor/lge/lito-caymanlm --include='*touch_rev-1.0.dtsi' \
             | tee -a ../logs/09b-post-fix-dt-check.log
@@ -2077,7 +2113,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V49-LM-G900-KARNAL
+          kernel.string=V50-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2115,7 +2151,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V49-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V50-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2156,8 +2192,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V49-LM-G900-KARNAL-output
-          path: V49-LM-G900-KARNAL-output.zip
+          name: V50-LM-G900-KARNAL-output
+          path: V50-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2165,7 +2201,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V49-LM-G900-KARNAL-flashable-zips
+          name: V50-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2329,16 +2365,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V49 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V50 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
       - name: "15. Upload V48 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V49-LM-G900-KARNAL-complete-logs
+          name: V50-LM-G900-KARNAL-complete-logs
           path: |
-            V49-LM-G900-KARNAL-complete-logs.zip
+            V50-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
