@@ -1,4 +1,4 @@
-name: V68-LM-G900-KARNAL-BUILT
+name: V64-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 
-# V45: preserve the boot-tested V44 kernel baseline and all existing kernel/DT/SUSFS work.
+# V67: preserve the boot-tested V44 kernel baseline and accumulated kernel/DT/touch/CIP fixes; isolate KernelSU legacy integration from SUSFS.
 # The KSU driver path is changed to legacy-susfs-v2 for non-GKI 4.19 Manager integration.
 # AnyKernel3 uses a strict CaymanLM identity check because the ported OrangeFox reports timelm.
 env:
@@ -26,52 +26,18 @@ env:
   BASELINE_CIP: v4.19.325-cip132
   CIP_PREFIX: v4.19.325-cip
 
+  # Clean KSU diagnostic profile: no SUSFS backport repository, commit pin, or Step-7 SUSFS merge.
+  # The legacy source branch itself is retained because it is the non-GKI driver path used for 4.19.
   KSU_VERSION: v3.2.0-legacy-susfs-v2
-  # V24: vanilla/official KernelSU-Next (KernelSU-Next/KernelSU-Next) does not carry
-  # the "config KSU_SUSFS" Kconfig entry or the su-compat hook symbols
-  # (ksu_su_compat_enabled, ksu_handle_execveat, ksu_handle_faccessat, ksu_handle_stat,
-  # ksu_handle_setresuid, ...) that SUSFS 2.x's inline-hook layer expects to already
-  # exist inside KernelSU's own source -- confirmed by Step 7 always failing its
-  # "config KSU_SUSFS" Kconfig check once it got far enough to reach it. KernelSU-Next's
-  # own maintainer (@pershoot) publishes a "dev-susfs" branch on the same v3.3.0 base
-  # specifically to add this; it is the same branch/commit multiple independent, current
-  # SUSFS+KernelSU-Next kernel-build projects (WildKernels/GKI_KernelSU_SUSFS,
-  # JeelsBoobz/android-kernel-builder) pin for exactly this reason. Pinned to an exact
-  # commit for reproducibility, matching this workflow's existing pinning style.
-  # NOTE: pershoot has stated this branch is not guaranteed production-stable.
-  KSU_SUSFS_FORK_OWNER: DXRN-MoonWake
-  KSU_SUSFS_FORK_REPO: KernelSU-Next
-  KSU_SUSFS_FORK_BRANCH: legacy-susfs-v2
-  # V40: audited commit of pershoot/KernelSU-Next dev-susfs (git describe v3.3.0-84-g4bcb6f3b).
-  # It is the exact tip V39 resolved and compiled against; every V32-V39 source-compatibility edit
-  # below was written for it. dev-susfs is a rebasing GKI-oriented branch (V28 resolved -77, V39 -84),
-  # so following its moving tip can bring new 5.x-only code between two runs. Step 6 fetches exactly
-  # this commit and only falls back to the tip (with a loud warning) if it is gone.
-  KSU_SUSFS_FORK_COMMIT: 56911735007ac4e0cf4cd8e7c423fcc421ec40f4
-  # V40: only arch/arm64/boot/Image is packaged (AnyKernel3 keeps the device DTB/DTBO), so only the
-  # Image target is built. A plain `make` also builds every DTB and lito-caymanlm_cn-rev-1.0_overlay.dtbo
-  # still aborts it ("Input tree has errors"), which stops the whole make before the Image is done.
+  KSU_LEGACY_OWNER: DXRN-MoonWake
+  KSU_LEGACY_REPO: KernelSU-Next
+  KSU_LEGACY_BRANCH: legacy-susfs-v2
   KERNEL_BUILD_TARGETS: Image
-  # V25: dev-susfs is an actively-moving/rebasing experimental branch -- the commit V24
-  # pinned ("fatal: unable to read tree") had already been rewritten off the branch by
-  # the time the workflow ran. Pinning an exact commit on a branch like this trades
-  # working builds for reproducibility that the fork itself does not honor. V25 tracks
-  # the branch's current tip instead; logs/06-kernelsu-resolved.txt records exactly which
-  # commit was actually used on each run, and Step 6's own "config KSU_SUSFS" Kconfig
-  # check (below) still fails loudly and immediately if that guarantee is ever lost.
-  SUSFS_VERSION: 2.3.0
-  SUSFS_BACKPORT_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
-  SUSFS_BACKPORT_REF: mainline
-  SUSFS_BACKPORT_COMMIT: f15603b246d7ce6008af8bdefa0a34b3df28326a
-  SUSFS_PATCH_PATH: Patches/Patch/susfs_patch_to_4.19.patch
-  SUSFS_PATCH_BLOB_SHA256: f9d8ed735f461ed982d2c49b338e35c17f4378e5
-  # This repo documents susfs_patch_to_<kernel>.patch + susfs_inline_hook_patches.sh
-  # as the two-layer non-GKI SUSFS integration path.
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V68
-  OUTPUT_PREFIX: V68-LM-G900-KARNAL
+  WORKFLOW_VERSION: V67
+  OUTPUT_PREFIX: V67-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -181,7 +147,7 @@ env:
 
 jobs:
   build:
-    name: Build V68
+    name: Build V67
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -468,11 +434,11 @@ jobs:
           echo "[INFO] If 136 stopped at an earlier tag, its exact conflict is preserved in logs/cip-checks/."
           echo "::endgroup::"
 
-      - name: "6. Integrate KernelSU-Next legacy-susfs-v2 (non-GKI 4.19)"
+      - name: "6. Integrate KernelSU-Next legacy driver (non-GKI 4.19, SUSFS disabled)"
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[6/15] KernelSU-Next ${KSU_VERSION} (${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}@${KSU_SUSFS_FORK_BRANCH})"
+          echo "::group::[6/15] KernelSU-Next ${KSU_VERSION} (${KSU_LEGACY_OWNER}/${KSU_LEGACY_REPO}@${KSU_LEGACY_BRANCH})"
           cd kernel
           if test -d common/drivers; then DRIVER_DIR=common/drivers
           elif test -d drivers; then DRIVER_DIR=drivers
@@ -480,8 +446,8 @@ jobs:
           fi
           DRIVER_MAKEFILE="${DRIVER_DIR}/Makefile"
           DRIVER_KCONFIG="${DRIVER_DIR}/Kconfig"
-          git clone --branch "${KSU_SUSFS_FORK_BRANCH}" --single-branch \
-            "https://github.com/${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}" KernelSU-Next
+          git clone --branch "${KSU_LEGACY_BRANCH}" --single-branch \
+            "https://github.com/${KSU_LEGACY_OWNER}/${KSU_LEGACY_REPO}" KernelSU-Next
           ln -sf "$(realpath --relative-to="${DRIVER_DIR}" "$(pwd)/KernelSU-Next/kernel")" "${DRIVER_DIR}/kernelsu"
           grep -q "kernelsu" "${DRIVER_MAKEFILE}" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "${DRIVER_MAKEFILE}"
           grep -q 'source "drivers/kernelsu/Kconfig"' "${DRIVER_KCONFIG}" || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' "${DRIVER_KCONFIG}"
@@ -489,9 +455,6 @@ jobs:
           test -L drivers/kernelsu
           test -f drivers/kernelsu/Kconfig
           grep -Eq '^[[:space:]]*config[[:space:]]+KSU([[:space:]]|$)' drivers/kernelsu/Kconfig
-          for sym in KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP; do
-            grep -Eq "^[[:space:]]*config[[:space:]]+${sym}([[:space:]]|$)" drivers/kernelsu/Kconfig || { echo "[ERROR] Missing ${sym} in legacy KernelSU Kconfig"; exit 1; }
-          done
           # Preserve V44's always-threaded throne tracker feature on the legacy source.
           python3 - drivers/kernelsu/Kconfig drivers/kernelsu/manager/throne_tracker.c <<'PY_THRONE'
           from pathlib import Path
@@ -562,985 +525,160 @@ jobs:
           KSU_TAG="$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
           {
             echo "requested=${KSU_VERSION}"
-            echo "fork=${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}@${KSU_SUSFS_FORK_BRANCH}"
+            echo "fork=${KSU_LEGACY_OWNER}/${KSU_LEGACY_REPO}@${KSU_LEGACY_BRANCH}"
             echo "resolved_describe=${KSU_TAG}"
             echo "resolved_commit=${KSU_COMMIT}"
             echo "kconfig_symbol=KSU"
-            echo "kconfig_symbol=KSU_SUSFS"
+            echo "kconfig_symbol=KSU_SUSFS (source available, disabled in this diagnostic build)"
           } | tee ../logs/06-kernelsu-resolved.txt
-          echo "[OK] Legacy-susfs-v2 driver integrated for non-GKI 4.19"
+          echo "[OK] KernelSU legacy driver integrated for non-GKI 4.19; SUSFS backport intentionally not applied"
           echo "::endgroup::"
 
-      - name: "7. Integrate SUSFS 2.3.0 + 4.19 backport"
+      - name: "7. Integrate KernelSU-Next manual hooks (KSU-only diagnostic; no SUSFS backport)"
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[7/15] Integrate SUSFS ${SUSFS_VERSION} + 4.19 backport"
-          mkdir -p logs
-          # V22: never allow a silent post-port test/grep to end Step 7 with only
-          # "Process completed with exit code 1". Record the exact command and line.
-          trap 'rc=$?; echo "[ERROR] Step 7 command failed: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a logs/07-susfs-failure.log; exit ${rc}' ERR
-
-          # V19 ROOT FIX: V16 attempted `git -C susfs-backport ...` without ever
-          # creating the working repository. That produced the exact Step-7 failure:
-          # "fatal: cannot change to 'susfs-backport': No such file or directory".
-          # Bootstrap a real Git repository first, then fetch the audited branch and
-          # exact pinned commit. No guessed source or moving branch is used for apply.
-          rm -rf susfs-backport
-          git init susfs-backport >> logs/07-susfs-repo-init.log 2>&1
-          git -C susfs-backport remote add origin "${SUSFS_BACKPORT_REPO}"
-          git -C susfs-backport config remote.origin.tagOpt --no-tags
-          git -C susfs-backport config fetch.prune true
-          git -C susfs-backport rev-parse --git-dir | tee logs/07-susfs-repo-init-check.log
-          git -C susfs-backport remote -v | tee logs/07-susfs-remote.txt
-
-          # Exact source pin; no blob filter. Previous runs proved acquisition and
-          # version verification; the remaining issue is source-context adaptation.
-          : > logs/07-susfs-clone.log
-          FETCH_OK=0
-          for attempt in 1 2 3 4 5; do
-            echo "[SUSFS] branch fetch attempt ${attempt}/5" | tee -a logs/07-susfs-clone.log
-            if git -C susfs-backport -c protocol.version=2 -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
-                 fetch --depth=1 origin \
-                 "refs/heads/${SUSFS_BACKPORT_REF}:refs/remotes/origin/${SUSFS_BACKPORT_REF}" \
-                 >> logs/07-susfs-clone.log 2>&1; then
-              FETCH_OK=1
-              break
-            fi
-            sleep $((attempt * 5))
-          done
-          test "${FETCH_OK}" -eq 1 || { tail -n 160 logs/07-susfs-clone.log; exit 1; }
-          git -C susfs-backport checkout --detach "refs/remotes/origin/${SUSFS_BACKPORT_REF}" >> logs/07-susfs-clone.log 2>&1
-          SUSFS_BACKPORT_HEAD="$(git -C susfs-backport rev-parse HEAD)"
-          echo "branch_head=${SUSFS_BACKPORT_HEAD}" | tee logs/07-susfs-backport-commit.log
-
-          : > logs/07-susfs-pin-fetch.log
-          PIN_OK=0
-          for attempt in 1 2 3 4 5; do
-            echo "[SUSFS] pinned commit fetch attempt ${attempt}/5" | tee -a logs/07-susfs-pin-fetch.log
-            if git -C susfs-backport -c protocol.version=2 -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
-                 fetch --depth=1 origin "${SUSFS_BACKPORT_COMMIT}" \
-                 >> logs/07-susfs-pin-fetch.log 2>&1; then
-              PIN_OK=1
-              break
-            fi
-            sleep $((attempt * 5))
-          done
-          if [ "${PIN_OK}" -ne 1 ]; then
-            echo "[SUSFS] Exact SHA was not accepted by the first fetch path; fetching branch history as a bounded fallback." | tee -a logs/07-susfs-pin-fetch.log
-            git -C susfs-backport fetch --deepen=256 origin "${SUSFS_BACKPORT_REF}" >> logs/07-susfs-pin-fetch.log 2>&1 || true
-            git -C susfs-backport fetch origin "${SUSFS_BACKPORT_COMMIT}" >> logs/07-susfs-pin-fetch.log 2>&1 || true
-            if git -C susfs-backport cat-file -e "${SUSFS_BACKPORT_COMMIT}^{commit}" 2>/dev/null; then
-              PIN_OK=1
-            fi
-          fi
-          test "${PIN_OK}" -eq 1
-          git -C susfs-backport cat-file -e "${SUSFS_BACKPORT_COMMIT}^{commit}"
-          git -C susfs-backport checkout --detach "${SUSFS_BACKPORT_COMMIT}" 2>&1 | tee logs/07-susfs-pin-checkout.log
-          SUSFS_BACKPORT_RESOLVED="$(git -C susfs-backport rev-parse HEAD)"
-          test "${SUSFS_BACKPORT_RESOLVED}" = "${SUSFS_BACKPORT_COMMIT}"
-          echo "pinned_commit=${SUSFS_BACKPORT_RESOLVED}" >> logs/07-susfs-backport-commit.log
-          git -C susfs-backport ls-tree -r --name-only HEAD Patches | tee logs/07-susfs-patches-list.txt
-
-          mapfile -t CANDIDATES < <(
-            git -C susfs-backport ls-tree -r --name-only HEAD Patches |
-              grep -Ei '(^|/)susfs_patch_to_4[._-]?19\.patch$|(^|/)50_add_susfs_in_kernel[-_]?4[._-]?19\.patch$|(^|/)susfs.*4[._-]?19.*\.patch$|(^|/)4[._-]?19.*susfs.*\.patch$' |
-              sort -u || true
-          )
-          test "${#CANDIDATES[@]}" -eq 1
-          test "${CANDIDATES[0]}" = "${SUSFS_PATCH_PATH}"
-          printf '%s\n' "${CANDIDATES[@]}" | tee logs/07-susfs-candidates.txt
-
-          TEST_VERSION_PATCH="${CANDIDATES[0]}"
-          PATCH_BLOB_SHA256="$(git -C susfs-backport rev-parse "HEAD:${TEST_VERSION_PATCH}")"
-          INLINE_SUSFS_VERSION="$(git -C susfs-backport show 'HEAD:Patches/susfs_inline_hook_patches.sh' | grep -E '^PATCH_LEVEL="[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/; s/\.00$/.0/' || true)"
-          {
-            echo "patch_blob_sha=${PATCH_BLOB_SHA256}"
-            echo "expected_patch_blob_sha=${SUSFS_PATCH_BLOB_SHA256}"
-            echo "inline_hook_declared_susfs=${INLINE_SUSFS_VERSION}"
-          } | tee logs/07-susfs-version-check.log
-          test "${PATCH_BLOB_SHA256}" = "${SUSFS_PATCH_BLOB_SHA256}"
-          test "${INLINE_SUSFS_VERSION}" = "${SUSFS_VERSION}"
-          test "${SUSFS_VERSION}" = "2.3.0"
-
-          SELECTED_PATCH="${SUSFS_PATCH_PATH}"
-          TEST_PATCH="logs/07-susfs-materialized.patch"
-          : > logs/07-susfs-compatibility.log
-          git -C susfs-backport cat-file -e "HEAD:${TEST_VERSION_PATCH}" > logs/07-susfs-materialize-check.log 2>&1
-          PATCH_BLOB_SIZE="$(git -C susfs-backport cat-file -s "HEAD:${TEST_VERSION_PATCH}")"
-          test "${PATCH_BLOB_SIZE}" -gt 0
-          git -C susfs-backport cat-file blob "HEAD:${TEST_VERSION_PATCH}" > "${TEST_PATCH}"
-          test -s "${TEST_PATCH}"
-          PATCH_FILE_SHA256="$(sha256sum "${TEST_PATCH}" | awk '{print $1}')"
-          {
-            echo "patch_path=${TEST_VERSION_PATCH}"
-            echo "git_blob_sha=${PATCH_BLOB_SHA256}"
-            echo "patch_bytes=${PATCH_BLOB_SIZE}"
-            echo "patch_file_sha256=${PATCH_FILE_SHA256}"
-          } | tee logs/07-susfs-materialized-info.txt
-          cp "${TEST_PATCH}" "logs/07-susfs-candidate-${SUSFS_PATCH_PATH//\//__}.patch"
-
-          echo "[SUSFS] strict direct preflight" | tee -a logs/07-susfs-compatibility.log
-          if (cd kernel && git apply --check --whitespace=nowarn "../${TEST_PATCH}") > logs/07-susfs-direct-check.log 2>&1; then
-            APPLY_MODE="direct"
-            git -C kernel apply --whitespace=nowarn "../${TEST_PATCH}" 2>&1 | tee logs/07-susfs-apply.log
-          else
-            echo "DIRECT_INCOMPATIBLE=${SUSFS_PATCH_PATH}" | tee -a logs/07-susfs-compatibility.log
-            cat logs/07-susfs-direct-check.log | tee -a logs/07-susfs-compatibility.log
-
-            echo "[SUSFS] content-aware 3-way apply" | tee -a logs/07-susfs-compatibility.log
-            # IMPORTANT: this command is expected to return rc=1 when Git
-            # creates unmerged entries for the four audited source files.
-            # Do NOT run it as a bare command under an ERR trap: `set +e`
-            # does not reliably suppress an ERR trap. A conditional does.
-            if git -C kernel apply --3way --whitespace=nowarn "../${TEST_PATCH}" > logs/07-susfs-3way-apply.log 2>&1; then
-              THREEWAY_RC=0
-            else
-              THREEWAY_RC=$?
-            fi
-            echo "threeway_rc=${THREEWAY_RC}" | tee -a logs/07-susfs-compatibility.log
-            cat logs/07-susfs-3way-apply.log | tee -a logs/07-susfs-compatibility.log
-
-            mapfile -t CONFLICT_FILES < <(git -C kernel diff --name-only --diff-filter=U)
-            printf '%s\n' "${CONFLICT_FILES[@]:-}" | tee logs/07-susfs-conflicted-files.txt
-            EXPECTED_CONFLICTS=(fs/namespace.c fs/proc/cmdline.c fs/proc/task_mmu.c fs/super.c)
-
-            if [ "${#CONFLICT_FILES[@]}" -eq 0 ]; then
-              if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git > logs/07-susfs-conflict-markers.log 2>&1; then
-                echo "[ERROR] 3-way reported no index conflicts but conflict markers remain." | tee logs/07-susfs-failure.log
-                exit 1
-              fi
-              APPLY_MODE="3way"
-            else
-              # V20 root fix: NEVER run the entire SUSFS patch again after 3-way.
-              # the prior revision did that and re-patched clean files, producing reversed hunks and
-              # a cascade of .rej/.orig files. Only the four conflicted file sections
-              # are re-applied, then their known source-version differences are ported.
-              if [ "${#CONFLICT_FILES[@]}" -ne 4 ]; then
-                echo "[ERROR] Unexpected SUSFS conflict-file count: ${#CONFLICT_FILES[@]}" | tee logs/07-susfs-failure.log
-                printf '%s\n' "${CONFLICT_FILES[@]}" | tee -a logs/07-susfs-failure.log
-                exit 1
-              fi
-              for f in "${EXPECTED_CONFLICTS[@]}"; do
-                printf '%s\n' "${CONFLICT_FILES[@]}" | grep -Fxq "${f}" || {
-                  echo "[ERROR] Expected conflict file missing: ${f}" | tee logs/07-susfs-failure.log
-                  exit 1
-                }
-              done
-
-              for f in "${CONFLICT_FILES[@]}"; do
-                safe="$(printf '%s' "${f}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
-                git -C kernel show ":1:${f}" > "logs/07-susfs-base-${safe}.txt" 2>/dev/null || true
-                git -C kernel show ":2:${f}" > "logs/07-susfs-ours-${safe}.txt" 2>/dev/null || true
-                git -C kernel show ":3:${f}" > "logs/07-susfs-theirs-${safe}.txt" 2>/dev/null || true
-                git -C kernel checkout --ours -- "${f}"
-                git -C kernel add -- "${f}"
-              done
-
-              : > logs/07-susfs-semantic-port.log
-              for f in "${CONFLICT_FILES[@]}"; do
-                safe="$(printf '%s' "${f}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
-                python3 - "${TEST_PATCH}" "${f}" "logs/07-susfs-file-${safe}.patch" <<'PY'
-          import pathlib, re, sys
-          patch = pathlib.Path(sys.argv[1]).read_text()
-          target = sys.argv[2]
-          out = pathlib.Path(sys.argv[3])
-          parts = patch.split('diff --git ')
-          needle = f'a/{target} b/{target}'
-          for part in parts[1:]:
-              if part.startswith(needle):
-                  out.write_text('diff --git ' + part)
-                  break
-          else:
-              raise SystemExit(f'No patch section for {target}')
-          PY
-                # V23 ROOT FIX: `set +e` does NOT suppress bash's ERR trap. The trap fires on
-                # any failing simple command regardless of errexit state, EXCEPT when that
-                # command is the direct condition of if/while/&&-chain (this is the exact same
-                # class of bug the V22 audit already fixed for the 3-way `git apply` above, but
-                # it was never applied to this per-file `patch` call). Worse, because `set -E`
-                # is active, the trap also inherits into the `(cd kernel && patch ...)` subshell,
-                # so it fired a SECOND time inside that subshell (cwd still "kernel/", hence the
-                # "tee: logs/07-susfs-failure.log: No such file or directory" noise seen in the
-                # apply logs) before firing again in the outer shell and aborting Step 7 the
-                # instant the FIRST audited/expected hunk failure (fs/namespace.c, hunk #1)
-                # occurred -- so the other three conflict files, the semantic port, and the
-                # inline-hook stage were never even reached. Fixed with an `if` guard (exempt
-                # from -e/ERR by definition) and `patch -d` instead of a `(cd ...)` subshell, so
-                # there is no subshell for the inherited trap to misfire inside.
-                if patch -d kernel -p1 --forward --batch --fuzz=0 -i "../logs/07-susfs-file-${safe}.patch" \
-                     > "logs/07-susfs-file-${safe}.apply.log" 2>&1; then
-                  FILE_PATCH_RC=0
-                else
-                  FILE_PATCH_RC=$?
-                fi
-                cat "logs/07-susfs-file-${safe}.apply.log" | tee -a logs/07-susfs-semantic-port.log
-                echo "${f}: patch_rc=${FILE_PATCH_RC}" | tee -a logs/07-susfs-semantic-port.log
-              done
-
-              # V22 exact source reconciliation. This block is intentionally a real
-              # shell heredoc: V19 had no closing PY delimiter, so its reconciliation
-              # Python never executed. No semantic result from V19 was trusted.
-              python3 - "${GITHUB_WORKSPACE}/kernel" <<'PY' | tee -a logs/07-susfs-semantic-port.log
-          import pathlib, re, sys
-          
-          root = pathlib.Path(sys.argv[1])
-          
-          EXPECTED_REJECTS = {
-              "fs/namespace.c": {(26, 10, 26, 21), (1098, 7, 1254, 22)},
-              "fs/proc/cmdline.c": {(4, 8, 4, 20)},
-              "fs/proc/task_mmu.c": {(1670, 7, 1728, 15)},
-              "fs/super.c": {(36, 8, 36, 16)},
-          }
-          HUNK_RE = re.compile(r"^@@ -(\d+),(\d+) \+(\d+),(\d+) @@")
-          
-          def insert_after_once(text, marker, block, label):
-              if block.strip() in text:
-                  return text
-              pos = text.find(marker)
-              if pos < 0:
-                  raise SystemExit(f"{label}: anchor missing")
-              pos += len(marker)
-              return text[:pos] + block + text[pos:]
-          
-          def namespace_port(s):
-              if "#include <linux/susfs_def.h>" not in s:
-                  s = insert_after_once(
-                      s,
-                      "#include <linux/fs_context.h>\n",
-                      "#ifdef CONFIG_KSU_SUSFS\n"
-                      "#include <linux/susfs_def.h>\n"
-                      "#endif // #ifdef CONFIG_KSU_SUSFS\n\n",
-                      "fs/namespace.c include",
-                  )
-          
-              if "#define CL_COPY_MNT_NS BIT(25)" not in s:
-                  s = insert_after_once(
-                      s,
-                      '#include "internal.h"\n',
-                      "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
-                      "extern bool susfs_is_current_ksu_domain(void);\n"
-                      "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n\n"
-                      "#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n\n"
-                      "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n",
-                      "fs/namespace.c declarations",
-                  )
-          
-              # Exact adaptation for this kernel's fs_context mount path. The generic
-              # SUSFS patch targets the pre-fs_context vfs_kern_mount() implementation.
-              marker = "\tsb = fc->root->d_sb;\n\n"
-              if "susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: \"none\")" not in s:
-                  old = marker + '\tmnt = alloc_vfsmnt(fc->source ?: "none");\n'
-                  new = marker + """#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          \tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
-          \t\tif (susfs_is_current_ksu_domain()) {
-          \t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none");
-          \t\t\tgoto bypass_orig_flow;
-          \t\t}
-          \t}
-          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          
-          \tmnt = alloc_vfsmnt(fc->source ?: "none");
-          #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          bypass_orig_flow:
-          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          """
-                  if old not in s:
-                      raise SystemExit("fs/namespace.c: vfs_create_mount anchor missing")
-                  s = s.replace(old, new, 1)
-              return s
-          
-          def cmdline_port(s):
-              if "extern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);" not in s:
-                  s = insert_after_once(
-                      s,
-                      "#include <linux/slab.h>\n",
-                      "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n"
-                      "extern struct static_key_false susfs_is_fake_cmdline_or_bootconfig_buffer_set;\n"
-                      "extern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);\n"
-                      "#endif\n\n",
-                      "fs/proc/cmdline.c declarations",
-                  )
-          
-              fn = "static int cmdline_proc_show(struct seq_file *m, void *v)\n{\n"
-              if "susfs_spoof_cmdline_or_bootconfig(m);" not in s:
-                  s = insert_after_once(
-                      s,
-                      fn,
-                      "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n"
-                      "\tif (static_branch_likely(&susfs_is_fake_cmdline_or_bootconfig_buffer_set)) {\n"
-                      "\t\tsusfs_spoof_cmdline_or_bootconfig(m);\n"
-                      "\t\tseq_putc(m, '\\n');\n"
-                      "\t\treturn 0;\n"
-                      "\t}\n"
-                      "#endif\n",
-                      "fs/proc/cmdline.c show",
-                  )
-              return s
-          
-          def task_mmu_port(s):
-              # IMPORTANT: the captured LM-G900 source uses the modern 4.19
-              # mmap_read_lock_killable()/mmap_read_unlock() wrappers. The generic
-              # SUSFS patch's failed hunk contains down_read_killable()/up_read(), so
-              # that generic context must NOT be copied into this kernel.
-              marker = "static ssize_t pagemap_read(struct file *file, char __user *buf,"
-              section_start = s.find(marker)
-              if section_start < 0:
-                  raise SystemExit("fs/proc/task_mmu.c: pagemap_read anchor missing")
-              section = s[section_start:]
-              if "SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))" not in section:
-                  old = """\t\tret = mmap_read_lock_killable(mm);
-          \t\tif (ret)
-          \t\t\tgoto out_free;
-          \t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);
-          \t\tmmap_read_unlock(mm);
-          \t\tstart_vaddr = end;"""
-                  new = """\t\tret = mmap_read_lock_killable(mm);
-          \t\tif (ret)
-          \t\t\tgoto out_free;
-          #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-          \t\tvma = find_vma(mm, start_vaddr);
-          \t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
-          \t\t\tgoto bypass_orig_flow;
-          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-          \t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);
-          #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-          bypass_orig_flow:
-          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-          \t\tmmap_read_unlock(mm);
-          \t\tstart_vaddr = end;"""
-                  if old not in s:
-                      raise SystemExit(
-                          "fs/proc/task_mmu.c: exact mmap_read_lock_killable pagemap anchor missing"
-                      )
-                  s = s.replace(old, new, 1)
-              return s
-          
-          def super_port(s):
-              if "#include <linux/susfs_def.h>" not in s:
-                  s = insert_after_once(
-                      s,
-                      "#include <linux/user_namespace.h>\n",
-                      "#ifdef CONFIG_KSU_SUSFS\n"
-                      "#include <linux/susfs_def.h>\n"
-                      "#endif // #ifdef CONFIG_KSU_SUSFS\n",
-                      "fs/super.c include",
-                  )
-              if "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;" not in s:
-                  s = s.replace(
-                      '#include "internal.h"\n',
-                      "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
-                      "extern bool susfs_is_current_ksu_domain(void);\n"
-                      "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n"
-                      "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n"
-                      '#include "internal.h"\n',
-                      1,
-                  )
-              return s
-          
-          ports = {
-              "fs/namespace.c": namespace_port,
-              "fs/proc/cmdline.c": cmdline_port,
-              "fs/proc/task_mmu.c": task_mmu_port,
-              "fs/super.c": super_port,
-          }
-          
-          for rel, fn in ports.items():
-              p = root / rel
-              p.write_text(fn(p.read_text()))
-          
-          # The only rejected hunks must be exactly the four audited incompatibilities.
-          for rel, expected in EXPECTED_REJECTS.items():
-              rej = root / (rel + ".rej")
-              if rej.exists():
-                  got = set()
-                  for line in rej.read_text(errors="replace").splitlines():
-                      m = HUNK_RE.match(line)
-                      if m:
-                          got.add(tuple(map(int, m.groups())))
-                  if got != expected:
-                      raise SystemExit(f"unexpected reject set in {rel}: {sorted(got)}")
-                  rej.unlink()
-              orig = root / (rel + ".orig")
-              if orig.exists():
-                  orig.unlink()
-          
-          checks = {
-              "fs/namespace.c": [
-                  "#include <linux/susfs_def.h>",
-                  "CL_COPY_MNT_NS",
-                  "susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: \"none\")",
-                  "susfs_get_non_sus_mnt_id_from_mnt",
-                  "susfs_get_non_sus_vfsmnt_from_vfsmnt",
-              ],
-              "fs/proc/cmdline.c": [
-                  "susfs_spoof_cmdline_or_bootconfig",
-                  "susfs_is_fake_cmdline_or_bootconfig_buffer_set",
-                  "updated_command_line",
-              ],
-              "fs/proc/task_mmu.c": [
-                  "susfs_sus_kstat_spoof_show_map_vma",
-                  "SUSFS_IS_INODE_OPEN_REDIRECT",
-                  "SUSFS_IS_INODE_SUS_MAP",
-                  "find_vma(mm, start_vaddr)",
-                  "mmap_read_lock_killable(mm)",
-                  "mmap_read_unlock(mm)",
-              ],
-              "fs/super.c": [
-                  "#include <linux/susfs_def.h>",
-                  "susfs_is_current_ksu_domain",
-                  "DEFAULT_KSU_MNT_MINOR_DEV",
-              ],
-          }
-          
-          for rel, needles in checks.items():
-              s = (root / rel).read_text()
-              for needle in needles:
-                  if needle not in s:
-                      raise SystemExit(f"missing semantic SUSFS marker: {rel}: {needle}")
-          
-          leftovers = list(root.rglob("*.rej")) + list(root.rglob("*.orig"))
-          if leftovers:
-              raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
-          
-          print("[OK] V32 exact four-file SUSFS reconciliation completed.")
-          print("[OK] task_mmu uses the captured kernel's mmap_read_lock_killable/mmap_read_unlock API.")
-          PY
-
-              APPLY_MODE="3way+exact-4-file-port"
-              # Only the four audited conflict files are ported; all other patch hunks must apply exactly.
-              # Leave the nested KernelSU-Next checkout unstaged; it is a build-time
-              # source tree, not a kernel submodule that this workflow needs to commit.
-            fi
-          fi
-
-          # V66: the content-aware 3-way apply intentionally leaves the four
-          # audited files as unmerged index entries even after our semantic
-          # reconciliation has written the final working-tree contents.
-          # Resolve ONLY those four audited files in the index. This does not
-          # commit anything and does not stage unrelated KernelSU work.
-          if git -C kernel ls-files -u | grep -q .; then
-            git -C kernel add -- fs/namespace.c fs/proc/cmdline.c fs/proc/task_mmu.c fs/super.c
-          fi
-          if git -C kernel ls-files -u | grep -q .; then
-            echo "[ERROR] SUSFS application left unexpected unmerged index entries." | tee logs/07-susfs-failure.log
-            git -C kernel status --short | tee -a logs/07-susfs-failure.log
-            git -C kernel ls-files -u | tee -a logs/07-susfs-failure.log
-            exit 1
-          fi
-          if find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "[ERROR] SUSFS application left reject/original files." | tee logs/07-susfs-failure.log
-            find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
-            exit 1
-          fi
-          # V22: emit a deterministic file-state inventory for Step-7 evidence.
-          {
-            echo "=== SUSFS POST-PORT STATE ==="
-            git -C kernel status --short
-            echo "--- four audited files ---"
-            sha256sum kernel/fs/namespace.c kernel/fs/proc/cmdline.c kernel/fs/proc/task_mmu.c kernel/fs/super.c
-          } | tee logs/07-susfs-post-port-state.txt
-          # Only treat a REAL merge-conflict triplet as a conflict. A kernel tree
-          # legitimately contains many documentation lines made only of '='; the
-          # V17 grep treated those as conflict markers and stopped Step 7 falsely.
-          python3 - "${GITHUB_WORKSPACE}/kernel" > logs/07-susfs-conflict-markers.log 2>&1 <<'PY'
-          import pathlib, re, sys
-          root = pathlib.Path(sys.argv[1])
-          bad = []
-          start_re = re.compile(r'^<<<<<<<(?: .*)?$')
-          sep_re = re.compile(r'^=======$')
-          end_re = re.compile(r'^>>>>>>>(?: .*)?$')
-          for p in root.rglob('*'):
-              if not p.is_file() or '.git' in p.parts:
-                  continue
-              try:
-                  lines = p.read_text(errors='replace').splitlines()
-              except Exception:
-                  continue
-              state = 0
-              start_line = 0
-              for no, line in enumerate(lines, 1):
-                  if state == 0 and start_re.match(line):
-                      state = 1
-                      start_line = no
-                  elif state == 1 and sep_re.match(line):
-                      state = 2
-                  elif state == 2 and end_re.match(line):
-                      bad.append(f'{p}:{start_line}-{no}')
-                      state = 0
-          if bad:
-              print('REAL_MERGE_CONFLICT_MARKERS_FOUND')
-              print('\n'.join(bad))
-              raise SystemExit(1)
-          print('[OK] No real merge-conflict triplets found.')
-          PY
-          if [ "$?" -ne 0 ]; then
-            echo "[ERROR] SUSFS application left real merge-conflict markers." | tee logs/07-susfs-failure.log
-            exit 1
-          fi
-
-          require_file() {
-            local f="$1"
-            if [ ! -f "$f" ]; then
-              echo "[ERROR] Missing required SUSFS file before inline hooks: $f" | tee -a logs/07-susfs-failure.log
-              return 1
-            fi
-            echo "[OK] required file: $f" | tee -a logs/07-susfs-validation.log
-          }
-          require_grep() {
-            local pattern="$1"; shift
-            if ! grep -RqsE "$pattern" "$@"; then
-              echo "[ERROR] Required SUSFS pattern not found: $pattern" | tee -a logs/07-susfs-failure.log
-              printf '[INFO] searched: %s\n' "$*" | tee -a logs/07-susfs-failure.log
-              return 1
-            fi
-            echo "[OK] required pattern: $pattern" | tee -a logs/07-susfs-validation.log
-          }
-          : > logs/07-susfs-validation.log
-          require_file kernel/fs/susfs.c
-          require_file kernel/include/linux/susfs.h
-          require_file kernel/include/linux/susfs_def.h
-          require_grep 'susfs_is_inode_sus_path|susfs_fake_qstr_name' kernel/fs/namei.c
-          require_grep 'KSU_SUSFS' kernel/fs/Makefile
-          git -C kernel diff --check | tee logs/07-susfs-diff-check.log
-
-          {
-            echo "selected_patch=${SELECTED_PATCH}"
-            echo "apply_mode=${APPLY_MODE}"
-            echo "susfs_backport_commit=${SUSFS_BACKPORT_RESOLVED}"
-            echo "requested_susfs_version=${SUSFS_VERSION}"
-            echo "kernel_version=$(make -s -C kernel kernelversion)"
-            echo "kernel_head=$(git -C kernel rev-parse HEAD)"
-            echo "susfs_semantic_port=4-file-v17"
-          } | tee logs/07-susfs-selected.txt
-
-          INLINE_SCRIPT="Patches/susfs_inline_hook_patches.sh"
-          test -f "susfs-backport/${INLINE_SCRIPT}"
-          cp "susfs-backport/${INLINE_SCRIPT}" logs/07-susfs-inline-hook-patches.sh
-          chmod +x logs/07-susfs-inline-hook-patches.sh
-
-          # V59: adapt SUSFS 2.3 inline hooks to the pinned legacy 4.19 KSU API.
-          # The legacy driver uses boolean hook-state variables and does not implement
-          # the newer post-exec session helper. No existing KSU/SUSFS feature is removed.
-          python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V68_HOOK_COMPAT'
+          echo "::group::[7/15] KernelSU-Next manual hooks (KSU-only)"
+          cd kernel
+          mkdir -p ../logs
+          cat > ../ksu_manual_hooks.py <<'PY_KSU_HOOKS'
           from pathlib import Path
-          import sys
-          p = Path(sys.argv[1])
-          lines = p.read_text().splitlines()
+          import re, sys
 
-          # V59: reconcile the SUSFS 2.3 inline-hook patcher with the pinned
-          # KernelSU-Next legacy 4.19 API.
-          #
-          # V56's assumption about an "empty" exec.c if/else block was wrong.
-          # The actual pinned SUSFS script has real branches, but its long
-          # single-line sed declaration commands are not safely parseable by
-          # bash in this copied form. Replace only that declaration block with
-          # an equivalent, syntax-safe Python insertion. No hook branch is
-          # discarded.
-          start = None
-          end = None
-          for i, line in enumerate(lines):
-              if line.strip() == 'if grep -q "__do_execve_file" "fs/exec.c"; then':
-                  start = i
-                  break
-          if start is not None:
-              for i in range(start + 1, len(lines)):
-                  if lines[i].strip() == 'fi':
-                      end = i
-                      break
-          if start is None or end is None:
-              raise SystemExit('[ERROR] V59: expected exec.c declaration block was not found.')
+          root = Path(sys.argv[1])
 
-          replacement = [
-              "        python3 - <<'PY_EXEC_DECLS'",
-              "from pathlib import Path",
-              "p = Path('fs/exec.c')",
-              "s = p.read_text()",
-              "decl = '''#ifdef CONFIG_KSU_SUSFS",
-              "extern bool ksu_su_compat_enabled;",
-              "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;",
-              "extern bool __ksu_is_allow_uid_for_current(uid_t uid);",
-              "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,",
-              "        void *envp, int *flags);",
-              "extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv,",
-              "        void *envp, int *flags);",
-              "#endif'''",
-              "if 'static int __do_execve_file(int fd, struct filename *filename,' in s:",
-              "    marker = 'static int __do_execve_file(int fd, struct filename *filename,'",
-              "elif 'static int do_execveat_common(int fd, struct filename *filename,' in s:",
-              "    marker = 'static int do_execveat_common(int fd, struct filename *filename,'",
-              "else:",
-              "    marker = None",
-              "if marker and 'ksu_handle_execveat(' not in s:",
-              "    s = s.replace(marker, decl + '\\n' + marker, 1)",
-              "p.write_text(s)",
-              "PY_EXEC_DECLS",
-          ]
-          lines = lines[:start] + replacement + lines[end + 1:]
+          def insert_after_brace(path, func_re, block, label):
+              p = root / path
+              s = p.read_text()
+              if label in s:
+                  return False
+              m = re.search(func_re, s, re.M | re.S)
+              if not m:
+                  raise SystemExit(f"[ERROR] {path}: anchor not found for {label}")
+              brace = s.find('{', m.end())
+              if brace < 0:
+                  raise SystemExit(f"[ERROR] {path}: opening brace not found for {label}")
+              s = s[:brace+1] + block + s[brace+1:]
+              p.write_text(s)
+              return True
 
-          # The legacy driver does not export the newer post-exec sucompat helper.
-          # Remove only its declaration/reference lines; keep execveat and
-          # execveat_sucompat hooks intact.
-          s = '\n'.join(
-              line for line in lines
-              if 'ksu_handle_post_execveat_sucompat' not in line
-          ) + '\n'
-
-          # Legacy 4.19 KSU uses bool hook-state variables rather than the
-          # newer static_key_true objects used by the generic SUSFS 2.3 script.
-          s = s.replace(
-              'extern struct static_key_true ksu_is_init_rc_hook_enabled;',
-              'extern bool ksu_init_rc_hook;'
+          # The legacy driver exposes these manual-hook entry points.  This is the
+          # KernelSU-Next non-GKI integration documented for legacy kernels; no SUSFS
+          # patch, SUSFS backport, or SUSFS Kconfig option is enabled here.
+          insert_after_brace(
+              'fs/exec.c',
+              r'^[[:space:]]*(?:static[[:space:]]+)?int[[:space:]]+do_execveat_common\s*\(',
+              '''\n#ifdef CONFIG_KSU\n\tksu_handle_execveat((int *)&fd, &filename, &argv, &envp, &flags);\n#endif\n''',
+              'ksu_handle_execveat((int *)&fd'
           )
-          # V61: the copied SUSFS script contains sed text with a single
-          # backslash before &, while V59 matched two backslashes in Python.
-          # Replace both escaped and plain spellings deterministically.
-          # V61: use regex rather than exact string matching because the copied
-          # SUSFS shell script can contain one or more shell-escape backslashes
-          # and optional whitespace around the address operator.
-          import re
-          legacy_hook_patterns = [
-              (r'static_branch_likely\s*\(\s*(?:\\+)?&\s*ksu_su_compat_enabled\s*\)', 'ksu_su_compat_enabled'),
-              (r'static_branch_unlikely\s*\(\s*(?:\\+)?&\s*ksu_is_init_rc_hook_enabled\s*\)', 'ksu_is_init_rc_hook_enabled'),
-              (r'static_branch_unlikely\s*\(\s*(?:\\+)?&\s*ksu_is_input_hook_enabled\s*\)', 'ksu_is_input_hook_enabled'),
-          ]
-          # Apply the legacy API conversion to the copied SUSFS shell script
-          # itself. The script later injects these exact snippets into the
-          # kernel sources, so validating only the shell script is insufficient.
-          script_text = '\n'.join(lines)
-          script_text = re.sub(
-              r'static_branch_likely\s*\(\s*(?:\\+)?&\s*ksu_su_compat_enabled\s*\)',
-              'READ_ONCE(ksu_su_compat_enabled)',
-              script_text,
-          )
-          script_text = re.sub(
-              r'static_branch_unlikely\s*\(\s*(?:\\+)?&\s*ksu_is_init_rc_hook_enabled\s*\)',
-              'READ_ONCE(ksu_init_rc_hook)',
-              script_text,
-          )
-          script_text = re.sub(
-              r'static_branch_unlikely\s*\(\s*(?:\\+)?&\s*ksu_is_input_hook_enabled\s*\)',
-              'READ_ONCE(ksu_input_hook)',
-              script_text,
-          )
-          script_text = script_text.replace(
-              'extern struct static_key_true ksu_su_compat_enabled;',
-              'extern bool ksu_su_compat_enabled;'
-          )
-          script_text = script_text.replace(
-              'extern struct static_key_true ksu_is_init_rc_hook_enabled;',
-              'extern bool ksu_init_rc_hook;'
-          )
-          script_text = script_text.replace(
-              'extern struct static_key_true ksu_is_input_hook_enabled;',
-              'extern bool ksu_input_hook;'
-          )
-          lines = script_text.splitlines()
-          p.write_text('\n'.join(lines) + '\n')
 
-          # V66: validate the transformed shell script before it can mutate the kernel tree.
-          import subprocess
-          bash_check = subprocess.run(['bash', '-n', str(p)], capture_output=True, text=True)
-          if bash_check.returncode != 0:
-              raise SystemExit('[ERROR] V68 transformed SUSFS hook script has invalid bash syntax:\n' + bash_check.stderr)
+          insert_after_brace(
+              'fs/open.c',
+              r'^[[:space:]]*long[[:space:]]+do_faccessat\s*\(',
+              '''\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n''',
+              'ksu_handle_faccessat(&dfd'
+          )
 
-          # The transformed script must itself contain no legacy static-key
-          # references. This catches the exact V58-V64 regression before the
-          # script is executed.
-          transformed = p.read_text()
-          for pat, label in legacy_hook_patterns:
-              if re.search(pat, transformed):
-                  raise SystemExit(
-                      f'[ERROR] V68 generated SUSFS hook script still contains legacy static-key reference: {label}'
-                  )
-
-          # V68: do NOT inspect the target kernel source before the inline-hook
-          # script has run. The whole purpose of this stage is to transform the
-          # SUSFS hook snippets that will be inserted into those files. A pre-run
-          # source scan can report a false failure against KSU code that predates
-          # the SUSFS hook insertion. Validate the generated script here, then run
-          # it against the kernel tree, and validate the resulting source below.
-          print('[OK] V68: transformed SUSFS hook script passes bash/API preflight; source validation deferred until after hooks execute')
-          PY_V68_HOOK_VALIDATE
-
-          # V59: SUSFS 2.3 expects the legacy driver to expose ksu_handle_vfs_fstat().
-          # Do not depend on a particular ksu_handle_vfs_read signature: the pinned
-          # legacy branch has changed that routine across revisions. Append the helper
-          # only when it is genuinely absent, while reusing the driver's existing
-          # is_init_rc() and ksu_rc_len symbols.
-          python3 - kernel/drivers/kernelsu/runtime/ksud_integration.c <<'PY_V68_KSUD'
-          from pathlib import Path
-          import sys
-          p = Path(sys.argv[1])
+          p = root / 'fs/read_write.c'
           s = p.read_text()
-          sig = 'void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)'
-          if sig not in s:
-              fn = '''
-          /* V59: SUSFS 2.3 manual fstat compatibility for legacy 4.19. */
-          void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
-          {
-              struct file *file;
-              loff_t orig_size;
+          if 'ksu_handle_sys_read(fd);' not in s:
+              m = re.search(r'^[[:space:]]*SYSCALL_DEFINE3\(read,', s, re.M)
+              if not m:
+                  raise SystemExit('[ERROR] fs/read_write.c: read syscall anchor not found')
+              brace = s.find('{', m.end())
+              if brace < 0:
+                  raise SystemExit('[ERROR] fs/read_write.c: read opening brace not found')
+              block='''\n#ifdef CONFIG_KSU\n\textern bool ksu_vfs_read_hook __read_mostly;\n\textern int ksu_handle_sys_read(unsigned int fd);\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_sys_read(fd);\n#endif\n'''
+              s=s[:brace+1]+block+s[brace+1:]
+              p.write_text(s)
 
-              if (!kstat_size_ptr)
-                  return;
+          insert_after_brace(
+              'fs/stat.c',
+              r'SYSCALL_DEFINE4\(newfstatat,',
+              '''\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n''',
+              'ksu_handle_stat(&dfd'
+          )
 
-              orig_size = *kstat_size_ptr;
-              file = fget(fd);
-              if (!file)
-                  return;
+          insert_after_brace(
+              'kernel/reboot.c',
+              r'SYSCALL_DEFINE4\(reboot,',
+              '''\n#ifdef CONFIG_KSU\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n''',
+              'ksu_handle_sys_reboot(magic1'
+          )
 
-              if (is_init_rc(file))
-                  *kstat_size_ptr = orig_size + ksu_rc_len;
-
-              fput(file);
-          }
-
-          '''
-              # The helper is deliberately appended: is_init_rc() and ksu_rc_len
-              # are file-local/global symbols in this legacy driver, so no fragile
-              # function-signature anchor is required.
-              p.write_text(s.rstrip() + '\n\n' + fn)
+          # Input hook is part of the legacy driver and is guarded internally by its
+          # legacy bool, so there is no static-key API assumption here.
+          p = root / 'drivers/input/input.c'
           s = p.read_text()
-          if sig not in s:
-              raise SystemExit('[ERROR] V61: ksu_handle_vfs_fstat insertion failed')
-          print('[OK] V61: ksu_handle_vfs_fstat compatibility present')
-          PY_V68_KSUD
+          if 'ksu_handle_input_handle_event(&type, &code, &value);' not in s:
+              marker = 'input_get_disposition(dev, type, code, &value);'
+              if marker not in s:
+                  raise SystemExit('[ERROR] drivers/input/input.c: input disposition anchor not found')
+              repl = marker + '''\n#ifdef CONFIG_KSU\n\tksu_handle_input_handle_event(&type, &code, &value);\n#endif'''
+              s=s.replace(marker,repl,1)
+              p.write_text(s)
 
-          # V59: syntax-check the modified C translation unit before continuing.
-          test -s kernel/drivers/kernelsu/runtime/ksud_integration.c
+          # Deterministic postconditions: KSU hooks exist, and no SUSFS backport files
+          # or KSU_SUSFS config is being introduced by this step.
+          required = {
+              'fs/exec.c':'ksu_handle_execveat',
+              'fs/open.c':'ksu_handle_faccessat',
+              'fs/read_write.c':'ksu_handle_sys_read',
+              'fs/stat.c':'ksu_handle_stat',
+              'kernel/reboot.c':'ksu_handle_sys_reboot',
+              'drivers/input/input.c':'ksu_handle_input_handle_event',
+          }
+          for rel, needle in required.items():
+              if needle not in (root/rel).read_text():
+                  raise SystemExit(f'[ERROR] Missing KSU manual hook: {rel}: {needle}')
+          print('[OK] KSU-only manual hooks reconciled against the legacy driver API.')
+          PY_KSU_HOOKS
+          python3 ../ksu_manual_hooks.py "$PWD" | tee ../logs/07-ksu-manual-hooks.log
+          rm -f ../ksu_manual_hooks.py
+          # KSU must be manual-hooked on this non-GKI 4.19 diagnostic build.
+          grep -Rqs 'ksu_handle_execveat' fs/exec.c
+          grep -Rqs 'ksu_handle_faccessat' fs/open.c
+          grep -Rqs 'ksu_handle_sys_read' fs/read_write.c
+          grep -Rqs 'ksu_handle_stat' fs/stat.c
+          grep -Rqs 'ksu_handle_sys_reboot' kernel/reboot.c
+          git diff --check | tee ../logs/07-ksu-diff-check.log
+          echo '[OK] Setup 7 completed: KSU legacy hooks only; SUSFS backport/pin not used.'
+          echo '::endgroup::'
 
-          SUSFS_C="kernel/fs/susfs.c"
-          if grep -q '^static void susfs_run_sus_path_loop(void)' "$SUSFS_C"; then
-            sed -i 's/^static void susfs_run_sus_path_loop(void)/void susfs_run_sus_path_loop(void)/' "$SUSFS_C"
-            echo '[FIX] V55: made susfs_run_sus_path_loop externally visible.'
-          fi
-          grep -q '^void susfs_run_sus_path_loop(void)' "$SUSFS_C"
-          grep -q '^void ksu_handle_vfs_fstat(int fd, loff_t \*kstat_size_ptr)' kernel/drivers/kernelsu/runtime/ksud_integration.c
-          if grep -q 'ksu_handle_post_execveat_sucompat' logs/07-susfs-inline-hook-patches.sh; then
-            echo '[ERROR] V68: unsupported post-exec helper remains referenced in transformed SUSFS hook script.'
-            exit 1
-          fi
-
-          # V68 ROOT FIX: the upstream SUSFS file is a patcher script, not the
-          # kernel hook itself. Earlier revisions transformed the script but never
-          # executed it, then attempted to validate the kernel as if the hooks had
-          # already been injected. Execute the transformed script explicitly from
-          # the kernel source root and capture its complete output.
-          : > logs/07-susfs-inline-execution.log
-          if (cd kernel && bash ../logs/07-susfs-inline-hook-patches.sh) > logs/07-susfs-inline-execution.log 2>&1; then
-            INLINE_HOOK_RC=0
-          else
-            INLINE_HOOK_RC=$?
-          fi
-          cat logs/07-susfs-inline-execution.log | tee -a logs/07-susfs-semantic-port.log
-          echo "inline_hook_rc=${INLINE_HOOK_RC}" | tee -a logs/07-susfs-semantic-port.log
-          if [ "${INLINE_HOOK_RC}" -ne 0 ]; then
-            echo "[ERROR] V68 SUSFS inline-hook script failed after transformation (rc=${INLINE_HOOK_RC})." | tee -a logs/07-susfs-failure.log
-            exit "${INLINE_HOOK_RC}"
-          fi
-
-          # V68: now validate the actual post-hook kernel sources.
-          python3 - <<'PY_V68_POST_HOOK_VALIDATE'
-          from pathlib import Path
-          import re
-          root = Path('kernel')
-          patterns = [
-              (r'static_branch_likely\s*\(\s*(?:\\+)?&\s*ksu_su_compat_enabled\s*\)', 'ksu_su_compat_enabled'),
-              (r'static_branch_unlikely\s*\(\s*(?:\\+)?&\s*ksu_is_init_rc_hook_enabled\s*\)', 'ksu_is_init_rc_hook_enabled'),
-              (r'static_branch_unlikely\s*\(\s*(?:\\+)?&\s*ksu_is_input_hook_enabled\s*\)', 'ksu_is_input_hook_enabled'),
-          ]
-          source_files = [
-              root / 'fs/exec.c', root / 'fs/open.c', root / 'fs/read_write.c',
-              root / 'fs/stat.c', root / 'drivers/input/input.c',
-          ]
-          bad = []
-          for src in source_files:
-              text = src.read_text(errors='replace')
-              for pat, label in patterns:
-                  for m in re.finditer(pat, text):
-                      line = text.count('\n', 0, m.start()) + 1
-                      bad.append(f'{src}:{line}: {label}')
-          if bad:
-              raise SystemExit('[ERROR] V68 post-hook legacy API validation failed:\n' + '\n'.join(bad))
-          print('[OK] V68 post-hook validation: no legacy KSU static-key references remain in SUSFS-hooked files.')
-          PY_V68_POST_HOOK_VALIDATE
-
-          # The inline script does not perform Git conflict resolution. The four
-          # audited SUSFS files must therefore be clean in the index before we
-          # continue; if Git still carries their pre-port stages, resolve only
-          # those known files from the already-verified working-tree contents.
-          if git -C kernel ls-files -u | grep -q .; then
-            git -C kernel add -- fs/namespace.c fs/proc/cmdline.c fs/proc/task_mmu.c fs/super.c
-          fi
-          if git -C kernel ls-files -u | grep -q .; then
-            echo "[ERROR] V68 inline SUSFS stage left unexpected unmerged index entries." | tee logs/07-susfs-failure.log
-            git -C kernel status --short | tee -a logs/07-susfs-failure.log
-            git -C kernel ls-files -u | tee -a logs/07-susfs-failure.log
-            exit 1
-          fi
-          echo '[OK] V68 KSU/SUSFS compatibility reconciliation and inline-hook execution passed.'
-          if find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "[ERROR] Inline SUSFS hook stage produced reject/original files." | tee logs/07-susfs-failure.log
-            find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
-            exit 1
-          fi
-          python3 - "${GITHUB_WORKSPACE}/kernel" > logs/07-susfs-conflict-markers-post-inline.log 2>&1 <<'PY'
-          import pathlib, re, sys
-          root = pathlib.Path(sys.argv[1])
-          bad = []
-          start_re = re.compile(r'^<<<<<<<(?: .*)?$')
-          sep_re = re.compile(r'^=======$')
-          end_re = re.compile(r'^>>>>>>>(?: .*)?$')
-          for p in root.rglob('*'):
-              if not p.is_file() or '.git' in p.parts:
-                  continue
-              try:
-                  lines = p.read_text(errors='replace').splitlines()
-              except Exception:
-                  continue
-              state = 0
-              start_line = 0
-              for no, line in enumerate(lines, 1):
-                  if state == 0 and start_re.match(line):
-                      state = 1
-                      start_line = no
-                  elif state == 1 and sep_re.match(line):
-                      state = 2
-                  elif state == 2 and end_re.match(line):
-                      bad.append(f'{p}:{start_line}-{no}')
-                      state = 0
-          if bad:
-              print('REAL_MERGE_CONFLICT_MARKERS_FOUND')
-              print('\n'.join(bad))
-              raise SystemExit(1)
-          print('[OK] No real merge-conflict triplets found after inline hooks.')
-          PY
-          if [ "$?" -ne 0 ]; then
-            echo "[ERROR] Inline SUSFS hook stage left real merge-conflict markers." | tee logs/07-susfs-failure.log
-            exit 1
-          fi
-
-          # V21: the upstream NonGKI flow explicitly runs susfs_inline_hook_patches.sh
-          # only after KernelSU is embedded. Therefore CONFIG_KSU_SUSFS validation is
-          # intentionally performed here, after the inline hook layer, not before it.
-          require_grep 'KSU_SUSFS' kernel/fs/susfs.c kernel/include/linux/susfs.h kernel/include/linux/susfs_def.h kernel/drivers/kernelsu
-          require_grep '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux
-          require_grep 'KSU_SUSFS' kernel/fs/Makefile
-          {
-            echo "=== V32 POST-INLINE SUSFS VALIDATION ==="
-            echo "kernel_head=$(git -C kernel rev-parse HEAD)"
-            echo "ksu_head=$(git -C kernel/KernelSU-Next rev-parse HEAD)"
-            echo "ksu_tag=$(git -C kernel/KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
-            grep -RInE '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux 2>/dev/null | head -40 || true
-          } | tee logs/07-susfs-post-inline-validation.txt
-          # V68: post-inline diff check must not turn a non-semantic whitespace
-          # warning into another opaque Setup-7 regression. First capture the exact
-          # diagnostics, then normalize only the files/lines Git reports as trailing
-          # whitespace. No code or feature logic is changed by this cleanup.
-          if ! git -C kernel diff --check > logs/07-susfs-diff-check-post-inline.log 2>&1; then
-            cat logs/07-susfs-diff-check-post-inline.log | tee -a logs/07-susfs-semantic-port.log
-            mapfile -t WS_FILES < <(
-              sed -nE 's#^([^:]+):[0-9]+: (trailing whitespace|new blank line at EOF).*#\1#p'                 logs/07-susfs-diff-check-post-inline.log | sort -u
-            )
-            for wf in "${WS_FILES[@]}"; do
-              if [ -f "kernel/${wf}" ]; then
-                sed -i 's/[[:space:]]+$//' "kernel/${wf}"
-              fi
-            done
-            if ! git -C kernel diff --check > logs/07-susfs-diff-check-post-inline.log 2>&1; then
-              echo "[ERROR] V68 post-inline diff check still fails after deterministic whitespace cleanup." | tee -a logs/07-susfs-failure.log
-              cat logs/07-susfs-diff-check-post-inline.log | tee -a logs/07-susfs-failure.log
-              exit 1
-            fi
-            echo "[OK] V68 post-inline diff check passed after whitespace-only normalization." | tee -a logs/07-susfs-semantic-port.log
-          else
-            echo "[OK] V68 post-inline diff check passed." | tee -a logs/07-susfs-semantic-port.log
-          fi
-          # Do NOT `git add -A` here: KernelSU-Next is intentionally a nested Git
-          # checkout created by its official setup script. Staging the entire tree
-          # produces the misleading "adding embedded git repository" warning.
-
-          # V68 final Step-7 invariant report: this makes the boundary between
-          # SUSFS reconciliation and the later kernel build explicit.
-          {
-            echo "=== V68 STEP-7 FINAL INVARIANTS ==="
-            echo "git_unmerged=$(git -C kernel ls-files -u | wc -l)"
-            echo "reject_files=$(find kernel -type f \( -name '*.rej' -o -name '*.orig' \) | wc -l)"
-            echo "ksu_susfs_symbol=$(grep -Rls '^[[:space:]]*config[[:space:]]\+KSU_SUSFS\([[:space:]]\|$\)' kernel/drivers/kernelsu kernel/fs kernel/include/linux 2>/dev/null | head -1 || true)"
-            echo "legacy_static_key_refs=$(grep -RInE 'static_branch_(likely|unlikely).*&[[:space:]]*ksu_(su_compat_enabled|is_init_rc_hook_enabled|is_input_hook_enabled)' kernel/fs/exec.c kernel/fs/open.c kernel/fs/read_write.c kernel/fs/stat.c kernel/drivers/input/input.c 2>/dev/null || true)"
-          } | tee logs/07-susfs-step7-final-invariants.txt
-          echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE}."
-          echo "::endgroup::"
-
-      - name: "8. Configure features and enforce no-removal policy"
+      - name: "8. Configure KSU legacy driver and enforce no-removal policy"
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[8/15] Configure features"
+          echo "::group::[8/15] Configure KSU legacy driver"
           cd kernel
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
           make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/08-defconfig.log 2>&1
-          grep -RqsE "^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)" drivers/kernelsu fs include || { echo "[ERROR] KSU_SUSFS Kconfig symbol is missing after SUSFS + inline-hook integration."; exit 1; }
-          ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS
-          mapfile -t SUSFS_SYMBOLS < <(grep -RhoE '^config KSU_SUSFS_[A-Za-z0-9_]+' drivers/kernelsu fs include 2>/dev/null | awk '{print $2}' | sort -u)
-          # V37: this loop used to force-enable every KSU_SUSFS_* symbol unconditionally,
-          # including KSU_SUSFS_SUS_SU. SUS_SU is the kprobe-based "hide su" mechanism; this
-          # kernel uses manual/inline hooks (Step 7), not kprobes, which is exactly the
-          # combination the community-documented non-GKI 4.19 KernelSU-Next+SUSFS configuration
-          # disables SUS_SU for. With it force-enabled, Kbuild pulls in
-          # drivers/kernelsu/selinux/rules.c, which manipulates struct selinux_state fields
-          # (.policy, .policy_mutex) and struct selinux_policy that only exist after the
-          # upstream SELinux RCU-policy rewrite (Linux 5.7+) -- kernel 4.19's struct
-          # selinux_state predates that rewrite entirely, so this is not a version-guard fix
-          # like the earlier filter_count one; there is no compatible field to fall back to
-          # without hand-patching live SELinux policy-engine internals. Skipping SUS_SU keeps
-          # every other SUSFS feature (SUS_PATH, SUS_MOUNT, SUS_KSTAT, TRY_UMOUNT,
-          # SPOOF_UNAME, ENABLE_LOG, HIDE_KSU_SUSFS_SYMBOLS, SPOOF_CMDLINE_OR_BOOTCONFIG,
-          # OPEN_REDIRECT, SUS_MAP, ...) force-enabled exactly as before.
-          for sym in "${SUSFS_SYMBOLS[@]}"; do
-            test "${sym}" = "KSU_SUSFS_SUS_SU" && continue
-            ./scripts/config --file out/.config --enable "${sym}" || true
-          done
-          ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_SU || true
-          # V48: legacy-susfs-v2 declares the old KSU_SUSFS_TRY_UMOUNT command path,
-          # but the separate SUSFS 2.3.0 4.19 backport used in this tree intentionally
-          # does not provide susfs_add_try_umount(). Leaving the legacy symbol enabled
-          # therefore causes supercall.c to fail with an implicit declaration. V44 did
-          # not have this symbol in its enabled feature set, so disable only this stale
-          # legacy command and keep all V44 KSU/SUSFS features intact.
-          # V48: legacy-susfs-v2 still declares the historical TRY_UMOUNT command,
-          # but this kernel tree uses the separate SUSFS 2.3.0 backport, which does not
-          # implement susfs_add_try_umount(). Keep the feature set identical to the
-          # boot-tested V44 config: TRY_UMOUNT was not enabled there. Disable it before
-          # and after olddefconfig, then verify that Kconfig did not silently re-enable it.
-          ./scripts/config --file out/.config --disable KSU_SUSFS_TRY_UMOUNT || true
+          grep -RqsE "^[[:space:]]*config[[:space:]]+KSU([[:space:]]|$)" drivers/kernelsu || { echo '[ERROR] KSU Kconfig symbol missing.'; exit 1; }
+          ./scripts/config --file out/.config --enable KSU --enable KSU_MANUAL_HOOK --disable KSU_KPROBES_HOOK --disable KSU_SUSFS
+          # Keep the manager and policy features enabled; disable only the SUSFS layer in this
+          # diagnostic build so the Manager integration can be tested independently.
+          ./scripts/config --file out/.config --disable KSU_DEBUG --disable KSU_DISABLE_MANAGER --disable KSU_DISABLE_POLICY
           make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
-          ./scripts/config --file out/.config --disable KSU_SUSFS_TRY_UMOUNT || true
+          ./scripts/config --file out/.config --enable KSU --enable KSU_MANUAL_HOOK --disable KSU_KPROBES_HOOK --disable KSU_SUSFS
           make O=out olddefconfig >> ../logs/08-olddefconfig.log 2>&1
-          if grep -q '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' out/.config; then
-            echo '[ERROR] KSU_SUSFS_TRY_UMOUNT was re-enabled after olddefconfig; disabling it would be unsafe without a matching SUSFS implementation.' | tee ../logs/08-no-removal-failure.log
-            exit 1
-          fi
-          grep -q '^# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set$' out/.config || { echo '[ERROR] CONFIG_KSU_SUSFS_TRY_UMOUNT is unexpectedly enabled'; exit 1; }
+          grep -q '^CONFIG_KSU=y$' out/.config
+          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' out/.config
+          grep -q '^# CONFIG_KSU_KPROBES_HOOK is not set$' out/.config
+          grep -q '^# CONFIG_KSU_SUSFS is not set$' out/.config
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
           while IFS= read -r line; do
             sym="${line%%=*}"
             grep -q "^${sym}=" ../post-integration-enabled-config.txt || { echo "[ERROR] Baseline feature removed: ${sym}" | tee ../logs/08-no-removal-failure.log; exit 1; }
           done < ../baseline-enabled-config.txt
-          grep -q '^CONFIG_KSU=y$' out/.config
-          grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
           {
             echo "baseline_enabled=$(wc -l < ../baseline-enabled-config.txt)"
             echo "post_integration_enabled=$(wc -l < ../post-integration-enabled-config.txt)"
-            echo "baseline_config_sha256=$(sha256sum ../baseline-enabled-config.txt | awk '{print $1}')"
-            echo "post_integration_config_sha256=$(sha256sum ../post-integration-enabled-config.txt | awk '{print $1}')"
-            grep -E '^CONFIG_(KSU|KPROBE|KPROBES|KSU_SUSFS)' out/.config || true
+            grep -E '^CONFIG_(KSU|KPROBE|KPROBES|KSU_MANUAL_HOOK|KSU_KPROBES_HOOK|KSU_SUSFS)=' out/.config || true
             echo "kernel_version=$(make -s O=out kernelversion)"
           } | tee ../logs/08-config-summary.log
-          echo "[OK] No-removal gate passed"
+          echo "[OK] KSU legacy manual-hook config enabled; SUSFS disabled for clean diagnosis."
           echo "::endgroup::"
 
       - name: "9. Build kernel"
@@ -2384,7 +1522,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V68-LM-G900-KARNAL
+          kernel.string=V67-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2422,15 +1560,12 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V68-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V67-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
             echo "cip_target=${CIP_TARGET}"
             echo "kernelsu_next=${KSU_VERSION}"
-            echo "susfs_version=${SUSFS_VERSION}"
-            echo "susfs_backport_repo=${SUSFS_BACKPORT_REPO}"
-            echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
             echo "clang=${CLANG_REV}"
             echo "clang_commit=${CLANG_COMMIT}"
             echo "defconfig=${TARGET_KERNEL_CONFIG}"
@@ -2459,20 +1594,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V44 final output"
+      - name: "12. Upload V67 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V68-LM-G900-KARNAL-output
-          path: V68-LM-G900-KARNAL-output.zip
+          name: V67-LM-G900-KARNAL-output
+          path: V67-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V44 flashable ZIPs"
+      - name: "13. Upload V67 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V68-LM-G900-KARNAL-flashable-zips
+          name: V67-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2502,9 +1637,6 @@ jobs:
             echo "cip_baseline=${BASELINE_CIP}"
             echo "cip_target=${CIP_TARGET:-UNRESOLVED}"
             echo "kernelsu_next=${KSU_VERSION}"
-            echo "susfs=${SUSFS_VERSION}"
-            echo "susfs_backport_repo=${SUSFS_BACKPORT_REPO}"
-            echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
             echo "clang=${CLANG_REV} (${CLANG_COMMIT})"
             echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
             echo "defconfig=${TARGET_KERNEL_CONFIG:-UNRESOLVED}"
@@ -2585,9 +1717,6 @@ jobs:
             echo "CIP baseline=${BASELINE_CIP}"
             echo "CIP selected=${CIP_TARGET:-UNRESOLVED}"
             echo "KernelSU-Next=${KSU_VERSION}"
-            echo "SUSFS=${SUSFS_VERSION}"
-            echo "SUSFS backport repo=${SUSFS_BACKPORT_REPO}"
-            echo "SUSFS backport ref=${SUSFS_BACKPORT_REF}"
             echo "Clang=${CLANG_REV}"
             echo "Clang commit=${CLANG_COMMIT}"
             echo "Architecture=arm64"
@@ -2636,16 +1765,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V59 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V67 clean KSU legacy-driver diagnostic: SUSFS backport/pin removed; KSU manual hooks are isolated and CONFIG_KSU_SUSFS is disabled. V44 build/DT/touch/CIP compatibility work is retained."
           echo "::endgroup::"
 
       - name: "15. Upload V48 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V68-LM-G900-KARNAL-complete-logs
+          name: V64-LM-G900-KARNAL-complete-logs
           path: |
-            V68-LM-G900-KARNAL-complete-logs.zip
+            V64-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
