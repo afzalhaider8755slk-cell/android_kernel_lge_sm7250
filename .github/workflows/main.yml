@@ -1,4 +1,4 @@
-name: V60-LM-G900-KARNAL-BUILT
+name: V61-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -70,8 +70,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V60
-  OUTPUT_PREFIX: V60-LM-G900-KARNAL
+  WORKFLOW_VERSION: V61
+  OUTPUT_PREFIX: V61-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1183,19 +1183,24 @@ jobs:
               'extern struct static_key_true ksu_is_init_rc_hook_enabled;',
               'extern bool ksu_init_rc_hook;'
           )
-          # V60: the copied SUSFS script contains sed text with a single
+          # V61: the copied SUSFS script contains sed text with a single
           # backslash before &, while V59 matched two backslashes in Python.
           # Replace both escaped and plain spellings deterministically.
-          replacements = {
-              r'static_branch_unlikely(\&ksu_is_init_rc_hook_enabled)': 'READ_ONCE(ksu_init_rc_hook)',
-              'static_branch_unlikely(&ksu_is_init_rc_hook_enabled)': 'READ_ONCE(ksu_init_rc_hook)',
-              r'static_branch_unlikely(\&ksu_is_input_hook_enabled)': 'READ_ONCE(ksu_input_hook)',
-              'static_branch_unlikely(&ksu_is_input_hook_enabled)': 'READ_ONCE(ksu_input_hook)',
-              r'static_branch_likely(\&ksu_su_compat_enabled)': 'READ_ONCE(ksu_su_compat_enabled)',
-              'static_branch_likely(&ksu_su_compat_enabled)': 'READ_ONCE(ksu_su_compat_enabled)',
-          }
-          for old_text, new_text in replacements.items():
-              s = s.replace(old_text, new_text)
+          # V61: use regex rather than exact string matching because the copied
+          # SUSFS shell script can contain one or more shell-escape backslashes
+          # and optional whitespace around the address operator.
+          import re
+          legacy_hook_patterns = [
+              (r'static_branch_unlikely\\s*\\(\\s*\\\\*&\\s*ksu_is_init_rc_hook_enabled\\s*\\)',
+               'READ_ONCE(ksu_init_rc_hook)'),
+              (r'static_branch_unlikely\\s*\\(\\s*\\\\*&\\s*ksu_is_input_hook_enabled\\s*\\)',
+               'READ_ONCE(ksu_input_hook)'),
+              (r'static_branch_likely\\s*\\(\\s*\\\\*&\\s*ksu_su_compat_enabled\\s*\\)',
+               'READ_ONCE(ksu_su_compat_enabled)'),
+          ]
+          for pattern, new_text in legacy_hook_patterns:
+              s, count = re.subn(pattern, new_text, s)
+              print(f'[V61] legacy script rewrite {pattern}: {count}')
           s = s.replace(
               'extern struct static_key_true ksu_is_input_hook_enabled;',
               'extern bool ksu_input_hook;'
@@ -1206,13 +1211,13 @@ jobs:
           )
 
           p.write_text(s)
-          print('[OK] V60: replaced only the unsafe exec.c declaration sed block')
-          print('[OK] V60: removed only unsupported post-exec helper references')
-          print('[OK] V60: reconciled legacy 4.19 KSU hook-state APIs')
+          print('[OK] V61: replaced only the unsafe exec.c declaration sed block')
+          print('[OK] V61: removed only unsupported post-exec helper references')
+          print('[OK] V61: reconciled legacy 4.19 KSU hook-state APIs')
           PY_V59_HOOK_COMPAT
 
 
-          # V60: deterministic post-rewrite validation. Do not rely on grep matching one
+          # V61: deterministic post-rewrite validation. Do not rely on grep matching one
           # particular indentation style; inspect the actual three-line shell construct.
           python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V59_VALIDATE'
           from pathlib import Path
@@ -1226,10 +1231,55 @@ jobs:
           print('[OK] V59: no invalid empty exec.c if/else block remains')
           PY_V59_VALIDATE
           bash -n logs/07-susfs-inline-hook-patches.sh
-          echo '[OK] V60: SUSFS inline-hook script passes bash -n'
+          echo '[OK] V61: SUSFS inline-hook script passes bash -n'
           (cd kernel && bash ../logs/07-susfs-inline-hook-patches.sh) 2>&1 | tee logs/07-susfs-inline-hooks.log
 
-          # V60: source-accurate legacy-hook validation.
+          # V61: reconcile the already-patched kernel sources too. The SUSFS
+          # 3-way port happens before the inline-hook script, so changing the
+          # script alone cannot repair legacy static-branch references that the
+          # 3-way patch may already have inserted into fs/*.c.
+          python3 - <<'PY_V61_SOURCE_RECONCILE'
+          from pathlib import Path
+          import re
+
+          files = [
+              Path("kernel/fs/exec.c"),
+              Path("kernel/fs/open.c"),
+              Path("kernel/fs/read_write.c"),
+              Path("kernel/fs/stat.c"),
+              Path("kernel/drivers/input/input.c"),
+          ]
+
+          replacements = [
+              (r'static_branch_unlikely\\s*\\(\\s*\\\\*&\\s*ksu_is_init_rc_hook_enabled\\s*\\)',
+               'READ_ONCE(ksu_init_rc_hook)'),
+              (r'static_branch_unlikely\\s*\\(\\s*\\\\*&\\s*ksu_input_hook_enabled\\s*\\)',
+               'READ_ONCE(ksu_input_hook)'),
+              (r'static_branch_unlikely\\s*\\(\\s*\\\\*&\\s*ksu_is_input_hook_enabled\\s*\\)',
+               'READ_ONCE(ksu_input_hook)'),
+              (r'static_branch_likely\\s*\\(\\s*\\\\*&\\s*ksu_su_compat_enabled\\s*\\)',
+               'READ_ONCE(ksu_su_compat_enabled)'),
+          ]
+
+          changed = []
+          for p in files:
+              s = p.read_text()
+              old = s
+              s = re.sub(r'extern\\s+struct\\s+static_key_true\\s+ksu_is_init_rc_hook_enabled\\s*;',
+                         'extern bool ksu_init_rc_hook;', s)
+              s = re.sub(r'extern\\s+struct\\s+static_key_true\\s+ksu_is_input_hook_enabled\\s*;',
+                         'extern bool ksu_input_hook;', s)
+              s = re.sub(r'extern\\s+struct\\s+static_key_true\\s+ksu_su_compat_enabled\\s*;',
+                         'extern bool ksu_su_compat_enabled;', s)
+              for pattern, repl in replacements:
+                  s = re.sub(pattern, repl, s)
+              if s != old:
+                  p.write_text(s)
+                  changed.append(str(p))
+          print('[OK] V61 source reconciliation changed: ' + (', '.join(changed) if changed else 'none'))
+          PY_V61_SOURCE_RECONCILE
+
+          # V61: source-accurate legacy-hook validation.
           # The pinned DXRN-MoonWake legacy-susfs-v2 driver defines these as bools:
           #   ksu_init_rc_hook, ksu_input_hook, ksu_su_compat_enabled.
           # They are NOT static_key objects, so SUSFS's static_branch wrappers must
@@ -1246,9 +1296,9 @@ jobs:
           import re
           bad = []
           patterns = [
-              (r'static_branch_likely\(\\?&ksu_su_compat_enabled\)', 'ksu_su_compat_enabled'),
-              (r'static_branch_unlikely\(\\?&ksu_is_init_rc_hook_enabled\)', 'ksu_is_init_rc_hook_enabled'),
-              (r'static_branch_unlikely\(\\?&ksu_is_input_hook_enabled\)', 'ksu_is_input_hook_enabled'),
+              (r'static_branch_likely\s*\(\s*\\*&\s*ksu_su_compat_enabled\s*\)', 'ksu_su_compat_enabled'),
+              (r'static_branch_unlikely\s*\(\s*\\*&\s*ksu_is_init_rc_hook_enabled\s*\)', 'ksu_is_init_rc_hook_enabled'),
+              (r'static_branch_unlikely\s*\(\s*\\*&\s*ksu_is_input_hook_enabled\s*\)', 'ksu_is_input_hook_enabled'),
           ]
           for p in files:
               text = p.read_text()
@@ -1256,8 +1306,8 @@ jobs:
                   if re.search(pat, text):
                       bad.append(f'{p}: {label}')
           if bad:
-              raise SystemExit('[ERROR] V60 legacy hook reconciliation incomplete:\n' + '\n'.join(bad))
-          print('[OK] V60: no SUSFS static-branch references remain for legacy KSU bool hooks (escaped/unescaped checked)')
+              raise SystemExit('[ERROR] V61 legacy hook reconciliation incomplete:\n' + '\n'.join(bad))
+          print('[OK] V61: no SUSFS static-branch references remain for legacy KSU bool hooks (escaped/unescaped checked)')
           PY_V59_HOOK_VALIDATE
 
           # V59: SUSFS 2.3 expects the legacy driver to expose ksu_handle_vfs_fstat().
@@ -1300,8 +1350,8 @@ jobs:
               p.write_text(s.rstrip() + '\n\n' + fn)
           s = p.read_text()
           if sig not in s:
-              raise SystemExit('[ERROR] V60: ksu_handle_vfs_fstat insertion failed')
-          print('[OK] V60: ksu_handle_vfs_fstat compatibility present')
+              raise SystemExit('[ERROR] V61: ksu_handle_vfs_fstat insertion failed')
+          print('[OK] V61: ksu_handle_vfs_fstat compatibility present')
           PY_V59_KSUD
 
           # V59: syntax-check the modified C translation unit before continuing.
@@ -2297,7 +2347,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V60-LM-G900-KARNAL
+          kernel.string=V61-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2335,7 +2385,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V60-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V61-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2376,8 +2426,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V60-LM-G900-KARNAL-output
-          path: V60-LM-G900-KARNAL-output.zip
+          name: V61-LM-G900-KARNAL-output
+          path: V61-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2385,7 +2435,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V60-LM-G900-KARNAL-flashable-zips
+          name: V61-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2556,9 +2606,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V60-LM-G900-KARNAL-complete-logs
+          name: V61-LM-G900-KARNAL-complete-logs
           path: |
-            V60-LM-G900-KARNAL-complete-logs.zip
+            V61-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
