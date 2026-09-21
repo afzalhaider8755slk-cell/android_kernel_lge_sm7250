@@ -1014,7 +1014,7 @@ jobs:
             fi
           fi
 
-          # V65: the content-aware 3-way apply intentionally leaves the four
+          # V66: the content-aware 3-way apply intentionally leaves the four
           # audited files as unmerged index entries even after our semantic
           # reconciliation has written the final working-tree contents.
           # Resolve ONLY those four audited files in the index. This does not
@@ -1200,26 +1200,26 @@ jobs:
           # and optional whitespace around the address operator.
           import re
           legacy_hook_patterns = [
-              (r'static_branch_likely\s*\(\s*(?:\\\\+|\\\\)?&\s*ksu_su_compat_enabled\s*\)', 'ksu_su_compat_enabled'),
-              (r'static_branch_unlikely\s*\(\s*(?:\\\\+|\\\\)?&\s*ksu_is_init_rc_hook_enabled\s*\)', 'ksu_is_init_rc_hook_enabled'),
-              (r'static_branch_unlikely\s*\(\s*(?:\\\\+|\\\\)?&\s*ksu_is_input_hook_enabled\s*\)', 'ksu_is_input_hook_enabled'),
+              (r'static_branch_likely\s*\(\s*(?:\\+)?&\s*ksu_su_compat_enabled\s*\)', 'ksu_su_compat_enabled'),
+              (r'static_branch_unlikely\s*\(\s*(?:\\+)?&\s*ksu_is_init_rc_hook_enabled\s*\)', 'ksu_is_init_rc_hook_enabled'),
+              (r'static_branch_unlikely\s*\(\s*(?:\\+)?&\s*ksu_is_input_hook_enabled\s*\)', 'ksu_is_input_hook_enabled'),
           ]
           # Apply the legacy API conversion to the copied SUSFS shell script
           # itself. The script later injects these exact snippets into the
           # kernel sources, so validating only the shell script is insufficient.
-          script_text = '\\n'.join(lines)
+          script_text = '\n'.join(lines)
           script_text = re.sub(
-              r'static_branch_likely\s*\(\s*(?:\\\\+)?&\s*ksu_su_compat_enabled\s*\)',
+              r'static_branch_likely\s*\(\s*(?:\\+)?&\s*ksu_su_compat_enabled\s*\)',
               'READ_ONCE(ksu_su_compat_enabled)',
               script_text,
           )
           script_text = re.sub(
-              r'static_branch_unlikely\s*\(\s*(?:\\\\+)?&\s*ksu_is_init_rc_hook_enabled\s*\)',
+              r'static_branch_unlikely\s*\(\s*(?:\\+)?&\s*ksu_is_init_rc_hook_enabled\s*\)',
               'READ_ONCE(ksu_init_rc_hook)',
               script_text,
           )
           script_text = re.sub(
-              r'static_branch_unlikely\s*\(\s*(?:\\\\+)?&\s*ksu_is_input_hook_enabled\s*\)',
+              r'static_branch_unlikely\s*\(\s*(?:\\+)?&\s*ksu_is_input_hook_enabled\s*\)',
               'READ_ONCE(ksu_input_hook)',
               script_text,
           )
@@ -1236,7 +1236,13 @@ jobs:
               'extern bool ksu_input_hook;'
           )
           lines = script_text.splitlines()
-          p.write_text('\\n'.join(lines) + '\\n')
+          p.write_text('\n'.join(lines) + '\n')
+
+          # V66: validate the transformed shell script before it can mutate the kernel tree.
+          import subprocess
+          bash_check = subprocess.run(['bash', '-n', str(p)], capture_output=True, text=True)
+          if bash_check.returncode != 0:
+              raise SystemExit('[ERROR] V66 transformed SUSFS hook script has invalid bash syntax:\n' + bash_check.stderr)
 
           # The transformed script must itself contain no legacy static-key
           # references. This catches the exact V58-V64 regression before the
@@ -1245,16 +1251,19 @@ jobs:
           for pat, label in legacy_hook_patterns:
               if re.search(pat, transformed):
                   raise SystemExit(
-                      f'[ERROR] V65 generated SUSFS hook script still contains legacy static-key reference: {label}'
+                      f'[ERROR] V66 generated SUSFS hook script still contains legacy static-key reference: {label}'
                   )
 
           # Validate the actual kernel files that the SUSFS script will patch.
+          kernel_root = Path.cwd() / 'kernel'
+          if not (kernel_root / 'fs').is_dir():
+              raise SystemExit(f'[ERROR] V66: kernel source root not found: {kernel_root}')
           source_files = [
-              Path('fs/exec.c'),
-              Path('fs/open.c'),
-              Path('fs/read_write.c'),
-              Path('fs/stat.c'),
-              Path('drivers/input/input.c'),
+              kernel_root / 'fs/exec.c',
+              kernel_root / 'fs/open.c',
+              kernel_root / 'fs/read_write.c',
+              kernel_root / 'fs/stat.c',
+              kernel_root / 'drivers/input/input.c',
           ]
           bad = []
           for src in source_files:
@@ -1263,8 +1272,8 @@ jobs:
                   if re.search(pat, text):
                       bad.append(f'{src}: {label}')
           if bad:
-              raise SystemExit('[ERROR] V64 legacy hook reconciliation incomplete:\\n' + '\\n'.join(bad))
-          print('[OK] V64: legacy KSU bool-hook references reconciled in the generated script and validated against kernel sources')
+              raise SystemExit('[ERROR] V66 legacy hook reconciliation incomplete:\\n' + '\\n'.join(bad))
+          print('[OK] V66: legacy KSU bool-hook references reconciled in the generated script and validated against kernel sources')
           PY_V65_HOOK_VALIDATE
 
           # V59: SUSFS 2.3 expects the legacy driver to expose ksu_handle_vfs_fstat().
