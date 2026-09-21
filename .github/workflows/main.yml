@@ -1197,9 +1197,10 @@ jobs:
                'READ_ONCE(ksu_input_hook)'),
               (r'static_branch_likely\s*\(\s*\\*&\s*ksu_su_compat_enabled\s*\)',
                'READ_ONCE(ksu_su_compat_enabled)'),
-          ]          for pattern, new_text in legacy_hook_patterns:
+          ]
+          for pattern, new_text in legacy_hook_patterns:
               s, count = re.subn(pattern, new_text, s)
-              print(f'[V61] legacy script rewrite {pattern}: {count}')
+              print(f'[V63] legacy script rewrite {pattern}: {count}')
           s = s.replace(
               'extern struct static_key_true ksu_is_input_hook_enabled;',
               'extern bool ksu_input_hook;'
