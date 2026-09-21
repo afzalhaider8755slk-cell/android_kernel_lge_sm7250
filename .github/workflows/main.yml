@@ -1,4 +1,4 @@
-name: V67-LM-G900-KARNAL-BUILT
+name: V68-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -70,8 +70,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V67
-  OUTPUT_PREFIX: V67-LM-G900-KARNAL
+  WORKFLOW_VERSION: V68
+  OUTPUT_PREFIX: V68-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -181,7 +181,7 @@ env:
 
 jobs:
   build:
-    name: Build V59
+    name: Build V68
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1122,7 +1122,7 @@ jobs:
           # V59: adapt SUSFS 2.3 inline hooks to the pinned legacy 4.19 KSU API.
           # The legacy driver uses boolean hook-state variables and does not implement
           # the newer post-exec session helper. No existing KSU/SUSFS feature is removed.
-          python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V67_HOOK_COMPAT'
+          python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V68_HOOK_COMPAT'
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
@@ -1242,7 +1242,7 @@ jobs:
           import subprocess
           bash_check = subprocess.run(['bash', '-n', str(p)], capture_output=True, text=True)
           if bash_check.returncode != 0:
-              raise SystemExit('[ERROR] V67 transformed SUSFS hook script has invalid bash syntax:\n' + bash_check.stderr)
+              raise SystemExit('[ERROR] V68 transformed SUSFS hook script has invalid bash syntax:\n' + bash_check.stderr)
 
           # The transformed script must itself contain no legacy static-key
           # references. This catches the exact V58-V64 regression before the
@@ -1251,24 +1251,24 @@ jobs:
           for pat, label in legacy_hook_patterns:
               if re.search(pat, transformed):
                   raise SystemExit(
-                      f'[ERROR] V67 generated SUSFS hook script still contains legacy static-key reference: {label}'
+                      f'[ERROR] V68 generated SUSFS hook script still contains legacy static-key reference: {label}'
                   )
 
-          # V67: do NOT inspect the target kernel source before the inline-hook
+          # V68: do NOT inspect the target kernel source before the inline-hook
           # script has run. The whole purpose of this stage is to transform the
           # SUSFS hook snippets that will be inserted into those files. A pre-run
           # source scan can report a false failure against KSU code that predates
           # the SUSFS hook insertion. Validate the generated script here, then run
           # it against the kernel tree, and validate the resulting source below.
-          print('[OK] V67: transformed SUSFS hook script passes bash/API preflight; source validation deferred until after hooks execute')
-          PY_V67_HOOK_VALIDATE
+          print('[OK] V68: transformed SUSFS hook script passes bash/API preflight; source validation deferred until after hooks execute')
+          PY_V68_HOOK_VALIDATE
 
           # V59: SUSFS 2.3 expects the legacy driver to expose ksu_handle_vfs_fstat().
           # Do not depend on a particular ksu_handle_vfs_read signature: the pinned
           # legacy branch has changed that routine across revisions. Append the helper
           # only when it is genuinely absent, while reusing the driver's existing
           # is_init_rc() and ksu_rc_len symbols.
-          python3 - kernel/drivers/kernelsu/runtime/ksud_integration.c <<'PY_V67_KSUD'
+          python3 - kernel/drivers/kernelsu/runtime/ksud_integration.c <<'PY_V68_KSUD'
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
@@ -1305,7 +1305,7 @@ jobs:
           if sig not in s:
               raise SystemExit('[ERROR] V61: ksu_handle_vfs_fstat insertion failed')
           print('[OK] V61: ksu_handle_vfs_fstat compatibility present')
-          PY_V67_KSUD
+          PY_V68_KSUD
 
           # V59: syntax-check the modified C translation unit before continuing.
           test -s kernel/drivers/kernelsu/runtime/ksud_integration.c
@@ -1318,11 +1318,11 @@ jobs:
           grep -q '^void susfs_run_sus_path_loop(void)' "$SUSFS_C"
           grep -q '^void ksu_handle_vfs_fstat(int fd, loff_t \*kstat_size_ptr)' kernel/drivers/kernelsu/runtime/ksud_integration.c
           if grep -q 'ksu_handle_post_execveat_sucompat' logs/07-susfs-inline-hook-patches.sh; then
-            echo '[ERROR] V67: unsupported post-exec helper remains referenced in transformed SUSFS hook script.'
+            echo '[ERROR] V68: unsupported post-exec helper remains referenced in transformed SUSFS hook script.'
             exit 1
           fi
 
-          # V67 ROOT FIX: the upstream SUSFS file is a patcher script, not the
+          # V68 ROOT FIX: the upstream SUSFS file is a patcher script, not the
           # kernel hook itself. Earlier revisions transformed the script but never
           # executed it, then attempted to validate the kernel as if the hooks had
           # already been injected. Execute the transformed script explicitly from
@@ -1336,12 +1336,12 @@ jobs:
           cat logs/07-susfs-inline-execution.log | tee -a logs/07-susfs-semantic-port.log
           echo "inline_hook_rc=${INLINE_HOOK_RC}" | tee -a logs/07-susfs-semantic-port.log
           if [ "${INLINE_HOOK_RC}" -ne 0 ]; then
-            echo "[ERROR] V67 SUSFS inline-hook script failed after transformation (rc=${INLINE_HOOK_RC})." | tee -a logs/07-susfs-failure.log
+            echo "[ERROR] V68 SUSFS inline-hook script failed after transformation (rc=${INLINE_HOOK_RC})." | tee -a logs/07-susfs-failure.log
             exit "${INLINE_HOOK_RC}"
           fi
 
-          # V67: now validate the actual post-hook kernel sources.
-          python3 - <<'PY_V67_POST_HOOK_VALIDATE'
+          # V68: now validate the actual post-hook kernel sources.
+          python3 - <<'PY_V68_POST_HOOK_VALIDATE'
           from pathlib import Path
           import re
           root = Path('kernel')
@@ -1362,9 +1362,9 @@ jobs:
                       line = text.count('\n', 0, m.start()) + 1
                       bad.append(f'{src}:{line}: {label}')
           if bad:
-              raise SystemExit('[ERROR] V67 post-hook legacy API validation failed:\n' + '\n'.join(bad))
-          print('[OK] V67 post-hook validation: no legacy KSU static-key references remain in SUSFS-hooked files.')
-          PY_V67_POST_HOOK_VALIDATE
+              raise SystemExit('[ERROR] V68 post-hook legacy API validation failed:\n' + '\n'.join(bad))
+          print('[OK] V68 post-hook validation: no legacy KSU static-key references remain in SUSFS-hooked files.')
+          PY_V68_POST_HOOK_VALIDATE
 
           # The inline script does not perform Git conflict resolution. The four
           # audited SUSFS files must therefore be clean in the index before we
@@ -1374,12 +1374,12 @@ jobs:
             git -C kernel add -- fs/namespace.c fs/proc/cmdline.c fs/proc/task_mmu.c fs/super.c
           fi
           if git -C kernel ls-files -u | grep -q .; then
-            echo "[ERROR] V67 inline SUSFS stage left unexpected unmerged index entries." | tee logs/07-susfs-failure.log
+            echo "[ERROR] V68 inline SUSFS stage left unexpected unmerged index entries." | tee logs/07-susfs-failure.log
             git -C kernel status --short | tee -a logs/07-susfs-failure.log
             git -C kernel ls-files -u | tee -a logs/07-susfs-failure.log
             exit 1
           fi
-          echo '[OK] V67 KSU/SUSFS compatibility reconciliation and inline-hook execution passed.'
+          echo '[OK] V68 KSU/SUSFS compatibility reconciliation and inline-hook execution passed.'
           if find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
             echo "[ERROR] Inline SUSFS hook stage produced reject/original files." | tee logs/07-susfs-failure.log
             find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a logs/07-susfs-failure.log
@@ -1434,11 +1434,42 @@ jobs:
             echo "ksu_tag=$(git -C kernel/KernelSU-Next describe --tags --exact-match HEAD 2>/dev/null || true)"
             grep -RInE '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' kernel/drivers/kernelsu kernel/fs kernel/include/linux 2>/dev/null | head -40 || true
           } | tee logs/07-susfs-post-inline-validation.txt
-          git -C kernel diff --check | tee logs/07-susfs-diff-check-post-inline.log
+          # V68: post-inline diff check must not turn a non-semantic whitespace
+          # warning into another opaque Setup-7 regression. First capture the exact
+          # diagnostics, then normalize only the files/lines Git reports as trailing
+          # whitespace. No code or feature logic is changed by this cleanup.
+          if ! git -C kernel diff --check > logs/07-susfs-diff-check-post-inline.log 2>&1; then
+            cat logs/07-susfs-diff-check-post-inline.log | tee -a logs/07-susfs-semantic-port.log
+            mapfile -t WS_FILES < <(
+              sed -nE 's#^([^:]+):[0-9]+: (trailing whitespace|new blank line at EOF).*#\1#p'                 logs/07-susfs-diff-check-post-inline.log | sort -u
+            )
+            for wf in "${WS_FILES[@]}"; do
+              if [ -f "kernel/${wf}" ]; then
+                sed -i 's/[[:space:]]+$//' "kernel/${wf}"
+              fi
+            done
+            if ! git -C kernel diff --check > logs/07-susfs-diff-check-post-inline.log 2>&1; then
+              echo "[ERROR] V68 post-inline diff check still fails after deterministic whitespace cleanup." | tee -a logs/07-susfs-failure.log
+              cat logs/07-susfs-diff-check-post-inline.log | tee -a logs/07-susfs-failure.log
+              exit 1
+            fi
+            echo "[OK] V68 post-inline diff check passed after whitespace-only normalization." | tee -a logs/07-susfs-semantic-port.log
+          else
+            echo "[OK] V68 post-inline diff check passed." | tee -a logs/07-susfs-semantic-port.log
+          fi
           # Do NOT `git add -A` here: KernelSU-Next is intentionally a nested Git
           # checkout created by its official setup script. Staging the entire tree
           # produces the misleading "adding embedded git repository" warning.
 
+          # V68 final Step-7 invariant report: this makes the boundary between
+          # SUSFS reconciliation and the later kernel build explicit.
+          {
+            echo "=== V68 STEP-7 FINAL INVARIANTS ==="
+            echo "git_unmerged=$(git -C kernel ls-files -u | wc -l)"
+            echo "reject_files=$(find kernel -type f \( -name '*.rej' -o -name '*.orig' \) | wc -l)"
+            echo "ksu_susfs_symbol=$(grep -Rls '^[[:space:]]*config[[:space:]]\+KSU_SUSFS\([[:space:]]\|$\)' kernel/drivers/kernelsu kernel/fs kernel/include/linux 2>/dev/null | head -1 || true)"
+            echo "legacy_static_key_refs=$(grep -RInE 'static_branch_(likely|unlikely).*&[[:space:]]*ksu_(su_compat_enabled|is_init_rc_hook_enabled|is_input_hook_enabled)' kernel/fs/exec.c kernel/fs/open.c kernel/fs/read_write.c kernel/fs/stat.c kernel/drivers/input/input.c 2>/dev/null || true)"
+          } | tee logs/07-susfs-step7-final-invariants.txt
           echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE}."
           echo "::endgroup::"
 
@@ -2353,7 +2384,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V67-LM-G900-KARNAL
+          kernel.string=V68-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2391,7 +2422,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V67-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V68-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2432,8 +2463,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V67-LM-G900-KARNAL-output
-          path: V67-LM-G900-KARNAL-output.zip
+          name: V68-LM-G900-KARNAL-output
+          path: V68-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2441,7 +2472,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V67-LM-G900-KARNAL-flashable-zips
+          name: V68-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2612,9 +2643,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V67-LM-G900-KARNAL-complete-logs
+          name: V68-LM-G900-KARNAL-complete-logs
           path: |
-            V67-LM-G900-KARNAL-complete-logs.zip
+            V68-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
