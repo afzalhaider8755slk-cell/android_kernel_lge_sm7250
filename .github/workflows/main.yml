@@ -1014,9 +1014,18 @@ jobs:
             fi
           fi
 
+          # V65: the content-aware 3-way apply intentionally leaves the four
+          # audited files as unmerged index entries even after our semantic
+          # reconciliation has written the final working-tree contents.
+          # Resolve ONLY those four audited files in the index. This does not
+          # commit anything and does not stage unrelated KernelSU work.
           if git -C kernel ls-files -u | grep -q .; then
-            echo "[ERROR] SUSFS application left unmerged index entries." | tee logs/07-susfs-failure.log
+            git -C kernel add -- fs/namespace.c fs/proc/cmdline.c fs/proc/task_mmu.c fs/super.c
+          fi
+          if git -C kernel ls-files -u | grep -q .; then
+            echo "[ERROR] SUSFS application left unexpected unmerged index entries." | tee logs/07-susfs-failure.log
             git -C kernel status --short | tee -a logs/07-susfs-failure.log
+            git -C kernel ls-files -u | tee -a logs/07-susfs-failure.log
             exit 1
           fi
           if find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
@@ -1113,7 +1122,7 @@ jobs:
           # V59: adapt SUSFS 2.3 inline hooks to the pinned legacy 4.19 KSU API.
           # The legacy driver uses boolean hook-state variables and does not implement
           # the newer post-exec session helper. No existing KSU/SUSFS feature is removed.
-          python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V59_HOOK_COMPAT'
+          python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V65_HOOK_COMPAT'
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
@@ -1191,19 +1200,72 @@ jobs:
           # and optional whitespace around the address operator.
           import re
           legacy_hook_patterns = [
-              (r'static_branch_likely\s*\(\s*(?:\\&|&)\s*ksu_su_compat_enabled\s*\)', 'ksu_su_compat_enabled'),
-              (r'static_branch_unlikely\s*\(\s*(?:\\&|&)\s*ksu_is_init_rc_hook_enabled\s*\)', 'ksu_is_init_rc_hook_enabled'),
-              (r'static_branch_unlikely\s*\(\s*(?:\\&|&)\s*ksu_is_input_hook_enabled\s*\)', 'ksu_is_input_hook_enabled'),
+              (r'static_branch_likely\s*\(\s*(?:\\\\+|\\\\)?&\s*ksu_su_compat_enabled\s*\)', 'ksu_su_compat_enabled'),
+              (r'static_branch_unlikely\s*\(\s*(?:\\\\+|\\\\)?&\s*ksu_is_init_rc_hook_enabled\s*\)', 'ksu_is_init_rc_hook_enabled'),
+              (r'static_branch_unlikely\s*\(\s*(?:\\\\+|\\\\)?&\s*ksu_is_input_hook_enabled\s*\)', 'ksu_is_input_hook_enabled'),
           ]
-          for p in files:
-              text = p.read_text()
-              for pat, label in patterns:
+          # Apply the legacy API conversion to the copied SUSFS shell script
+          # itself. The script later injects these exact snippets into the
+          # kernel sources, so validating only the shell script is insufficient.
+          script_text = '\\n'.join(lines)
+          script_text = re.sub(
+              r'static_branch_likely\s*\(\s*(?:\\\\+)?&\s*ksu_su_compat_enabled\s*\)',
+              'READ_ONCE(ksu_su_compat_enabled)',
+              script_text,
+          )
+          script_text = re.sub(
+              r'static_branch_unlikely\s*\(\s*(?:\\\\+)?&\s*ksu_is_init_rc_hook_enabled\s*\)',
+              'READ_ONCE(ksu_init_rc_hook)',
+              script_text,
+          )
+          script_text = re.sub(
+              r'static_branch_unlikely\s*\(\s*(?:\\\\+)?&\s*ksu_is_input_hook_enabled\s*\)',
+              'READ_ONCE(ksu_input_hook)',
+              script_text,
+          )
+          script_text = script_text.replace(
+              'extern struct static_key_true ksu_su_compat_enabled;',
+              'extern bool ksu_su_compat_enabled;'
+          )
+          script_text = script_text.replace(
+              'extern struct static_key_true ksu_is_init_rc_hook_enabled;',
+              'extern bool ksu_init_rc_hook;'
+          )
+          script_text = script_text.replace(
+              'extern struct static_key_true ksu_is_input_hook_enabled;',
+              'extern bool ksu_input_hook;'
+          )
+          lines = script_text.splitlines()
+          p.write_text('\\n'.join(lines) + '\\n')
+
+          # The transformed script must itself contain no legacy static-key
+          # references. This catches the exact V58-V64 regression before the
+          # script is executed.
+          transformed = p.read_text()
+          for pat, label in legacy_hook_patterns:
+              if re.search(pat, transformed):
+                  raise SystemExit(
+                      f'[ERROR] V65 generated SUSFS hook script still contains legacy static-key reference: {label}'
+                  )
+
+          # Validate the actual kernel files that the SUSFS script will patch.
+          source_files = [
+              Path('fs/exec.c'),
+              Path('fs/open.c'),
+              Path('fs/read_write.c'),
+              Path('fs/stat.c'),
+              Path('drivers/input/input.c'),
+          ]
+          bad = []
+          for src in source_files:
+              text = src.read_text(errors='replace')
+              for pat, label in legacy_hook_patterns:
                   if re.search(pat, text):
-                      bad.append(f'{p}: {label}')
+                      bad.append(f'{src}: {label}')
           if bad:
-              raise SystemExit('[ERROR] V64 legacy hook reconciliation incomplete:\n' + '\n'.join(bad))
-          print('[OK] V64: no SUSFS static-branch references remain for legacy KSU bool hooks (escaped/unescaped checked)')
-          PY_V64_HOOK_VALIDATE
+              raise SystemExit('[ERROR] V64 legacy hook reconciliation incomplete:\\n' + '\\n'.join(bad))
+          print('[OK] V64: legacy KSU bool-hook references reconciled in the generated script and validated against kernel sources')
+          PY_V65_HOOK_VALIDATE
 
           # V59: SUSFS 2.3 expects the legacy driver to expose ksu_handle_vfs_fstat().
           # Do not depend on a particular ksu_handle_vfs_read signature: the pinned
