@@ -1,4 +1,4 @@
-name: V55-LM-G900-KARNAL-BUILT
+name: V56-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -70,8 +70,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V55
-  OUTPUT_PREFIX: V55-LM-G900-KARNAL
+  WORKFLOW_VERSION: V56
+  OUTPUT_PREFIX: V56-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -181,7 +181,7 @@ env:
 
 jobs:
   build:
-    name: Build V55
+    name: Build V56
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1113,34 +1113,74 @@ jobs:
           # V55: adapt SUSFS 2.3 inline hooks to the pinned legacy 4.19 KSU API.
           # The legacy driver uses boolean hook-state variables and does not implement
           # the newer post-exec session helper. No existing KSU/SUSFS feature is removed.
-          python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V55_HOOK_COMPAT'
+          python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V56_HOOK_COMPAT'
           from pathlib import Path
-          import sys, re
-          p=Path(sys.argv[1]); s=p.read_text()
-          s=s.replace('extern struct static_key_true ksu_is_init_rc_hook_enabled;', 'extern bool ksu_init_rc_hook;')
-          s=s.replace(r'static_branch_unlikely(\&ksu_is_init_rc_hook_enabled)', 'READ_ONCE(ksu_init_rc_hook)')
-          s=s.replace('extern struct static_key_true ksu_is_input_hook_enabled;', 'extern bool ksu_input_hook;')
-          s=s.replace(r'static_branch_unlikely(\&ksu_is_input_hook_enabled)', 'READ_ONCE(ksu_input_hook)')
-          s=s.replace('extern struct static_key_true ksu_su_compat_enabled;', 'extern bool ksu_su_compat_enabled;')
-          s=s.replace(r'static_branch_likely(\&ksu_su_compat_enabled)', 'READ_ONCE(ksu_su_compat_enabled)')
-          # V55: remove the upstream empty exec.c if/else block robustly.
-          # The previous literal replacement was whitespace-sensitive and could miss it.
-          s=re.sub(r'(?m)^[ \t]*if grep -q "__do_execve_file" "fs/exec\.c"; then\n[ \t]*else\n[ \t]*fi\n',
-                   '        # V55: legacy 4.19 uses the existing exec path; no rewrite is required.\n',
-                   s)
-          # The legacy branch does not implement the post-exec session helper; remove the
-          # complete declaration/callback command from the copied shell patcher.
-          s='\n'.join(line for line in s.splitlines() if 'ksu_handle_post_execveat_sucompat' not in line) + '\n'
-          p.write_text(s)
-          print('[FIX] V55: inline-hook script reconciled with legacy KSU')
-          PY_V55_HOOK_COMPAT
+          import sys
+          p = Path(sys.argv[1])
+          lines = p.read_text().splitlines()
 
-          if grep -nE '^[[:space:]]*if grep -q "__do_execve_file" "fs/exec\.c"; then[[:space:]]*$' logs/07-susfs-inline-hook-patches.sh; then
-            echo '[ERROR] V55: empty exec.c if/else block survived compatibility rewrite.' | tee logs/07-susfs-failure.log
-            nl -ba logs/07-susfs-inline-hook-patches.sh | sed -n '45,65p' | tee -a logs/07-susfs-failure.log
-            exit 1
-          fi
+          # V56: reconcile the copied SUSFS 2.3 shell patcher with the legacy 4.19 KSU API.
+          # Do this structurally instead of with a whitespace-sensitive regex. The upstream
+          # script contains an empty shell if/else/fi block for exec.c on this branch; it has
+          # no functional branch body and is invalid bash, so remove exactly that block.
+          out = []
+          i = 0
+          removed_empty_exec_block = False
+          while i < len(lines):
+              stripped = lines[i].strip()
+              if (stripped == 'if grep -q "__do_execve_file" "fs/exec.c"; then'
+                      and i + 2 < len(lines)
+                      and lines[i + 1].strip() == 'else'
+                      and lines[i + 2].strip() == 'fi'):
+                  out.append('        # V56: legacy 4.19 has no alternate __do_execve_file branch.')
+                  i += 3
+                  removed_empty_exec_block = True
+                  continue
+              out.append(lines[i])
+              i += 1
+
+          s = '\n'.join(out) + '\n'
+          # Legacy KSU does not provide this newer helper. Remove only references to that
+          # unsupported helper; the rest of the exec hook remains intact.
+          s = '\n'.join(line for line in s.splitlines()
+                         if 'ksu_handle_post_execveat_sucompat' not in line) + '\n'
+
+          s = s.replace('extern struct static_key_true ksu_is_init_rc_hook_enabled;',
+                        'extern bool ksu_init_rc_hook;')
+          s = s.replace(r'static_branch_unlikely(\&ksu_is_init_rc_hook_enabled)',
+                        'READ_ONCE(ksu_init_rc_hook)')
+          s = s.replace('extern struct static_key_true ksu_is_input_hook_enabled;',
+                        'extern bool ksu_input_hook;')
+          s = s.replace(r'static_branch_unlikely(\&ksu_is_input_hook_enabled)',
+                        'READ_ONCE(ksu_input_hook)')
+          s = s.replace('extern struct static_key_true ksu_su_compat_enabled;',
+                        'extern bool ksu_su_compat_enabled;')
+          s = s.replace(r'static_branch_likely(\&ksu_su_compat_enabled)',
+                        'READ_ONCE(ksu_su_compat_enabled)')
+
+          if not removed_empty_exec_block:
+              # Fail with a precise diagnostic if the upstream source shape changes.
+              raise SystemExit('[ERROR] V56: expected empty exec.c if/else block was not found.')
+          p.write_text(s)
+          print('[OK] V56: structurally removed the invalid empty exec.c if/else block')
+          print('[OK] V56: reconciled legacy KSU hook-state APIs')
+          PY_V56_HOOK_COMPAT
+
+          # V56: deterministic post-rewrite validation. Do not rely on grep matching one
+          # particular indentation style; inspect the actual three-line shell construct.
+          python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V56_VALIDATE'
+          from pathlib import Path
+          import sys
+          lines = Path(sys.argv[1]).read_text().splitlines()
+          for i in range(len(lines) - 2):
+              if (lines[i].strip() == 'if grep -q "__do_execve_file" "fs/exec.c"; then'
+                      and lines[i+1].strip() == 'else'
+                      and lines[i+2].strip() == 'fi'):
+                  raise SystemExit(f'[ERROR] V56: invalid empty exec.c block remains at line {i+1}')
+          print('[OK] V56: no invalid empty exec.c if/else block remains')
+          PY_V56_VALIDATE
           bash -n logs/07-susfs-inline-hook-patches.sh
+          echo '[OK] V56: SUSFS inline-hook script passes bash -n'
           (cd kernel && bash ../logs/07-susfs-inline-hook-patches.sh) 2>&1 | tee logs/07-susfs-inline-hooks.log
 
           # V55: expose the fstat helper expected by SUSFS 2.3 while reusing the
@@ -2052,7 +2092,7 @@ jobs:
           fi
           # V41: flask.h/av_permissions.h are generated while security/selinux/ is built and drivers/kernelsu
           # includes them. Without this step the pre-compile reported 7 false 'flask.h not found' errors.
-          # V55: V51 proved the complete dtbs phase returns dtbs_rc=0, so the prior
+          # V56: V51 proved the complete dtbs phase returns dtbs_rc=0, so the prior
           # CN-only preflight is no longer a blocker. It was a redundant second DTC invocation
           # before the real build and V51 stopped before producing its preflight/build logs.
           # Keep the source-integrity checks above, then let the real kernel build proceed.
@@ -2131,7 +2171,7 @@ jobs:
           timeout 900 make "${MAKE_ARGS[@]}" -k -j"$(nproc)" V=1 dtbs > ../logs/09b-dtbs-diagnostic.log 2>&1
           echo "dtbs_rc=$?" | tee ../logs/09b-dtbs-rc.txt
           grep -nE "Input tree has errors|Error [0-9]+$" ../logs/09b-dtbs-diagnostic.log | head -20
-          echo "--- V55 post-fix DT source checks ---" | tee ../logs/09b-post-fix-dt-check.log
+          echo "--- V56 post-fix DT source checks ---" | tee ../logs/09b-post-fix-dt-check.log
           grep -RInF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' \
             arch/arm64/boot/dts/vendor/lge/lito-caymanlm --include='*touch_rev-1.0.dtsi' \
             | tee -a ../logs/09b-post-fix-dt-check.log
@@ -2170,7 +2210,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V55-LM-G900-KARNAL
+          kernel.string=V56-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2208,7 +2248,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V55-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V56-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2249,8 +2289,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V55-LM-G900-KARNAL-output
-          path: V55-LM-G900-KARNAL-output.zip
+          name: V56-LM-G900-KARNAL-output
+          path: V56-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2258,7 +2298,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V55-LM-G900-KARNAL-flashable-zips
+          name: V56-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2422,16 +2462,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V55 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V56 diagnostics collected; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next dev-susfs fork for CONFIG_KSU_SUSFS, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
       - name: "15. Upload V48 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V55-LM-G900-KARNAL-complete-logs
+          name: V56-LM-G900-KARNAL-complete-logs
           path: |
-            V55-LM-G900-KARNAL-complete-logs.zip
+            V56-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
