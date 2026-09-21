@@ -1,4 +1,4 @@
-name: V62-LM-G900-KARNAL-BUILT
+name: v63-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -70,8 +70,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V62
-  OUTPUT_PREFIX: V62-LM-G900-KARNAL
+  WORKFLOW_VERSION: v63
+  OUTPUT_PREFIX: v63-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -1211,13 +1211,13 @@ jobs:
           )
 
           p.write_text(s)
-          print('[OK] V62: replaced only the unsafe exec.c declaration sed block')
-          print('[OK] V62: removed only unsupported post-exec helper references')
-          print('[OK] V62: reconciled legacy 4.19 KSU hook-state APIs')
+          print('[OK] v63: replaced only the unsafe exec.c declaration sed block')
+          print('[OK] v63: removed only unsupported post-exec helper references')
+          print('[OK] v63: reconciled legacy 4.19 KSU hook-state APIs')
           PY_V59_HOOK_COMPAT
 
 
-          # V62: deterministic post-rewrite validation. Do not rely on grep matching one
+          # v63: deterministic post-rewrite validation. Do not rely on grep matching one
           # particular indentation style; inspect the actual three-line shell construct.
           python3 - logs/07-susfs-inline-hook-patches.sh <<'PY_V59_VALIDATE'
           from pathlib import Path
@@ -1238,7 +1238,7 @@ jobs:
           # 3-way port happens before the inline-hook script, so changing the
           # script alone cannot repair legacy static-branch references that the
           # 3-way patch may already have inserted into fs/*.c.
-          python3 - <<'PY_V62_SOURCE_RECONCILE'
+          python3 - <<'PY_v63_SOURCE_RECONCILE'
           from pathlib import Path
           import re
 
@@ -1250,7 +1250,7 @@ jobs:
               Path("kernel/drivers/input/input.c"),
           ]
 
-          # V62: the previous V61 regex was over-escaped. In Python raw regex
+          # v63: the previous V61 regex was over-escaped. In Python raw regex
           # syntax, \s means whitespace and \\ means a literal backslash.
           # Match both `&foo` and `\&foo` emitted by the SUSFS shell script.
           replacements = [
@@ -1291,12 +1291,12 @@ jobs:
                   p.write_text(s)
                   changed.append(str(p))
 
-          print('[OK] V62 source reconciliation changed: ' + (', '.join(changed) if changed else 'none'))
-          PY_V62_SOURCE_RECONCILE
+          print('[OK] v63 source reconciliation changed: ' + (', '.join(changed) if changed else 'none'))
+          PY_v63_SOURCE_RECONCILE
 
-          # V62: prove the reconciliation itself, not just the shell script.
+          # v63: prove the reconciliation itself, not just the shell script.
           # Print the exact remaining source line if a legacy static-key reference survives.
-          python3 - <<'PY_V62_HOOK_SCAN'
+          python3 - <<'PY_v63_HOOK_SCAN'
           from pathlib import Path
           import re
           files = [
@@ -1313,18 +1313,18 @@ jobs:
                   if rx.search(line):
                       bad.append(f"{p}:{no}: {line.strip()}")
           if bad:
-              print("[ERROR] V62 remaining legacy static-branch references:")
+              print("[ERROR] v63 remaining legacy static-branch references:")
               print("\n".join(bad))
               raise SystemExit(1)
-          print("[OK] V62 source scan: no legacy KSU bools are passed to static_branch_*")
-          PY_V62_HOOK_SCAN
+          print("[OK] v63 source scan: no legacy KSU bools are passed to static_branch_*")
+          PY_v63_HOOK_SCAN
 
-          # V62: source-accurate legacy-hook validation.
+          # v63: source-accurate legacy-hook validation.
           # The pinned DXRN-MoonWake legacy-susfs-v2 driver defines these as bools:
           #   ksu_init_rc_hook, ksu_input_hook, ksu_su_compat_enabled.
           # They are NOT static_key objects, so SUSFS's static_branch wrappers must
           # not survive into the 4.19 source.
-          python3 - <<'PY_V62_HOOK_VALIDATE'
+          python3 - <<'PY_v63_HOOK_VALIDATE'
           from pathlib import Path
           files = [
               Path("fs/exec.c"),
@@ -1346,16 +1346,16 @@ jobs:
                   if re.search(pat, text):
                       bad.append(f'{p}: {label}')
           if bad:
-              raise SystemExit('[ERROR] V62 legacy hook reconciliation incomplete:\n' + '\n'.join(bad))
-          print('[OK] V62: no SUSFS static-branch references remain for legacy KSU bool hooks (escaped/unescaped checked)')
-          PY_V62_HOOK_VALIDATE
+              raise SystemExit('[ERROR] v63 legacy hook reconciliation incomplete:\n' + '\n'.join(bad))
+          print('[OK] v63: no SUSFS static-branch references remain for legacy KSU bool hooks (escaped/unescaped checked)')
+          PY_v63_HOOK_VALIDATE
 
           # V59: SUSFS 2.3 expects the legacy driver to expose ksu_handle_vfs_fstat().
           # Do not depend on a particular ksu_handle_vfs_read signature: the pinned
           # legacy branch has changed that routine across revisions. Append the helper
           # only when it is genuinely absent, while reusing the driver's existing
           # is_init_rc() and ksu_rc_len symbols.
-          python3 - kernel/drivers/kernelsu/runtime/ksud_integration.c <<'PY_V62_KSUD'
+          python3 - kernel/drivers/kernelsu/runtime/ksud_integration.c <<'PY_v63_KSUD'
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
@@ -1392,7 +1392,7 @@ jobs:
           if sig not in s:
               raise SystemExit('[ERROR] V61: ksu_handle_vfs_fstat insertion failed')
           print('[OK] V61: ksu_handle_vfs_fstat compatibility present')
-          PY_V62_KSUD
+          PY_v63_KSUD
 
           # V59: syntax-check the modified C translation unit before continuing.
           test -s kernel/drivers/kernelsu/runtime/ksud_integration.c
@@ -2387,7 +2387,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V62-LM-G900-KARNAL
+          kernel.string=v63-LM-G900-KARNAL
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -2425,7 +2425,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V62-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=v63-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2466,8 +2466,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V62-LM-G900-KARNAL-output
-          path: V62-LM-G900-KARNAL-output.zip
+          name: v63-LM-G900-KARNAL-output
+          path: v63-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2475,7 +2475,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V62-LM-G900-KARNAL-flashable-zips
+          name: v63-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2646,9 +2646,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V62-LM-G900-KARNAL-complete-logs
+          name: v63-LM-G900-KARNAL-complete-logs
           path: |
-            V62-LM-G900-KARNAL-complete-logs.zip
+            v63-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
