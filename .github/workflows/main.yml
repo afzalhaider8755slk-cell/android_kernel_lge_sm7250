@@ -184,7 +184,7 @@ env:
 
 jobs:
   build:
-    name: Build V96
+    name: Build V98
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -720,27 +720,27 @@ jobs:
           # Hard source guards: the legacy 4.19 build must not contain the V95
           # pre-5.7 stub that disabled KSU policy injection.
           if grep -q 'SELinux policy hot-patch API unavailable on this kernel' "$RULES_C"; then
-            echo '[ERROR] V96: legacy rules.c still contains the V95 SELinux policy-injection stub.'
+            echo '[ERROR] V98: legacy rules.c still contains the V95 SELinux policy-injection stub.'
             exit 1
           fi
           if ! grep -q 'void apply_kernelsu_rules()' "$RULES_C"; then
-            echo '[ERROR] V96: apply_kernelsu_rules() missing.'
+            echo '[ERROR] V98: apply_kernelsu_rules() missing.'
             exit 1
           fi
           if ! grep -q 'db = get_policydb();' "$RULES_C"; then
-            echo '[ERROR] V96: 4.19 policydb path missing from legacy rules.c.'
+            echo '[ERROR] V98: 4.19 policydb path missing from legacy rules.c.'
             exit 1
           fi
           if ! grep -q 'stop_machine(apply_kernelsu_rules_fn' "$RULES_C"; then
-            echo '[ERROR] V96: legacy stop_machine() SELinux policy path missing.'
+            echo '[ERROR] V98: legacy stop_machine() SELinux policy path missing.'
             exit 1
           fi
           if ! grep -q 'ksu_type(db, KERNEL_SU_DOMAIN, "domain")' "$RULES_C"; then
-            echo '[ERROR] V96: KSU domain creation rule missing.'
+            echo '[ERROR] V98: KSU domain creation rule missing.'
             exit 1
           fi
           if ! grep -q 'ksu_type(db, KERNEL_SU_FILE, "file_type")' "$RULES_C"; then
-            echo '[ERROR] V96: ksu_file type creation rule missing.'
+            echo '[ERROR] V98: ksu_file type creation rule missing.'
             exit 1
           fi
 
@@ -761,7 +761,7 @@ jobs:
             echo 'susfs=preserved'
           } | tee ../logs/06-selinux-v96-source-fix.log
 
-          echo '[OK] V96: official legacy SELinux policy injection remains enabled for 4.19.'
+          echo '[OK] V98: official legacy SELinux policy injection remains enabled for 4.19.'
 
           ln -sf "$(realpath --relative-to="${DRIVER_DIR}" "$(pwd)/KernelSU-Next/kernel")" "${DRIVER_DIR}/kernelsu"
           grep -q "kernelsu" "${DRIVER_MAKEFILE}" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "${DRIVER_MAKEFILE}"
@@ -904,23 +904,26 @@ jobs:
               s = s.replace(marker, block + marker, 1)
           runtime.write_text(s)
 
-          # CRITICAL: the pinned KernelSU-Next legacy 4.19 driver defines this as bool.
-          # Do not force the newer static-key ABI before the SUSFS patch exists.
+          # SOURCE-AWARE ABI RULE:
+          # The pinned legacy commit dd074bc... uses a plain bool ABI.
+          # Do not manufacture a static-key ABI here. The SUSFS 2.3 patch stage
+          # may legitimately transform this ABI later if the actual patched source
+          # requires it. Step 6b accepts either proven ABI.
           h = sucompat_h.read_text()
-          h = h.replace("extern struct static_key_true ksu_su_compat_enabled;", "extern bool ksu_su_compat_enabled;")
-          h = h.replace("#include <linux/jump_label.h>\n", "")
-          if "extern bool ksu_su_compat_enabled;" not in h:
-              h += "\nextern bool ksu_su_compat_enabled;\n"
-          sucompat_h.write_text(h)
-
           s = sucompat.read_text()
-          s = s.replace("DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);", "bool ksu_su_compat_enabled __read_mostly = true;")
-          s = s.replace("static_key_enabled(&ksu_su_compat_enabled)", "ksu_su_compat_enabled")
-          s = s.replace("static_branch_likely(&ksu_su_compat_enabled)", "ksu_su_compat_enabled")
-          s = s.replace("if (enable)\n                  static_branch_enable(&ksu_su_compat_enabled);\n              else\n                  static_branch_disable(&ksu_su_compat_enabled);", "ksu_su_compat_enabled = enable;")
-          if "static_branch_" not in s:
-              s = s.replace("#include <linux/jump_label.h>\n", "")
-          sucompat.write_text(s)
+          bool_def = bool(re.search(r'(?m)^\s*bool\s+ksu_su_compat_enabled\s+__read_mostly\s*=\s*true\s*;', s))
+          static_def = bool(re.search(r'(?m)^\s*DEFINE_STATIC_KEY_TRUE\(ksu_su_compat_enabled\)\s*;', s))
+          bool_decl = bool(re.search(r'(?m)^\s*extern\s+bool\s+ksu_su_compat_enabled\s*;', h))
+          static_decl = bool(re.search(r'(?m)^\s*extern\s+struct\s+static_key_true\s+ksu_su_compat_enabled\s*;', h))
+          if bool_def and not bool_decl:
+              raise SystemExit("legacy sucompat source uses bool definition but header declaration is missing")
+          if static_def and not static_decl:
+              raise SystemExit("sucompat source uses static-key definition but header declaration is missing")
+          if bool_def and static_def:
+              raise SystemExit("sucompat ABI contains both bool and static-key definitions")
+          if not (bool_def or static_def):
+              raise SystemExit("unable to identify ksu_su_compat_enabled ABI in actual legacy source")
+          print("[OK] Source-aware sucompat ABI detected: " + ("bool" if bool_def else "static-key"))
 
           # ROOT FIX: replace the V95/V97 pre-5.7 no-op with the real legacy policydb path.
           r = rules.read_text()
@@ -988,6 +991,13 @@ jobs:
               r = r[:pos] + legacy + r[end:]
           elif 'stop_machine(apply_kernelsu_rules_fn' not in r:
               raise SystemExit('apply_kernelsu_rules lacks legacy stop_machine path')
+          # Ensure SUSFS SID initialization is tied to the completed policy mutation.
+          # This follows the SUSFS patch architecture: policy mutation -> AVC reset -> SID resolve.
+          if 'susfs_set_batch_sid();' not in r:
+              anchor = '    reset_avc_cache();\n'
+              if anchor not in r:
+                  raise SystemExit('reset_avc_cache() anchor missing from rules.c')
+              r = r.replace(anchor, anchor + '#ifdef CONFIG_KSU_SUSFS\n    susfs_set_batch_sid();\n#endif\n', 1)
           rules.write_text(r)
 
           # SUSFS SID cache helpers are retained; the KSU SID is resolved only after policy mutation.
@@ -1108,14 +1118,23 @@ jobs:
                   raise SystemExit(f"[ERROR] cross-setup contract missing: {label}: {path}")
               return s
 
-          c = need(sucompat, "DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);",
-                   "su_compat static-key definition")
-          h = need(sucompat_h, "extern struct static_key_true ksu_su_compat_enabled;",
-                   "su_compat static-key declaration")
-          if re.search(r"extern\s+bool\s+ksu_su_compat_enabled\s*;", h):
-              raise SystemExit("[ERROR] cross-setup stale bool declaration remains")
-          if len(re.findall(r"DEFINE_STATIC_KEY_TRUE\(ksu_su_compat_enabled\)", c)) != 1:
-              raise SystemExit("[ERROR] cross-setup requires exactly one su_compat static-key definition")
+          # Source-aware sucompat ABI contract. The pinned legacy driver is bool;
+          # SUSFS may convert it to static-key later. Accept exactly one consistent ABI.
+          c = sucompat.read_text(errors="replace")
+          h = sucompat_h.read_text(errors="replace")
+          bool_def = bool(re.search(r"(?m)^\s*bool\s+ksu_su_compat_enabled\s+__read_mostly\s*=\s*true\s*;", c))
+          static_def = bool(re.search(r"(?m)^\s*DEFINE_STATIC_KEY_TRUE\(ksu_su_compat_enabled\)\s*;", c))
+          bool_decl = bool(re.search(r"(?m)^\s*extern\s+bool\s+ksu_su_compat_enabled\s*;", h))
+          static_decl = bool(re.search(r"(?m)^\s*extern\s+struct\s+static_key_true\s+ksu_su_compat_enabled\s*;", h))
+          if bool_def and static_def:
+              raise SystemExit("[ERROR] cross-setup sucompat ABI has both bool and static-key definitions")
+          if bool_def and not bool_decl:
+              raise SystemExit("[ERROR] cross-setup bool sucompat definition lacks matching extern bool declaration")
+          if static_def and not static_decl:
+              raise SystemExit("[ERROR] cross-setup static-key sucompat definition lacks matching extern static-key declaration")
+          if not (bool_def or static_def):
+              raise SystemExit("[ERROR] cross-setup cannot identify ksu_su_compat_enabled ABI")
+          print("[OK] cross-setup sucompat ABI is source-consistent: " + ("bool" if bool_def else "static-key"))
           if "ksu_install_su_fd(" in c:
               raise SystemExit("[ERROR] cross-setup found newer ksu_install_su_fd API in legacy driver")
           if "ksu_install_fd(" not in c:
@@ -1168,7 +1187,7 @@ jobs:
           if not re.search(r"config\s+KSU_SUSFS[\s\S]{0,500}?depends on KSU", kconfig_text):
               raise SystemExit("[ERROR] cross-setup Kconfig contract: KSU_SUSFS no longer depends on KSU")
 
-          print("[OK] V96: cross-setup source/Kconfig/Manager contract audit passed")
+          print("[OK] V98: cross-setup source/Kconfig/Manager contract audit passed")
           print("[INFO] Generated CONFIG_KSU* values are validated after Step 8 configuration generation.")
           PY_CROSS_SETUP
           echo "::endgroup::"
@@ -1867,10 +1886,10 @@ jobs:
           # V84: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
           # so the actual pre-build abort was invisible.
           exec > >(tee -a ../logs/09-step9-full.log) 2>&1
-          trap 'rc=$?; echo "[ERROR] V97 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
+          trap 'rc=$?; echo "[ERROR] V98 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
 
           {
-            echo "=== V97 PRE-BUILD SOURCE AUDIT ==="
+            echo "=== V98 PRE-BUILD SOURCE AUDIT ==="
             echo "kernel_commit=$(git rev-parse HEAD)"
             echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
             echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
@@ -1934,7 +1953,7 @@ jobs:
           # open and prevents a false-negative audit on the baseline defconfig.
           for sym in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_SUSFS; do
             grep -q "^${sym}=y$" out/.config || {
-              echo "[ERROR] V96 generated-config contract missing: ${sym}=y" | tee ../logs/08-generated-config-contract-failure.log
+              echo "[ERROR] V98 generated-config contract missing: ${sym}=y" | tee ../logs/08-generated-config-contract-failure.log
               exit 1
             }
           done
@@ -2276,7 +2295,7 @@ jobs:
             echo "[ERROR] V91: duplicate board PM labels remain under ${PM_ROOT}"
             exit 1
           fi
-          echo "[OK] V96: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
+          echo "[OK] V98: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
 
           # V32 FIX 2 — KernelSU-Next v3.4.0 legacy expects the newer UAPI mount.h header.
           # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
@@ -2903,7 +2922,7 @@ jobs:
             echo "kernel_uapi_version=4"
             echo "final_vmlinux_contract=passed"
           } | tee ../logs/09-final-ksu-contract.log
-          echo "[OK] V96: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
+          echo "[OK] V98: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
           echo "::endgroup::"
 
       - name: "9b. DTB diagnostic (non-blocking; captures the hidden dtc error text)"
@@ -2954,7 +2973,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V96-LM-G900-KARNAL
+          kernel.string=V98-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2980,7 +2999,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V96-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V98-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -3021,8 +3040,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V96-LM-G900-KARNAL-output
-          path: V96-LM-G900-KARNAL-output.zip
+          name: V98-LM-G900-KARNAL-output
+          path: V98-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -3030,7 +3049,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V96-LM-G900-KARNAL-flashable-zips
+          name: V98-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -3195,16 +3214,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V97 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V98 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
       - name: "15. Upload V98 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V96-LM-G900-KARNAL-complete-logs
+          name: V98-LM-G900-KARNAL-complete-logs
           path: |
-            V96-LM-G900-KARNAL-complete-logs.zip
+            V98-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
