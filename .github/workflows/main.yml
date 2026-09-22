@@ -1,4 +1,4 @@
-name: V83-LM-G900-KARNAL-BUILT
+name: V84-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -31,7 +31,7 @@ env:
   # the exact installed Manager build; do not alter the legacy driver code.
   KSU_VERSION_CODE: 33294
   KSU_VERSION_TAG_OVERRIDE: v3.4.0
-  # V83: use the official KernelSU-Next legacy branch for the real non-GKI
+  # V84: use the official KernelSU-Next legacy branch for the real non-GKI
   # driver/manual-hook integration. the previous build only synthesized CONFIG_KSU_MANUAL_HOOK
   # inside a dev-susfs v3.4.0 legacy tree; that did not satisfy the Manager's legacy-driver
   # detection. The existing SUSFS 2.3 kernel-side chain is preserved.
@@ -45,7 +45,7 @@ env:
   # Image target is built. A plain `make` also builds every DTB and lito-caymanlm_cn-rev-1.0_overlay.dtbo
   # still aborts it ("Input tree has errors"), which stops the whole make before the Image is done.
   KERNEL_BUILD_TARGETS: Image
-  # V83: SUSFS acquisition and the audited 4.19 backport remain exactly the same
+  # V84: SUSFS acquisition and the audited 4.19 backport remain exactly the same
   # as the previous successful build. Only the KernelSU-Next driver source/integration
   # path and the requested v3.4.0 version are changed in this release.
   SUSFS_VERSION: 2.3.0
@@ -59,8 +59,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V83
-  OUTPUT_PREFIX: V83-LM-G900-KARNAL
+  WORKFLOW_VERSION: V84
+  OUTPUT_PREFIX: V84-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -464,7 +464,7 @@ jobs:
           echo "::group::[6/15] KernelSU-Next ${KSU_VERSION} legacy driver (${KSU_REPO_OWNER}/${KSU_REPO}@${KSU_REF})"
           cd kernel
 
-          # V83: clone the official legacy branch. This is the actual non-GKI
+          # V84: clone the official legacy branch. This is the actual non-GKI
           # KernelSU-Next driver integration path; CONFIG_KSU_MANUAL_HOOK is not
           # synthesized as a substitute.
           if test -d common/drivers; then DRIVER_DIR=common/drivers
@@ -561,17 +561,14 @@ jobs:
               replacement = block + '    __u32 uapi_version; /* Output: KERNEL_SU_UAPI_VERSION */\n'
               us = us[:m.start()] + replacement + us[m.end():]
 
-          # V83: normalize accumulated UAPI backports to exactly one uapi_version field.
-          m = re.search(r'(struct\s+ksu_get_info_cmd\s*\{)(.*?)(\n\};)', us, flags=re.S)
+          # V84: reconstruct the modern GET_INFO struct deterministically.
+          # This prevents duplicate uapi_version fields from accumulating across
+          # previous backport attempts. The legacy 3-field struct is untouched.
+          m = re.search(r'(?ms)^(struct\s+ksu_get_info_cmd\s*\{).*?^\};', us)
           if not m:
-              raise SystemExit('[ERROR] V83: ksu_get_info_cmd struct not found')
-          body = re.sub(r'(?m)^[ \t]*__u32\s+uapi_version\s*;[^\n]*\n?', '', m.group(2))
-          feat = re.search(r'(?m)^([ \t]*)__u32\s+features;[^\n]*$', body)
-          if not feat:
-              raise SystemExit('[ERROR] V83: features field not found')
-          indent=feat.group(1)
-          body=body[:feat.end()]+'\n'+indent+'__u32 uapi_version; /* Output: KERNEL_SU_UAPI_VERSION */'+body[feat.end():]
-          us=us[:m.start()]+m.group(1)+body+m.group(3)+us[m.end():]
+              raise SystemExit('[ERROR] V84: ksu_get_info_cmd struct not found')
+          modern_struct = """struct ksu_get_info_cmd {\n    __u32 version; /* Output: KERNEL_SU_VERSION */\n    __u32 flags; /* Output: KSU_GET_INFO_FLAG_* bits */\n    __u32 features; /* Output: max feature ID supported */\n    __u32 uapi_version; /* Output: KERNEL_SU_UAPI_VERSION */\n};"""
+          us = us[:m.start()] + modern_struct + us[m.end():]
 
           # Modern handler: add the runtime UAPI value exactly once.
           start = ds.find('static int do_get_info(void __user *arg)')
@@ -626,7 +623,7 @@ jobs:
               raise SystemExit('[ERROR] V81: UAPI version definition is not exactly 4')
           info_struct = re.search(r'struct\s+ksu_get_info_cmd\s*\{.*?\n\}', us, flags=re.S).group(0)
           if len(re.findall(r'(?m)^\s*__u32\s+uapi_version\s*;', info_struct)) != 1:
-              raise SystemExit('[ERROR] V83: modern GET_INFO struct must contain exactly one uapi_version field')
+              raise SystemExit('[ERROR] V84: modern GET_INFO struct must contain exactly one uapi_version field')
           if 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION;' not in modern:
               raise SystemExit('[ERROR] V81: modern GET_INFO does not populate uapi_version')
           if 'cmd.uapi_version' in legacy_block:
@@ -653,7 +650,7 @@ jobs:
             echo "legacy_get_info_abi=untouched"
           } | tee ../logs/06-kernelsu-uapi-v4.log
 
-          # V83: DO NOT merge the normal v3.4.0 release into legacy.
+          # V84: DO NOT merge the normal v3.4.0 release into legacy.
           # Upstream keeps non-GKI/4.x support on the separate `legacy` branch; the
           # normal v3.4.0 release is a different history. Merging those histories
           # is not a supported way to create a v3.4.0 legacy driver and can mix
@@ -1489,7 +1486,7 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
 
-          # V83: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
+          # V84: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
           # so the actual pre-build abort was invisible.
           exec > >(tee -a ../logs/09-step9-full.log) 2>&1
           trap 'rc=$?; echo "[ERROR] V83 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
@@ -1516,7 +1513,7 @@ jobs:
           grep -RqsE "^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)" drivers/kernelsu fs include || { echo "[ERROR] KSU_SUSFS Kconfig symbol is missing after SUSFS + inline-hook integration."; exit 1; }
           ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS --enable KSU_MANUAL_HOOK
           grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' out/.config
-          # V83: the driver-mode flag is only valid if the actual non-GKI manual hooks
+          # V84: the driver-mode flag is only valid if the actual non-GKI manual hooks
           # already installed by the V82 SUSFS 2.3 inline-hook stage are present.
           for hook in             fs/exec.c fs/open.c fs/read_write.c fs/stat.c             drivers/input/input.c kernel/reboot.c kernel/sys.c; do
             test -f "$hook"
@@ -1601,47 +1598,26 @@ jobs:
             } > include/linux/minmax.h
             echo "[FIX] Added missing include/linux/minmax.h compatibility header for KernelSU-Next"
           fi
-          # FIX: drivers/kernelsu/infra/file_wrapper.c (KernelSU-Next) unconditionally uses
-          # struct file_operations.iopoll and .remap_file_range, and the REMAP_FILE_DEDUP
-          # flag. None of the three exist on this 4.19.325 CIP tree (they were introduced by
-          # upstream commits from Linux 4.20+), so the build failed with 8 compile errors:
-          #   error: no member named 'iopoll' in 'struct file_operations'
-          #   error: use of undeclared identifier 'REMAP_FILE_DEDUP'
-          #   error: no member named 'remap_file_range' in 'struct file_operations'
-          # This only touches those exact statements (by line number, verified against the
-          # failing build log) so the file compiles; nothing else in the driver is changed:
-          #   - REMAP_FILE_DEDUP is given its standard upstream value via a guarded #define,
-          #     so the existing dedupe-detection branch keeps compiling as written.
-          #   - The two calls into ->iopoll()/->remap_file_range() (which can never be taken
-          #     on a kernel that has no such op) are replaced with `return -EOPNOTSUPP;`.
-          #   - The two assignments that set p->ops.iopoll / p->ops.remap_file_range are
-          #     dropped, since those destination fields don't exist on this kernel's
-          #     struct file_operations either.
+          # V84 FIX — do NOT rewrite KernelSU-Next file_wrapper.c by line number.
+          # The official legacy source already gates iopoll behind >= 6.1 and
+          # remap_file_range behind >= 4.20. On this 4.19.325 kernel those
+          # sections are correctly excluded by the preprocessor. The previous
+          # V83/V82 line-number sed rewrite shifted after prepending a header and
+          # deleted unrelated C/preprocessor lines, producing the syntax cascade
+          # seen in Step 9 (undeclared orig, while outside function, #endif without
+          # #if, default-argument errors, etc.).
+          # Keep the official legacy file_wrapper.c untouched and verify its
+          # version guards instead. This preserves the driver's real source.
           FW="drivers/kernelsu/infra/file_wrapper.c"
-          if [ -f "$FW" ] && ! grep -q '^#define REMAP_FILE_DEDUP' "$FW"; then
-            {
-              echo '#pragma clang diagnostic ignored "-Wunused-function"'
-              echo '#ifndef REMAP_FILE_DEDUP'
-              echo '#define REMAP_FILE_DEDUP (1 << 0)'
-              echo '#endif'
-              cat "$FW"
-            } > "${FW}.ksu_compat_tmp"
-            mv "${FW}.ksu_compat_tmp" "$FW"
-            # The 4 lines above shift every original line number down by 4. The two
-            # remap_file_range() call statements each wrap onto a second line (the closing
-            # ")" and trailing args); both lines of each statement must be handled together,
-            # or the leftover continuation line becomes a dangling "...);" syntax error.
-            sed -i \
-              -e '113s#.*#    return -EOPNOTSUPP;#' \
-              -e '346s#.*#        return -EOPNOTSUPP;#' \
-              -e '347d' \
-              -e '351s#.*#        return -EOPNOTSUPP;#' \
-              -e '352d' \
-              -e '397d' \
-              -e '434,435d' \
-              "$FW"
-            echo "[FIX] Patched file_wrapper.c: stubbed iopoll/remap_file_range fops for pre-4.20 VFS API"
-          fi
+          test -f "$FW"
+          grep -q '#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)' "$FW" || {
+            echo "[ERROR] V84: legacy file_wrapper.c lost the iopoll >=6.1 guard."; exit 1;
+          }
+          grep -q '#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)' "$FW" || {
+            echo "[ERROR] V84: legacy file_wrapper.c lost the remap_file_range >=4.20 guard."; exit 1;
+          }
+          echo "[OK] V84: official legacy file_wrapper.c kept intact; 4.19 excludes iopoll/remap_file_range by source guards."
+
           # V32 FIX 1 — KernelSU-Next v3.4.0 legacy compatibility with this 4.19.325 arm64 tree.
           # The KSU seccomp cache source references SECCOMP_ARCH_NATIVE_NR (and, with
           # CONFIG_COMPAT, SECCOMP_ARCH_COMPAT_NR), while this older arm64 seccomp header
@@ -1795,14 +1771,14 @@ jobs:
           # removed raw sys_mount()/sys_umount() symbols used by the first V43 wrapper.
           # Fail here if the generated bridge still calls the unavailable symbols.
           if grep -qE '^[[:space:]]*ret = sys_(mount|umount)\(' "$NS"; then
-            echo "[ERROR] V83: path_mount/path_umount still call unavailable sys_mount/sys_umount"
+            echo "[ERROR] V84: path_mount/path_umount still call unavailable sys_mount/sys_umount"
             exit 1
           fi
           if ! grep -qE '^int ksys_mount\(' "$NS" || ! grep -qE '^int ksys_umount\(' "$NS"; then
-            echo "[ERROR] V83: expected Linux 4.19 ksys_mount/ksys_umount entry points are missing"
+            echo "[ERROR] V84: expected Linux 4.19 ksys_mount/ksys_umount entry points are missing"
             exit 1
           fi
-          echo "[OK] V83: mount compatibility bridge uses existing 4.19 ksys_mount/ksys_umount."
+          echo "[OK] V84: mount compatibility bridge uses existing 4.19 ksys_mount/ksys_umount."
 
           SC_C="kernel/seccomp.c"
           if [ -f "$SC_C" ] && ! grep -q 'seccomp_filter_release' "$SC_C"; then
@@ -1888,19 +1864,19 @@ jobs:
                   changed.append(str(p))
 
           if not changed:
-              raise SystemExit('[ERROR] V83: no board-specific PM duplicate labels were found')
+              raise SystemExit('[ERROR] V84: no board-specific PM duplicate labels were found')
           for p in changed:
-              print(f'[FIX] V83: reconciled duplicate PM labels in {p}')
+              print(f'[FIX] V84: reconciled duplicate PM labels in {p}')
           PY_V83_DT
 
           # Hard validation: no board-specific PM file may still define either generic
           # duplicate label. The generic qcom/lito-pmic-overlay.dtsi remains untouched.
           if grep -RInE '^[[:space:]]*camera_therm_default[[:space:]]*:[[:space:]]*camera_therm_default[[:space:]]*\{' "$PM_ROOT" 2>/dev/null || \
              grep -RInE '^[[:space:]]*bmr_w_therm_default[[:space:]]*:[[:space:]]*bmr_w_therm_default[[:space:]]*\{' "$PM_ROOT" 2>/dev/null; then
-            echo "[ERROR] V83: duplicate board PM labels remain under ${PM_ROOT}"
+            echo "[ERROR] V84: duplicate board PM labels remain under ${PM_ROOT}"
             exit 1
           fi
-          echo "[OK] V83: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
+          echo "[OK] V84: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
 
           # V32 FIX 2 — KernelSU-Next v3.4.0 legacy expects the newer UAPI mount.h header.
           # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
@@ -2071,7 +2047,7 @@ jobs:
           # Linux 4.19's struct seccomp has only mode + filter (no filter_count).
           # Keep the seccomp escape path intact and compile only the newer counter reset
           # on kernels that actually provide that member.
-          # V83 FIX — remove the stale V78-era seccomp filter_count rewrite.
+          # V84 FIX — remove the stale V78-era seccomp filter_count rewrite.
           # Official KernelSU-Next legacy already guards filter_count with
           # LINUX_VERSION_CODE >= 5.9 and uses put_seccomp_filter() on older kernels.
           # V82 failed because its transformer expected four literal spaces and tried
@@ -2085,7 +2061,7 @@ jobs:
           s=p.read_text()
           needle='atomic_set(&current->seccomp.filter_count, 0);'
           if needle not in s:
-              raise SystemExit('[ERROR] V83: expected KernelSU app_profile seccomp filter_count reset not found')
+              raise SystemExit('[ERROR] V84: expected KernelSU app_profile seccomp filter_count reset not found')
           # Upstream legacy already protects this line for >=5.9. Only add a guard if a
           # compatibility source has an actually unguarded copy.
           for m in list(re.finditer(re.escape(needle), s)):
@@ -2102,7 +2078,7 @@ jobs:
               break
           p.write_text(s)
           PY_V83_SECCOMP
-            echo "[OK] V83: seccomp filter_count handling is compatible with Linux 4.19."
+            echo "[OK] V84: seccomp filter_count handling is compatible with Linux 4.19."
           fi
 
           # V36 FIX 2 — Repair the V33 touch include change without altering any touch data.
@@ -2159,7 +2135,7 @@ jobs:
           echo "[CHECK] DT and KernelSU compatibility fixes will be verified by the normal kernel build."
 
           MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
-          # V83: pin the exact KernelSU-Next v3.4.0 Manager contract in the
+          # V84: pin the exact KernelSU-Next v3.4.0 Manager contract in the
           # official legacy Kbuild. These are native Kbuild overrides, not APK modification.
           MAKE_ARGS+=(KSU_VERSION_OVERRIDE="${KSU_VERSION_CODE}" KSU_VERSION_TAG_OVERRIDE="${KSU_VERSION_TAG_OVERRIDE}")
           MAKE_ARGS+=(KSU_NEXT_MANAGER_SIZE=0x3e6)
@@ -2422,16 +2398,16 @@ jobs:
           make "${MAKE_ARGS[@]}" -k -j"$(nproc)" drivers/kernelsu/ 2>&1 | tee ../logs/09a-kernelsu-precompile.log
           PRE_RC=${PIPESTATUS[0]}
           set -e
-          # V83: prove the actual legacy Kbuild saw the Manager-compatible metadata.
+          # V84: prove the actual legacy Kbuild saw the Manager-compatible metadata.
           if ! grep -qE -- "-- KernelSU-Next version( override)?: ${KSU_VERSION_CODE}" ../logs/09a-kernelsu-precompile.log; then
-            echo "[ERROR] V83: KernelSU driver did not report version ${KSU_VERSION_CODE}; Manager compatibility fix was not applied"
+            echo "[ERROR] V84: KernelSU driver did not report version ${KSU_VERSION_CODE}; Manager compatibility fix was not applied"
             exit 1
           fi
           if ! grep -q -- "-- KernelSU-Next tag: ${KSU_VERSION_TAG_OVERRIDE}" ../logs/09a-kernelsu-precompile.log; then
-            echo "[ERROR] V83: KernelSU driver did not report tag ${KSU_VERSION_TAG_OVERRIDE}"
+            echo "[ERROR] V84: KernelSU driver did not report tag ${KSU_VERSION_TAG_OVERRIDE}"
             exit 1
           fi
-          echo "[OK] V83: KernelSU driver metadata matches Manager ${KSU_MANAGER_BUILD}: ${KSU_VERSION_CODE}/${KSU_VERSION_TAG_OVERRIDE}"
+          echo "[OK] V84: KernelSU driver metadata matches Manager ${KSU_MANAGER_BUILD}: ${KSU_VERSION_CODE}/${KSU_VERSION_TAG_OVERRIDE}"
           if [ "$PRE_RC" -ne 0 ]; then
             if grep -qE "error:|fatal error:" ../logs/09a-kernelsu-precompile.log; then
               summarize_errors ../logs/09a-kernelsu-precompile.log
@@ -2552,7 +2528,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V83-LM-G900-KARNAL
+          kernel.string=V84-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2578,7 +2554,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V83-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V84-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2619,8 +2595,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V83-LM-G900-KARNAL-output
-          path: V83-LM-G900-KARNAL-output.zip
+          name: V84-LM-G900-KARNAL-output
+          path: V84-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2628,7 +2604,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V83-LM-G900-KARNAL-flashable-zips
+          name: V84-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2800,9 +2776,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V83-LM-G900-KARNAL-complete-logs
+          name: V84-LM-G900-KARNAL-complete-logs
           path: |
-            V83-LM-G900-KARNAL-complete-logs.zip
+            V84-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
