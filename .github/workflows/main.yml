@@ -1,4 +1,4 @@
-name: V87-LM-G900-KARNAL-BUILT
+name: V88-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -59,8 +59,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V87
-  OUTPUT_PREFIX: V87-LM-G900-KARNAL
+  WORKFLOW_VERSION: V88
+  OUTPUT_PREFIX: V88-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -926,14 +926,23 @@ jobs:
 
           s = sucompat.read_text()
           if "int ksu_handle_post_execveat_sucompat(" not in s:
+              # The official legacy driver exposes ksu_install_fd(), not the newer
+              # scoped ksu_install_su_fd() API. Reuse the legacy fd ABI rather than
+              # importing the newer supercall permission model into this 4.19 tree.
+              include = '#include "supercall/supercall.h"\n'
+              if include not in s:
+                  anchor = '#include "sulog/event.h"\n'
+                  if anchor not in s:
+                      raise SystemExit("sucompat sulog include anchor missing")
+                  s = s.replace(anchor, anchor + include, 1)
               marker = "// sucompat: permitted process can execute 'su' to gain root access.\n"
               block = '''#ifdef CONFIG_KSU_SUSFS
           int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr,
                  void *argv_user, void *envp_user,
                  int *__never_use_flags, int *retval)
           {
-              if (*retval >= 0)
-                  (void)ksu_install_su_fd();
+              if (retval && *retval >= 0)
+                  (void)ksu_install_fd();
               return 0;
           }
           #endif
@@ -943,6 +952,7 @@ jobs:
                   raise SystemExit("sucompat anchor missing")
               s = s.replace(marker, block + marker, 1)
           sucompat.write_text(s)
+
 
           s = selinux.read_text()
           if "u32 susfs_ksu_sid __read_mostly" not in s:
@@ -1082,23 +1092,26 @@ jobs:
           }
           for sym, body in checks.items():
               if sym not in body:
-                  raise SystemExit(f"missing V87 bridge definition: {sym}")
+                  raise SystemExit(f"missing V88 bridge definition: {sym}")
           if "susfs_set_batch_sid();" not in rules.read_text():
               raise SystemExit("missing V87 SUSFS SID initialization call in selinux/rules.c")
-          print("[OK] V87: all seven V84 linker-missing symbols are source-defined")
-          print("[OK] V87: SUSFS SID initialization call is present in selinux/rules.c")
+          print("[OK] V88: all seven V84 linker-missing symbols are source-defined")
+          print("[OK] V88: SUSFS SID initialization call is present in selinux/rules.c")
           PY_KSU_SUSFS_LEGACY_BRIDGE
 
           grep -q 'DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled)' KernelSU-Next/kernel/runtime/ksud_integration.c
           grep -q 'DEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled)' KernelSU-Next/kernel/runtime/ksud_integration.c
           grep -q 'void ksu_handle_vfs_fstat(int fd, loff_t \*kstat_size_ptr)' KernelSU-Next/kernel/runtime/ksud_integration.c
           grep -q 'int ksu_handle_post_execveat_sucompat(' KernelSU-Next/kernel/feature/sucompat.c
+          grep -q '#include "supercall/supercall.h"' KernelSU-Next/kernel/feature/sucompat.c
+          grep -q '(void)ksu_install_fd();' KernelSU-Next/kernel/feature/sucompat.c
+          ! grep -q 'ksu_install_su_fd' KernelSU-Next/kernel/feature/sucompat.c
           grep -q 'u32 susfs_ksu_sid' KernelSU-Next/kernel/selinux/selinux.c
           grep -q 'u32 susfs_priv_app_sid' KernelSU-Next/kernel/selinux/selinux.c
           grep -q 'bool susfs_is_current_ksu_domain(void)' KernelSU-Next/kernel/selinux/selinux.c
           grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
           grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
-          echo "[OK] V87: source audit passed"
+          echo "[OK] V88: source audit passed"
           echo "::endgroup::"
 
       - name: '7. Integrate SUSFS 2.3.0 + 4.19 backport'
@@ -2762,7 +2775,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V87-LM-G900-KARNAL
+          kernel.string=V88-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2788,7 +2801,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V87-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V88-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2829,8 +2842,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V87-LM-G900-KARNAL-output
-          path: V87-LM-G900-KARNAL-output.zip
+          name: V88-LM-G900-KARNAL-output
+          path: V88-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2838,7 +2851,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V87-LM-G900-KARNAL-flashable-zips
+          name: V88-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -3010,9 +3023,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V87-LM-G900-KARNAL-complete-logs
+          name: V88-LM-G900-KARNAL-complete-logs
           path: |
-            V87-LM-G900-KARNAL-complete-logs.zip
+            V88-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
