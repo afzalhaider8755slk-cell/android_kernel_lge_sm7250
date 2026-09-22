@@ -509,12 +509,12 @@ jobs:
           m = re.search(r'(?m)^\s*static const __u32 KERNEL_SU_UAPI_VERSION\s*=\s*(\d+)\s*;', us)
           if m:
               if m.group(1) != '4':
-                  us = us[:m.start()] + 'static const __u32 KERNEL_SU_UAPI_VERSION = 4;' + us[m.end():]
+                  us = us[:m.start()] + 'static const __u32 KERNEL_SU_UAPI_VERSION = 2;' + us[m.end():]
           else:
               anchor = '#include "uapi/app_profile.h"'
               if anchor not in us:
                   raise SystemExit('[ERROR] V75: UAPI include anchor missing')
-              us = us.replace(anchor, anchor + '\n\n// 4: add KSU_GET_INFO_FLAG_BUNDLED / UAPI version matching\nstatic const __u32 KERNEL_SU_UAPI_VERSION = 4;', 1)
+              us = us.replace(anchor, anchor + '\n\n// 4: add KSU_GET_INFO_FLAG_BUNDLED / UAPI version matching\nstatic const __u32 KERNEL_SU_UAPI_VERSION = 2;', 1)
 
           # The legacy branch has the 3-field GET_INFO structure. Add the fourth
           # field only when it is genuinely absent; do not rewrite existing ABI fields.
@@ -548,20 +548,30 @@ jobs:
 
           uapi.write_text(us)
           dispatch.write_text(ds)
-          print('[FIX] V75: backported KernelSU-Next UAPI v4 GET_INFO contract to legacy driver')
+          print('[FIX] V75: backported KernelSU-Next UAPI v2 GET_INFO contract to legacy driver')
           PY_V75_UAPI
 
-          grep -q 'KERNEL_SU_UAPI_VERSION = 4' "$UAPI_H"
+          grep -q 'KERNEL_SU_UAPI_VERSION = 2' "$UAPI_H"
           grep -q 'uapi_version' "$UAPI_H"
           grep -q 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION' "$DISPATCH_C"
+          if grep -q 'KERNEL_SU_UAPI_VERSION = 4' "$UAPI_H"; then
+            echo "[ERROR] V76: unsupported UAPI v4 override remains; v3.4.0 matching contract is UAPI v2"
+            exit 1
+          fi
+          echo "[OK] V76: KernelSU-Next v3.4.0 matching contract pinned to UAPI v2"
           grep -q 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION' "$DISPATCH_C"
+          if grep -q 'KERNEL_SU_UAPI_VERSION = 4' "$UAPI_H"; then
+            echo "[ERROR] V76: unsupported UAPI v4 override remains; v3.4.0 matching contract is UAPI v2"
+            exit 1
+          fi
+          echo "[OK] V76: KernelSU-Next v3.4.0 matching contract pinned to UAPI v2"
           {
-            echo "uapi_version=4"
-            echo "uapi_source=KernelSU #3516 / KernelSU-Next e801e16 kernel-side UAPI backport"
+            echo "uapi_version=2"
+            echo "uapi_source=KernelSU #3516 / KernelSU-Next e727186 version-matching contract"
             echo "uapi_file=${UAPI_H}"
             echo "dispatch_file=${DISPATCH_C}"
           } | tee ../logs/06-kernelsu-uapi-v4.log
-          echo "[OK] V75: Manager v3.4.0 UAPI v4 contract is present in legacy kernel source"
+          echo "[OK] V75: Manager v3.4.0 UAPI v2 contract is present in legacy kernel source"
 
           # V75: DO NOT merge the normal v3.4.0 release into legacy.
           # Upstream keeps non-GKI/4.x support on the separate `legacy` branch; the
