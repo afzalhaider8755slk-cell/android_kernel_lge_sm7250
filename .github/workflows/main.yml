@@ -1,4 +1,4 @@
-name: V78-LM-G900-KARNAL-BUILT
+name: V79-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -59,8 +59,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V78
-  OUTPUT_PREFIX: V78-LM-G900-KARNAL
+  WORKFLOW_VERSION: V79
+  OUTPUT_PREFIX: V79-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -170,7 +170,7 @@ env:
 
 jobs:
   build:
-    name: Build V78
+    name: Build V79
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -2672,7 +2672,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V78-LM-G900-KARNAL-complete-logs
+          name: V79-LM-G900-KARNAL-complete-logs
           path: |
             V78-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
