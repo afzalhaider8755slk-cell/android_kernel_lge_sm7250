@@ -1923,58 +1923,46 @@ jobs:
             exit 1
           fi
 
-          # V35 FIX 1 — Linux 4.19 KernelSU-Next allowlist task_work compatibility.
-          # KernelSU-Next v3.4.0 legacy uses TWA_RESUME + put_task_struct(), but this target is Linux 4.19:
-          # 4.19 exposes task_work_add(..., bool notify), and put_task_struct() is declared by
-          # <linux/sched/task.h>. Preserve the allowlist feature and adapt only these APIs.
+          # V79 FIX — Do not impose a stale task_work API requirement on the actual legacy source.
+          # The pinned KernelSU-Next legacy commit (dd074bc6...) has no task_work_add() path
+          # in policy/allowlist.c. The previous V35 compatibility block was written for a
+          # different KernelSU source layout and therefore aborted a valid legacy checkout.
+          # Source-level rule: only adapt task_work when the target source actually contains
+          # that API; otherwise leave allowlist.c untouched.
           KSU_ALLOWLIST="drivers/kernelsu/policy/allowlist.c"
           if [ -f "$KSU_ALLOWLIST" ]; then
-            python3 - "$KSU_ALLOWLIST" <<'PY_KSU_ALLOWLIST'
+            if grep -qF "task_work_add(" "$KSU_ALLOWLIST"; then
+              python3 - "$KSU_ALLOWLIST" <<'PY_V79_ALLOWLIST'
           from pathlib import Path
           import sys
-          p=Path(sys.argv[1])
-          s=p.read_text()
-
-          if '#include <linux/sched/task.h>' not in s:
-              marker='#include <linux/task_work.h>'
-              if marker not in s:
-                  raise SystemExit('expected <linux/task_work.h> include not found in KernelSU allowlist.c')
-              s=s.replace(marker, marker+'\n#include <linux/sched/task.h>', 1)
-
-          macro = """#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
-          #define KSU_TASK_WORK_RESUME TWA_RESUME
-          #else
-          #define KSU_TASK_WORK_RESUME true
-          #endif"""
-          if 'KSU_TASK_WORK_RESUME' not in s:
-              marker='#include <linux/task_work.h>'
-              s=s.replace(marker, marker+'\n#include <linux/version.h>\n\n'+macro, 1)
-
-          old='task_work_add(tsk, cb, TWA_RESUME)'
-          if old in s:
-              s=s.replace(old, 'task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)', 1)
-          elif 'task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)' not in s:
-              raise SystemExit('expected KernelSU allowlist task_work_add(TWA_RESUME) call not found')
-
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          if "#include <linux/sched/task.h>" not in s:
+              marker = "#include <linux/task_work.h>"
+              if marker in s:
+                  s = s.replace(marker, marker + "\n#include <linux/sched/task.h>", 1)
+          if "KSU_TASK_WORK_RESUME" not in s:
+              marker = "#include <linux/task_work.h>"
+              macro = """
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
+#define KSU_TASK_WORK_RESUME TWA_RESUME
+#else
+#define KSU_TASK_WORK_RESUME true
+#endif""".strip()
+              if marker in s:
+                  s = s.replace(marker, marker + "\n#include <linux/version.h>\n\n" + macro, 1)
+          s = s.replace("task_work_add(tsk, cb, TWA_RESUME)",
+                        "task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)")
           p.write_text(s)
-          PY_KSU_ALLOWLIST
-
-            if ! grep -qF '#include <linux/sched/task.h>' "$KSU_ALLOWLIST"; then
-              echo "[ERROR] allowlist.c is missing sched/task.h compatibility include."
-              exit 1
+          PY_V79_ALLOWLIST
+              echo "[FIX] V79: adapted task_work only because the actual allowlist.c contains task_work_add()."
+            else
+              echo "[OK] V79: actual legacy allowlist.c has no task_work_add(); no unrelated compatibility rewrite applied."
             fi
-            if ! grep -qF 'KSU_TASK_WORK_RESUME' "$KSU_ALLOWLIST"; then
-              echo "[ERROR] allowlist.c task_work compatibility macro was not installed."
-              exit 1
-            fi
-            if grep -qF 'task_work_add(tsk, cb, TWA_RESUME)' "$KSU_ALLOWLIST"; then
-              echo "[ERROR] allowlist.c still uses the 5.7+ TWA_RESUME call directly."
-              exit 1
-            fi
-            echo "[FIX] Applied Linux 4.19 task_work/put_task_struct compatibility to KernelSU allowlist."
           else
-            echo "[ERROR] KernelSU allowlist.c not found; refusing to continue without compatibility fix."
+            echo "[ERROR] KernelSU allowlist.c not found; refusing to continue without the legacy driver."
             exit 1
+          fi
           fi
 
           # V36 FIX 1 — Linux 4.19 KernelSU app_profile seccomp compatibility.
