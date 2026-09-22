@@ -1,4 +1,4 @@
-name: V93-LM-G900-KARNAL-BUILT
+name: V95-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -63,8 +63,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V94
-  OUTPUT_PREFIX: V94-LM-G900-KARNAL
+  WORKFLOW_VERSION: V95
+  OUTPUT_PREFIX: V95-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -174,7 +174,7 @@ env:
 
 jobs:
   build:
-    name: Build V94
+    name: Build V95
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1298,15 +1298,29 @@ jobs:
               if sym not in source_text:
                   raise SystemExit(f"[ERROR] cross-setup required symbol missing: {sym}")
 
-          config_path = Path("out/.config")
-          if not config_path.is_file():
-              raise SystemExit("[ERROR] cross-setup config contract: kernel/out/.config is missing")
-          config = config_path.read_text(errors="replace")
-          for sym in ("CONFIG_KSU=y", "CONFIG_KSU_MANUAL_HOOK=y", "CONFIG_KSU_SUSFS=y"):
-              if not re.search(rf"(?m)^{re.escape(sym)}$", config):
-                  raise SystemExit(f"[ERROR] cross-setup config contract missing: {sym}")
+          # IMPORTANT: Step 3 generated the device baseline .config before KernelSU is
+          # integrated/enabled. Step 8 is the first stage that intentionally enables
+          # CONFIG_KSU/CONFIG_KSU_MANUAL_HOOK/CONFIG_KSU_SUSFS and runs olddefconfig.
+          # Therefore Step 6b must NOT require those generated values yet. Doing so
+          # creates a false failure even though the Kconfig declarations and source
+          # integration are correct. Generated-config validation is performed again
+          # after Step 8's configuration lifecycle below.
+          kconfig = Path("drivers/kernelsu/Kconfig")
+          drivers_make = Path("drivers/Makefile")
+          drivers_kconfig = Path("drivers/Kconfig")
+          kconfig_text = need(kconfig, "config KSU", "KSU Kconfig symbol")
+          need(kconfig, "config KSU_MANUAL_HOOK", "KSU manual-hook Kconfig symbol")
+          need(kconfig, "config KSU_SUSFS", "SUSFS Kconfig symbol")
+          need(drivers_make, "obj-$(CONFIG_KSU) += kernelsu/", "drivers Makefile KSU wiring")
+          need(drivers_kconfig, 'source "drivers/kernelsu/Kconfig"', "drivers Kconfig KSU wiring")
 
-          print("[OK] V94: cross-setup KSU/SUSFS/Manager contract audit passed (config=out/.config)")
+          # Verify the source-level dependency direction: SUSFS depends on KSU,
+          # while the generated .config contract is deliberately deferred to Step 8.
+          if not re.search(r"config\s+KSU_SUSFS[\s\S]{0,500}?depends on KSU", kconfig_text):
+              raise SystemExit("[ERROR] cross-setup Kconfig contract: KSU_SUSFS no longer depends on KSU")
+
+          print("[OK] V95: cross-setup source/Kconfig/Manager contract audit passed")
+          print("[INFO] Generated CONFIG_KSU* values are validated after Step 8 configuration generation.")
           PY_CROSS_SETUP
           echo "::endgroup::"
 
@@ -1929,10 +1943,10 @@ jobs:
           # V84: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
           # so the actual pre-build abort was invisible.
           exec > >(tee -a ../logs/09-step9-full.log) 2>&1
-          trap 'rc=$?; echo "[ERROR] V94 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
+          trap 'rc=$?; echo "[ERROR] V95 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
 
           {
-            echo "=== V94 PRE-BUILD SOURCE AUDIT ==="
+            echo "=== V95 PRE-BUILD SOURCE AUDIT ==="
             echo "kernel_commit=$(git rev-parse HEAD)"
             echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
             echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
@@ -1989,6 +2003,25 @@ jobs:
           done
           ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_SU || true
           make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
+
+          # V95 cross-setup continuation: these are generated-config contracts, so
+          # validate them only after the configuration lifecycle has actually enabled
+          # KernelSU/SUSFS. This closes the dependency that Step 6b intentionally leaves
+          # open and prevents a false-negative audit on the baseline defconfig.
+          for sym in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_SUSFS; do
+            grep -q "^${sym}=y$" out/.config || {
+              echo "[ERROR] V95 generated-config contract missing: ${sym}=y" | tee ../logs/08-generated-config-contract-failure.log
+              exit 1
+            }
+          done
+          {
+            echo "CONFIG_KSU=$(grep '^CONFIG_KSU=' out/.config)"
+            echo "CONFIG_KSU_MANUAL_HOOK=$(grep '^CONFIG_KSU_MANUAL_HOOK=' out/.config)"
+            echo "CONFIG_KSU_SUSFS=$(grep '^CONFIG_KSU_SUSFS=' out/.config)"
+            echo "config_source=kernel/out/.config"
+            echo "validated_after=make_O=out_olddefconfig"
+          } | tee ../logs/08-generated-config-contract.log
+
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
           while IFS= read -r line; do
             sym="${line%%=*}"
@@ -2319,7 +2352,7 @@ jobs:
             echo "[ERROR] V91: duplicate board PM labels remain under ${PM_ROOT}"
             exit 1
           fi
-          echo "[OK] V94: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
+          echo "[OK] V95: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
 
           # V32 FIX 2 — KernelSU-Next v3.4.0 legacy expects the newer UAPI mount.h header.
           # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
@@ -2590,7 +2623,7 @@ jobs:
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V94 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V95 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -2946,7 +2979,7 @@ jobs:
             echo "kernel_uapi_version=4"
             echo "final_vmlinux_contract=passed"
           } | tee ../logs/09-final-ksu-contract.log
-          echo "[OK] V94: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
+          echo "[OK] V95: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
           echo "::endgroup::"
 
       - name: "9b. DTB diagnostic (non-blocking; captures the hidden dtc error text)"
@@ -2997,7 +3030,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V94-LM-G900-KARNAL
+          kernel.string=V95-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -3023,7 +3056,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V94-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V95-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -3064,8 +3097,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V94-LM-G900-KARNAL-output
-          path: V94-LM-G900-KARNAL-output.zip
+          name: V95-LM-G900-KARNAL-output
+          path: V95-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -3073,7 +3106,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V94-LM-G900-KARNAL-flashable-zips
+          name: V95-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -3245,9 +3278,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V94-LM-G900-KARNAL-complete-logs
+          name: V95-LM-G900-KARNAL-complete-logs
           path: |
-            V94-LM-G900-KARNAL-complete-logs.zip
+            V95-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
