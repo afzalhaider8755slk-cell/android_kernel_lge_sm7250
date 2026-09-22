@@ -1,4 +1,4 @@
-name: V95-LM-G900-KARNAL-BUILT
+name: V96-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -63,8 +63,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V95
-  OUTPUT_PREFIX: V95-LM-G900-KARNAL
+  WORKFLOW_VERSION: V96
+  OUTPUT_PREFIX: V96-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -174,7 +174,7 @@ env:
 
 jobs:
   build:
-    name: Build V95
+    name: Build V96
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -677,108 +677,81 @@ jobs:
           test -f KernelSU-Next/kernel/Kconfig
           grep -Eq '^[[:space:]]*config[[:space:]]+KSU_MANUAL_HOOK([[:space:]]|$)' KernelSU-Next/kernel/Kconfig
 
-          # V40: kernel/selinux/rules.c and kernel/selinux/sepolicy.c hot-swap the running
-          # SELinux policy via struct selinux_policy + selinux_state.policy/.policy_mutex,
-          # which only exist after upstream's SELinux RCU-policy rewrite (Linux 5.7+); this
-          # kernel is 4.19. Full source review (logs/ksu-selinux-source from a prior run)
-          # showed the actual rule-editing primitives (ksu_allow, ksu_type, etc., operating
-          # directly on struct policydb) are ALREADY carefully version-guarded back through
-          # 5.8/5.9 and compile fine standalone -- only four functions touch the >=5.7-only
-          # RCU policy wrapper: apply_kernelsu_rules(), handle_sepolicy(), and their shared
-          # reset_avc_cache() helper in rules.c, plus ksu_dup_sepolicy()/ksu_destroy_sepolicy()
-          # in sepolicy.c. A correct <5.7 implementation would need the kernel's own
-          # security/selinux/ss/services.c to export its static policydb/sidtab globals
-          # (a real change to the main kernel's SELinux subsystem, not just KernelSU-Next),
-          # or a kallsyms-based lookup of them at runtime -- both are genuine security-relevant
-          # kernel-internals work that should not be hand-written without the ability to test
-          # against real hardware. This device's SELinux is confirmed permissive (from the
-          # working-kernel boot image the person supplied), so these two entry points have no
-          # policy to enforce against regardless. They are stubbed out (behind the same
-          # LINUX_VERSION_CODE guard style already used throughout both files) to log a clear
-          # message and return, rather than either failing to build or hand-patching live
-          # SELinux policy internals.
-          python3 - << 'PATCH_SELINUX_COMPAT'
-          import sys
+          # V96 ROOT-FIX: Do NOT stub KernelSU SELinux policy injection on 4.19.
+          #
+          # The previous V95 workflow incorrectly disabled apply_kernelsu_rules()
+          # on all pre-5.7 kernels. That is the direct cause of the runtime failure
+          # seen on the LG 4.19.325 device:
+          #   security_secctx_to_secid u:r:ksu:s0 -> sid: 0, error: -22
+          #   transive domain failed
+          #
+          # KernelSU-Next's official legacy rules.c has a dedicated pre-5.10 path:
+          # it operates on the legacy global struct policydb and uses stop_machine()
+          # when the policy rwlock is unavailable. The >=5.10 selinux_policy copy path
+          # is separately guarded by SELINUX_POLICY_INSTEAD_SELINUX_SS. Therefore the
+          # 4.19 tree must keep apply_kernelsu_rules() ACTIVE so the KSU domain/type
+          # and permissions are inserted into the live policy before root transition.
+          #
+          # V95's blanket stub prevented that insertion, so u:r:ksu:s0 never became a
+          # resolvable SID. SELinux being permissive does not make an unknown context
+          # resolvable; security_secctx_to_secid() still returns -EINVAL (-22).
+          #
+          # Do not hand-write a replacement SELinux policy and do not change
+          # KERNEL_SU_CONTEXT. Use the official legacy implementation and its
+          # existing 4.19 compatibility path. This preserves SUSFS, manual hooks,
+          # DT/DTBO handling and all other accumulated kernel features.
+          RULES_C="KernelSU-Next/kernel/selinux/rules.c"
+          SEPOLICY_C="KernelSU-Next/kernel/selinux/sepolicy.c"
+          SELINUX_C="KernelSU-Next/kernel/selinux/selinux.c"
+          test -f "$RULES_C"
+          test -f "$SEPOLICY_C"
+          test -f "$SELINUX_C"
 
-          def wrap_function(text, signature, stub_body, path, guard="5, 7, 0"):
-              idx = text.find(signature)
-              if idx == -1:
-                  print(f"[ERROR] could not find function signature in {path}: {signature!r}", file=sys.stderr)
-                  sys.exit(1)
-              brace_start = text.find('{', idx)
-              if brace_start == -1:
-                  print(f"[ERROR] no opening brace after signature in {path}: {signature!r}", file=sys.stderr)
-                  sys.exit(1)
-              depth = 0
-              i = brace_start
-              while i < len(text):
-                  if text[i] == '{':
-                      depth += 1
-                  elif text[i] == '}':
-                      depth -= 1
-                      if depth == 0:
-                          break
-                  i += 1
-              else:
-                  print(f"[ERROR] unbalanced braces for {signature!r} in {path}", file=sys.stderr)
-                  sys.exit(1)
-              body_end = i + 1
-              header = text[idx:brace_start]
-              real_body = text[brace_start:body_end]
-              new_block = (
-                  f"#if LINUX_VERSION_CODE >= KERNEL_VERSION({guard})\n"
-                  f"{header}{real_body}\n"
-                  f"#else\n"
-                  f"{header}{{\n{stub_body}\n}}\n"
-                  f"#endif\n"
-              )
-              print(f"[FIX] Wrapped {signature.split('(')[0].split()[-1]}() with pre-5.7 SELinux stub in {path}")
-              return text[:idx] + new_block + text[body_end:]
+          # Hard source guards: the legacy 4.19 build must not contain the V95
+          # pre-5.7 stub that disabled KSU policy injection.
+          if grep -q 'SELinux policy hot-patch API unavailable on this kernel' "$RULES_C"; then
+            echo '[ERROR] V96: legacy rules.c still contains the V95 SELinux policy-injection stub.'
+            exit 1
+          fi
+          if ! grep -q 'void apply_kernelsu_rules()' "$RULES_C"; then
+            echo '[ERROR] V96: apply_kernelsu_rules() missing.'
+            exit 1
+          fi
+          if ! grep -q 'db = get_policydb();' "$RULES_C"; then
+            echo '[ERROR] V96: 4.19 policydb path missing from legacy rules.c.'
+            exit 1
+          fi
+          if ! grep -q 'stop_machine(apply_kernelsu_rules_fn' "$RULES_C"; then
+            echo '[ERROR] V96: legacy stop_machine() SELinux policy path missing.'
+            exit 1
+          fi
+          if ! grep -q 'ksu_type(db, KERNEL_SU_DOMAIN, "domain")' "$RULES_C"; then
+            echo '[ERROR] V96: KSU domain creation rule missing.'
+            exit 1
+          fi
+          if ! grep -q 'ksu_type(db, KERNEL_SU_FILE, "file_type")' "$RULES_C"; then
+            echo '[ERROR] V96: ksu_file type creation rule missing.'
+            exit 1
+          fi
 
-          rules_path = "KernelSU-Next/kernel/selinux/rules.c"
-          with open(rules_path) as f:
-              rules = f.read()
-          rules = wrap_function(
-              rules, "void apply_kernelsu_rules()",
-              '    pr_warn("KernelSU: SELinux policy hot-patch API unavailable on this kernel "\n'
-              '            "(pre-5.7 SELinux); skipping in-kernel su domain policy injection.\\n");',
-              rules_path,
-          )
-          rules = wrap_function(
-              rules, "int handle_sepolicy(void __user *user_data, u64 data_len)",
-              '    (void)user_data;\n'
-              '    (void)data_len;\n'
-              '    pr_warn("KernelSU: SELinux policy hot-patch API unavailable on this kernel "\n'
-              '            "(pre-5.7 SELinux); ksu_handle_sepolicy is not supported.\\n");\n'
-              '    return -EOPNOTSUPP;',
-              rules_path,
-          )
-          rules = wrap_function(
-              rules, "static void reset_avc_cache()",
-              "    /* unused on pre-5.7 SELinux; see apply_kernelsu_rules() stub above */",
-              rules_path,
-          )
-          with open(rules_path, "w") as f:
-              f.write(rules)
+          # 4.19 must use the legacy/global-policy path; the selinux_policy copy
+          # helpers are guarded upstream for newer kernels and must not be forced
+          # into the 4.19 build by this workflow.
+          grep -q '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)' "$RULES_C" || true
+          grep -q '#ifdef SELINUX_POLICY_INSTEAD_SELINUX_SS' "$RULES_C"
 
-          sepolicy_path = "KernelSU-Next/kernel/selinux/sepolicy.c"
-          with open(sepolicy_path) as f:
-              sepolicy = f.read()
-          sepolicy = wrap_function(
-              sepolicy, "void ksu_destroy_sepolicy(struct selinux_policy *pol)",
-              "    (void)pol;",
-              sepolicy_path,
-          )
-          sepolicy = wrap_function(
-              sepolicy, "struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)",
-              "    (void)old_pol;\n    return NULL;",
-              sepolicy_path,
-          )
-          with open(sepolicy_path, "w") as f:
-              f.write(sepolicy)
+          {
+            echo 'selinux_fix=V96'
+            echo 'root_cause=V95 disabled apply_kernelsu_rules() on 4.19, preventing creation of u:r:ksu:s0 in the live policy'
+            echo 'expected_runtime=security_secctx_to_secid(u:r:ksu:s0) must resolve to a non-zero SID'
+            echo 'legacy_policy_path=global policydb + policy rwlock/stop_machine'
+            echo 'ksu_domain=u:r:ksu:s0'
+            echo 'ksu_file=u:object_r:ksu_file:s0'
+            echo 'manual_hook=preserved'
+            echo 'susfs=preserved'
+          } | tee ../logs/06-selinux-v96-source-fix.log
 
-          print("[OK] SELinux pre-5.7 compatibility stubs applied to rules.c and sepolicy.c")
-          PATCH_SELINUX_COMPAT
+          echo '[OK] V96: official legacy SELinux policy injection remains enabled for 4.19.'
 
           ln -sf "$(realpath --relative-to="${DRIVER_DIR}" "$(pwd)/KernelSU-Next/kernel")" "${DRIVER_DIR}/kernelsu"
           grep -q "kernelsu" "${DRIVER_MAKEFILE}" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "${DRIVER_MAKEFILE}"
@@ -1319,7 +1292,7 @@ jobs:
           if not re.search(r"config\s+KSU_SUSFS[\s\S]{0,500}?depends on KSU", kconfig_text):
               raise SystemExit("[ERROR] cross-setup Kconfig contract: KSU_SUSFS no longer depends on KSU")
 
-          print("[OK] V95: cross-setup source/Kconfig/Manager contract audit passed")
+          print("[OK] V96: cross-setup source/Kconfig/Manager contract audit passed")
           print("[INFO] Generated CONFIG_KSU* values are validated after Step 8 configuration generation.")
           PY_CROSS_SETUP
           echo "::endgroup::"
@@ -1943,10 +1916,10 @@ jobs:
           # V84: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
           # so the actual pre-build abort was invisible.
           exec > >(tee -a ../logs/09-step9-full.log) 2>&1
-          trap 'rc=$?; echo "[ERROR] V95 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
+          trap 'rc=$?; echo "[ERROR] V96 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
 
           {
-            echo "=== V95 PRE-BUILD SOURCE AUDIT ==="
+            echo "=== V96 PRE-BUILD SOURCE AUDIT ==="
             echo "kernel_commit=$(git rev-parse HEAD)"
             echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
             echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
@@ -2004,13 +1977,13 @@ jobs:
           ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_SU || true
           make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
 
-          # V95 cross-setup continuation: these are generated-config contracts, so
+          # V96 cross-setup continuation: these are generated-config contracts, so
           # validate them only after the configuration lifecycle has actually enabled
           # KernelSU/SUSFS. This closes the dependency that Step 6b intentionally leaves
           # open and prevents a false-negative audit on the baseline defconfig.
           for sym in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_SUSFS; do
             grep -q "^${sym}=y$" out/.config || {
-              echo "[ERROR] V95 generated-config contract missing: ${sym}=y" | tee ../logs/08-generated-config-contract-failure.log
+              echo "[ERROR] V96 generated-config contract missing: ${sym}=y" | tee ../logs/08-generated-config-contract-failure.log
               exit 1
             }
           done
@@ -2352,7 +2325,7 @@ jobs:
             echo "[ERROR] V91: duplicate board PM labels remain under ${PM_ROOT}"
             exit 1
           fi
-          echo "[OK] V95: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
+          echo "[OK] V96: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
 
           # V32 FIX 2 — KernelSU-Next v3.4.0 legacy expects the newer UAPI mount.h header.
           # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
@@ -2623,7 +2596,7 @@ jobs:
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V95 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V96 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -2979,7 +2952,7 @@ jobs:
             echo "kernel_uapi_version=4"
             echo "final_vmlinux_contract=passed"
           } | tee ../logs/09-final-ksu-contract.log
-          echo "[OK] V95: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
+          echo "[OK] V96: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
           echo "::endgroup::"
 
       - name: "9b. DTB diagnostic (non-blocking; captures the hidden dtc error text)"
@@ -3030,7 +3003,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V95-LM-G900-KARNAL
+          kernel.string=V96-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -3056,7 +3029,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V95-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V96-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -3093,20 +3066,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V91 final output"
+      - name: "12. Upload V96 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V95-LM-G900-KARNAL-output
-          path: V95-LM-G900-KARNAL-output.zip
+          name: V96-LM-G900-KARNAL-output
+          path: V96-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V91 flashable ZIPs"
+      - name: "13. Upload V96 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V95-LM-G900-KARNAL-flashable-zips
+          name: V96-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -3271,16 +3244,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V91 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V96 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V91 complete diagnostics (always)"
+      - name: "15. Upload V96 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V95-LM-G900-KARNAL-complete-logs
+          name: V96-LM-G900-KARNAL-complete-logs
           path: |
-            V95-LM-G900-KARNAL-complete-logs.zip
+            V96-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
