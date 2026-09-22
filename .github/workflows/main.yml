@@ -1,4 +1,4 @@
-name: V86-LM-G900-KARNAL-BUILT
+name: V87-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -59,8 +59,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V86
-  OUTPUT_PREFIX: V86-LM-G900-KARNAL
+  WORKFLOW_VERSION: V87
+  OUTPUT_PREFIX: V87-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -170,7 +170,7 @@ env:
 
 jobs:
   build:
-    name: Build V86
+    name: Build V87
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -790,7 +790,7 @@ jobs:
           grep -Eq '^[[:space:]]*config[[:space:]]+KSU_MANUAL_HOOK([[:space:]]|$)' "$KSU_KCONFIG"
 
           # Preserve the existing SUSFS namespace without replacing the legacy driver.
-          python3 - "$KSU_KCONFIG" <<'PY_V83_SUSFS_KCONFIG'
+          python3 - "$KSU_KCONFIG" <<'PY_V87_SUSFS_KCONFIG'
           from pathlib import Path
           import re, sys
           p=Path(sys.argv[1]); s=p.read_text()
@@ -844,7 +844,7 @@ jobs:
               if pos<0: raise SystemExit('KSU Kconfig endmenu missing')
               s=s[:pos]+block+s[pos:]
               p.write_text(s)
-          PY_V83_SUSFS_KCONFIG
+          PY_V87_SUSFS_KCONFIG
           grep -Eq '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' "$KSU_KCONFIG"
 
           # Verify the actual legacy driver exports the manual-hook functions used by
@@ -877,7 +877,7 @@ jobs:
           echo "::group::[6a/15] Bridge only the seven SUSFS/KSU symbols proven missing by the V84 linker"
           # Each GitHub Actions step starts in the workspace root. Step 6 intentionally
           # changes into kernel; Step 6a must do the same before addressing KernelSU-Next.
-          # V85 failed only because this cwd was omitted, so Path("KernelSU-Next/...")
+          # V86 failed only because this cwd was omitted, so Path("KernelSU-Next/...")
           # resolved at the workspace root where that directory does not exist.
           cd kernel
           test -d KernelSU-Next/kernel
@@ -1020,16 +1020,55 @@ jobs:
 
           s = rules.read_text()
           if "susfs_set_batch_sid();" not in s:
-              start = s.find("void apply_kernelsu_rules()")
-              if start < 0:
-                  raise SystemExit("rules apply_kernelsu_rules anchor missing")
-              tail = s[start:]
-              end_marker = "\n}\n#define KSU_SEPOLICY_MAX_BATCH_SIZE"
-              pos = tail.find(end_marker)
-              if pos < 0:
-                  raise SystemExit("rules apply_kernelsu_rules end anchor missing")
-              tail = tail[:pos] + "\n#ifdef CONFIG_KSU_SUSFS\n    susfs_set_batch_sid();\n#endif" + tail[pos:]
-              s = s[:start] + tail
+              # The legacy rules.c used here does NOT put KSU_SEPOLICY_MAX_BATCH_SIZE
+              # immediately after the apply_kernelsu_rules() closing brace. On this
+              # source it is separated by the #else pre-5.7 implementation, so the
+              # old V86 anchor could never match. Use the exact, source-verified
+              # tail of the real >=5.7 implementation, then also initialize the
+              # SUSFS SID cache in the pre-5.7 stub used by this 4.19 kernel.
+                        actual_anchor = """out_flush:
+          \tsmp_mb();
+          \treset_avc_cache();
+          #endif
+          }
+          #else
+          void apply_kernelsu_rules()
+          """
+                        actual_replacement = """out_flush:
+          \tsmp_mb();
+          \treset_avc_cache();
+          #ifdef CONFIG_KSU_SUSFS
+          \tsusfs_set_batch_sid();
+          #endif
+          #endif
+          }
+          #else
+          void apply_kernelsu_rules()
+          """
+                        if actual_anchor not in s:
+                            raise SystemExit("rules actual apply_kernelsu_rules tail anchor missing")
+                        s = s.replace(actual_anchor, actual_replacement, 1)
+          
+                        stub_anchor = """void apply_kernelsu_rules()
+          {
+              pr_warn("KernelSU: SELinux policy hot-patch API unavailable on this kernel "
+                      "(pre-5.7 SELinux); skipping in-kernel su domain policy injection.\\n");
+          }
+          #endif
+          """
+                        stub_replacement = """void apply_kernelsu_rules()
+          {
+              pr_warn("KernelSU: SELinux policy hot-patch API unavailable on this kernel "
+                      "(pre-5.7 SELinux); skipping in-kernel su domain policy injection.\\n");
+          #ifdef CONFIG_KSU_SUSFS
+              susfs_set_batch_sid();
+          #endif
+          }
+          #endif
+          """
+                        if stub_anchor not in s:
+                            raise SystemExit("rules pre-5.7 stub anchor missing")
+                        s = s.replace(stub_anchor, stub_replacement, 1)
           rules.write_text(s)
 
           checks = {
@@ -1043,8 +1082,11 @@ jobs:
           }
           for sym, body in checks.items():
               if sym not in body:
-                  raise SystemExit(f"missing V85 bridge definition: {sym}")
-          print("[OK] V86: all seven V84 linker-missing symbols are source-defined")
+                  raise SystemExit(f"missing V87 bridge definition: {sym}")
+          if "susfs_set_batch_sid();" not in rules.read_text():
+              raise SystemExit("missing V87 SUSFS SID initialization call in selinux/rules.c")
+          print("[OK] V87: all seven V84 linker-missing symbols are source-defined")
+          print("[OK] V87: SUSFS SID initialization call is present in selinux/rules.c")
           PY_KSU_SUSFS_LEGACY_BRIDGE
 
           grep -q 'DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled)' KernelSU-Next/kernel/runtime/ksud_integration.c
@@ -1055,7 +1097,8 @@ jobs:
           grep -q 'u32 susfs_priv_app_sid' KernelSU-Next/kernel/selinux/selinux.c
           grep -q 'bool susfs_is_current_ksu_domain(void)' KernelSU-Next/kernel/selinux/selinux.c
           grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
-          echo "[OK] V86: source audit passed"
+          grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
+          echo "[OK] V87: source audit passed"
           echo "::endgroup::"
 
       - name: '7. Integrate SUSFS 2.3.0 + 4.19 backport'
@@ -1677,10 +1720,10 @@ jobs:
           # V84: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
           # so the actual pre-build abort was invisible.
           exec > >(tee -a ../logs/09-step9-full.log) 2>&1
-          trap 'rc=$?; echo "[ERROR] V83 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
+          trap 'rc=$?; echo "[ERROR] V87 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
 
           {
-            echo "=== V83 PRE-BUILD SOURCE AUDIT ==="
+            echo "=== V87 PRE-BUILD SOURCE AUDIT ==="
             echo "kernel_commit=$(git rev-parse HEAD)"
             echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
             echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
@@ -1793,7 +1836,7 @@ jobs:
           # The official legacy source already gates iopoll behind >= 6.1 and
           # remap_file_range behind >= 4.20. On this 4.19.325 kernel those
           # sections are correctly excluded by the preprocessor. The previous
-          # V83/V82 line-number sed rewrite shifted after prepending a header and
+          # V87/V82 line-number sed rewrite shifted after prepending a header and
           # deleted unrelated C/preprocessor lines, producing the syntax cascade
           # seen in Step 9 (undeclared orig, while outside function, #endif without
           # #if, default-argument errors, etc.).
@@ -2030,7 +2073,7 @@ jobs:
           # modify the generic qcom definitions. This covers the normal LaoCom PM file,
           # HDK PM file, and VZW PM file together instead of fixing only one variant.
           PM_ROOT="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com"
-          python3 - "$PM_ROOT" <<'PY_V83_DT'
+          python3 - "$PM_ROOT" <<'PY_V87_DT'
           from pathlib import Path
           import re, sys
 
@@ -2058,7 +2101,7 @@ jobs:
               raise SystemExit('[ERROR] V84: no board-specific PM duplicate labels were found')
           for p in changed:
               print(f'[FIX] V84: reconciled duplicate PM labels in {p}')
-          PY_V83_DT
+          PY_V87_DT
 
           # Hard validation: no board-specific PM file may still define either generic
           # duplicate label. The generic qcom/lito-pmic-overlay.dtsi remains untouched.
@@ -2245,7 +2288,7 @@ jobs:
           # to rewrite an upstream line that was already correctly guarded.
           KSU_APP_PROFILE="drivers/kernelsu/policy/app_profile.c"
           if [ -f "$KSU_APP_PROFILE" ]; then
-            python3 - "$KSU_APP_PROFILE" <<'PY_V83_SECCOMP'
+            python3 - "$KSU_APP_PROFILE" <<'PY_V87_SECCOMP'
           from pathlib import Path
           import re, sys
           p=Path(sys.argv[1])
@@ -2268,7 +2311,7 @@ jobs:
               s=s[:line_start]+repl+s[line_end:]
               break
           p.write_text(s)
-          PY_V83_SECCOMP
+          PY_V87_SECCOMP
             echo "[OK] V84: seccomp filter_count handling is compatible with Linux 4.19."
           fi
 
@@ -2337,7 +2380,7 @@ jobs:
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V83 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V87 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -2566,7 +2609,7 @@ jobs:
 
           # V40 FIX 3: compile ALL of drivers/kernelsu with keep-going first so every remaining
           # KernelSU/4.19 incompatibility is listed in one run instead of one per 8-minute build.
-          echo "[V83] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
+          echo "[V87] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
           if ! make "${MAKE_ARGS[@]}" -j"$(nproc)" prepare > ../logs/09a-prepare.log 2>&1; then
             tail -60 ../logs/09a-prepare.log
             echo "[ERROR] make prepare failed (see logs/09a-prepare.log)"
@@ -2621,7 +2664,7 @@ jobs:
             fi
           fi
 
-          # V83 final source audit: verify the exact Manager/UAPI contract survived
+          # V87 final source audit: verify the exact Manager/UAPI contract survived
           # all 4.19 compatibility edits before linking the Image.
           test "$(grep -Ec '^[[:space:]]*(#define[[:space:]]+KERNEL_SU_UAPI_VERSION|static[[:space:]]+const[[:space:]]+__u32[[:space:]]+KERNEL_SU_UAPI_VERSION)' KernelSU-Next/uapi/supercall.h)" -eq 1
           grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*4;' KernelSU-Next/uapi/supercall.h
@@ -2653,7 +2696,7 @@ jobs:
           fi
           test -s out/arch/arm64/boot/Image
           sha256sum out/arch/arm64/boot/Image | tee ../logs/output-image.sha256
-          # V83 final source/build audit: the driver must be built-in, manual hooks
+          # V87 final source/build audit: the driver must be built-in, manual hooks
           # must be present, and the new Manager UAPI field must be part of the exact
           # source that produced this Image. This is deliberately source-level; it does
           # not alter the image after linking.
@@ -2719,7 +2762,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V86-LM-G900-KARNAL
+          kernel.string=V87-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2745,7 +2788,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V86-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V87-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2782,20 +2825,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V83 final output"
+      - name: "12. Upload V87 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V86-LM-G900-KARNAL-output
-          path: V86-LM-G900-KARNAL-output.zip
+          name: V87-LM-G900-KARNAL-output
+          path: V87-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V83 flashable ZIPs"
+      - name: "13. Upload V87 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V86-LM-G900-KARNAL-flashable-zips
+          name: V87-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2895,7 +2938,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V83 ==="
+            echo "=== A-Z BUILD RECORD V87 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -2960,16 +3003,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V83 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V87 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V83 complete diagnostics (always)"
+      - name: "15. Upload V87 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V86-LM-G900-KARNAL-complete-logs
+          name: V87-LM-G900-KARNAL-complete-logs
           path: |
-            V86-LM-G900-KARNAL-complete-logs.zip
+            V87-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
