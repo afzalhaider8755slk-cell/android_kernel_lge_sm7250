@@ -59,7 +59,7 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V78
+  WORKFLOW_VERSION: V82
   OUTPUT_PREFIX: V78-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
@@ -170,7 +170,7 @@ env:
 
 jobs:
   build:
-    name: Build V78
+    name: Build V82
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1477,6 +1477,30 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
+
+          # V82: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
+          # so the actual pre-build abort was invisible.
+          exec > >(tee -a ../logs/09-step9-full.log) 2>&1
+          trap 'rc=$?; echo "[ERROR] V82 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
+
+          {
+            echo "=== V82 PRE-BUILD SOURCE AUDIT ==="
+            echo "kernel_commit=$(git rev-parse HEAD)"
+            echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
+            echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
+            echo "requested_manager=${KSU_VERSION}/${KSU_MANAGER_BUILD}"
+            echo "version_override=${KSU_VERSION_CODE}"
+            echo "tag_override=${KSU_VERSION_TAG_OVERRIDE}"
+            echo "manager_size=0x3e6"
+            echo "manager_hash=79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"
+            grep -n 'KERNEL_SU_UAPI_VERSION' KernelSU-Next/uapi/supercall.h || true
+            grep -n 'uapi_version' KernelSU-Next/uapi/supercall.h | head -10 || true
+            grep -n 'cmd.uapi_version' KernelSU-Next/kernel/supercall/dispatch.c || true
+            grep -n 'KSU_VERSION_OVERRIDE\|KSU_NEXT_MANAGER_SIZE\|KSU_NEXT_MANAGER_HASH' KernelSU-Next/kernel/Kbuild || true
+            grep -n 'EXPECTED_MANAGER_SIZE\|EXPECTED_MANAGER_HASH' KernelSU-Next/kernel/Kbuild || true
+            grep -n 'is_manager_apk\|check_v2_signature' KernelSU-Next/kernel/manager/apk_sign.c || true
+            grep -n 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || true
+          } | tee ../logs/09-kernelsu-prebuild-audit.log
           make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/08-defconfig.log 2>&1
           grep -RqsE "^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)" drivers/kernelsu fs include || { echo "[ERROR] KSU_SUSFS Kconfig symbol is missing after SUSFS + inline-hook integration."; exit 1; }
           ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS --enable KSU_MANUAL_HOOK
@@ -2119,16 +2143,18 @@ jobs:
           echo "[CHECK] DT and KernelSU compatibility fixes will be verified by the normal kernel build."
 
           MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
-          # V78: pass the Manager-compatible version metadata into KernelSU-Next
-          # Kbuild. This changes only the reported driver metadata, not source features.
+          # V82: pin the exact KernelSU-Next v3.4.0 Manager contract in the
+          # official legacy Kbuild. These are native Kbuild overrides, not APK modification.
           MAKE_ARGS+=(KSU_VERSION_OVERRIDE="${KSU_VERSION_CODE}" KSU_VERSION_TAG_OVERRIDE="${KSU_VERSION_TAG_OVERRIDE}")
+          MAKE_ARGS+=(KSU_NEXT_MANAGER_SIZE=0x3e6)
+          MAKE_ARGS+=(KSU_NEXT_MANAGER_HASH=79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7)
 
           # V40: the real errors are NOT at the bottom of a `make -j` log (make keeps finishing running
           # jobs after the first failure). Print them as the last lines and as annotations.
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V78 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V82 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -2381,7 +2407,7 @@ jobs:
           PRE_RC=${PIPESTATUS[0]}
           set -e
           # V78: prove the actual legacy Kbuild saw the Manager-compatible metadata.
-          if ! grep -q -- "-- KernelSU-Next version: ${KSU_VERSION_CODE}" ../logs/09a-kernelsu-precompile.log; then
+          if ! grep -qE -- "-- KernelSU-Next version( override)?: ${KSU_VERSION_CODE}" ../logs/09a-kernelsu-precompile.log; then
             echo "[ERROR] V78: KernelSU driver did not report version ${KSU_VERSION_CODE}; Manager compatibility fix was not applied"
             exit 1
           fi
@@ -2411,6 +2437,25 @@ jobs:
               cat ../logs/09a-ksu-unresolved.txt
             fi
           fi
+
+          # V82 final source audit: verify the exact Manager/UAPI contract survived
+          # all 4.19 compatibility edits before linking the Image.
+          test "$(grep -Ec '^[[:space:]]*(#define[[:space:]]+KERNEL_SU_UAPI_VERSION|static[[:space:]]+const[[:space:]]+__u32[[:space:]]+KERNEL_SU_UAPI_VERSION)' KernelSU-Next/uapi/supercall.h)" -eq 1
+          grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*4;' KernelSU-Next/uapi/supercall.h
+          grep -q 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION;' KernelSU-Next/kernel/supercall/dispatch.c
+          grep -q 'EXPECTED_MANAGER_SIZE' KernelSU-Next/kernel/Kbuild
+          grep -q 'EXPECTED_MANAGER_HASH' KernelSU-Next/kernel/Kbuild
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+          {
+            echo "uapi_version=4"
+            echo "manager_version=33294"
+            echo "manager_tag=v3.4.0"
+            echo "manager_signature_size=0x3e6"
+            echo "manager_signature_sha256=79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"
+            echo "driver=official KernelSU-Next legacy"
+            echo "driver_commit=$(git -C KernelSU-Next rev-parse HEAD)"
+            echo "manual_hook=$(grep '^CONFIG_KSU_MANUAL_HOOK=' out/.config)"
+          } | tee ../logs/09-kernelsu-final-contract.log
 
           # V40 FIX 4: build only the kernel Image (what is packaged). See KERNEL_BUILD_TARGETS in env.
           set +e
@@ -2553,7 +2598,7 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V78 final output"
+      - name: "12. Upload V82 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
@@ -2562,7 +2607,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V78 flashable ZIPs"
+      - name: "13. Upload V82 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
@@ -2734,7 +2779,7 @@ jobs:
           echo "::notice::V78 diagnostics collected; V78 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V78 complete diagnostics (always)"
+      - name: "15. Upload V82 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
