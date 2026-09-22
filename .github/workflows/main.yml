@@ -63,8 +63,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V93
-  OUTPUT_PREFIX: V93-LM-G900-KARNAL
+  WORKFLOW_VERSION: V94
+  OUTPUT_PREFIX: V94-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -174,7 +174,7 @@ env:
 
 jobs:
   build:
-    name: Build V93
+    name: Build V94
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1298,12 +1298,15 @@ jobs:
               if sym not in source_text:
                   raise SystemExit(f"[ERROR] cross-setup required symbol missing: {sym}")
 
-          config = Path(".config").read_text(errors="replace")
+          config_path = Path("out/.config")
+          if not config_path.is_file():
+              raise SystemExit("[ERROR] cross-setup config contract: kernel/out/.config is missing")
+          config = config_path.read_text(errors="replace")
           for sym in ("CONFIG_KSU=y", "CONFIG_KSU_MANUAL_HOOK=y", "CONFIG_KSU_SUSFS=y"):
               if not re.search(rf"(?m)^{re.escape(sym)}$", config):
                   raise SystemExit(f"[ERROR] cross-setup config contract missing: {sym}")
 
-          print("[OK] V93: cross-setup KSU/SUSFS/Manager contract audit passed")
+          print("[OK] V94: cross-setup KSU/SUSFS/Manager contract audit passed (config=out/.config)")
           PY_CROSS_SETUP
           echo "::endgroup::"
 
@@ -1926,10 +1929,10 @@ jobs:
           # V84: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
           # so the actual pre-build abort was invisible.
           exec > >(tee -a ../logs/09-step9-full.log) 2>&1
-          trap 'rc=$?; echo "[ERROR] V93 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
+          trap 'rc=$?; echo "[ERROR] V94 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
 
           {
-            echo "=== V93 PRE-BUILD SOURCE AUDIT ==="
+            echo "=== V94 PRE-BUILD SOURCE AUDIT ==="
             echo "kernel_commit=$(git rev-parse HEAD)"
             echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
             echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
@@ -2316,7 +2319,7 @@ jobs:
             echo "[ERROR] V91: duplicate board PM labels remain under ${PM_ROOT}"
             exit 1
           fi
-          echo "[OK] V93: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
+          echo "[OK] V94: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
 
           # V32 FIX 2 — KernelSU-Next v3.4.0 legacy expects the newer UAPI mount.h header.
           # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
@@ -2587,7 +2590,7 @@ jobs:
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V93 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V94 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -2943,7 +2946,7 @@ jobs:
             echo "kernel_uapi_version=4"
             echo "final_vmlinux_contract=passed"
           } | tee ../logs/09-final-ksu-contract.log
-          echo "[OK] V93: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
+          echo "[OK] V94: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
           echo "::endgroup::"
 
       - name: "9b. DTB diagnostic (non-blocking; captures the hidden dtc error text)"
@@ -2994,7 +2997,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V93-LM-G900-KARNAL
+          kernel.string=V94-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -3020,7 +3023,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V93-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V94-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -3061,8 +3064,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V93-LM-G900-KARNAL-output
-          path: V93-LM-G900-KARNAL-output.zip
+          name: V94-LM-G900-KARNAL-output
+          path: V94-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -3070,7 +3073,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V93-LM-G900-KARNAL-flashable-zips
+          name: V94-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -3242,9 +3245,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V93-LM-G900-KARNAL-complete-logs
+          name: V94-LM-G900-KARNAL-complete-logs
           path: |
-            V93-LM-G900-KARNAL-complete-logs.zip
+            V94-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
