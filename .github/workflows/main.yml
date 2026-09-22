@@ -1,4 +1,4 @@
-name: V84-LM-G900-KARNAL-BUILT
+name: V85-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -59,8 +59,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V84
-  OUTPUT_PREFIX: V84-LM-G900-KARNAL
+  WORKFLOW_VERSION: V85
+  OUTPUT_PREFIX: V85-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -870,7 +870,189 @@ jobs:
           echo "[OK] KernelSU-Next ${KSU_VERSION} legacy driver integrated with preserved SUSFS compatibility"
           echo "::endgroup::"
 
-      - name: "7. Integrate SUSFS 2.3.0 + 4.19 backport"
+      - name: "6a. Bridge SUSFS 2.3.0 hook ABI into official legacy driver"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "::group::[6a/15] Bridge only the seven SUSFS/KSU symbols proven missing by the V84 linker"
+          python3 - <<'PY_KSU_SUSFS_LEGACY_BRIDGE'
+          from pathlib import Path
+
+          root = Path("KernelSU-Next/kernel")
+          runtime = root / "runtime/ksud_integration.c"
+          sucompat = root / "feature/sucompat.c"
+          selinux = root / "selinux/selinux.c"
+          selinux_h = root / "selinux/selinux.h"
+          rules = root / "selinux/rules.c"
+
+          # V84 proved this exact seven-symbol ABI gap. Do not alter other subsystems.
+          # The definitions are source-matched to the SUSFS-aware KernelSU-Next code path.
+
+          s = runtime.read_text()
+          if "DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);" not in s:
+              inc = "#include <linux/workqueue.h>\n"
+              if inc not in s:
+                  raise SystemExit("runtime workqueue include anchor missing")
+              s = s.replace(inc, inc + "#ifdef CONFIG_KSU_SUSFS\n#include <linux/jump_label.h>\nDEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);\nDEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled);\n#endif\n", 1)
+          if "void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)" not in s:
+              marker = "static unsigned int volumedown_pressed_count = 0;\n"
+              block = '''#ifdef CONFIG_KSU_SUSFS
+          void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
+          {
+              loff_t new_size = *kstat_size_ptr + ksu_rc_len;
+              struct file *file = fget(fd);
+              if (!file)
+                  return;
+              if (is_init_rc(file)) {
+                  pr_info("stat init.rc");
+                  pr_info("adding ksu_rc_len: %lld -> %lld", *kstat_size_ptr, new_size);
+                  *kstat_size_ptr = new_size;
+              }
+              fput(file);
+          }
+          #endif
+
+          '''
+              if marker not in s:
+                  raise SystemExit("runtime volumedown anchor missing")
+              s = s.replace(marker, block + marker, 1)
+          runtime.write_text(s)
+
+          s = sucompat.read_text()
+          if "int ksu_handle_post_execveat_sucompat(" not in s:
+              marker = "// sucompat: permitted process can execute 'su' to gain root access.\n"
+              block = '''#ifdef CONFIG_KSU_SUSFS
+          int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr,
+                 void *argv_user, void *envp_user,
+                 int *__never_use_flags, int *retval)
+          {
+              if (*retval >= 0)
+                  (void)ksu_install_su_fd();
+              return 0;
+          }
+          #endif
+
+          '''
+              if marker not in s:
+                  raise SystemExit("sucompat anchor missing")
+              s = s.replace(marker, block + marker, 1)
+          sucompat.write_text(s)
+
+          s = selinux.read_text()
+          if "u32 susfs_ksu_sid __read_mostly" not in s:
+              marker = "u32 ksu_file_sid __read_mostly = 0;\n"
+              block = '''u32 ksu_file_sid __read_mostly = 0;
+          #ifdef CONFIG_KSU_SUSFS
+          u32 susfs_ksu_sid __read_mostly = 0;
+          u32 susfs_init_sid __read_mostly = 0;
+          u32 susfs_zygote_sid __read_mostly = 0;
+          u32 susfs_zygote_next_sid __read_mostly = 0;
+          u32 susfs_priv_app_sid __read_mostly = 0;
+          #endif
+          '''
+              if marker not in s:
+                  raise SystemExit("selinux SID anchor missing")
+              s = s.replace(marker, block, 1)
+          if "bool susfs_is_current_ksu_domain(void)" not in s:
+              marker = "void escape_to_root_for_adb_root(void)\n"
+              block = '''#ifdef CONFIG_KSU_SUSFS
+          #define KERNEL_INIT_DOMAIN "u:r:init:s0"
+          #define KERNEL_ZYGOTE_DOMAIN "u:r:zygote:s0"
+          #define KERNEL_ZYGOTE_NEXT_DOMAIN "u:r:zygote_next:s0"
+          #define KERNEL_PRIV_APP_DOMAIN "u:r:priv_app:s0:c512,c768"
+          static inline void susfs_set_sid(const char *secctx_name, u32 *out_sid)
+          {
+              int err;
+              if (!secctx_name || !out_sid)
+                  return;
+              err = security_secctx_to_secid(secctx_name, strlen(secctx_name), out_sid);
+              if (err)
+                  pr_err("failed setting sid for '%s', err: %d\\n", secctx_name, err);
+          }
+          bool susfs_is_sid_equal(const struct cred *cred, u32 sid2)
+          {
+              struct task_security_struct *tsec = selinux_cred(cred);
+              return tsec ? tsec->sid == sid2 : false;
+          }
+          u32 susfs_get_sid_from_name(const char *secctx_name)
+          {
+              u32 sid = 0;
+              if (!secctx_name)
+                  return 0;
+              if (security_secctx_to_secid(secctx_name, strlen(secctx_name), &sid))
+                  return 0;
+              return sid;
+          }
+          u32 susfs_get_current_sid(void) { return current_sid(); }
+          bool susfs_is_current_zygote_domain(void) { return unlikely(current_sid() == susfs_zygote_sid); }
+          bool susfs_is_current_zygote_next_domain(void) { return unlikely(current_sid() == susfs_zygote_next_sid); }
+          bool susfs_is_current_ksu_domain(void) { return unlikely(current_sid() == susfs_ksu_sid); }
+          bool susfs_is_current_init_domain(void) { return unlikely(current_sid() == susfs_init_sid); }
+          void susfs_set_batch_sid(void)
+          {
+              susfs_set_sid(KERNEL_ZYGOTE_DOMAIN, &susfs_zygote_sid);
+              susfs_set_sid(KERNEL_ZYGOTE_NEXT_DOMAIN, &susfs_zygote_next_sid);
+              susfs_set_sid(KERNEL_SU_CONTEXT, &susfs_ksu_sid);
+              susfs_set_sid(KERNEL_INIT_DOMAIN, &susfs_init_sid);
+              susfs_set_sid(KERNEL_PRIV_APP_DOMAIN, &susfs_priv_app_sid);
+          }
+          #endif
+
+          '''
+              if marker not in s:
+                  raise SystemExit("selinux function anchor missing")
+              s = s.replace(marker, block + marker, 1)
+          selinux.write_text(s)
+
+          s = selinux_h.read_text()
+          if "void susfs_set_batch_sid(void);" not in s:
+              marker = "void cache_sid(void);\n"
+              if marker not in s:
+                  raise SystemExit("selinux.h cache_sid anchor missing")
+              s = s.replace(marker, marker + "#ifdef CONFIG_KSU_SUSFS\nvoid susfs_set_batch_sid(void);\n#endif\n", 1)
+          selinux_h.write_text(s)
+
+          s = rules.read_text()
+          if "susfs_set_batch_sid();" not in s:
+              start = s.find("void apply_kernelsu_rules()")
+              if start < 0:
+                  raise SystemExit("rules apply_kernelsu_rules anchor missing")
+              tail = s[start:]
+              end_marker = "\n}\n#define KSU_SEPOLICY_MAX_BATCH_SIZE"
+              pos = tail.find(end_marker)
+              if pos < 0:
+                  raise SystemExit("rules apply_kernelsu_rules end anchor missing")
+              tail = tail[:pos] + "\n#ifdef CONFIG_KSU_SUSFS\n    susfs_set_batch_sid();\n#endif" + tail[pos:]
+              s = s[:start] + tail
+          rules.write_text(s)
+
+          checks = {
+              "ksu_is_input_hook_enabled": runtime.read_text(),
+              "ksu_is_init_rc_hook_enabled": runtime.read_text(),
+              "ksu_handle_vfs_fstat": runtime.read_text(),
+              "ksu_handle_post_execveat_sucompat": sucompat.read_text(),
+              "susfs_ksu_sid": selinux.read_text(),
+              "susfs_priv_app_sid": selinux.read_text(),
+              "susfs_is_current_ksu_domain": selinux.read_text(),
+          }
+          for sym, body in checks.items():
+              if sym not in body:
+                  raise SystemExit(f"missing V85 bridge definition: {sym}")
+          print("[OK] V85: all seven V84 linker-missing symbols are source-defined")
+          PY_KSU_SUSFS_LEGACY_BRIDGE
+
+          grep -q 'DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled)' KernelSU-Next/kernel/runtime/ksud_integration.c
+          grep -q 'DEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled)' KernelSU-Next/kernel/runtime/ksud_integration.c
+          grep -q 'void ksu_handle_vfs_fstat(int fd, loff_t \*kstat_size_ptr)' KernelSU-Next/kernel/runtime/ksud_integration.c
+          grep -q 'int ksu_handle_post_execveat_sucompat(' KernelSU-Next/kernel/feature/sucompat.c
+          grep -q 'u32 susfs_ksu_sid' KernelSU-Next/kernel/selinux/selinux.c
+          grep -q 'u32 susfs_priv_app_sid' KernelSU-Next/kernel/selinux/selinux.c
+          grep -q 'bool susfs_is_current_ksu_domain(void)' KernelSU-Next/kernel/selinux/selinux.c
+          grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
+          echo "[OK] V85: source audit passed"
+          echo "::endgroup::"
+
+      - name: '7. Integrate SUSFS 2.3.0 + 4.19 backport'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -1506,6 +1688,9 @@ jobs:
             grep -n 'cmd.uapi_version' KernelSU-Next/kernel/supercall/dispatch.c || true
             grep -n 'KSU_VERSION_OVERRIDE\|KSU_NEXT_MANAGER_SIZE\|KSU_NEXT_MANAGER_HASH' KernelSU-Next/kernel/Kbuild || true
             grep -n 'EXPECTED_MANAGER_SIZE\|EXPECTED_MANAGER_HASH' KernelSU-Next/kernel/Kbuild || true
+          for sym in ksu_is_input_hook_enabled ksu_is_init_rc_hook_enabled ksu_handle_vfs_fstat; do grep -Rns --include='*.c' "$sym" KernelSU-Next/kernel/runtime; done
+          grep -n 'ksu_handle_post_execveat_sucompat' KernelSU-Next/kernel/feature/sucompat.c || true
+          grep -n 'susfs_ksu_sid\|susfs_priv_app_sid\|susfs_is_current_ksu_domain' KernelSU-Next/kernel/selinux/selinux.c || true
             grep -n 'is_manager_apk\|check_v2_signature' KernelSU-Next/kernel/manager/apk_sign.c || true
             grep -n 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || true
           } | tee ../logs/09-kernelsu-prebuild-audit.log
@@ -2528,7 +2713,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V84-LM-G900-KARNAL
+          kernel.string=V85-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2554,7 +2739,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V84-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V85-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2595,8 +2780,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V84-LM-G900-KARNAL-output
-          path: V84-LM-G900-KARNAL-output.zip
+          name: V85-LM-G900-KARNAL-output
+          path: V85-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2604,7 +2789,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V84-LM-G900-KARNAL-flashable-zips
+          name: V85-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2776,9 +2961,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V84-LM-G900-KARNAL-complete-logs
+          name: V85-LM-G900-KARNAL-complete-logs
           path: |
-            V84-LM-G900-KARNAL-complete-logs.zip
+            V85-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
