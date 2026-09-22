@@ -1,4 +1,4 @@
-name: V92-LM-G900-KARNAL-BUILT
+name: V93-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -63,8 +63,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V91
-  OUTPUT_PREFIX: V92-LM-G900-KARNAL
+  WORKFLOW_VERSION: V93
+  OUTPUT_PREFIX: V93-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -174,7 +174,7 @@ env:
 
 jobs:
   build:
-    name: Build V92
+    name: Build V93
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -887,6 +887,7 @@ jobs:
           test -d KernelSU-Next/kernel
           python3 - <<'PY_KSU_SUSFS_LEGACY_BRIDGE'
           from pathlib import Path
+          import re
 
           root = Path("KernelSU-Next/kernel")
           runtime = root / "runtime/ksud_integration.c"
@@ -929,7 +930,7 @@ jobs:
               s = s.replace(marker, block + marker, 1)
           runtime.write_text(s)
 
-          # V92 root-cause fix:
+          # V93 root-cause fix:
           # The V91 compiler error was not 19 independent errors. The first error
           # came from feature/sucompat.h declaring the legacy feature switch as
           # `extern bool`, while V90/V91 correctly changed the definition in
@@ -955,9 +956,9 @@ jobs:
                   h = h.replace("#include <linux/types.h>\n",
                                 "#include <linux/types.h>\n#include <linux/jump_label.h>\n", 1)
           if "extern bool ksu_su_compat_enabled;" in h:
-              raise SystemExit("V92: stale bool declaration remains in sucompat.h")
+              raise SystemExit("V93: stale bool declaration remains in sucompat.h")
           if "extern struct static_key_true ksu_su_compat_enabled;" not in h:
-              raise SystemExit("V92: static-key declaration missing from sucompat.h")
+              raise SystemExit("V93: static-key declaration missing from sucompat.h")
           sucompat_h.write_text(h)
 
           s = sucompat.read_text()
@@ -1227,8 +1228,83 @@ jobs:
           test "$(grep -RhsE '^[[:space:]]*extern[[:space:]]+bool[[:space:]]+ksu_su_compat_enabled[[:space:]]*;' KernelSU-Next/kernel/feature KernelSU-Next/kernel 2>/dev/null | wc -l)" -eq 0
           test "$(grep -RhsE '^[[:space:]]*DEFINE_STATIC_KEY_TRUE\(ksu_su_compat_enabled\);' KernelSU-Next/kernel 2>/dev/null | wc -l)" -eq 1
           test "$(grep -RhsE '^[[:space:]]*extern[[:space:]]+struct[[:space:]]+static_key_true[[:space:]]+ksu_su_compat_enabled[[:space:]]*;' KernelSU-Next/kernel 2>/dev/null | wc -l)" -ge 1
-          echo "[OK] V92: ksu_su_compat_enabled ABI has one definition and no stale bool declaration"
-          echo "[OK] V92: SUSFS/KSU bridge source audit passed"
+          echo "[OK] V93: ksu_su_compat_enabled ABI has one definition and no stale bool declaration"
+          echo "[OK] V93: SUSFS/KSU bridge source audit passed"
+          echo "::endgroup::"
+
+      - name: '6b. Cross-setup KSU/SUSFS/Manager contract audit'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "::group::[6b/15] Verify all dependent setup contracts before SUSFS/build stages"
+          cd kernel
+
+          # Permanent workflow rule: a source-level fix in one setup must be
+          # reconciled against every dependent setup before the next setup runs.
+          python3 - <<'PY_CROSS_SETUP'
+          from pathlib import Path
+          import re
+
+          root = Path("KernelSU-Next/kernel")
+          sucompat = root / "feature/sucompat.c"
+          sucompat_h = root / "feature/sucompat.h"
+          uapi = Path("KernelSU-Next/uapi/supercall.h")
+          dispatch = root / "supercall/dispatch.c"
+          kbuild = root / "Kbuild"
+          apk_sign = root / "manager/apk_sign.c"
+
+          def need(path, needle, label):
+              s = path.read_text(errors="replace")
+              if needle not in s:
+                  raise SystemExit(f"[ERROR] cross-setup contract missing: {label}: {path}")
+              return s
+
+          c = need(sucompat, "DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);",
+                   "su_compat static-key definition")
+          h = need(sucompat_h, "extern struct static_key_true ksu_su_compat_enabled;",
+                   "su_compat static-key declaration")
+          if re.search(r"extern\s+bool\s+ksu_su_compat_enabled\s*;", h):
+              raise SystemExit("[ERROR] cross-setup stale bool declaration remains")
+          if len(re.findall(r"DEFINE_STATIC_KEY_TRUE\(ksu_su_compat_enabled\)", c)) != 1:
+              raise SystemExit("[ERROR] cross-setup requires exactly one su_compat static-key definition")
+          if "ksu_install_su_fd(" in c:
+              raise SystemExit("[ERROR] cross-setup found newer ksu_install_su_fd API in legacy driver")
+          if "ksu_install_fd(" not in c:
+              raise SystemExit("[ERROR] cross-setup legacy ksu_install_fd API missing")
+
+          need(uapi, "KERNEL_SU_UAPI_VERSION = 4", "UAPI v4")
+          need(uapi, "struct ksu_get_info_cmd", "GET_INFO structure")
+          need(dispatch, "cmd.uapi_version = KERNEL_SU_UAPI_VERSION;", "GET_INFO UAPI assignment")
+
+          need(kbuild, "KSU_NEXT_MANAGER_SIZE", "Manager certificate size contract")
+          need(kbuild, "KSU_NEXT_MANAGER_HASH", "Manager certificate hash contract")
+          need(apk_sign, "KSU_MANAGER_PACKAGE", "Manager package contract")
+
+          required = [
+              "ksu_handle_post_execveat_sucompat",
+              "ksu_handle_vfs_fstat",
+              "ksu_is_init_rc_hook_enabled",
+              "ksu_is_input_hook_enabled",
+              "susfs_is_current_ksu_domain",
+              "susfs_ksu_sid",
+              "susfs_priv_app_sid",
+          ]
+          source_text = "\n".join(
+              p.read_text(errors="replace")
+              for p in root.rglob("*")
+              if p.is_file() and p.suffix in {".c", ".h"}
+          )
+          for sym in required:
+              if sym not in source_text:
+                  raise SystemExit(f"[ERROR] cross-setup required symbol missing: {sym}")
+
+          config = Path(".config").read_text(errors="replace")
+          for sym in ("CONFIG_KSU=y", "CONFIG_KSU_MANUAL_HOOK=y", "CONFIG_KSU_SUSFS=y"):
+              if not re.search(rf"(?m)^{re.escape(sym)}$", config):
+                  raise SystemExit(f"[ERROR] cross-setup config contract missing: {sym}")
+
+          print("[OK] V93: cross-setup KSU/SUSFS/Manager contract audit passed")
+          PY_CROSS_SETUP
           echo "::endgroup::"
 
       - name: '7. Integrate SUSFS 2.3.0 + 4.19 backport'
@@ -1850,10 +1926,10 @@ jobs:
           # V84: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
           # so the actual pre-build abort was invisible.
           exec > >(tee -a ../logs/09-step9-full.log) 2>&1
-          trap 'rc=$?; echo "[ERROR] V92 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
+          trap 'rc=$?; echo "[ERROR] V93 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
 
           {
-            echo "=== V92 PRE-BUILD SOURCE AUDIT ==="
+            echo "=== V93 PRE-BUILD SOURCE AUDIT ==="
             echo "kernel_commit=$(git rev-parse HEAD)"
             echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
             echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
@@ -2240,7 +2316,7 @@ jobs:
             echo "[ERROR] V91: duplicate board PM labels remain under ${PM_ROOT}"
             exit 1
           fi
-          echo "[OK] V92: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
+          echo "[OK] V93: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
 
           # V32 FIX 2 — KernelSU-Next v3.4.0 legacy expects the newer UAPI mount.h header.
           # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
@@ -2511,7 +2587,7 @@ jobs:
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V92 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V93 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -2867,7 +2943,7 @@ jobs:
             echo "kernel_uapi_version=4"
             echo "final_vmlinux_contract=passed"
           } | tee ../logs/09-final-ksu-contract.log
-          echo "[OK] V92: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
+          echo "[OK] V93: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
           echo "::endgroup::"
 
       - name: "9b. DTB diagnostic (non-blocking; captures the hidden dtc error text)"
@@ -2918,7 +2994,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V92-LM-G900-KARNAL
+          kernel.string=V93-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2944,7 +3020,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V92-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V93-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2985,8 +3061,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V92-LM-G900-KARNAL-output
-          path: V92-LM-G900-KARNAL-output.zip
+          name: V93-LM-G900-KARNAL-output
+          path: V93-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2994,7 +3070,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V92-LM-G900-KARNAL-flashable-zips
+          name: V93-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -3166,9 +3242,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V92-LM-G900-KARNAL-complete-logs
+          name: V93-LM-G900-KARNAL-complete-logs
           path: |
-            V92-LM-G900-KARNAL-complete-logs.zip
+            V93-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
