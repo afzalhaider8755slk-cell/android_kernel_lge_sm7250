@@ -1,4 +1,4 @@
-name: V89-LM-G900-KARNAL-BUILT
+name: V90-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -59,8 +59,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V89
-  OUTPUT_PREFIX: V89-LM-G900-KARNAL
+  WORKFLOW_VERSION: V90
+  OUTPUT_PREFIX: V90-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -895,11 +895,11 @@ jobs:
           # The definitions are source-matched to the SUSFS-aware KernelSU-Next code path.
 
           s = runtime.read_text()
-          if "struct static_key_true ksu_is_init_rc_hook_enabled __aligned(8)" not in s:
+          if "DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);" not in s:
               inc = "#include <linux/workqueue.h>\n"
               if inc not in s:
                   raise SystemExit("runtime workqueue include anchor missing")
-              s = s.replace(inc, inc + "#ifdef CONFIG_KSU_SUSFS\n#include <linux/jump_label.h>\n/* Linux 4.19 arm64: force natural alignment for SUSFS static-key objects.\n * Their call sites perform 32-bit atomic loads; V88 linked them at 0x...D2.\n */\nstruct static_key_true ksu_is_init_rc_hook_enabled __aligned(8) = STATIC_KEY_TRUE_INIT;\nstruct static_key_true ksu_is_input_hook_enabled __aligned(8) = STATIC_KEY_TRUE_INIT;\n#endif\n", 1)
+              s = s.replace(inc, inc + "#ifdef CONFIG_KSU_SUSFS\n#include <linux/jump_label.h>\nDEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);\nDEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled);\n#endif\n", 1)
           if "void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)" not in s:
               marker = "static unsigned int volumedown_pressed_count = 0;\n"
               block = '''#ifdef CONFIG_KSU_SUSFS
@@ -925,6 +925,69 @@ jobs:
           runtime.write_text(s)
 
           s = sucompat.read_text()
+
+          # V88/V89's six final-link relocations were not caused by the init/input
+          # hook keys. The SUSFS 2.3.0 inline-hook patch declares
+          # ksu_su_compat_enabled as struct static_key_true, while the official
+          # legacy driver still defines it as a plain bool. On arm64/4.19 that
+          # makes the SUSFS call sites emit a 32-bit static-key access to the
+          # legacy bool's byte address (the 0x...D2 target in V88/V89).
+          # Convert that one legacy feature switch to the exact static-key ABI
+          # used by the SUSFS-aware KernelSU-Next source.
+          if "DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);" not in s:
+              inc = '#include <linux/fs.h>\n'
+              if inc not in s:
+                  raise SystemExit("sucompat fs include anchor missing")
+              s = s.replace(inc, inc + '#include <linux/jump_label.h>\n', 1)
+              old_def = 'bool ksu_su_compat_enabled __read_mostly = true;\n'
+              if old_def not in s:
+                  raise SystemExit("legacy ksu_su_compat_enabled bool definition missing")
+              s = s.replace(old_def, 'DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);\n', 1)
+
+              old_get = """static int su_compat_feature_get(u64 *value)
+          {
+              *value = ksu_su_compat_enabled ? 1 : 0;
+              return 0;
+          }
+          """
+              new_get = """static int su_compat_feature_get(u64 *value)
+          {
+              if (static_key_enabled(&ksu_su_compat_enabled))
+                  *value = 1;
+              else
+                  *value = 0;
+              return 0;
+          }
+          """
+              if old_get not in s:
+                  raise SystemExit("legacy su_compat_feature_get block missing")
+              s = s.replace(old_get, new_get, 1)
+
+              old_set = """static int su_compat_feature_set(u64 value)
+          {
+              bool enable = value != 0;
+              ksu_su_compat_enabled = enable;
+              pr_info("su_compat: set to %d\n", enable);
+              return 0;
+          }
+          """
+              new_set = """static int su_compat_feature_set(u64 value)
+          {
+              bool enable = value != 0;
+              if (enable)
+                  static_branch_enable(&ksu_su_compat_enabled);
+              else
+                  static_branch_disable(&ksu_su_compat_enabled);
+              pr_info("su_compat: set to %d\n", enable);
+              return 0;
+          }
+          """
+              if old_set not in s:
+                  raise SystemExit("legacy su_compat_feature_set block missing")
+              s = s.replace(old_set, new_set, 1)
+
+              s = s.replace('if (!ksu_su_compat_enabled)', 'if (!static_branch_likely(&ksu_su_compat_enabled))')
+
           if "int ksu_handle_post_execveat_sucompat(" not in s:
               # The official legacy driver exposes ksu_install_fd(), not the newer
               # scoped ksu_install_su_fd() API. Reuse the legacy fd ABI rather than
@@ -1092,16 +1155,18 @@ jobs:
           }
           for sym, body in checks.items():
               if sym not in body:
-                  raise SystemExit(f"missing V89 bridge definition: {sym}")
+                  raise SystemExit(f"missing V90 bridge definition: {sym}")
           if "susfs_set_batch_sid();" not in rules.read_text():
               raise SystemExit("missing V87 SUSFS SID initialization call in selinux/rules.c")
-          print("[OK] V89: all seven V84 linker-missing symbols are source-defined")
-          print("[OK] V89: SUSFS SID initialization call is present in selinux/rules.c")
+          print("[OK] V90: all seven V84 linker-missing symbols are source-defined")
+          print("[OK] V90: SUSFS SID initialization call is present in selinux/rules.c")
           PY_KSU_SUSFS_LEGACY_BRIDGE
 
-          grep -q 'struct static_key_true ksu_is_init_rc_hook_enabled __aligned(8)' KernelSU-Next/kernel/runtime/ksud_integration.c
-          grep -q 'struct static_key_true ksu_is_init_rc_hook_enabled __aligned(8)' KernelSU-Next/kernel/runtime/ksud_integration.c
-          grep -q 'struct static_key_true ksu_is_input_hook_enabled __aligned(8)' KernelSU-Next/kernel/runtime/ksud_integration.c
+          grep -q 'DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);' KernelSU-Next/kernel/runtime/ksud_integration.c
+          grep -q 'DEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled);' KernelSU-Next/kernel/runtime/ksud_integration.c
+          grep -q 'DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);' KernelSU-Next/kernel/feature/sucompat.c
+          ! grep -q 'bool ksu_su_compat_enabled __read_mostly' KernelSU-Next/kernel/feature/sucompat.c
+          grep -q 'static_branch_likely(&ksu_su_compat_enabled)' KernelSU-Next/kernel/feature/sucompat.c
           grep -q 'void ksu_handle_vfs_fstat(int fd, loff_t \*kstat_size_ptr)' KernelSU-Next/kernel/runtime/ksud_integration.c
           grep -q 'int ksu_handle_post_execveat_sucompat(' KernelSU-Next/kernel/feature/sucompat.c
           grep -q '#include "supercall/supercall.h"' KernelSU-Next/kernel/feature/sucompat.c
@@ -1112,7 +1177,7 @@ jobs:
           grep -q 'bool susfs_is_current_ksu_domain(void)' KernelSU-Next/kernel/selinux/selinux.c
           grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
           grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
-          echo "[OK] V89: source audit passed"
+          echo "[OK] V90: source audit passed"
           echo "::endgroup::"
 
       - name: '7. Integrate SUSFS 2.3.0 + 4.19 backport'
@@ -2776,7 +2841,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V89-LM-G900-KARNAL
+          kernel.string=V90-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2802,7 +2867,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V89-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V90-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2843,8 +2908,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V89-LM-G900-KARNAL-output
-          path: V89-LM-G900-KARNAL-output.zip
+          name: V90-LM-G900-KARNAL-output
+          path: V90-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -2852,7 +2917,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V89-LM-G900-KARNAL-flashable-zips
+          name: V90-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -3024,9 +3089,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V89-LM-G900-KARNAL-complete-logs
+          name: V90-LM-G900-KARNAL-complete-logs
           path: |
-            V89-LM-G900-KARNAL-complete-logs.zip
+            V90-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
