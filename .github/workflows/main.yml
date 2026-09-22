@@ -1,4 +1,4 @@
-name: V90-LM-G900-KARNAL-BUILT
+name: V91-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -25,6 +25,10 @@ env:
 
   KSU_VERSION: v3.4.0
   KSU_MANAGER_BUILD: 33294-4
+  # Exact package from the user-supplied official v3.4.0/33294 APK.
+  # Kbuild passes this to apk_sign.c so the kernel-side Manager check is
+  # package+certificate bound, not merely certificate-bound.
+  KSU_MANAGER_PACKAGE: com.rifsxd.ksunext
   # V82 source-level compatibility fix: the current official legacy branch
   # reports a stale legacy-derived KSU_VERSION even when its Manager signature
   # is the v3.4.0/33294 manager. Force the kernel-side reported version/tag to
@@ -59,8 +63,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V90
-  OUTPUT_PREFIX: V90-LM-G900-KARNAL
+  WORKFLOW_VERSION: V91
+  OUTPUT_PREFIX: V91-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -170,7 +174,7 @@ env:
 
 jobs:
   build:
-    name: Build V87
+    name: Build V91
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -934,63 +938,70 @@ jobs:
           # legacy bool's byte address (the 0x...D2 target in V88/V89).
           # Convert that one legacy feature switch to the exact static-key ABI
           # used by the SUSFS-aware KernelSU-Next source.
+          # V91: the legacy source is whitespace-sensitive enough that the previous
+          # exact multiline replacement could fail even when the real function was present.
+          # Replace the two feature-handler functions structurally (signature + balanced braces),
+          # not by indentation/spacing. This is source-level, deterministic, and only touches
+          # the single static-key ABI needed by SUSFS 2.3 on this 4.19 tree.
+          def replace_c_function(text, signature, replacement):
+              start = text.find(signature)
+              if start < 0:
+                  raise SystemExit(f"missing C function: {signature}")
+              brace = text.find("{", start)
+              if brace < 0:
+                  raise SystemExit(f"missing opening brace: {signature}")
+              depth = 0
+              end = None
+              i = brace
+              while i < len(text):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          end = i + 1
+                          break
+                  i += 1
+              if end is None:
+                  raise SystemExit(f"unbalanced C function: {signature}")
+              return text[:start] + replacement.rstrip() + text[end:]
+
           if "DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);" not in s:
               inc = '#include <linux/fs.h>\n'
               if inc not in s:
                   raise SystemExit("sucompat fs include anchor missing")
-              s = s.replace(inc, inc + '#include <linux/jump_label.h>\n', 1)
-              old_def = 'bool ksu_su_compat_enabled __read_mostly = true;\n'
+              if '#include <linux/jump_label.h>' not in s:
+                  s = s.replace(inc, inc + '#include <linux/jump_label.h>\n', 1)
+              old_def = 'bool ksu_su_compat_enabled __read_mostly = true;'
               if old_def not in s:
-                  raise SystemExit("legacy ksu_su_compat_enabled bool definition missing")
-              s = s.replace(old_def, 'DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);\n', 1)
+                  raise SystemExit("legacy ksu_su_compat_enabled boolean definition missing")
+              s = s.replace(old_def, 'DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);', 1)
 
-              old_get = """static int su_compat_feature_get(u64 *value)
+          new_get = """static int su_compat_feature_get(u64 *value)
           {
-              *value = ksu_su_compat_enabled ? 1 : 0;
+              *value = static_key_enabled(&ksu_su_compat_enabled) ? 1 : 0;
               return 0;
-          }
-          """
-              new_get = """static int su_compat_feature_get(u64 *value)
-          {
-              if (static_key_enabled(&ksu_su_compat_enabled))
-                  *value = 1;
-              else
-                  *value = 0;
-              return 0;
-          }
-          """
-              if old_get not in s:
-                  raise SystemExit("legacy su_compat_feature_get block missing")
-              s = s.replace(old_get, new_get, 1)
+          }"""
+          s = replace_c_function(s, "static int su_compat_feature_get(u64 *value)", new_get)
 
-              old_set = """static int su_compat_feature_set(u64 value)
-          {
-              bool enable = value != 0;
-              ksu_su_compat_enabled = enable;
-              pr_info("su_compat: set to %d\n", enable);
-              return 0;
-          }
-          """
-              new_set = """static int su_compat_feature_set(u64 value)
+          new_set = """static int su_compat_feature_set(u64 value)
           {
               bool enable = value != 0;
               if (enable)
                   static_branch_enable(&ksu_su_compat_enabled);
               else
                   static_branch_disable(&ksu_su_compat_enabled);
-              pr_info("su_compat: set to %d\n", enable);
+              pr_info("su_compat: set to %d\\n", enable);
               return 0;
-          }
-          """
-              if old_set not in s:
-                  raise SystemExit("legacy su_compat_feature_set block missing")
-              s = s.replace(old_set, new_set, 1)
+          }"""
+          s = replace_c_function(s, "static int su_compat_feature_set(u64 value)", new_set)
 
-              s = s.replace('if (!ksu_su_compat_enabled)', 'if (!static_branch_likely(&ksu_su_compat_enabled))')
+          s = s.replace('if (!ksu_su_compat_enabled)',
+                        'if (!static_branch_likely(&ksu_su_compat_enabled))')
 
           if "int ksu_handle_post_execveat_sucompat(" not in s:
               # The official legacy driver exposes ksu_install_fd(), not the newer
-              # scoped ksu_install_su_fd() API. Reuse the legacy fd ABI rather than
+              # scoped su-session fd API. Reuse the legacy fd ABI rather than
               # importing the newer supercall permission model into this 4.19 tree.
               include = '#include "supercall/supercall.h"\n'
               if include not in s:
@@ -1177,7 +1188,8 @@ jobs:
           grep -q 'bool susfs_is_current_ksu_domain(void)' KernelSU-Next/kernel/selinux/selinux.c
           grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
           grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
-          echo "[OK] V90: source audit passed"
+          grep -q 'KSU_MANAGER_PACKAGE' KernelSU-Next/kernel/manager/apk_sign.c
+          echo "[OK] V91: SUSFS/KSU bridge source audit passed"
           echo "::endgroup::"
 
       - name: '7. Integrate SUSFS 2.3.0 + 4.19 backport'
@@ -1799,10 +1811,10 @@ jobs:
           # V84: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
           # so the actual pre-build abort was invisible.
           exec > >(tee -a ../logs/09-step9-full.log) 2>&1
-          trap 'rc=$?; echo "[ERROR] V87 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
+          trap 'rc=$?; echo "[ERROR] V91 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
 
           {
-            echo "=== V87 PRE-BUILD SOURCE AUDIT ==="
+            echo "=== V91 PRE-BUILD SOURCE AUDIT ==="
             echo "kernel_commit=$(git rev-parse HEAD)"
             echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
             echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
@@ -2151,14 +2163,14 @@ jobs:
           # unique names, and references inside the same PM file are updated. Do not
           # modify the generic qcom definitions. This covers the normal LaoCom PM file,
           # HDK PM file, and VZW PM file together instead of fixing only one variant.
-          PM_ROOT="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com"
-          python3 - "$PM_ROOT" <<'PY_V87_DT'
+          PM_ROOT="arch/arm64/boot/dts/vendor/lge/lito-caymanlm"
+          python3 - "$PM_ROOT" <<'PY_V91_DT'
           from pathlib import Path
           import re, sys
 
           root = Path(sys.argv[1])
           changed = []
-          for p in sorted(root.glob('*pm*.dtsi')):
+          for p in sorted(root.rglob('*pm*.dtsi')):
               s = p.read_text()
               old = s
               # Only rename labels that are actually defined in this board-specific PM file.
@@ -2177,19 +2189,19 @@ jobs:
                   changed.append(str(p))
 
           if not changed:
-              raise SystemExit('[ERROR] V84: no board-specific PM duplicate labels were found')
+              raise SystemExit('[ERROR] V91: no board-specific PM duplicate labels were found')
           for p in changed:
-              print(f'[FIX] V84: reconciled duplicate PM labels in {p}')
-          PY_V87_DT
+              print(f'[FIX] V91: reconciled duplicate PM labels in {p}')
+          PY_V91_DT
 
           # Hard validation: no board-specific PM file may still define either generic
           # duplicate label. The generic qcom/lito-pmic-overlay.dtsi remains untouched.
           if grep -RInE '^[[:space:]]*camera_therm_default[[:space:]]*:[[:space:]]*camera_therm_default[[:space:]]*\{' "$PM_ROOT" 2>/dev/null || \
              grep -RInE '^[[:space:]]*bmr_w_therm_default[[:space:]]*:[[:space:]]*bmr_w_therm_default[[:space:]]*\{' "$PM_ROOT" 2>/dev/null; then
-            echo "[ERROR] V84: duplicate board PM labels remain under ${PM_ROOT}"
+            echo "[ERROR] V91: duplicate board PM labels remain under ${PM_ROOT}"
             exit 1
           fi
-          echo "[OK] V84: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
+          echo "[OK] V91: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
 
           # V32 FIX 2 — KernelSU-Next v3.4.0 legacy expects the newer UAPI mount.h header.
           # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
@@ -2453,13 +2465,14 @@ jobs:
           MAKE_ARGS+=(KSU_VERSION_OVERRIDE="${KSU_VERSION_CODE}" KSU_VERSION_TAG_OVERRIDE="${KSU_VERSION_TAG_OVERRIDE}")
           MAKE_ARGS+=(KSU_NEXT_MANAGER_SIZE=0x3e6)
           MAKE_ARGS+=(KSU_NEXT_MANAGER_HASH=79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7)
+          MAKE_ARGS+=(KSU_MANAGER_PACKAGE="${KSU_MANAGER_PACKAGE}")
 
           # V40: the real errors are NOT at the bottom of a `make -j` log (make keeps finishing running
           # jobs after the first failure). Print them as the last lines and as annotations.
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V87 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V91 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -2688,7 +2701,7 @@ jobs:
 
           # V40 FIX 3: compile ALL of drivers/kernelsu with keep-going first so every remaining
           # KernelSU/4.19 incompatibility is listed in one run instead of one per 8-minute build.
-          echo "[V87] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
+          echo "[V91] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
           if ! make "${MAKE_ARGS[@]}" -j"$(nproc)" prepare > ../logs/09a-prepare.log 2>&1; then
             tail -60 ../logs/09a-prepare.log
             echo "[ERROR] make prepare failed (see logs/09a-prepare.log)"
@@ -2791,6 +2804,31 @@ jobs:
             echo "[WARN] Linux version string was not found in Image; build artifact exists." | tee -a ../logs/09-image-version.log
           fi
           echo "[OK] Kernel Image built"
+          # V91 final compiled-image contract audit:
+          # prove the exact Manager package/hash/version/tag and the UAPI-v4 field made
+          # it into the actual linked kernel, rather than relying only on source checks.
+          test -s out/vmlinux
+          test -s out/arch/arm64/boot/Image
+          strings out/vmlinux | grep -Fq 'com.rifsxd.ksunext'
+          strings out/vmlinux | grep -Fq '79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7'
+          strings out/vmlinux | grep -Fq 'v3.4.0'
+          strings out/vmlinux | grep -Fq 'KSU_VERSION_TAG' || true
+          for sym in             ksu_handle_post_execveat_sucompat             ksu_handle_vfs_fstat             ksu_is_init_rc_hook_enabled             ksu_is_input_hook_enabled             susfs_is_current_ksu_domain             susfs_ksu_sid             susfs_priv_app_sid; do
+            grep -qE "(^|[[:space:]])${sym}([[:space:]]|$)" <(llvm-nm -n out/vmlinux 2>/dev/null) || {
+              echo "[ERROR] V91: final vmlinux is missing required symbol ${sym}"
+              exit 1
+            }
+          done
+          {
+            echo "manager_package=com.rifsxd.ksunext"
+            echo "manager_signature_size=998"
+            echo "manager_signature_sha256=79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"
+            echo "manager_version=v3.4.0"
+            echo "manager_version_code=33294"
+            echo "kernel_uapi_version=4"
+            echo "final_vmlinux_contract=passed"
+          } | tee ../logs/09-final-ksu-contract.log
+          echo "[OK] V91: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
           echo "::endgroup::"
 
       - name: "9b. DTB diagnostic (non-blocking; captures the hidden dtc error text)"
@@ -2841,7 +2879,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V90-LM-G900-KARNAL
+          kernel.string=V91-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2867,7 +2905,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V90-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V91-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2904,20 +2942,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V87 final output"
+      - name: "12. Upload V91 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V90-LM-G900-KARNAL-output
-          path: V90-LM-G900-KARNAL-output.zip
+          name: V91-LM-G900-KARNAL-output
+          path: V91-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V87 flashable ZIPs"
+      - name: "13. Upload V91 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V90-LM-G900-KARNAL-flashable-zips
+          name: V91-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -3017,7 +3055,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V87 ==="
+            echo "=== A-Z BUILD RECORD V91 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -3082,16 +3120,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V87 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V91 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V87 complete diagnostics (always)"
+      - name: "15. Upload V91 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V90-LM-G900-KARNAL-complete-logs
+          name: V91-LM-G900-KARNAL-complete-logs
           path: |
-            V90-LM-G900-KARNAL-complete-logs.zip
+            V91-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
