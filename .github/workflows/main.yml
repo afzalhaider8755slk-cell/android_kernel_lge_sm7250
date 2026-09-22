@@ -1,4 +1,4 @@
-name: V96-LM-G900-KARNAL-BUILT
+name: V97-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -52,7 +52,17 @@ env:
   # V84: SUSFS acquisition and the audited 4.19 backport remain exactly the same
   # as the previous successful build. Only the KernelSU-Next driver source/integration
   # path and the requested v3.4.0 version are changed in this release.
-  SUSFS_VERSION: 2.3.0
+  # V97: SUSFS 2.3.0 target for the 4.19 non-GKI port. This is a
+  # compatibility port, not a claim that upstream ships an untouched 2.3.0
+  # kernel-4.19 patch. The workflow must verify the kernel-side SUSFS API and
+  # the userspace-facing feature contract before declaring support.
+  SUSFS_TARGET_MAJOR: 2
+  SUSFS_TARGET_MINOR: 3
+  SUSFS_TARGET_PATCH: 0
+  # SUS_SU is intentionally NOT forced on for this 4.19 manual-hook kernel.
+  # Upstream SUSFS documents SUS_SU as unsupported for non-GKI/manual-hook
+  # integration; all other compatible SUSFS facilities remain enabled.
+  SUSFS_NON_GKI_SUS_SU: false
   SUSFS_BACKPORT_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
   SUSFS_BACKPORT_REF: mainline
   SUSFS_BACKPORT_COMMIT: f15603b246d7ce6008af8bdefa0a34b3df28326a
@@ -63,8 +73,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V96
-  OUTPUT_PREFIX: V96-LM-G900-KARNAL
+  WORKFLOW_VERSION: V97
+  OUTPUT_PREFIX: V97-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -1903,6 +1913,54 @@ jobs:
           echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE}."
           echo "::endgroup::"
 
+      - name: "7b. SUSFS 2.3.0 non-GKI compatibility audit"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "::group::[7b/15] SUSFS 2.3.0 compatibility audit"
+          cd kernel
+          : > ../logs/07b-susfs-23-audit.log
+          {
+            echo "target=${SUSFS_TARGET_MAJOR}.${SUSFS_TARGET_MINOR}.${SUSFS_TARGET_PATCH}"
+            echo "kernel=$(make -s kernelversion 2>/dev/null || true)"
+            echo "susfs_backport_commit=${SUSFS_BACKPORT_RESOLVED:-unknown}"
+            echo "sus_su_allowed=${SUSFS_NON_GKI_SUS_SU}"
+          } | tee -a ../logs/07b-susfs-23-audit.log
+
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+          grep -Rqs 'CONFIG_KSU_SUSFS' fs include drivers/kernelsu
+
+          # Kernel/user-space ABI markers introduced/used by modern SUSFS 2.x.
+          # We accept either the direct kernel symbol or the compatibility wrapper
+          # because the 4.19 port may rename internal helpers while keeping the ABI.
+          for marker in \
+            'susfs_get_enabled_features' \
+            'susfs_set_cmdline_or_bootconfig' \
+            'susfs_is_current_ksu_domain' \
+            'susfs_ksu_sid'; do
+            if grep -Rqs --exclude-dir=.git "$marker" fs include drivers/kernelsu; then
+              echo "[OK] SUSFS API marker: $marker" | tee -a ../logs/07b-susfs-23-audit.log
+            else
+              echo "[WARN] SUSFS API marker absent on this port: $marker" | tee -a ../logs/07b-susfs-23-audit.log
+            fi
+          done
+
+          # Detect the known v2.3.0 kstat bit typo if the port carries it.
+          if grep -Rqs 'KSTAT_SPOOF_CTIME_TV_SEC.*(1 < 8)' fs include drivers/kernelsu; then
+            echo '[ERROR] Known SUSFS v2.3.0 KSTAT bit collision detected: (1 < 8)' | tee -a ../logs/07b-susfs-23-audit.log
+            exit 1
+          fi
+
+          # Record the complete feature namespace so the next stages can prove
+          # that every compatible SUSFS option survived olddefconfig.
+          grep -RhoE '^config[[:space:]]+KSU_SUSFS_[A-Za-z0-9_]+' drivers/kernelsu fs include 2>/dev/null \
+            | awk '{print $2}' | sort -u | tee ../logs/07b-susfs-23-kconfig-symbols.txt
+
+          echo '[OK] SUSFS 2.3.0 non-GKI compatibility audit completed.' | tee -a ../logs/07b-susfs-23-audit.log
+          echo '::endgroup::'
+
       - name: "8. Configure features and enforce no-removal policy"
         shell: bash
         run: |
@@ -1916,10 +1974,10 @@ jobs:
           # V84: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
           # so the actual pre-build abort was invisible.
           exec > >(tee -a ../logs/09-step9-full.log) 2>&1
-          trap 'rc=$?; echo "[ERROR] V96 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
+          trap 'rc=$?; echo "[ERROR] V97 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
 
           {
-            echo "=== V96 PRE-BUILD SOURCE AUDIT ==="
+            echo "=== V97 PRE-BUILD SOURCE AUDIT ==="
             echo "kernel_commit=$(git rev-parse HEAD)"
             echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
             echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
@@ -3193,7 +3251,7 @@ jobs:
             echo "CIP selected=${CIP_TARGET:-UNRESOLVED}"
             echo "KernelSU-Next=${KSU_VERSION}"
              echo "KernelSU-Next-manager-build=${KSU_MANAGER_BUILD}"
-            echo "SUSFS=${SUSFS_VERSION}"
+            echo "SUSFS=${SUSFS_VERSION} (target ${SUSFS_TARGET_MAJOR}.${SUSFS_TARGET_MINOR}.${SUSFS_TARGET_PATCH})"
             echo "SUSFS backport repo=${SUSFS_BACKPORT_REPO}"
             echo "SUSFS backport ref=${SUSFS_BACKPORT_REF}"
             echo "Clang=${CLANG_REV}"
@@ -3244,7 +3302,7 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V96 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V97 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
       - name: "15. Upload V96 complete diagnostics (always)"
