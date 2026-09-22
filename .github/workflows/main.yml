@@ -477,26 +477,29 @@ jobs:
           git clone --branch "${KSU_REF}" --single-branch \
             "https://github.com/${KSU_REPO_OWNER}/${KSU_REPO}" KernelSU-Next
 
-          # V78 ROOT FIX: KernelSU-Next Manager v3.4.0 uses the new UAPI-based
-          # compatibility/detection path. The legacy branch predates that change,
-          # so its GET_INFO response has no uapi_version field. Manager therefore
-          # cannot establish a compatible built-in legacy driver and reports the
-          # generic non-GKI "Not integrated" state even when CONFIG_KSU=y.
+          # V81 SOURCE-LEVEL FIX — The legacy UAPI already contains the modern
+          # ksu_get_info_cmd.uapi_version field, but it defines KERNEL_SU_UAPI_VERSION
+          # as 2. V78 incorrectly inserted a second *static const* value of 4 while
+          # leaving the old #define 2 in place. The preprocessor therefore made the
+          # actual dispatch.c value 2 even though the grep-based validation reported 4.
           #
-          # Upstream's version-matching change (KernelSU #3516, carried into
-          # KernelSU-Next as e801e16) changes only the kernel UAPI plumbing:
-          # KERNEL_SU_UAPI_VERSION=4, the uapi_version field in GET_INFO, and
-          # population of that field in both normal and legacy GET_INFO paths.
-          # Backport exactly those kernel-side pieces to the legacy driver rather
-          # than merging the unrelated v3.4.0/GKI kernel history. This preserves
-          # the legacy/manual-hook implementation while making its UAPI visible to
-          # the v3.4.0 Manager.
+          # V78 also incorrectly wrote cmd.uapi_version in do_get_info_legacy(), whose
+          # struct intentionally has no uapi_version field. That changes/invalidates
+          # the legacy ioctl path and can produce a compile error on the real source.
+          #
+          # Correct source-level contract:
+          #   1) exactly one KERNEL_SU_UAPI_VERSION definition, value 4;
+          #   2) ksu_get_info_cmd contains uapi_version;
+          #   3) modern do_get_info() returns uapi_version=4;
+          #   4) do_get_info_legacy() remains ABI-compatible and is NOT modified.
+          # This backports only the UAPI detection contract; the official legacy
+          # manual-hook driver, SUSFS, and all existing kernel features remain intact.
           UAPI_H="KernelSU-Next/uapi/supercall.h"
           DISPATCH_C="KernelSU-Next/kernel/supercall/dispatch.c"
           test -f "$UAPI_H"
           test -f "$DISPATCH_C"
 
-          python3 - "$UAPI_H" "$DISPATCH_C" <<'PY_V78_UAPI'
+          python3 - "$UAPI_H" "$DISPATCH_C" <<'PY_V81_UAPI'
           from pathlib import Path
           import re, sys
 
@@ -505,75 +508,139 @@ jobs:
           us = uapi.read_text()
           ds = dispatch.read_text()
 
-          # Keep the UAPI version aligned with the v3.4.0 Manager's UAPI contract.
-          m = re.search(r'(?m)^\s*static const __u32 KERNEL_SU_UAPI_VERSION\s*=\s*(\d+)\s*;', us)
-          if m:
-              if m.group(1) != '4':
-                  us = us[:m.start()] + 'static const __u32 KERNEL_SU_UAPI_VERSION = 4;' + us[m.end():]
-          else:
-              anchor = '#include "uapi/app_profile.h"'
-              if anchor not in us:
-                  raise SystemExit('[ERROR] V78: UAPI include anchor missing')
-              us = us.replace(anchor, anchor + '\n\n// 4: add KSU_GET_INFO_FLAG_BUNDLED / UAPI version matching\nstatic const __u32 KERNEL_SU_UAPI_VERSION = 4;', 1)
+          # Normalize ALL existing legacy/v3.4.0 forms to one exact definition.
+          # This handles both:
+          #   #define KERNEL_SU_UAPI_VERSION 2
+          # and:
+          #   static const __u32 KERNEL_SU_UAPI_VERSION = 2;
+          patterns = [
+              r'(?m)^[ \t]*#define[ \t]+KERNEL_SU_UAPI_VERSION[ \t]+[^\n]+\n?',
+              r'(?m)^[ \t]*static[ \t]+const[ \t]+__u32[ \t]+KERNEL_SU_UAPI_VERSION[ \t]*=[ \t]*[0-9]+[ \t]*;[ \t]*\n?',
+          ]
+          for pat in patterns:
+              us = re.sub(pat, '', us)
 
-          # The legacy branch has the 3-field GET_INFO structure. Add the fourth
-          # field only when it is genuinely absent; do not rewrite existing ABI fields.
+          anchor = '#include "uapi/app_profile.h"'
+          if anchor not in us:
+              raise SystemExit('[ERROR] V81: UAPI include anchor missing')
+          us = us.replace(
+              anchor,
+              anchor + '\n\n// KernelSU-Next UAPI v4: Manager/kernel compatibility contract\n'
+              'static const __u32 KERNEL_SU_UAPI_VERSION = 4;',
+              1
+          )
+
+          # Add the bundled flag if this legacy header does not already have it.
           if 'KSU_GET_INFO_FLAG_BUNDLED' not in us:
               marker = 'static const __u32 KSU_GET_INFO_FLAG_PR_BUILD = (1U << 3);'
+              define_marker = '#define KSU_GET_INFO_FLAG_PR_BUILD (1U << 3)'
               if marker in us:
-                  us = us.replace(marker, marker + '\\nstatic const __u32 KSU_GET_INFO_FLAG_BUNDLED = (1U << 4);', 1)
+                  us = us.replace(
+                      marker,
+                      marker + '\nstatic const __u32 KSU_GET_INFO_FLAG_BUNDLED = (1U << 4);',
+                      1
+                  )
+              elif define_marker in us:
+                  us = us.replace(
+                      define_marker,
+                      define_marker + '\n#define KSU_GET_INFO_FLAG_BUNDLED (1U << 4)',
+                      1
+                  )
               else:
-                  raise SystemExit('[ERROR] V78: v3.4.0 PR_BUILD flag anchor missing')
-          if 'uapi_version' not in us:
-              pat = r'(struct\s+ksu_get_info_cmd\s*\{.*?__u32\s+features;[^\n]*\n)'
-              us, n = re.subn(pat, r'\1    __u32 uapi_version; /* Output: KERNEL_SU_UAPI_VERSION */\n', us, count=1, flags=re.S)
-              if n != 1:
-                  raise SystemExit('[ERROR] V78: could not add uapi_version to ksu_get_info_cmd')
+                  raise SystemExit('[ERROR] V81: PR_BUILD flag anchor missing')
 
-          # Populate the new field in both GET_INFO handlers. Legacy kernels use
-          # do_get_info_legacy() for the older supercall path, so both paths matter.
-          for fn in ('do_get_info', 'do_get_info_legacy'):
-              start = ds.find('static int ' + fn)
-              if start < 0:
-                  raise SystemExit(f'[ERROR] V78: {fn}() not found in dispatch.c')
-              end = ds.find('\n}', start)
-              if end < 0:
-                  raise SystemExit(f'[ERROR] V78: end of {fn}() not found')
-              block = ds[start:end]
-              if 'cmd.uapi_version' not in block:
-                  # Put it directly after the features assignment, which keeps the
-                  # GET_INFO output construction deterministic.
-                  mm = re.search(r'(?m)^([ \t]*)cmd\.features\s*=.*?;\s*$', block)
-                  if not mm:
-                      raise SystemExit(f'[ERROR] V78: features assignment not found in {fn}()')
-                  line = mm.group(0)
-                  indent = mm.group(1)
-                  replacement = line + '\n' + indent + 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION;'
-                  block = block.replace(line, replacement, 1)
-                  ds = ds[:start] + block + ds[end:]
+          # The modern GET_INFO struct must expose the fourth field.
+          m = re.search(
+              r'(struct\s+ksu_get_info_cmd\s*\{.*?__u32\s+features;[^\n]*\n)',
+              us, flags=re.S
+          )
+          if not m:
+              raise SystemExit('[ERROR] V81: ksu_get_info_cmd/features field not found')
+          block = m.group(1)
+          if 'uapi_version' not in block:
+              replacement = block + '    __u32 uapi_version; /* Output: KERNEL_SU_UAPI_VERSION */\n'
+              us = us[:m.start()] + replacement + us[m.end():]
+
+          # Modern handler: add the runtime UAPI value exactly once.
+          start = ds.find('static int do_get_info(void __user *arg)')
+          if start < 0:
+              raise SystemExit('[ERROR] V81: do_get_info() not found in dispatch.c')
+          end = ds.find('\n}', start)
+          if end < 0:
+              raise SystemExit('[ERROR] V81: end of do_get_info() not found')
+          modern = ds[start:end]
+          if 'cmd.uapi_version' not in modern:
+              mm = re.search(r'(?m)^([ \t]*)cmd\.features\s*=.*?;\s*$', modern)
+              if not mm:
+                  raise SystemExit('[ERROR] V81: do_get_info() features assignment not found')
+              line = mm.group(0)
+              indent = mm.group(1)
+              modern = modern.replace(
+                  line,
+                  line + '\n' + indent + 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION;',
+                  1
+              )
+              ds = ds[:start] + modern + ds[end:]
+
+          # Never modify the legacy 3-field GET_INFO_LEGACY ABI.
+          start_legacy = ds.find('static int do_get_info_legacy(void __user *arg)')
+          if start_legacy < 0:
+              raise SystemExit('[ERROR] V81: do_get_info_legacy() not found in dispatch.c')
+          end_legacy = ds.find('\n}', start_legacy)
+          if end_legacy < 0:
+              raise SystemExit('[ERROR] V81: end of do_get_info_legacy() not found')
+          legacy_block = ds[start_legacy:end_legacy]
+          if 'cmd.uapi_version' in legacy_block:
+              legacy_block = re.sub(
+                  r'(?m)^[ \t]*cmd\.uapi_version\s*=\s*KERNEL_SU_UAPI_VERSION;\s*\n?',
+                  '',
+                  legacy_block
+              )
+              ds = ds[:start_legacy] + legacy_block + ds[end_legacy:]
 
           uapi.write_text(us)
           dispatch.write_text(ds)
-          print('[FIX] V78: backported KernelSU-Next UAPI v4 GET_INFO contract to legacy driver')
-          PY_V78_UAPI
 
-          # V78 source-level assertions: these must be true before any kernel build.
-          grep -q 'KERNEL_SU_UAPI_VERSION = 4' "$UAPI_H"
-          grep -q 'KSU_GET_INFO_FLAG_BUNDLED' "$UAPI_H"
+          # Source-level invariants: fail if the source is ambiguous or the wrong
+          # ioctl path was modified.
+          version_defs = re.findall(
+              r'(?m)^[ \t]*(?:#define[ \t]+KERNEL_SU_UAPI_VERSION[ \t]+[^\n]+|'
+              r'static[ \t]+const[ \t]+__u32[ \t]+KERNEL_SU_UAPI_VERSION[ \t]*=[ \t]*[0-9]+[ \t]*;)',
+              us
+          )
+          if len(version_defs) != 1:
+              raise SystemExit(f'[ERROR] V81: expected exactly one UAPI version definition, found {len(version_defs)}')
+          if not re.search(r'KERNEL_SU_UAPI_VERSION\s*=\s*4\s*;', us):
+              raise SystemExit('[ERROR] V81: UAPI version definition is not exactly 4')
+          if 'uapi_version' not in re.search(
+              r'struct\s+ksu_get_info_cmd\s*\{.*?\n\}', us, flags=re.S
+          ).group(0):
+              raise SystemExit('[ERROR] V81: modern GET_INFO struct has no uapi_version')
+          if 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION;' not in modern:
+              raise SystemExit('[ERROR] V81: modern GET_INFO does not populate uapi_version')
+          if 'cmd.uapi_version' in legacy_block:
+              raise SystemExit('[ERROR] V81: legacy GET_INFO path still references uapi_version')
+          print('[FIX] V81: corrected legacy UAPI v4 source contract; modern GET_INFO only')
+          PY_V81_UAPI
+
+          # Strong source checks. These validate the preprocessed contract rather than
+          # merely grepping for a stray "4" while an older macro can still win.
+          test "$(grep -Ec '^[[:space:]]*(#define[[:space:]]+KERNEL_SU_UAPI_VERSION|static[[:space:]]+const[[:space:]]+__u32[[:space:]]+KERNEL_SU_UAPI_VERSION)' "$UAPI_H")" -eq 1
+          grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*4;' "$UAPI_H"
           grep -q 'uapi_version' "$UAPI_H"
-          grep -q 'KSU_GET_INFO_FLAG_BUNDLED' "$UAPI_H"
           grep -q 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION' "$DISPATCH_C"
-          grep -q 'static int do_get_info(void __user \*arg)' "$DISPATCH_C"
-          grep -q 'static int do_get_info_legacy(void __user \*arg)' "$DISPATCH_C"
-          echo "[OK] V78: modern GET_INFO returns UAPI v4; legacy ioctl ABI remains untouched"
-          grep -q 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION' "$DISPATCH_C"
+          if awk '/static int do_get_info_legacy\(void __user \*arg\)/,/^}/' "$DISPATCH_C" | grep -q 'cmd\.uapi_version'; then
+            echo "[ERROR] V81: legacy GET_INFO ABI was modified."
+            exit 1
+          fi
+          echo "[OK] V81: actual source now returns UAPI v4 through modern GET_INFO; legacy ioctl ABI untouched."
           {
             echo "uapi_version=4"
-            echo "uapi_source=KernelSU-Next v3.4.0 tag 1a879d6; UAPI v4 (bundled flag + GET_INFO uapi_version)"
+            echo "uapi_source=KernelSU-Next v3.4.0 tag 1a879d6 UAPI contract backported to official legacy driver"
             echo "uapi_file=${UAPI_H}"
             echo "dispatch_file=${DISPATCH_C}"
+            echo "legacy_get_info_abi=untouched"
           } | tee ../logs/06-kernelsu-uapi-v4.log
-          echo "[OK] V78: Manager v3.4.0 UAPI v4 contract is present in legacy kernel source"
 
           # V78: DO NOT merge the normal v3.4.0 release into legacy.
           # Upstream keeps non-GKI/4.x support on the separate `legacy` branch; the
@@ -1923,7 +1990,7 @@ jobs:
             exit 1
           fi
 
-          # V79 FIX — Do not impose a stale task_work API requirement on the actual legacy source.
+          # V81 FIX — Do not impose a stale task_work API requirement on the actual legacy source.
           # The pinned KernelSU-Next legacy commit (dd074bc6...) has no task_work_add() path
           # in policy/allowlist.c. The previous V35 compatibility block was written for a
           # different KernelSU source layout and therefore aborted a valid legacy checkout.
