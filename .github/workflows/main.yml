@@ -1235,8 +1235,13 @@ jobs:
           need(kbuild, "KSU_NEXT_MANAGER_HASH", "Manager certificate hash contract")
           need(apk_sign, "KSU_MANAGER_PACKAGE", "Manager package contract")
 
+          # Pre-SUSFS contract only: ksu_handle_post_execveat_sucompat is
+          # intentionally deferred to the post-SUSFS audit below because the
+          # pinned legacy KernelSU source does not provide that SUSFS-specific
+          # symbol before Step 7's SUSFS 2.3.0 inline-hook integration.
+          # Requiring it here makes Step 6b fail before the integration that
+          # is supposed to introduce/consume the SUSFS-side contract.
           required = [
-              "ksu_handle_post_execveat_sucompat",
               "ksu_handle_vfs_fstat",
               "ksu_is_init_rc_hook_enabled",
               "ksu_is_input_hook_enabled",
@@ -1930,6 +1935,16 @@ jobs:
           test -f include/linux/susfs.h
           test -f include/linux/susfs_def.h
           grep -Rqs 'CONFIG_KSU_SUSFS' fs include drivers/kernelsu
+
+          # This symbol is a SUSFS 2.3.0 post-exec contract, not a pre-SUSFS
+          # KernelSU legacy contract. Verify it only after Step 7's inline
+          # hook stage has had a chance to add the corresponding call site.
+          if grep -Rqs --exclude-dir=.git 'ksu_handle_post_execveat_sucompat' fs include drivers/kernelsu; then
+            echo '[OK] SUSFS post-exec sucompat contract is present after Step 7.' | tee -a ../logs/07b-susfs-23-audit.log
+          else
+            echo '[ERROR] SUSFS 2.3.0 post-exec sucompat contract is missing after Step 7.' | tee -a ../logs/07b-susfs-23-audit.log
+            exit 1
+          fi
 
           # Kernel/user-space ABI markers introduced/used by modern SUSFS 2.x.
           # We accept either the direct kernel symbol or the compatibility wrapper
