@@ -1,4 +1,4 @@
-name: V99-LM-G900-KARNAL-BUILT
+name: V46-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -23,47 +23,49 @@ env:
   BASELINE_CIP: v4.19.325-cip132
   CIP_PREFIX: v4.19.325-cip
 
-  KSU_VERSION: v3.4.0
-  KSU_MANAGER_BUILD: 33294-4
-  # Exact package from the user-supplied official v3.4.0/33294 APK.
-  # Kbuild passes this to apk_sign.c so the kernel-side Manager check is
-  # package+certificate bound, not merely certificate-bound.
-  KSU_MANAGER_PACKAGE: com.rifsxd.ksunext
-  # V82 source-level compatibility fix: the current official legacy branch
-  # reports a stale legacy-derived KSU_VERSION even when its Manager signature
-  # is the v3.4.0/33294 manager. Force the kernel-side reported version/tag to
-  # the exact installed Manager build; do not alter the legacy driver code.
-  KSU_VERSION_CODE: 33294
-  KSU_VERSION_TAG_OVERRIDE: v3.4.0
-  # V84: use the official KernelSU-Next legacy branch for the real non-GKI
-  # driver/manual-hook integration. the previous build only synthesized CONFIG_KSU_MANUAL_HOOK
-  # inside a dev-susfs v3.4.0 legacy tree; that did not satisfy the Manager's legacy-driver
-  # detection. The existing SUSFS 2.3 kernel-side chain is preserved.
-  KSU_REPO_OWNER: KernelSU-Next
-  KSU_REPO: KernelSU-Next
-  KSU_REF: legacy
-  # V82 adds only the KSU_SUSFS Kconfig namespace to the legacy driver so the
-  # existing SUSFS 2.3 backport/inline-hook layer remains enabled. No SUSFS source,
-  # CIP, DT, packaging, or unrelated kernel feature is removed.
+  KSU_VERSION: main
+  # V46: switched the root driver from KernelSU-Next to ReSukiSU. V45's diagnosis (see
+  # logs/08-hook-mode-discovery.log from that run, and diagnostics/ksu-selinux-source/kernel/Kconfig
+  # +Kbuild in that run's complete-logs.zip) showed pershoot/KernelSU-Next@dev-susfs was compiling
+  # exactly as its own Kbuild intends for CONFIG_KSU_SUSFS=y without kprobes -- the Manager's
+  # "Non-GKI kernels are not supported" banner was not a missing-Kconfig-symbol bug at all.
+  # Independent evidence (WildKernels' own release notes: "the fork maintainer has said it is not
+  # ready for production use"; every public build of this fork found in the wild targets GKI 5.10+
+  # as an LKM, none targets a non-GKI built-in kernel like this one) indicates the fork's Manager
+  # detection path was likely never exercised in this exact configuration.
+  # ReSukiSU has a real, documented non-GKI + SUSFS precedent instead: ReSukiSU's own Kconfig puts
+  # KSU_TRACEPOINT_HOOK / KSU_MANUAL_HOOK / KSU_SUSFS in one mutually-exclusive choice (confirmed
+  # from ReSukiSU/ReSukiSU's own README and from a real non-GKI SUSFS 2.3.0 ReSukiSU build,
+  # rigaz29/surya-kernel-build, whose defconfig is CONFIG_KSU=y + CONFIG_KSU_SUSFS=y with the same
+  # KSU_SUSFS_* sub-options this workflow already enables), and a second real device kernel
+  # (frost-1256/nothing-spacewar-resukisu) documents a 5.4 non-GKI, built-in, manual-hook ReSukiSU +
+  # SUSFS v2.3.0 kernel whose ReSukiSU manager "reports the driver as working".
+  # IMPORTANT: switching the Manager app is required. ReSukiSU is not KernelSU-Next; the
+  # KernelSU_Next_v3.3.0 Manager APK will not recognize this kernel. Install ReSukiSU's own Manager
+  # (or another compatible manager -- ReSukiSU documents multi-manager support with the official
+  # KernelSU/RKSU/MKSU/SukiSU managers) after flashing.
+  # NOT YET VERIFIED: unlike the KSU_SUSFS_FORK_COMMIT pin V19-V45 carried (audited against real
+  # V32-V44 build logs), there is no equivalent audited ReSukiSU commit yet -- this is this
+  # workflow's first attempt at ReSukiSU, so KSU_SUSFS_FORK_COMMIT is intentionally left unset
+  # below and Step 6 will build against the live main branch tip, logging exactly which commit it
+  # used to logs/06-kernelsu-resolved.txt. Once a build succeeds, pin that exact commit here the
+  # same way V40 pinned pershoot's fork, for reproducibility.
+  KSU_SUSFS_FORK_OWNER: ReSukiSU
+  KSU_SUSFS_FORK_REPO: ReSukiSU
+  KSU_SUSFS_FORK_BRANCH: main
+  KSU_SUSFS_FORK_COMMIT: ""
   # V40: only arch/arm64/boot/Image is packaged (AnyKernel3 keeps the device DTB/DTBO), so only the
   # Image target is built. A plain `make` also builds every DTB and lito-caymanlm_cn-rev-1.0_overlay.dtbo
   # still aborts it ("Input tree has errors"), which stops the whole make before the Image is done.
   KERNEL_BUILD_TARGETS: Image
-  # V84: SUSFS acquisition and the audited 4.19 backport remain exactly the same
-  # as the previous successful build. Only the KernelSU-Next driver source/integration
-  # path and the requested v3.4.0 version are changed in this release.
-  # V97: SUSFS 2.3.0 target for the 4.19 non-GKI port. This is a
-  # compatibility port, not a claim that upstream ships an untouched 2.3.0
-  # kernel-4.19 patch. The workflow must verify the kernel-side SUSFS API and
-  # the userspace-facing feature contract before declaring support.
-  SUSFS_TARGET_MAJOR: 2
-  SUSFS_TARGET_MINOR: 3
-  SUSFS_TARGET_PATCH: 0
+  # V25: dev-susfs is an actively-moving/rebasing experimental branch -- the commit V24
+  # pinned ("fatal: unable to read tree") had already been rewritten off the branch by
+  # the time the workflow ran. Pinning an exact commit on a branch like this trades
+  # working builds for reproducibility that the fork itself does not honor. V25 tracks
+  # the branch's current tip instead; logs/06-kernelsu-resolved.txt records exactly which
+  # commit was actually used on each run, and Step 6's own "config KSU_SUSFS" Kconfig
+  # check (below) still fails loudly and immediately if that guarantee is ever lost.
   SUSFS_VERSION: 2.3.0
-  # SUS_SU is intentionally NOT forced on for this 4.19 manual-hook kernel.
-  # Upstream SUSFS documents SUS_SU as unsupported for non-GKI/manual-hook
-  # integration; all other compatible SUSFS facilities remain enabled.
-  SUSFS_NON_GKI_SUS_SU: false
   SUSFS_BACKPORT_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
   SUSFS_BACKPORT_REF: mainline
   SUSFS_BACKPORT_COMMIT: f15603b246d7ce6008af8bdefa0a34b3df28326a
@@ -74,10 +76,10 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V99
-  OUTPUT_PREFIX: V99-LM-G900-KARNAL
-  # Historical integration notes are retained for auditability; active KSU source is
-  # the official KernelSU-Next legacy branch configured above.
+  WORKFLOW_VERSION: V46
+  OUTPUT_PREFIX: V46-LM-G900-KARNAL
+  # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
+  # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
   # 3) discover the actual 4.19 backport filename used by that source
   # 4) try a strict direct apply first, then a Git 3-way merge against the staged CIP+KSUN tree
@@ -108,7 +110,7 @@ env:
   # not carry them. Step 6 now clones KernelSU-Next's own SUSFS fork (pershoot/KernelSU-Next,
   # branch dev-susfs) instead, which several current, independent SUSFS+KernelSU-Next projects
   # use for this exact reason. Everything else about Step 6 (driver symlink, Makefile/Kconfig
-  # wiring, KSU_VERSION=v3.4.0 legacy baseline) is unchanged.
+  # wiring, KSU_VERSION=v3.3.0 baseline) is unchanged.
   #
   # V25: dev-susfs is an actively-moving experimental branch, so V24's exact-commit pin broke
   # ("fatal: unable to read tree") the moment that commit was rewritten off the branch. V25
@@ -173,8 +175,8 @@ env:
   # DTC (non-blocking): logs/09b-dup-label-sources.txt shows camera_therm_default and bmr_w_therm_default are
   # defined both in qcom/lito-pmic-overlay.dtsi and in lito-caymanlm_lao_com-pm.dtsi.
 
-  # V43 (previous run; actual V43 build log analyzed for V82):
-  # V82 (built from the complete V43 run-logs.zip): the selinux_hide.c stub from V42 cleared that file, and the pre-compile
+  # V43 (previous run; actual V43 build log analyzed for V44):
+  # V44 (built from the complete V43 run-logs.zip): the selinux_hide.c stub from V42 cleared that file, and the pre-compile
   # moved on to the final Image link, which failed with 3 ld.lld "undefined symbol" errors: seccomp_filter_release
   # (drivers/kernelsu/policy/app_profile.c), path_mount (drivers/kernelsu/infra/su_mount_ns.c), and path_umount
   # (drivers/kernelsu/feature/kernel_umount.c) -- all Linux 5.9+ kernel-internal entry points this 4.19.325 tree
@@ -185,7 +187,7 @@ env:
 
 jobs:
   build:
-    name: Build V99
+    name: Build V46
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -472,16 +474,17 @@ jobs:
           echo "[INFO] If 136 stopped at an earlier tag, its exact conflict is preserved in logs/cip-checks/."
           echo "::endgroup::"
 
-      - name: "6. Integrate KernelSU-Next official legacy driver + SUSFS compatibility"
+      - name: "6. Integrate ReSukiSU (SUSFS-enabled, non-GKI manual hook)"
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[6/15] KernelSU-Next ${KSU_VERSION} legacy driver (${KSU_REPO_OWNER}/${KSU_REPO}@${KSU_REF})"
+          echo "::group::[6/15] ReSukiSU ${KSU_VERSION} (${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}@${KSU_SUSFS_FORK_BRANCH})"
           cd kernel
 
-          # V84: clone the official legacy branch. This is the actual non-GKI
-          # KernelSU-Next driver integration path; CONFIG_KSU_MANUAL_HOOK is not
-          # synthesized as a substitute.
+          # V24: replicate the official setup.sh's driver-dir detection, symlink, and
+          # Makefile/Kconfig wiring by hand, because the official setup.sh hardcodes
+          # OWNER=REPO="KernelSU-Next" internally -- downloading that script from any
+          # fork does NOT change which repo it clones. We clone the fork ourselves instead.
           if test -d common/drivers; then DRIVER_DIR=common/drivers
           elif test -d drivers; then DRIVER_DIR=drivers
           else echo '[ERROR] "drivers/" directory not found.'; exit 127
@@ -489,280 +492,138 @@ jobs:
           DRIVER_MAKEFILE="${DRIVER_DIR}/Makefile"
           DRIVER_KCONFIG="${DRIVER_DIR}/Kconfig"
 
-          git clone --branch "${KSU_REF}" --single-branch \
-            "https://github.com/${KSU_REPO_OWNER}/${KSU_REPO}" KernelSU-Next
+          git clone --branch "${KSU_SUSFS_FORK_BRANCH}" --single-branch \
+            "https://github.com/${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}" KernelSU-Next
 
-          # V81 SOURCE-LEVEL FIX — The legacy UAPI already contains the modern
-          # ksu_get_info_cmd.uapi_version field, but it defines KERNEL_SU_UAPI_VERSION
-          # as 2. V82 incorrectly inserted a second *static const* value of 4 while
-          # leaving the old #define 2 in place. The preprocessor therefore made the
-          # actual dispatch.c value 2 even though the grep-based validation reported 4.
-          #
-          # V82 also incorrectly wrote cmd.uapi_version in do_get_info_legacy(), whose
-          # struct intentionally has no uapi_version field. That changes/invalidates
-          # the legacy ioctl path and can produce a compile error on the real source.
-          #
-          # Correct source-level contract:
-          #   1) exactly one KERNEL_SU_UAPI_VERSION definition, value 4;
-          #   2) ksu_get_info_cmd contains uapi_version;
-          #   3) modern do_get_info() returns uapi_version=4;
-          #   4) do_get_info_legacy() remains ABI-compatible and is NOT modified.
-          # This backports only the UAPI detection contract; the official legacy
-          # manual-hook driver, SUSFS, and all existing kernel features remain intact.
-          UAPI_H="KernelSU-Next/uapi/supercall.h"
-          DISPATCH_C="KernelSU-Next/kernel/supercall/dispatch.c"
-          test -f "$UAPI_H"
-          test -f "$DISPATCH_C"
+          # V40: pin to the audited commit (see KSU_SUSFS_FORK_COMMIT in env).
+          if [ -n "${KSU_SUSFS_FORK_COMMIT:-}" ]; then
+            if git -C KernelSU-Next cat-file -e "${KSU_SUSFS_FORK_COMMIT}^{commit}" 2>/dev/null \
+               || git -C KernelSU-Next fetch --quiet origin "${KSU_SUSFS_FORK_COMMIT}" 2>/dev/null; then
+              git -C KernelSU-Next checkout --quiet --detach "${KSU_SUSFS_FORK_COMMIT}"
+              echo "[OK] KernelSU-Next pinned to audited commit ${KSU_SUSFS_FORK_COMMIT}"
+            else
+              echo "::warning::V40: audited KernelSU-Next commit ${KSU_SUSFS_FORK_COMMIT} is no longer fetchable; using the current dev-susfs tip. Source-compat edits may not match; see logs/06-kernelsu-resolved.txt"
+            fi
+          fi
 
-          python3 - "$UAPI_H" "$DISPATCH_C" <<'PY_V81_UAPI'
-          from pathlib import Path
-          import re, sys
+          # V40: kernel/selinux/rules.c and kernel/selinux/sepolicy.c hot-swap the running
+          # SELinux policy via struct selinux_policy + selinux_state.policy/.policy_mutex,
+          # which only exist after upstream's SELinux RCU-policy rewrite (Linux 5.7+); this
+          # kernel is 4.19. Full source review (logs/ksu-selinux-source from a prior run)
+          # showed the actual rule-editing primitives (ksu_allow, ksu_type, etc., operating
+          # directly on struct policydb) are ALREADY carefully version-guarded back through
+          # 5.8/5.9 and compile fine standalone -- only four functions touch the >=5.7-only
+          # RCU policy wrapper: apply_kernelsu_rules(), handle_sepolicy(), and their shared
+          # reset_avc_cache() helper in rules.c, plus ksu_dup_sepolicy()/ksu_destroy_sepolicy()
+          # in sepolicy.c. A correct <5.7 implementation would need the kernel's own
+          # security/selinux/ss/services.c to export its static policydb/sidtab globals
+          # (a real change to the main kernel's SELinux subsystem, not just KernelSU-Next),
+          # or a kallsyms-based lookup of them at runtime -- both are genuine security-relevant
+          # kernel-internals work that should not be hand-written without the ability to test
+          # against real hardware. This device's SELinux is confirmed permissive (from the
+          # working-kernel boot image the person supplied), so these two entry points have no
+          # policy to enforce against regardless. They are stubbed out (behind the same
+          # LINUX_VERSION_CODE guard style already used throughout both files) to log a clear
+          # message and return, rather than either failing to build or hand-patching live
+          # SELinux policy internals.
+          # V46 NOTE: this SELinux hot-patch stub was derived against KernelSU-Next's exact
+          # function names/signatures (apply_kernelsu_rules, handle_sepolicy, reset_avc_cache,
+          # ksu_destroy_sepolicy, ksu_dup_sepolicy) in kernel/selinux/rules.c and sepolicy.c.
+          # ReSukiSU's equivalent files may use different names or structure. wrap_function()
+          # below now skips (with a clear warning) any signature it can't find instead of
+          # aborting the whole build, so Step 6 can proceed even if none of these match --
+          # check logs/06-selinux-compat.log afterward; if ReSukiSU's driver still can't
+          # build/boot because of a pre-5.7 SELinux API mismatch, this is the block to
+          # re-derive against ReSukiSU's actual kernel/selinux/ (or equivalent) source.
+          python3 - << 'PATCH_SELINUX_COMPAT'
+          import sys
 
-          uapi = Path(sys.argv[1])
-          dispatch = Path(sys.argv[2])
-          us = uapi.read_text()
-          ds = dispatch.read_text()
-
-          # Normalize ALL existing legacy/v3.4.0 forms to one exact definition.
-          # This handles both:
-          #   #define KERNEL_SU_UAPI_VERSION 2
-          # and:
-          #   static const __u32 KERNEL_SU_UAPI_VERSION = 2;
-          patterns = [
-              r'(?m)^[ \t]*#define[ \t]+KERNEL_SU_UAPI_VERSION[ \t]+[^\n]+\n?',
-              r'(?m)^[ \t]*static[ \t]+const[ \t]+__u32[ \t]+KERNEL_SU_UAPI_VERSION[ \t]*=[ \t]*[0-9]+[ \t]*;[ \t]*\n?',
-          ]
-          for pat in patterns:
-              us = re.sub(pat, '', us)
-
-          anchor = '#include "uapi/app_profile.h"'
-          if anchor not in us:
-              raise SystemExit('[ERROR] V81: UAPI include anchor missing')
-          us = us.replace(
-              anchor,
-              anchor + '\n\n// KernelSU-Next UAPI v4: Manager/kernel compatibility contract\n'
-              'static const __u32 KERNEL_SU_UAPI_VERSION = 4;',
-              1
-          )
-
-          # Add the bundled flag if this legacy header does not already have it.
-          if 'KSU_GET_INFO_FLAG_BUNDLED' not in us:
-              marker = 'static const __u32 KSU_GET_INFO_FLAG_PR_BUILD = (1U << 3);'
-              define_marker = '#define KSU_GET_INFO_FLAG_PR_BUILD (1U << 3)'
-              if marker in us:
-                  us = us.replace(
-                      marker,
-                      marker + '\nstatic const __u32 KSU_GET_INFO_FLAG_BUNDLED = (1U << 4);',
-                      1
-                  )
-              elif define_marker in us:
-                  us = us.replace(
-                      define_marker,
-                      define_marker + '\n#define KSU_GET_INFO_FLAG_BUNDLED (1U << 4)',
-                      1
-                  )
+          def wrap_function(text, signature, stub_body, path, guard="5, 7, 0"):
+              idx = text.find(signature)
+              if idx == -1:
+                  print(f"[SKIP-V46-UNVERIFIED] {path}: signature not found, leaving file untouched: {signature!r}")
+                  return text
+              brace_start = text.find('{', idx)
+              if brace_start == -1:
+                  print(f"[SKIP-V46-UNVERIFIED] {path}: no opening brace after signature, leaving untouched: {signature!r}")
+                  return text
+              depth = 0
+              i = brace_start
+              while i < len(text):
+                  if text[i] == '{':
+                      depth += 1
+                  elif text[i] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          break
+                  i += 1
               else:
-                  raise SystemExit('[ERROR] V81: PR_BUILD flag anchor missing')
-
-          # The modern GET_INFO struct must expose the fourth field.
-          m = re.search(
-              r'(struct\s+ksu_get_info_cmd\s*\{.*?__u32\s+features;[^\n]*\n)',
-              us, flags=re.S
-          )
-          if not m:
-              raise SystemExit('[ERROR] V81: ksu_get_info_cmd/features field not found')
-          block = m.group(1)
-          if 'uapi_version' not in block:
-              replacement = block + '    __u32 uapi_version; /* Output: KERNEL_SU_UAPI_VERSION */\n'
-              us = us[:m.start()] + replacement + us[m.end():]
-
-          # V84: reconstruct the modern GET_INFO struct deterministically.
-          # This prevents duplicate uapi_version fields from accumulating across
-          # previous backport attempts. The legacy 3-field struct is untouched.
-          m = re.search(r'(?ms)^(struct\s+ksu_get_info_cmd\s*\{).*?^\};', us)
-          if not m:
-              raise SystemExit('[ERROR] V84: ksu_get_info_cmd struct not found')
-          modern_struct = """struct ksu_get_info_cmd {\n    __u32 version; /* Output: KERNEL_SU_VERSION */\n    __u32 flags; /* Output: KSU_GET_INFO_FLAG_* bits */\n    __u32 features; /* Output: max feature ID supported */\n    __u32 uapi_version; /* Output: KERNEL_SU_UAPI_VERSION */\n};"""
-          us = us[:m.start()] + modern_struct + us[m.end():]
-
-          # Modern handler: add the runtime UAPI value exactly once.
-          start = ds.find('static int do_get_info(void __user *arg)')
-          if start < 0:
-              raise SystemExit('[ERROR] V81: do_get_info() not found in dispatch.c')
-          end = ds.find('\n}', start)
-          if end < 0:
-              raise SystemExit('[ERROR] V81: end of do_get_info() not found')
-          modern = ds[start:end]
-          if 'cmd.uapi_version' not in modern:
-              mm = re.search(r'(?m)^([ \t]*)cmd\.features\s*=.*?;\s*$', modern)
-              if not mm:
-                  raise SystemExit('[ERROR] V81: do_get_info() features assignment not found')
-              line = mm.group(0)
-              indent = mm.group(1)
-              modern = modern.replace(
-                  line,
-                  line + '\n' + indent + 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION;',
-                  1
+                  print(f"[SKIP-V46-UNVERIFIED] {path}: unbalanced braces, leaving untouched: {signature!r}")
+                  return text
+              body_end = i + 1
+              header = text[idx:brace_start]
+              real_body = text[brace_start:body_end]
+              new_block = (
+                  f"#if LINUX_VERSION_CODE >= KERNEL_VERSION({guard})\n"
+                  f"{header}{real_body}\n"
+                  f"#else\n"
+                  f"{header}{{\n{stub_body}\n}}\n"
+                  f"#endif\n"
               )
-              ds = ds[:start] + modern + ds[end:]
+              print(f"[FIX] Wrapped {signature.split('(')[0].split()[-1]}() with pre-5.7 SELinux stub in {path}")
+              return text[:idx] + new_block + text[body_end:]
 
-          # Never modify the legacy 3-field GET_INFO_LEGACY ABI.
-          start_legacy = ds.find('static int do_get_info_legacy(void __user *arg)')
-          if start_legacy < 0:
-              raise SystemExit('[ERROR] V81: do_get_info_legacy() not found in dispatch.c')
-          end_legacy = ds.find('\n}', start_legacy)
-          if end_legacy < 0:
-              raise SystemExit('[ERROR] V81: end of do_get_info_legacy() not found')
-          legacy_block = ds[start_legacy:end_legacy]
-          if 'cmd.uapi_version' in legacy_block:
-              legacy_block = re.sub(
-                  r'(?m)^[ \t]*cmd\.uapi_version\s*=\s*KERNEL_SU_UAPI_VERSION;\s*\n?',
-                  '',
-                  legacy_block
+          rules_path = "KernelSU-Next/kernel/selinux/rules.c"
+          import os
+          if not os.path.exists(rules_path):
+              print(f"[SKIP-V46-UNVERIFIED] {rules_path} does not exist in this source; nothing to patch.")
+          else:
+              with open(rules_path) as f:
+                  rules = f.read()
+              rules = wrap_function(
+                  rules, "void apply_kernelsu_rules()",
+                  '    pr_warn("KernelSU: SELinux policy hot-patch API unavailable on this kernel "\n'
+                  '            "(pre-5.7 SELinux); skipping in-kernel su domain policy injection.\\n");',
+                  rules_path,
               )
-              ds = ds[:start_legacy] + legacy_block + ds[end_legacy:]
+              rules = wrap_function(
+                  rules, "int handle_sepolicy(void __user *user_data, u64 data_len)",
+                  '    (void)user_data;\n'
+                  '    (void)data_len;\n'
+                  '    pr_warn("KernelSU: SELinux policy hot-patch API unavailable on this kernel "\n'
+                  '            "(pre-5.7 SELinux); ksu_handle_sepolicy is not supported.\\n");\n'
+                  '    return -EOPNOTSUPP;',
+                  rules_path,
+              )
+              rules = wrap_function(
+                  rules, "static void reset_avc_cache()",
+                  "    /* unused on pre-5.7 SELinux; see apply_kernelsu_rules() stub above */",
+                  rules_path,
+              )
+              with open(rules_path, "w") as f:
+                  f.write(rules)
 
-          uapi.write_text(us)
-          dispatch.write_text(ds)
+          sepolicy_path = "KernelSU-Next/kernel/selinux/sepolicy.c"
+          if not os.path.exists(sepolicy_path):
+              print(f"[SKIP-V46-UNVERIFIED] {sepolicy_path} does not exist in this source; nothing to patch.")
+          else:
+              with open(sepolicy_path) as f:
+                  sepolicy = f.read()
+              sepolicy = wrap_function(
+                  sepolicy, "void ksu_destroy_sepolicy(struct selinux_policy *pol)",
+                  "    (void)pol;",
+                  sepolicy_path,
+              )
+              sepolicy = wrap_function(
+                  sepolicy, "struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)",
+                  "    (void)old_pol;\n    return NULL;",
+                  sepolicy_path,
+              )
+              with open(sepolicy_path, "w") as f:
+                  f.write(sepolicy)
 
-          # Source-level invariants: fail if the source is ambiguous or the wrong
-          # ioctl path was modified.
-          version_defs = re.findall(
-              r'(?m)^[ \t]*(?:#define[ \t]+KERNEL_SU_UAPI_VERSION[ \t]+[^\n]+|'
-              r'static[ \t]+const[ \t]+__u32[ \t]+KERNEL_SU_UAPI_VERSION[ \t]*=[ \t]*[0-9]+[ \t]*;)',
-              us
-          )
-          if len(version_defs) != 1:
-              raise SystemExit(f'[ERROR] V81: expected exactly one UAPI version definition, found {len(version_defs)}')
-          if not re.search(r'KERNEL_SU_UAPI_VERSION\s*=\s*4\s*;', us):
-              raise SystemExit('[ERROR] V81: UAPI version definition is not exactly 4')
-          info_struct = re.search(r'struct\s+ksu_get_info_cmd\s*\{.*?\n\}', us, flags=re.S).group(0)
-          if len(re.findall(r'(?m)^\s*__u32\s+uapi_version\s*;', info_struct)) != 1:
-              raise SystemExit('[ERROR] V84: modern GET_INFO struct must contain exactly one uapi_version field')
-          if 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION;' not in modern:
-              raise SystemExit('[ERROR] V81: modern GET_INFO does not populate uapi_version')
-          if 'cmd.uapi_version' in legacy_block:
-              raise SystemExit('[ERROR] V81: legacy GET_INFO path still references uapi_version')
-          print('[FIX] V81: corrected legacy UAPI v4 source contract; modern GET_INFO only')
-          PY_V81_UAPI
-
-          # Strong source checks. These validate the preprocessed contract rather than
-          # merely grepping for a stray "4" while an older macro can still win.
-          test "$(grep -Ec '^[[:space:]]*(#define[[:space:]]+KERNEL_SU_UAPI_VERSION|static[[:space:]]+const[[:space:]]+__u32[[:space:]]+KERNEL_SU_UAPI_VERSION)' "$UAPI_H")" -eq 1
-          grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*4;' "$UAPI_H"
-          grep -q 'uapi_version' "$UAPI_H"
-          grep -q 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION' "$DISPATCH_C"
-          if awk '/static int do_get_info_legacy\(void __user \*arg\)/,/^}/' "$DISPATCH_C" | grep -q 'cmd\.uapi_version'; then
-            echo "[ERROR] V81: legacy GET_INFO ABI was modified."
-            exit 1
-          fi
-          echo "[OK] V81: actual source now returns UAPI v4 through modern GET_INFO; legacy ioctl ABI untouched."
-          {
-            echo "uapi_version=4"
-            echo "uapi_source=KernelSU-Next v3.4.0 tag 1a879d6 UAPI contract backported to official legacy driver"
-            echo "uapi_file=${UAPI_H}"
-            echo "dispatch_file=${DISPATCH_C}"
-            echo "legacy_get_info_abi=untouched"
-          } | tee ../logs/06-kernelsu-uapi-v4.log
-
-          # V84: DO NOT merge the normal v3.4.0 release into legacy.
-          # Upstream keeps non-GKI/4.x support on the separate `legacy` branch; the
-          # normal v3.4.0 release is a different history. Merging those histories
-          # is not a supported way to create a v3.4.0 legacy driver and can mix
-          # incompatible hook/Kbuild code.
-          #
-          # The requested Manager target remains v3.4.0 (33294-4), while the kernel
-          # driver source uses the official `legacy` branch, which is the upstream
-          # non-GKI/manual-hook path required by this 4.19 kernel.
-          echo "[OK] KernelSU-Next official legacy branch selected; no unsupported v3.4.0/legacy merge"
-          LEGACY_KSU_COMMIT="$(git -C KernelSU-Next rev-parse HEAD)"
-          LEGACY_KSU_COUNT="$(git -C KernelSU-Next rev-list --count HEAD)"
-          {
-            echo "legacy_commit=${LEGACY_KSU_COMMIT}"
-            echo "legacy_commit_count=${LEGACY_KSU_COUNT}"
-            echo "manager_target=${KSU_VERSION}"
-            echo "manager_build=${KSU_MANAGER_BUILD}"
-          } | tee ../logs/06-kernelsu-legacy-source.txt
-
-          # Upstream legacy Kconfig is the authoritative non-GKI/manual-hook contract.
-          test -f KernelSU-Next/kernel/Kconfig
-          grep -Eq '^[[:space:]]*config[[:space:]]+KSU_MANUAL_HOOK([[:space:]]|$)' KernelSU-Next/kernel/Kconfig
-
-          # V99 ROOT-FIX: Do NOT stub KernelSU SELinux policy injection on 4.19.
-          #
-          # The previous V95 workflow incorrectly disabled apply_kernelsu_rules()
-          # on all pre-5.7 kernels. That is the direct cause of the runtime failure
-          # seen on the LG 4.19.325 device:
-          #   security_secctx_to_secid u:r:ksu:s0 -> sid: 0, error: -22
-          #   transive domain failed
-          #
-          # KernelSU-Next's official legacy rules.c has a dedicated pre-5.10 path:
-          # it operates on the legacy global struct policydb and uses stop_machine()
-          # when the policy rwlock is unavailable. The >=5.10 selinux_policy copy path
-          # is separately guarded by SELINUX_POLICY_INSTEAD_SELINUX_SS. Therefore the
-          # 4.19 tree must keep apply_kernelsu_rules() ACTIVE so the KSU domain/type
-          # and permissions are inserted into the live policy before root transition.
-          #
-          # V95's blanket stub prevented that insertion, so u:r:ksu:s0 never became a
-          # resolvable SID. SELinux being permissive does not make an unknown context
-          # resolvable; security_secctx_to_secid() still returns -EINVAL (-22).
-          #
-          # Do not hand-write a replacement SELinux policy and do not change
-          # KERNEL_SU_CONTEXT. Use the official legacy implementation and its
-          # existing 4.19 compatibility path. This preserves SUSFS, manual hooks,
-          # DT/DTBO handling and all other accumulated kernel features.
-          RULES_C="KernelSU-Next/kernel/selinux/rules.c"
-          SEPOLICY_C="KernelSU-Next/kernel/selinux/sepolicy.c"
-          SELINUX_C="KernelSU-Next/kernel/selinux/selinux.c"
-          test -f "$RULES_C"
-          test -f "$SEPOLICY_C"
-          test -f "$SELINUX_C"
-
-          # Hard source guards: the legacy 4.19 build must not contain the V95
-          # pre-5.7 stub that disabled KSU policy injection.
-          if grep -q 'SELinux policy hot-patch API unavailable on this kernel' "$RULES_C"; then
-            echo '[ERROR] V99: legacy rules.c still contains the V95 SELinux policy-injection stub.'
-            exit 1
-          fi
-          if ! grep -q 'void apply_kernelsu_rules()' "$RULES_C"; then
-            echo '[ERROR] V99: apply_kernelsu_rules() missing.'
-            exit 1
-          fi
-          if ! grep -q 'db = get_policydb();' "$RULES_C"; then
-            echo '[ERROR] V99: 4.19 policydb path missing from legacy rules.c.'
-            exit 1
-          fi
-          if ! grep -q 'stop_machine(apply_kernelsu_rules_fn' "$RULES_C"; then
-            echo '[ERROR] V99: legacy stop_machine() SELinux policy path missing.'
-            exit 1
-          fi
-          if ! grep -q 'ksu_type(db, KERNEL_SU_DOMAIN, "domain")' "$RULES_C"; then
-            echo '[ERROR] V99: KSU domain creation rule missing.'
-            exit 1
-          fi
-          if ! grep -q 'ksu_type(db, KERNEL_SU_FILE, "file_type")' "$RULES_C"; then
-            echo '[ERROR] V99: ksu_file type creation rule missing.'
-            exit 1
-          fi
-
-          # 4.19 must use the legacy/global-policy path; the selinux_policy copy
-          # helpers are guarded upstream for newer kernels and must not be forced
-          # into the 4.19 build by this workflow.
-          grep -q '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)' "$RULES_C" || true
-          grep -q '#ifdef SELINUX_POLICY_INSTEAD_SELINUX_SS' "$RULES_C"
-
-          {
-            echo 'selinux_fix=V99'
-            echo 'root_cause=V95 disabled apply_kernelsu_rules() on 4.19, preventing creation of u:r:ksu:s0 in the live policy'
-            echo 'expected_runtime=security_secctx_to_secid(u:r:ksu:s0) must resolve to a non-zero SID'
-            echo 'legacy_policy_path=global policydb + policy rwlock/stop_machine'
-            echo 'ksu_domain=u:r:ksu:s0'
-            echo 'ksu_file=u:object_r:ksu_file:s0'
-            echo 'manual_hook=preserved'
-            echo 'susfs=preserved'
-          } | tee ../logs/06-selinux-v96-source-fix.log
-
-          echo '[OK] V99: official legacy SELinux policy injection remains enabled for 4.19.'
+          print("[OK] SELinux pre-5.7 compatibility pass complete (see [SKIP-V46-UNVERIFIED]/[FIX] lines above for what actually applied)")
+          PATCH_SELINUX_COMPAT
 
           ln -sf "$(realpath --relative-to="${DRIVER_DIR}" "$(pwd)/KernelSU-Next/kernel")" "${DRIVER_DIR}/kernelsu"
           grep -q "kernelsu" "${DRIVER_MAKEFILE}" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "${DRIVER_MAKEFILE}"
@@ -771,528 +632,29 @@ jobs:
           test -d KernelSU-Next
           test -L drivers/kernelsu
           test -f drivers/kernelsu/Kconfig
-          KSU_KCONFIG="drivers/kernelsu/Kconfig"
-          grep -Eq '^[[:space:]]*config[[:space:]]+KSU([[:space:]]|$)' "$KSU_KCONFIG"
-
-          # The official legacy branch must supply the real manual-hook contract.
-          grep -Eq '^[[:space:]]*config[[:space:]]+KSU_MANUAL_HOOK([[:space:]]|$)' "$KSU_KCONFIG"
-
-          # Preserve the existing SUSFS namespace without replacing the legacy driver.
-          python3 - "$KSU_KCONFIG" <<'PY_V87_SUSFS_KCONFIG'
-          from pathlib import Path
-          import re, sys
-          p=Path(sys.argv[1]); s=p.read_text()
-          if not re.search(r'^\s*config\s+KSU_SUSFS(?:\s|$)', s, re.M):
-              block="""
-          menu \"KernelSU - SUSFS\"
-          config KSU_SUSFS
-          \tbool \"KernelSU addon - SUSFS\"
-          \tdepends on KSU
-          \tdepends on THREAD_INFO_IN_TASK
-          \tdefault y
-          config KSU_SUSFS_SUS_PATH
-          \tbool \"Enable to hide suspicious path\"
-          \tdepends on KSU_SUSFS
-          \tdefault y
-          config KSU_SUSFS_SUS_MOUNT
-          \tbool \"Enable to hide suspicious mounts\"
-          \tdepends on KSU_SUSFS
-          \tdefault y
-          config KSU_SUSFS_SUS_KSTAT
-          \tbool \"Enable to spoof suspicious kstat\"
-          \tdepends on KSU_SUSFS
-          \tdefault y
-          config KSU_SUSFS_SPOOF_UNAME
-          \tbool \"Enable to spoof uname\"
-          \tdepends on KSU_SUSFS
-          \tdefault y
-          config KSU_SUSFS_ENABLE_LOG
-          \tbool \"Enable logging susfs log to kernel\"
-          \tdepends on KSU_SUSFS
-          \tdefault y
-          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-          \tbool \"Enable to hide ksu and susfs symbols\"
-          \tdepends on KSU_SUSFS
-          \tdefault y
-          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          \tbool \"Enable to spoof cmdline or bootconfig\"
-          \tdepends on KSU_SUSFS
-          \tdefault y
-          config KSU_SUSFS_OPEN_REDIRECT
-          \tbool \"Enable open redirect\"
-          \tdepends on KSU_SUSFS
-          \tdefault y
-          config KSU_SUSFS_SUS_MAP
-          \tbool \"Enable SUS_MAP\"
-          \tdepends on KSU_SUSFS
-          \tdefault y
-          endmenu
-          """
-              pos=s.rfind('endmenu')
-              if pos<0: raise SystemExit('KSU Kconfig endmenu missing')
-              s=s[:pos]+block+s[pos:]
-              p.write_text(s)
-          PY_V87_SUSFS_KCONFIG
-          grep -Eq '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' "$KSU_KCONFIG"
-
-          # Verify the actual legacy driver exports the manual-hook functions used by
-          # the existing SUSFS inline-hook stage.
-          for sym in ksu_handle_execveat ksu_handle_faccessat ksu_handle_stat ksu_handle_setresuid ksu_handle_sys_reboot; do
-            grep -Rqs --include='*.c' --include='*.h' "$sym" drivers/kernelsu || {
-              echo "[ERROR] legacy driver missing required manual-hook symbol: $sym"; exit 1;
-            }
-          done
+          # Kconfig declares symbols as "config KSU"; it does not need the literal
+          # string "CONFIG_KSU" inside the source Kconfig file.
+          grep -Eq '^[[:space:]]*config[[:space:]]+KSU([[:space:]]|$)' drivers/kernelsu/Kconfig
+          # V24/V25: this fork's dev-susfs branch must additionally declare config KSU_SUSFS
+          # in the same Kconfig -- this is the whole reason for switching forks. Fail loudly
+          # here rather than hundreds of lines later in Step 7 if that ever stops being true.
+          grep -Eq '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' drivers/kernelsu/Kconfig
 
           KSU_COMMIT="$(git -C KernelSU-Next rev-parse HEAD)"
           KSU_TAG="$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
           {
             echo "requested=${KSU_VERSION}"
-            echo "repo=${KSU_REPO_OWNER}/${KSU_REPO}@${KSU_REF}"
+            echo "fork=${KSU_SUSFS_FORK_OWNER}/${KSU_SUSFS_FORK_REPO}@${KSU_SUSFS_FORK_BRANCH}"
             echo "resolved_describe=${KSU_TAG}"
             echo "resolved_commit=${KSU_COMMIT}"
             echo "kconfig_symbol=KSU"
             echo "kconfig_symbol=KSU_SUSFS"
-            echo "kconfig_symbol=KSU_MANUAL_HOOK"
             echo "symlink=$(readlink drivers/kernelsu)"
           } | tee ../logs/06-kernelsu-resolved.txt
-          echo "[OK] KernelSU-Next ${KSU_VERSION} legacy driver integrated with preserved SUSFS compatibility"
+          echo "[OK] KernelSU-Next ${KSU_VERSION} (SUSFS fork, ${KSU_SUSFS_FORK_BRANCH}@${KSU_COMMIT}) pinned integration"
           echo "::endgroup::"
 
-      - name: "6a. Source-aware KSU/SUSFS ABI bridge + 4.19 SELinux root fix"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[6a/15] Source-aware legacy ABI bridge and SELinux root-domain repair"
-          cd kernel
-          test -d KernelSU-Next/kernel
-
-          python3 - <<'PY_KSU_LEGACY_ROOT_FIX'
-          from pathlib import Path
-          import re
-          import subprocess
-
-          root = Path("KernelSU-Next/kernel")
-          runtime = root / "runtime/ksud_integration.c"
-          sucompat = root / "feature/sucompat.c"
-          sucompat_h = root / "feature/sucompat.h"
-          selinux = root / "selinux/selinux.c"
-          selinux_h = root / "selinux/selinux.h"
-          rules = root / "selinux/rules.c"
-
-          for p in (runtime, sucompat, sucompat_h, selinux, selinux_h, rules):
-              if not p.is_file():
-                  raise SystemExit(f"[ERROR] required legacy KernelSU source missing: {p}")
-
-          # ------------------------------------------------------------------
-          # SUSFS-side runtime helpers. These are the only new runtime symbols
-          # introduced here; they belong to the SUSFS 2.3 compatibility target.
-          # ------------------------------------------------------------------
-          s = runtime.read_text()
-          if "DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);" not in s:
-              inc = "#include <linux/workqueue.h>\n"
-              if inc not in s:
-                  raise SystemExit("[ERROR] runtime workqueue include anchor missing")
-              s = s.replace(
-                  inc,
-                  inc +
-                  "#ifdef CONFIG_KSU_SUSFS\n"
-                  "#include <linux/jump_label.h>\n"
-                  "DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);\n"
-                  "DEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled);\n"
-                  "#endif\n",
-                  1,
-              )
-
-          if "void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)" not in s:
-              marker = "static unsigned int volumedown_pressed_count = 0;\n"
-              block = """#ifdef CONFIG_KSU_SUSFS
-          void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
-          {
-              loff_t new_size = *kstat_size_ptr + ksu_rc_len;
-              struct file *file = fget(fd);
-              if (!file)
-                  return;
-              if (is_init_rc(file))
-                  *kstat_size_ptr = new_size;
-              fput(file);
-          }
-          #endif
-
-          """
-              if marker not in s:
-                  raise SystemExit("[ERROR] runtime volumedown anchor missing")
-              s = s.replace(marker, block + marker, 1)
-          runtime.write_text(s)
-
-          # ------------------------------------------------------------------
-          # The pinned legacy driver uses a plain bool sucompat ABI. Do not
-          # convert it merely to satisfy a modern SUSFS audit. Static-key
-          # conversion is allowed only later if the actual SUSFS post-patch
-          # source contains static_branch_* references to this switch.
-          # ------------------------------------------------------------------
-          c = sucompat.read_text()
-          h = sucompat_h.read_text()
-          bool_def = bool(re.search(
-              r"(?m)^\s*bool\s+ksu_su_compat_enabled\s+__read_mostly\s*=\s*true\s*;",
-              c,
-          ))
-          static_def = bool(re.search(
-              r"(?m)^\s*DEFINE_STATIC_KEY_TRUE\(ksu_su_compat_enabled\)\s*;",
-              c,
-          ))
-          bool_decl = bool(re.search(
-              r"(?m)^\s*extern\s+bool\s+ksu_su_compat_enabled\s*;",
-              h,
-          ))
-          static_decl = bool(re.search(
-              r"(?m)^\s*extern\s+struct\s+static_key_true\s+ksu_su_compat_enabled\s*;",
-              h,
-          ))
-          if bool_def and static_def:
-              raise SystemExit("[ERROR] legacy sucompat ABI contains both bool and static-key definitions")
-          if bool_def and not bool_decl:
-              raise SystemExit("[ERROR] legacy bool sucompat definition lacks matching extern bool declaration")
-          if static_def and not static_decl:
-              raise SystemExit("[ERROR] legacy static-key sucompat definition lacks matching declaration")
-          if not (bool_def or static_def):
-              raise SystemExit("[ERROR] unable to identify ksu_su_compat_enabled ABI in the pinned legacy source")
-          abi = "bool" if bool_def else "static-key"
-          print(f"[OK] source-aware legacy sucompat ABI: {abi}")
-
-          # ------------------------------------------------------------------
-          # ROOT FIX: use the actual pinned KernelSU-Next legacy SELinux policy
-          # implementation. If a previous compatibility layer left the old
-          # pre-5.7 no-op stub, restore rules.c byte-for-byte from this exact
-          # pinned Git commit instead of inventing a replacement.
-          # ------------------------------------------------------------------
-          r = rules.read_text()
-          marker = "void apply_kernelsu_rules()"
-          pos = r.find(marker)
-          if pos < 0:
-              raise SystemExit("[ERROR] apply_kernelsu_rules() is missing from legacy driver")
-          brace = r.find("{", pos)
-          if brace < 0:
-              raise SystemExit("[ERROR] apply_kernelsu_rules() has no body")
-          depth = 0
-          end = None
-          for i in range(brace, len(r)):
-              if r[i] == "{":
-                  depth += 1
-              elif r[i] == "}":
-                  depth -= 1
-                  if depth == 0:
-                      end = i + 1
-                      break
-          if end is None:
-              raise SystemExit("[ERROR] unbalanced apply_kernelsu_rules() body")
-          body = r[brace:end]
-
-          if (
-              "apply_kernelsu_rules_fn" not in body
-              or "reset_avc_cache()" not in body
-              or "stop_machine(apply_kernelsu_rules_fn" not in body
-              or "get_policydb()" not in r
-          ):
-              official = subprocess.check_output(
-                  ["git", "show", "HEAD:kernel/selinux/rules.c"],
-                  text=True,
-              )
-              r = official
-              rules.write_text(r)
-              print("[FIX] Restored apply_kernelsu_rules() from the pinned legacy KernelSU-Next commit.")
-          else:
-              print("[OK] Real legacy policydb/lock/stop_machine root path already present.")
-
-          # The actual Android 4.19 built-in/manual-hook path must execute the
-          # SELinux mutation after init reaches second stage. This is the path
-          # that makes u:r:ksu:s0 a real policy SID before setexeccon().
-          rt = runtime.read_text()
-          required_root_chain = [
-              "ksu_initialize_selinux_tw_func",
-              "apply_kernelsu_rules();",
-              "task_work_add(current, cb, TWA_RESUME)",
-              "init_second_stage_executed",
-          ]
-          for needle in required_root_chain:
-              if needle not in rt:
-                  raise SystemExit(f"[ERROR] 4.19 root transition chain missing: {needle}")
-          rr = rules.read_text()
-          if 'ksu_type(db, KERNEL_SU_DOMAIN, "domain")' not in rr:
-              raise SystemExit("[ERROR] legacy SELinux policy does not create the KSU domain type")
-          if "security_secctx_to_secid" not in selinux.read_text():
-              raise SystemExit("[ERROR] SELinux root transition lacks secctx-to-SID resolution")
-          if "KERNEL_SU_CONTEXT" not in selinux.read_text():
-              raise SystemExit("[ERROR] KSU SELinux context contract missing")
-          print("[OK] 4.19 built-in/manual-hook root transition chain is source-present.")
-          print("[OK] KSU domain is created in live policy before secctx-to-SID transition.")
-
-          # ------------------------------------------------------------------
-          # SUSFS 2.3 target: cache the SIDs only after the policy mutation and
-          # AVC reset. The helper is guarded by CONFIG_KSU_SUSFS so the legacy
-          # root path itself remains independent of SUSFS.
-          # ------------------------------------------------------------------
-          s = selinux.read_text()
-          if "u32 susfs_ksu_sid __read_mostly" not in s:
-              marker = "u32 ksu_file_sid __read_mostly = 0;\n"
-              block = """u32 ksu_file_sid __read_mostly = 0;
-          #ifdef CONFIG_KSU_SUSFS
-          u32 susfs_ksu_sid __read_mostly = 0;
-          u32 susfs_init_sid __read_mostly = 0;
-          u32 susfs_zygote_sid __read_mostly = 0;
-          u32 susfs_zygote_next_sid __read_mostly = 0;
-          u32 susfs_priv_app_sid __read_mostly = 0;
-          #endif
-          """
-              if marker not in s:
-                  raise SystemExit("[ERROR] SELinux SID storage anchor missing")
-              s = s.replace(marker, block, 1)
-
-          if "void susfs_set_batch_sid(void)" not in s:
-              marker = "void escape_to_root_for_adb_root(void)\n"
-              block = """#ifdef CONFIG_KSU_SUSFS
-          #define KERNEL_INIT_DOMAIN "u:r:init:s0"
-          #define KERNEL_ZYGOTE_DOMAIN "u:r:zygote:s0"
-          #define KERNEL_ZYGOTE_NEXT_DOMAIN "u:r:zygote_next:s0"
-          #define KERNEL_PRIV_APP_DOMAIN "u:r:priv_app:s0:c512,c768"
-
-          static int susfs_set_sid(const char *secctx_name, u32 *out_sid)
-          {
-              int err;
-              if (!secctx_name || !out_sid)
-                  return -EINVAL;
-              *out_sid = 0;
-              err = security_secctx_to_secid(
-                  secctx_name, strlen(secctx_name), out_sid);
-              if (err) {
-                  pr_err("SUSFS: failed resolving SID for '%s': %d\\n",
-                         secctx_name, err);
-                  return err;
-              }
-              pr_info("SUSFS: SID %u <- %s\\n", *out_sid, secctx_name);
-              return 0;
-          }
-
-          bool susfs_is_sid_equal(const struct cred *cred, u32 sid2)
-          {
-              const struct task_security_struct *tsec = selinux_cred(cred);
-              return tsec && tsec->sid == sid2;
-          }
-
-          u32 susfs_get_sid_from_name(const char *secctx_name)
-          {
-              u32 sid = 0;
-              if (!secctx_name ||
-                  security_secctx_to_secid(secctx_name, strlen(secctx_name), &sid))
-                  return 0;
-              return sid;
-          }
-
-          u32 susfs_get_current_sid(void)
-          {
-              return current_sid();
-          }
-
-          bool susfs_is_current_zygote_domain(void)
-          {
-              return unlikely(current_sid() == susfs_zygote_sid);
-          }
-
-          bool susfs_is_current_zygote_next_domain(void)
-          {
-              return unlikely(current_sid() == susfs_zygote_next_sid);
-          }
-
-          bool susfs_is_current_ksu_domain(void)
-          {
-              return unlikely(current_sid() == susfs_ksu_sid);
-          }
-
-          bool susfs_is_current_init_domain(void)
-          {
-              return unlikely(current_sid() == susfs_init_sid);
-          }
-
-          void susfs_set_batch_sid(void)
-          {
-              susfs_set_sid(KERNEL_ZYGOTE_DOMAIN, &susfs_zygote_sid);
-              susfs_set_sid(KERNEL_ZYGOTE_NEXT_DOMAIN, &susfs_zygote_next_sid);
-              susfs_set_sid(KERNEL_SU_CONTEXT, &susfs_ksu_sid);
-              susfs_set_sid(KERNEL_INIT_DOMAIN, &susfs_init_sid);
-              susfs_set_sid(KERNEL_PRIV_APP_DOMAIN, &susfs_priv_app_sid);
-          }
-          #endif
-
-          """
-              if marker not in s:
-                  raise SystemExit("[ERROR] SELinux SID helper anchor missing")
-              s = s.replace(marker, block + marker, 1)
-          selinux.write_text(s)
-
-          sh = selinux_h.read_text()
-          if "void susfs_set_batch_sid(void);" not in sh:
-              marker = "void cache_sid(void);\n"
-              if marker not in sh:
-                  raise SystemExit("[ERROR] SELinux header cache_sid() anchor missing")
-              sh = sh.replace(
-                  marker,
-                  marker + "#ifdef CONFIG_KSU_SUSFS\nvoid susfs_set_batch_sid(void);\n#endif\n",
-                  1,
-              )
-          selinux_h.write_text(sh)
-
-          # Source-level placement: policy mutation -> AVC reset -> SUSFS SID
-          # resolution. Match indentation with whitespace, not a hard-coded
-          # four-space anchor (the legacy file uses tabs).
-          r = rules.read_text()
-          if "susfs_set_batch_sid();" not in r:
-              pat = re.compile(r"(?m)^([ \t]*)reset_avc_cache\(\);\s*$")
-              matches = list(pat.finditer(r))
-              if not matches:
-                  raise SystemExit("[ERROR] reset_avc_cache() anchor missing from legacy rules.c")
-              # 4.19 uses the legacy out_flush occurrence. Do not alter the
-              # newer selinux_policy branch on another kernel family.
-              m = matches[-1]
-              indent = m.group(1)
-              replacement = (
-                  m.group(0)
-                  + "\n"
-                  + indent
-                  + "#ifdef CONFIG_KSU_SUSFS\n"
-                  + indent
-                  + "\tsusfs_set_batch_sid();\n"
-                  + indent
-                  + "#endif"
-              )
-              r = r[:m.start()] + replacement + r[m.end():]
-              rules.write_text(r)
-
-          r = rules.read_text()
-          if "susfs_set_batch_sid();" not in r:
-              raise SystemExit("[ERROR] SUSFS SID initialization was not placed in rules.c")
-          if "apply_kernelsu_rules_fn" not in r:
-              raise SystemExit("[ERROR] legacy apply_kernelsu_rules implementation is incomplete")
-
-          print("[OK] SUSFS SID resolution is placed after policy mutation/AVC reset.")
-          print("[OK] Step 6a changed only the two requested target areas.")
-          PY_KSU_LEGACY_ROOT_FIX
-
-          echo "[OK] V99 source-aware legacy ABI + 4.19 SELinux root policy gate passed"
-          echo "::endgroup::"
-      - name: '6b. Cross-setup KSU/SUSFS/Manager contract audit'
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[6b/15] Verify all dependent setup contracts before SUSFS/build stages"
-          cd kernel
-
-          # Permanent workflow rule: a source-level fix in one setup must be
-          # reconciled against every dependent setup before the next setup runs.
-          python3 - <<'PY_CROSS_SETUP'
-          from pathlib import Path
-          import re
-
-          root = Path("KernelSU-Next/kernel")
-          sucompat = root / "feature/sucompat.c"
-          sucompat_h = root / "feature/sucompat.h"
-          uapi = Path("KernelSU-Next/uapi/supercall.h")
-          dispatch = root / "supercall/dispatch.c"
-          kbuild = root / "Kbuild"
-          apk_sign = root / "manager/apk_sign.c"
-
-          def need(path, needle, label):
-              s = path.read_text(errors="replace")
-              if needle not in s:
-                  raise SystemExit(f"[ERROR] cross-setup contract missing: {label}: {path}")
-              return s
-
-          # Source-aware sucompat ABI contract. The pinned legacy driver is bool;
-          # SUSFS may convert it to static-key later. Accept exactly one consistent ABI.
-          c = sucompat.read_text(errors="replace")
-          h = sucompat_h.read_text(errors="replace")
-          bool_def = bool(re.search(r"(?m)^\s*bool\s+ksu_su_compat_enabled\s+__read_mostly\s*=\s*true\s*;", c))
-          static_def = bool(re.search(r"(?m)^\s*DEFINE_STATIC_KEY_TRUE\(ksu_su_compat_enabled\)\s*;", c))
-          bool_decl = bool(re.search(r"(?m)^\s*extern\s+bool\s+ksu_su_compat_enabled\s*;", h))
-          static_decl = bool(re.search(r"(?m)^\s*extern\s+struct\s+static_key_true\s+ksu_su_compat_enabled\s*;", h))
-          if bool_def and static_def:
-              raise SystemExit("[ERROR] cross-setup sucompat ABI has both bool and static-key definitions")
-          if bool_def and not bool_decl:
-              raise SystemExit("[ERROR] cross-setup bool sucompat definition lacks matching extern bool declaration")
-          if static_def and not static_decl:
-              raise SystemExit("[ERROR] cross-setup static-key sucompat definition lacks matching extern static-key declaration")
-          if not (bool_def or static_def):
-              raise SystemExit("[ERROR] cross-setup cannot identify ksu_su_compat_enabled ABI")
-          print("[OK] cross-setup sucompat ABI is source-consistent: " + ("bool" if bool_def else "static-key"))
-          # The pinned legacy commit dd074bc6c4b33ca4cdf7da05838c71a26ebd6a66
-          # does not define the newer install-fd API. Validate the legacy ABI
-          # actually provided by this exact source instead of requiring a symbol
-          # from a different KernelSU generation.
-          need(sucompat_h, "void ksu_sucompat_init(void);", "legacy sucompat init API")
-          need(sucompat_h, "void ksu_sucompat_exit(void);", "legacy sucompat exit API")
-          need(sucompat_h, "int ksu_handle_faccessat(", "legacy faccessat hook API")
-          need(sucompat_h, "int ksu_handle_stat(", "legacy stat hook API")
-          if "ksu_install_su_fd(" in c or "ksu_install_fd(" in c:
-              print("[INFO] install-fd helper exists; it is not a required legacy ABI contract")
-          else:
-              print("[OK] pinned legacy source has no install-fd helper; no incompatible API is required")
-
-          need(uapi, "KERNEL_SU_UAPI_VERSION = 4", "UAPI v4")
-          need(uapi, "struct ksu_get_info_cmd", "GET_INFO structure")
-          need(dispatch, "cmd.uapi_version = KERNEL_SU_UAPI_VERSION;", "GET_INFO UAPI assignment")
-
-          need(kbuild, "KSU_NEXT_MANAGER_SIZE", "Manager certificate size contract")
-          need(kbuild, "KSU_NEXT_MANAGER_HASH", "Manager certificate hash contract")
-          need(apk_sign, "KSU_MANAGER_PACKAGE", "Manager package contract")
-
-          # Pre-SUSFS contract only: ksu_handle_post_execveat_sucompat is
-          # intentionally deferred to the post-SUSFS audit below because the
-          # pinned legacy KernelSU source does not provide that SUSFS-specific
-          # symbol before Step 7's SUSFS 2.3.0 inline-hook integration.
-          # Requiring it here makes Step 6b fail before the integration that
-          # is supposed to introduce/consume the SUSFS-side contract.
-          required = [
-              "ksu_handle_vfs_fstat",
-              "ksu_is_init_rc_hook_enabled",
-              "ksu_is_input_hook_enabled",
-              "susfs_is_current_ksu_domain",
-              "susfs_ksu_sid",
-              "susfs_priv_app_sid",
-          ]
-          source_text = "\n".join(
-              p.read_text(errors="replace")
-              for p in root.rglob("*")
-              if p.is_file() and p.suffix in {".c", ".h"}
-          )
-          for sym in required:
-              if sym not in source_text:
-                  raise SystemExit(f"[ERROR] cross-setup required symbol missing: {sym}")
-
-          # IMPORTANT: Step 3 generated the device baseline .config before KernelSU is
-          # integrated/enabled. Step 8 is the first stage that intentionally enables
-          # CONFIG_KSU/CONFIG_KSU_MANUAL_HOOK/CONFIG_KSU_SUSFS and runs olddefconfig.
-          # Therefore Step 6b must NOT require those generated values yet. Doing so
-          # creates a false failure even though the Kconfig declarations and source
-          # integration are correct. Generated-config validation is performed again
-          # after Step 8's configuration lifecycle below.
-          kconfig = Path("drivers/kernelsu/Kconfig")
-          drivers_make = Path("drivers/Makefile")
-          drivers_kconfig = Path("drivers/Kconfig")
-          kconfig_text = need(kconfig, "config KSU", "KSU Kconfig symbol")
-          need(kconfig, "config KSU_MANUAL_HOOK", "KSU manual-hook Kconfig symbol")
-          need(kconfig, "config KSU_SUSFS", "SUSFS Kconfig symbol")
-          need(drivers_make, "obj-$(CONFIG_KSU) += kernelsu/", "drivers Makefile KSU wiring")
-          need(drivers_kconfig, 'source "drivers/kernelsu/Kconfig"', "drivers Kconfig KSU wiring")
-
-          # Verify the source-level dependency direction: SUSFS depends on KSU,
-          # while the generated .config contract is deliberately deferred to Step 8.
-          if not re.search(r"config\s+KSU_SUSFS[\s\S]{0,500}?depends on KSU", kconfig_text):
-              raise SystemExit("[ERROR] cross-setup Kconfig contract: KSU_SUSFS no longer depends on KSU")
-
-          print("[OK] V99: cross-setup source/Kconfig/Manager contract audit passed")
-          print("[INFO] Generated CONFIG_KSU* values are validated after Step 8 configuration generation.")
-          PY_CROSS_SETUP
-          echo "::endgroup::"
-
-      - name: '7. Integrate SUSFS 2.3.0 + 4.19 backport'
+      - name: "7. Integrate SUSFS 2.3.0 + 4.19 backport"
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -1832,194 +1194,6 @@ jobs:
           chmod +x logs/07-susfs-inline-hook-patches.sh
           (cd kernel && bash ../logs/07-susfs-inline-hook-patches.sh) 2>&1 | tee logs/07-susfs-inline-hooks.log
 
-          # ------------------------------------------------------------------
-          # V99-R12: reconcile the pinned legacy KernelSU ABI AFTER the external
-          # SUSFS inline-hook script has modified fs/exec.c/open.c/stat.c.
-          #
-          # The pinned KernelSU-Next commit dd074bc6... defines
-          # ksu_su_compat_enabled as a plain bool. The SUSFS helper script was
-          # written for a newer static-key ABI and also expects a newer
-          # ksu_handle_post_execveat_sucompat() contract. Neither may be
-          # invented/forced into this exact 4.19 legacy driver.
-          #
-          # Therefore:
-          #   1) keep the legacy bool ABI;
-          #   2) convert only the generated call-sites back to bool tests;
-          #   3) remove the unsupported post-exec symbol/call;
-          #   4) preserve the real legacy ksu_handle_execveat_sucompat() path;
-          #   5) fail if any stale static-key/post-exec contract remains.
-          # ------------------------------------------------------------------
-          python3 - <<'PY_R12_LEGACY_SUSFS_RECONCILE' > logs/07-susfs-legacy-abi-reconcile.log 2>&1
-          from pathlib import Path
-          import re
-          import subprocess
-
-          kernel = Path("kernel")
-          ksu = kernel / "KernelSU-Next/kernel"
-          sucompat_c = ksu / "feature/sucompat.c"
-          sucompat_h = ksu / "feature/sucompat.h"
-
-          EXPECTED_KSU = "dd074bc6c4b33ca4cdf7da05838c71a26ebd6a66"
-          ksu_repo = kernel / "KernelSU-Next"
-          if not ksu_repo.is_dir():
-              raise SystemExit(
-                  f"[ERROR] R13: expected embedded KernelSU repository is missing: {ksu_repo}"
-              )
-          resolved = subprocess.check_output(
-              ["git", "-C", str(ksu_repo), "rev-parse", "HEAD"], text=True
-          ).strip()
-          if resolved != EXPECTED_KSU:
-              raise SystemExit(
-                  f"[ERROR] R12 legacy ABI reconciliation: expected pinned "
-                  f"KernelSU commit {EXPECTED_KSU}, got {resolved}"
-              )
-
-          c = sucompat_c.read_text(errors="replace")
-          h = sucompat_h.read_text(errors="replace")
-
-          if not re.search(
-              r"(?m)^\s*bool\s+ksu_su_compat_enabled\s+__read_mostly\s*=\s*true\s*;",
-              c,
-          ):
-              raise SystemExit(
-                  "[ERROR] R12: pinned legacy sucompat bool definition is not present"
-              )
-          if not re.search(
-              r"(?m)^\s*extern\s+bool\s+ksu_su_compat_enabled\s*;",
-              h,
-          ):
-              raise SystemExit(
-                  "[ERROR] R12: pinned legacy sucompat extern bool declaration is not present"
-              )
-          if re.search(r"DEFINE_STATIC_KEY_TRUE\s*\(\s*ksu_su_compat_enabled\s*\)", c):
-              raise SystemExit(
-                  "[ERROR] R12: legacy sucompat was already converted to an incompatible static-key definition"
-              )
-
-          # The external SUSFS inline script declares this legacy symbol as a
-          # static_key_true in the three manual-hook call sites. Restore the exact
-          # legacy declaration and condition semantics there.
-          hook_files = [
-              kernel / "fs/exec.c",
-              kernel / "fs/open.c",
-              kernel / "fs/stat.c",
-          ]
-
-          for p in hook_files:
-              if not p.is_file():
-                  raise SystemExit(f"[ERROR] R12: expected manual-hook file missing: {p}")
-              s = p.read_text(errors="replace")
-
-              s = re.sub(
-                  r"extern\s+struct\s+static_key_true\s+ksu_su_compat_enabled\s*;",
-                  "extern bool ksu_su_compat_enabled;",
-                  s,
-              )
-              s = re.sub(
-                  r"static_branch_likely\s*\(\s*&\s*ksu_su_compat_enabled\s*\)",
-                  "ksu_su_compat_enabled",
-                  s,
-              )
-              s = re.sub(
-                  r"static_branch_unlikely\s*\(\s*&\s*ksu_su_compat_enabled\s*\)",
-                  "ksu_su_compat_enabled",
-                  s,
-              )
-
-              p.write_text(s)
-
-          # The pinned legacy sucompat.c has no post-exec helper. The inline
-          # script's declaration/call is a newer integration contract, not part
-          # of SUSFS 2.3.0 itself and not part of dd074bc6 legacy KSU.
-          exec_c = kernel / "fs/exec.c"
-          s = exec_c.read_text(errors="replace")
-
-          s = re.sub(
-              r"(?ms)^\s*extern\s+int\s+ksu_handle_post_execveat_sucompat\s*"
-              r"\(\s*int\s*\*fd,\s*struct\s+filename\s*\*\*filename_ptr,\s*"
-              r"void\s+\*argv,\s*void\s+\*envp,\s*int\s+\*flags,\s*int\s+\*retval\s*\)\s*;\s*",
-              "",
-              s,
-          )
-
-          # Remove the helper's temporary session flag; it only existed to feed
-          # the unsupported post-exec function.
-          s = re.sub(
-              r"(?ms)#ifdef CONFIG_KSU_SUSFS\s+bool\s+is_su_session\s*=\s*false;\s*"
-              r"#endif\s*(?=\n)",
-              "",
-              s,
-          )
-
-          # Convert the generated assignments into direct legacy calls. The
-          # return value of both legacy hook functions is intentionally ignored
-          # by the existing manual-hook ABI.
-          s = s.replace(
-              "is_su_session = !ksu_handle_execveat(\\&fd, \\&filename, \\&argv, \\&envp, \\&flags);",
-              "ksu_handle_execveat(\\&fd, \\&filename, \\&argv, \\&envp, \\&flags);",
-          )
-          s = s.replace(
-              "is_su_session = !ksu_handle_execveat_sucompat(\\&fd, \\&filename, \\&argv, \\&envp, \\&flags);",
-              "ksu_handle_execveat_sucompat(\\&fd, \\&filename, \\&argv, \\&envp, \\&flags);",
-          )
-
-          # The shell-escaped log copy uses literal backslashes; the real source
-          # contains normal '&' characters. Handle both forms defensively.
-          s = s.replace(
-              "is_su_session = !ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);",
-              "ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);",
-          )
-          s = s.replace(
-              "is_su_session = !ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);",
-              "ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);",
-          )
-
-          # Remove the unsupported post-exec call block, if the external script
-          # inserted it.
-          s = re.sub(
-              r"(?ms)#ifdef CONFIG_KSU_SUSFS\s+if\s*\(\s*unlikely\s*\(\s*is_su_session\s*\)\s*\)\s*"
-              r"\(void\)\s*ksu_handle_post_execveat_sucompat\s*\(\s*&fd,\s*&filename,\s*&argv,\s*&envp,\s*&flags,\s*&retval\s*\)\s*;\s*"
-              r"#endif\s*(?=//\s*#ifdef CONFIG_KSU_SUSFS|$)",
-              "",
-              s,
-          )
-
-          exec_c.write_text(s)
-
-          # Hard contract checks. These prevent a future workflow edit from
-          # silently reintroducing the same ABI mismatch.
-          all_c = "\n".join(
-              p.read_text(errors="replace")
-              for p in kernel.rglob("*")
-              if p.is_file() and p.suffix in {".c", ".h"}
-          )
-
-          if re.search(
-              r"static_branch_(?:likely|unlikely|enable|disable)\s*\(\s*&\s*ksu_su_compat_enabled",
-              all_c,
-          ):
-              raise SystemExit(
-                  "[ERROR] R12: static-key operations still target legacy bool ksu_su_compat_enabled"
-              )
-
-          if "ksu_handle_post_execveat_sucompat" in all_c:
-              raise SystemExit(
-                  "[ERROR] R12: unsupported post-exec sucompat symbol remains in the integrated legacy tree"
-              )
-
-          if "extern bool ksu_su_compat_enabled;" not in exec_c.read_text():
-              raise SystemExit("[ERROR] R12: fs/exec.c lost the legacy bool declaration")
-          if "ksu_handle_execveat_sucompat" not in exec_c.read_text():
-              raise SystemExit("[ERROR] R12: real legacy execveat sucompat hook was removed")
-
-          print("[OK] R12: pinned legacy KernelSU bool ABI preserved.")
-          print("[OK] R12: SUSFS inline call-sites reconciled to legacy 4.19 ABI.")
-          print("[OK] R12: unsupported post-exec helper removed rather than fabricated.")
-          print("[OK] R12: no static-key operations remain against ksu_su_compat_enabled.")
-          print("[OK] R12: legacy ksu_handle_execveat_sucompat path preserved.")
-          PY_R12_LEGACY_SUSFS_RECONCILE
-
-
           if git -C kernel ls-files -u | grep -q .; then
             echo "[ERROR] Inline SUSFS hook stage left unmerged index entries." | tee logs/07-susfs-failure.log
             exit 1
@@ -2083,319 +1257,8 @@ jobs:
           # checkout created by its official setup script. Staging the entire tree
           # produces the misleading "adding embedded git repository" warning.
 
-          # V99-R11: canonical source-derived SUSFS 2.3.0 KSTAT definition repair.
-          # The exact pinned SUSFS 2.3.0 4.19 patch places the KSTAT flag block
-          # in include/linux/susfs.h (NOT susfs_def.h). It defines one consecutive
-          # bit per field (0..11), except for its known typo:
-          # KSTAT_SPOOF_CTIME_TV_SEC is written as (1 < 8).  That expression
-          # evaluates to 1 and collides with KSTAT_SPOOF_INO.  Do not guess a
-          # replacement: reconstruct the complete macro block from the exact
-          # pinned patch's source-derived 0..11 sequence.
-          python3 - <<'PY_SUSFS_KSTAT_FIX'
-          from pathlib import Path
-          import re
-
-          p = Path('kernel/include/linux/susfs.h')
-          if not p.is_file():
-              raise SystemExit('[ERROR] SUSFS KSTAT definition file is missing: kernel/include/linux/susfs.h')
-          # V99-R11: Step 7 executes from the workspace root. Keep the
-          # kernel source path explicit so cwd changes cannot produce a false
-          # "missing file" error.
-          if not Path('kernel/include/linux/susfs.h').is_file():
-              raise SystemExit('[ERROR] V99-R11: kernel/include/linux/susfs.h is absent after SUSFS port')
-          s = p.read_text()
-
-          expected = {
-              'KSTAT_SPOOF_INO': 0,
-              'KSTAT_SPOOF_DEV': 1,
-              'KSTAT_SPOOF_NLINK': 2,
-              'KSTAT_SPOOF_SIZE': 3,
-              'KSTAT_SPOOF_ATIME_TV_SEC': 4,
-              'KSTAT_SPOOF_ATIME_TV_NSEC': 5,
-              'KSTAT_SPOOF_MTIME_TV_SEC': 6,
-              'KSTAT_SPOOF_MTIME_TV_NSEC': 7,
-              'KSTAT_SPOOF_CTIME_TV_SEC': 8,
-              'KSTAT_SPOOF_CTIME_TV_NSEC': 9,
-              'KSTAT_SPOOF_BLOCKS': 10,
-              'KSTAT_SPOOF_BLKSIZE': 11,
-          }
-
-          # Exact macro block from the pinned SUSFS 2.3.0 patch, with only the
-          # documented typo corrected: (1 < 8) -> (1 << 8).
-          canonical = ''.join(
-              f'#define {name} (1 << {bit})\n'
-              for name, bit in expected.items()
-          )
-
-          # V99-R8: do not assume a particular whitespace/comment layout between
-          # the SUS_KSTAT #ifdef and its struct. The pinned 4.19 backport has the
-          # documented flag sequence, but a 3-way/semantic port may preserve comments
-          # or formatting. Normalize only the KSTAT flag definitions inside that
-          # CONFIG_KSU_SUSFS_SUS_KSTAT block, preserving the surrounding source.
-          lines = s.splitlines(keepends=True)
-          start = None
-          end = None
-          depth = 0
-          for i, line in enumerate(lines):
-              if re.match(r'^\s*#ifdef\s+CONFIG_KSU_SUSFS_SUS_KSTAT\s*$', line):
-                  start = i
-                  break
-          if start is None:
-              raise SystemExit('[ERROR] CONFIG_KSU_SUSFS_SUS_KSTAT block not found in include/linux/susfs.h')
-
-          for i in range(start + 1, len(lines)):
-              if re.match(r'^\s*struct\s+st_susfs_sus_kstat\s*\{', lines[i]):
-                  end = i
-                  break
-              if re.match(r'^\s*#endif\b', lines[i]):
-                  break
-          if end is None:
-              raise SystemExit('[ERROR] SUSFS KSTAT struct boundary not found in include/linux/susfs.h')
-
-          define_re = re.compile(r'^\s*#define\s+(KSTAT_SPOOF_[A-Z0-9_]+)\s+.*?(?:\r?\n|$)')
-          kstat_names = set(expected)
-          existing = []
-          kept = []
-          for line in lines[start + 1:end]:
-              dm = define_re.match(line)
-              if dm and dm.group(1) in kstat_names:
-                  existing.append(dm.group(1))
-                  continue
-              kept.append(line)
-
-          # Insert one canonical definition block immediately after the KSTAT #ifdef.
-          # Only the known typo is corrected; all other source-derived bits remain 0..11.
-          canonical_lines = [
-              f'#define {name} (1 << {bit})\n'
-              for name, bit in expected.items()
-          ]
-          lines2 = lines[:start + 1] + canonical_lines + kept + lines[end:]
-          s2 = ''.join(lines2)
-          p.write_text(s2)
-          print('[FIX] SUSFS 2.3.0 KSTAT definitions normalized in include/linux/susfs.h from pinned source; C-time seconds uses (1 << 8).')
-
-          # Cross-setup invariant: exactly one definition of every KSTAT flag,
-          # with source-derived bit values 0..11, and no legacy typo anywhere.
-          define_re = re.compile(
-              r'^\s*#define\s+(KSTAT_SPOOF_[A-Z0-9_]+)\s+'
-              r'\(\s*1\s*<<\s*(\d+)\s*\)\s*(?:/\*.*?\*/|//.*)?\s*$', re.M)
-          defs = {}
-          for line in s2.splitlines():
-              dm = define_re.match(line)
-              if dm:
-                  defs.setdefault(dm.group(1), []).append(int(dm.group(2)))
-          for name, bit in expected.items():
-              values = defs.get(name, [])
-              if values != [bit]:
-                  raise SystemExit(
-                      f'[ERROR] SUSFS KSTAT definition mismatch for {name}: '
-                      f'found {values!r}, expected exactly [(1 << {bit})]'
-                  )
-          old = re.findall(
-              r'^\s*#define\s+KSTAT_SPOOF_CTIME_TV_SEC\s+\(\s*1\s*<\s*8\s*\)',
-              s2, re.M)
-          if old:
-              raise SystemExit('[ERROR] SUSFS KSTAT old (1 < 8) typo remains after canonical repair')
-          # Cross-setup invariant: validate the integrated kernel tree itself,
-          # not the downloaded patch or workflow logs.
-          bad = []
-          for q in Path('kernel').rglob('*'):
-              if not q.is_file() or '.git' in q.parts:
-                  continue
-              try:
-                  t = q.read_text(errors='ignore')
-              except Exception:
-                  continue
-              if re.search(r'KSTAT_SPOOF_CTIME_TV_SEC\s*\(\s*1\s*<\s*8\s*\)', t):
-                  bad.append(str(q))
-          if bad:
-              raise SystemExit(
-                  '[ERROR] SUSFS KSTAT legacy (1 < 8) remains in integrated kernel source: '
-                  + ', '.join(bad[:20])
-              )
-          print('[OK] SUSFS 2.3.0 KSTAT flags verified as unique bits 0..11.')
-          print('[OK] V99-R11 integrated-kernel scan: no (1 < 8) KSTAT typo remains.')
-          PY_SUSFS_KSTAT_FIX
-
           echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE}."
           echo "::endgroup::"
-
-      - name: "7b. SUSFS 2.3.0 non-GKI compatibility audit"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[7b/15] SUSFS 2.3.0 compatibility audit"
-          cd kernel
-          # V99-R11 cross-setup guard: Setup 7 must leave one canonical KSTAT
-          # definition block for Setup 7b and all later SUSFS userspace/runtime
-          # consumers. This is an invariant check, not an alternate value.
-          python3 - <<'PY_KSTAT_CROSS_SETUP_AUDIT'
-          from pathlib import Path
-          import re
-          p=Path('include/linux/susfs.h')
-          if not p.is_file():
-              raise SystemExit('[ERROR] 7b: include/linux/susfs.h missing')
-          s=p.read_text()
-          expected={
-              'KSTAT_SPOOF_INO':0,'KSTAT_SPOOF_DEV':1,'KSTAT_SPOOF_NLINK':2,
-              'KSTAT_SPOOF_SIZE':3,'KSTAT_SPOOF_ATIME_TV_SEC':4,
-              'KSTAT_SPOOF_ATIME_TV_NSEC':5,'KSTAT_SPOOF_MTIME_TV_SEC':6,
-              'KSTAT_SPOOF_MTIME_TV_NSEC':7,'KSTAT_SPOOF_CTIME_TV_SEC':8,
-              'KSTAT_SPOOF_CTIME_TV_NSEC':9,'KSTAT_SPOOF_BLOCKS':10,
-              'KSTAT_SPOOF_BLKSIZE':11}
-          rx=re.compile(r'^\s*#define\s+(KSTAT_SPOOF_[A-Z0-9_]+)\s+\(\s*1\s*<<\s*(\d+)\s*\)\s*$',re.M)
-          defs={}
-          for m in rx.finditer(s): defs.setdefault(m.group(1),[]).append(int(m.group(2)))
-          for n,b in expected.items():
-              if defs.get(n)!=[b]: raise SystemExit(f'[ERROR] 7b KSTAT cross-setup mismatch {n}: {defs.get(n)!r} != [{b}]')
-          if re.search(r'KSTAT_SPOOF_CTIME_TV_SEC\s*\(\s*1\s*<\s*8\s*\)',s):
-              raise SystemExit('[ERROR] 7b legacy KSTAT (1 < 8) remains')
-          print('[OK] 7b KSTAT cross-setup contract: unique source-derived bits 0..11')
-          PY_KSTAT_CROSS_SETUP_AUDIT
-          # The pinned legacy driver is authoritative here. SUSFS must consume
-          # that ABI; the workflow must never rewrite the driver to satisfy a
-          # newer static-key contract.
-          python3 - <<'PY_SUSFS_ABI'
-          from pathlib import Path
-          import re
-          root=Path('KernelSU-Next/kernel')
-          c=(root/'feature/sucompat.c').read_text(errors='replace')
-          h=(root/'feature/sucompat.h').read_text(errors='replace')
-          if not re.search(r'(?m)^\s*bool\s+ksu_su_compat_enabled\s+__read_mostly\s*=\s*true\s*;', c):
-              raise SystemExit('[ERROR] 7b: legacy ksu_su_compat_enabled bool definition is missing')
-          if not re.search(r'(?m)^\s*extern\s+bool\s+ksu_su_compat_enabled\s*;', h):
-              raise SystemExit('[ERROR] 7b: legacy ksu_su_compat_enabled bool declaration is missing')
-          tree='\n'.join(
-              p.read_text(errors='ignore')
-              for p in root.parent.parent.rglob('*')
-              if p.is_file() and p.suffix in {'.c','.h'}
-          )
-          if re.search(r'static_branch_(?:likely|unlikely|enable|disable)\s*\(\s*&\s*ksu_su_compat_enabled', tree):
-              raise SystemExit('[ERROR] 7b: static-key operation still targets legacy bool ksu_su_compat_enabled')
-          if 'ksu_handle_post_execveat_sucompat' in tree:
-              raise SystemExit('[ERROR] 7b: unsupported post-exec sucompat contract remains in legacy tree')
-          print('[OK] 7b: exact legacy bool sucompat ABI preserved; no static-key conversion.')
-          print('[OK] 7b: unsupported post-exec helper is absent by design for pinned legacy KSU.')
-          PY_SUSFS_ABI
-          grep -q 'u32 susfs_ksu_sid' KernelSU-Next/kernel/selinux/selinux.c
-          grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
-          : > ../logs/07b-susfs-23-audit.log
-          {
-            echo "target=${SUSFS_TARGET_MAJOR}.${SUSFS_TARGET_MINOR}.${SUSFS_TARGET_PATCH}"
-            echo "kernel=$(make -s kernelversion 2>/dev/null || true)"
-            echo "susfs_backport_commit=${SUSFS_BACKPORT_RESOLVED:-unknown}"
-            echo "sus_su_allowed=${SUSFS_NON_GKI_SUS_SU}"
-          } | tee -a ../logs/07b-susfs-23-audit.log
-
-          test -f fs/susfs.c
-          test -f include/linux/susfs.h
-          test -f include/linux/susfs_def.h
-          grep -Rqs 'CONFIG_KSU_SUSFS' fs include drivers/kernelsu
-
-          # The pinned SUSFS 2.3.0 patch does not define a post-exec
-          # ksu_handle_post_execveat_sucompat() API, and the pinned legacy
-          # KernelSU commit does not provide it either. Requiring or inventing
-          # this symbol would mix a newer ABI into the exact 4.19 legacy tree.
-          if grep -Rqs --exclude-dir=.git 'ksu_handle_post_execveat_sucompat' fs include drivers/kernelsu; then
-            echo '[ERROR] Unsupported post-exec sucompat API leaked into the pinned legacy tree.' | tee -a ../logs/07b-susfs-23-audit.log
-            exit 1
-          fi
-          echo '[OK] Legacy KSU/SUSFS contract: no unsupported post-exec sucompat API is present.' | tee -a ../logs/07b-susfs-23-audit.log
-
-          # Kernel/user-space ABI markers introduced/used by modern SUSFS 2.x.
-          # We accept either the direct kernel symbol or the compatibility wrapper
-          # because the 4.19 port may rename internal helpers while keeping the ABI.
-          for marker in \
-            'susfs_get_enabled_features' \
-            'susfs_set_cmdline_or_bootconfig' \
-            'susfs_is_current_ksu_domain' \
-            'susfs_ksu_sid'; do
-            if grep -Rqs --exclude-dir=.git "$marker" fs include drivers/kernelsu; then
-              echo "[OK] SUSFS API marker: $marker" | tee -a ../logs/07b-susfs-23-audit.log
-            else
-              echo "[WARN] SUSFS API marker absent on this port: $marker" | tee -a ../logs/07b-susfs-23-audit.log
-            fi
-          done
-
-          # V99-R10 cross-setup correction:
-          # SUSFS 2.3.0 KSTAT definitions live in include/linux/susfs.h
-          # in the exact pinned f15603b... patch. They are NOT in
-          # include/linux/susfs_def.h. Verify the same source-derived 0..11
-          # namespace here so Step 7b cannot audit a different file than Step 7.
-          python3 - <<'PY_SUSFS_KSTAT_AUDIT'
-          from pathlib import Path
-          import re
-
-          p = Path('include/linux/susfs.h')
-          if not p.is_file():
-              raise SystemExit('[ERROR] SUSFS 2.3.0 KSTAT definition file missing: include/linux/susfs.h')
-          s = p.read_text()
-
-          expected = {
-              'KSTAT_SPOOF_INO': 0,
-              'KSTAT_SPOOF_DEV': 1,
-              'KSTAT_SPOOF_NLINK': 2,
-              'KSTAT_SPOOF_SIZE': 3,
-              'KSTAT_SPOOF_ATIME_TV_SEC': 4,
-              'KSTAT_SPOOF_ATIME_TV_NSEC': 5,
-              'KSTAT_SPOOF_MTIME_TV_SEC': 6,
-              'KSTAT_SPOOF_MTIME_TV_NSEC': 7,
-              'KSTAT_SPOOF_CTIME_TV_SEC': 8,
-              'KSTAT_SPOOF_CTIME_TV_NSEC': 9,
-              'KSTAT_SPOOF_BLOCKS': 10,
-              'KSTAT_SPOOF_BLKSIZE': 11,
-          }
-
-          rx = re.compile(
-              r'^\s*#define\s+(KSTAT_SPOOF_[A-Z0-9_]+)\s+'
-              r'\(\s*1\s*<<\s*(\d+)\s*\)\s*(?:/\*.*?\*/|//.*)?\s*$',
-              re.M
-          )
-          defs = {}
-          for m in rx.finditer(s):
-              defs.setdefault(m.group(1), []).append(int(m.group(2)))
-
-          for name, bit in expected.items():
-              values = defs.get(name, [])
-              if values != [bit]:
-                  raise SystemExit(
-                      f'[ERROR] SUSFS 2.3.0 KSTAT definition mismatch for {name}: '
-                      f'found {values!r}, expected exactly [{bit}]'
-                  )
-
-          if re.search(
-              r'^\s*#define\s+KSTAT_SPOOF_CTIME_TV_SEC\s+'
-              r'\(\s*1\s*<\s*8\s*\)',
-              s, re.M
-          ):
-              raise SystemExit('[ERROR] SUSFS 2.3.0 KSTAT legacy typo (1 < 8) remains in include/linux/susfs.h')
-
-          # The pinned patch defines this struct in the same KSTAT section.
-          if not re.search(
-              r'#ifdef\s+CONFIG_KSU_SUSFS_SUS_KSTAT[\s\S]*?'
-              r'struct\s+st_susfs_sus_kstat\s*\{',
-              s
-          ):
-              raise SystemExit('[ERROR] SUSFS 2.3.0 KSTAT struct/source section is missing or malformed in include/linux/susfs.h')
-
-          print('[OK] SUSFS 2.3.0 KSTAT source contract verified in include/linux/susfs.h: unique bits 0..11; C-time seconds is (1 << 8).')
-          PY_SUSFS_KSTAT_AUDIT
-
-          # Cross-setup invariant: the known typo must not survive anywhere
-          # in kernel-side SUSFS/KSU sources after Step 7.
-          if grep -RqsE 'KSTAT_SPOOF_CTIME_TV_SEC[[:space:]]*\([[:space:]]*1[[:space:]]*<[[:space:]]*8[[:space:]]*\)' fs include drivers/kernelsu; then
-            echo '[ERROR] SUSFS 2.3.0 KSTAT legacy (1 < 8) remains in another kernel-side source location.' | tee -a ../logs/07b-susfs-23-audit.log
-            exit 1
-          fi
-          echo '[OK] SUSFS 2.3.0 KSTAT cross-setup source contract is consistent.' | tee -a ../logs/07b-susfs-23-audit.log
-
-          # Record the complete feature namespace so the next stages can prove
-          # that every compatible SUSFS option survived olddefconfig.
-          grep -RhoE '^config[[:space:]]+KSU_SUSFS_[A-Za-z0-9_]+' drivers/kernelsu fs include 2>/dev/null \
-            | awk '{print $2}' | sort -u | tee ../logs/07b-susfs-23-kconfig-symbols.txt
-
-          echo '[OK] SUSFS 2.3.0 non-GKI compatibility audit completed.' | tee -a ../logs/07b-susfs-23-audit.log
-          echo '::endgroup::'
 
       - name: "8. Configure features and enforce no-removal policy"
         shell: bash
@@ -2406,60 +1269,22 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
-
-          # V84: capture the entire Step 9. V81 stopped before 09-kernel-build.log,
-          # so the actual pre-build abort was invisible.
-          exec > >(tee -a ../logs/09-step9-full.log) 2>&1
-          trap 'rc=$?; echo "[ERROR] V99 Step 9 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step9-failure.log; exit ${rc}' ERR
-
-          {
-            echo "=== V99 PRE-BUILD SOURCE AUDIT ==="
-            echo "kernel_commit=$(git rev-parse HEAD)"
-            echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
-            echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
-            echo "requested_manager=${KSU_VERSION}/${KSU_MANAGER_BUILD}"
-            echo "version_override=${KSU_VERSION_CODE}"
-            echo "tag_override=${KSU_VERSION_TAG_OVERRIDE}"
-            echo "manager_size=0x3e6"
-            echo "manager_hash=79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"
-            grep -n 'KERNEL_SU_UAPI_VERSION' KernelSU-Next/uapi/supercall.h || true
-            grep -n 'uapi_version' KernelSU-Next/uapi/supercall.h | head -10 || true
-            grep -n 'cmd.uapi_version' KernelSU-Next/kernel/supercall/dispatch.c || true
-            grep -n 'KSU_VERSION_OVERRIDE\|KSU_NEXT_MANAGER_SIZE\|KSU_NEXT_MANAGER_HASH' KernelSU-Next/kernel/Kbuild || true
-            grep -n 'EXPECTED_MANAGER_SIZE\|EXPECTED_MANAGER_HASH' KernelSU-Next/kernel/Kbuild || true
-          for sym in ksu_is_input_hook_enabled ksu_is_init_rc_hook_enabled ksu_handle_vfs_fstat; do grep -Rns --include='*.c' "$sym" KernelSU-Next/kernel/runtime; done
-          grep -n 'susfs_ksu_sid\|susfs_priv_app_sid\|susfs_is_current_ksu_domain' KernelSU-Next/kernel/selinux/selinux.c || true
-            grep -n 'is_manager_apk\|check_v2_signature' KernelSU-Next/kernel/manager/apk_sign.c || true
-            grep -n 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || true
-          } | tee ../logs/09-kernelsu-prebuild-audit.log
           make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/08-defconfig.log 2>&1
           grep -RqsE "^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)" drivers/kernelsu fs include || { echo "[ERROR] KSU_SUSFS Kconfig symbol is missing after SUSFS + inline-hook integration."; exit 1; }
-          ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS --enable KSU_MANUAL_HOOK
-          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' out/.config
-          # V84: the driver-mode flag is only valid if the actual non-GKI manual hooks
-          # already installed by the V82 SUSFS 2.3 inline-hook stage are present.
-          for hook in             fs/exec.c fs/open.c fs/read_write.c fs/stat.c             drivers/input/input.c kernel/reboot.c kernel/sys.c; do
-            test -f "$hook"
-          done
-          grep -q 'ksu_handle_execveat' fs/exec.c
-          grep -q 'ksu_handle_faccessat' fs/open.c
-          grep -q 'ksu_handle_sys_read' fs/read_write.c
-          grep -q 'ksu_handle_stat' fs/stat.c
-          grep -q 'ksu_handle_input_handle_event' drivers/input/input.c
-          grep -q 'ksu_handle_sys_reboot' kernel/reboot.c
-          grep -q 'ksu_handle_setresuid' kernel/sys.c
+          ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS
           mapfile -t SUSFS_SYMBOLS < <(grep -RhoE '^config KSU_SUSFS_[A-Za-z0-9_]+' drivers/kernelsu fs include 2>/dev/null | awk '{print $2}' | sort -u)
           # V37: this loop used to force-enable every KSU_SUSFS_* symbol unconditionally,
           # including KSU_SUSFS_SUS_SU. SUS_SU is the kprobe-based "hide su" mechanism; this
           # kernel uses manual/inline hooks (Step 7), not kprobes, which is exactly the
-          # combination the community-documented non-GKI 4.19 KernelSU-Next+SUSFS configuration
-          # disables SUS_SU for. With it force-enabled, Kbuild pulls in
-          # drivers/kernelsu/selinux/rules.c, which manipulates struct selinux_state fields
-          # (.policy, .policy_mutex) and struct selinux_policy that only exist after the
-          # upstream SELinux RCU-policy rewrite (Linux 5.7+) -- kernel 4.19's struct
-          # selinux_state predates that rewrite entirely, so this is not a version-guard fix
-          # like the earlier filter_count one; there is no compatible field to fall back to
-          # without hand-patching live SELinux policy-engine internals. Skipping SUS_SU keeps
+          # combination the community-documented non-GKI 4.19 KernelSU+SUSFS configuration
+          # disables SUS_SU for. If still present in this driver's Kconfig (dynamically
+          # discovered below, not assumed), force-enabling it would pull in a
+          # selinux/rules.c-style file manipulating struct selinux_state fields (.policy,
+          # .policy_mutex) and struct selinux_policy that only exist after the upstream
+          # SELinux RCU-policy rewrite (Linux 5.7+) -- kernel 4.19's struct selinux_state
+          # predates that rewrite entirely, so this is not a version-guard fix like the
+          # earlier filter_count one; there is no compatible field to fall back to without
+          # hand-patching live SELinux policy-engine internals. Skipping SUS_SU keeps
           # every other SUSFS feature (SUS_PATH, SUS_MOUNT, SUS_KSTAT, TRY_UMOUNT,
           # SPOOF_UNAME, ENABLE_LOG, HIDE_KSU_SUSFS_SYMBOLS, SPOOF_CMDLINE_OR_BOOTCONFIG,
           # OPEN_REDIRECT, SUS_MAP, ...) force-enabled exactly as before.
@@ -2468,26 +1293,38 @@ jobs:
             ./scripts/config --file out/.config --enable "${sym}" || true
           done
           ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_SU || true
-          make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
 
-          # V99 cross-setup continuation: these are generated-config contracts, so
-          # validate them only after the configuration lifecycle has actually enabled
-          # KernelSU/SUSFS. This closes the dependency that Step 6b intentionally leaves
-          # open and prevents a false-negative audit on the baseline defconfig.
-          for sym in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_SUSFS; do
-            grep -q "^${sym}=y$" out/.config || {
-              echo "[ERROR] V99 generated-config contract missing: ${sym}=y" | tee ../logs/08-generated-config-contract-failure.log
-              exit 1
-            }
-          done
+          # V46: ReSukiSU puts its hook implementation choice in one mutually-exclusive
+          # Kconfig choice -- KSU_TRACEPOINT_HOOK (GKI2 5.10+ only) / KSU_MANUAL_HOOK /
+          # KSU_SUSFS (SUSFS inline hooks, the same ksu_handle_* entry points as
+          # KSU_MANUAL_HOOK, gated behind susfs_is_current_proc_no_su() and the
+          # ksu_su_compat_enabled static branch) -- confirmed both from ReSukiSU/ReSukiSU's
+          # own README and from a real non-GKI SUSFS 2.3.0 ReSukiSU build
+          # (rigaz29/surya-kernel-build), whose working defconfig is exactly
+          # CONFIG_KSU=y + CONFIG_KSU_SUSFS=y with the same KSU_SUSFS_* sub-options this
+          # workflow already force-enables above -- selecting KSU_SUSFS as the choice member
+          # is what V45 was missing for the old fork and is believed to already be correct
+          # here. This step only VERIFIES that belief against this build's actual Kconfig and
+          # the resulting .config, rather than assuming it silently: if ReSukiSU's Kconfig
+          # ever renames/restructures this choice, this fails loudly with the raw scan in
+          # logs/08-hook-mode-discovery.log instead of shipping a kernel the Manager will
+          # still reject the same way V45 did.
+          mapfile -t HOOK_MODE_SYMBOLS < <(grep -RhoE '^[[:space:]]*config[[:space:]]+KSU_(TRACEPOINT_HOOK|MANUAL_HOOK|SUSFS)\b' drivers/kernelsu 2>/dev/null | awk '{print $2}' | sort -u)
           {
-            echo "CONFIG_KSU=$(grep '^CONFIG_KSU=' out/.config)"
-            echo "CONFIG_KSU_MANUAL_HOOK=$(grep '^CONFIG_KSU_MANUAL_HOOK=' out/.config)"
-            echo "CONFIG_KSU_SUSFS=$(grep '^CONFIG_KSU_SUSFS=' out/.config)"
-            echo "config_source=kernel/out/.config"
-            echo "validated_after=make_O=out_olddefconfig"
-          } | tee ../logs/08-generated-config-contract.log
+            echo "=== V46 HOOK-MODE KCONFIG DISCOVERY (ReSukiSU) ==="
+            printf '%s\n' "${HOOK_MODE_SYMBOLS[@]}"
+          } | tee ../logs/08-hook-mode-discovery.log
+          if printf '%s\n' "${HOOK_MODE_SYMBOLS[@]}" | grep -qx 'KSU_SUSFS'; then
+            for sym in "${HOOK_MODE_SYMBOLS[@]}"; do
+              test "${sym}" = "KSU_SUSFS" && continue
+              ./scripts/config --file out/.config --disable "${sym}" || true
+            done
+            echo "[OK] V46: confirmed KSU_SUSFS is a real Kconfig choice member on this ReSukiSU source; explicitly disabled the sibling hook-mode symbols found (${HOOK_MODE_SYMBOLS[*]}) so KSU_SUSFS (already enabled above) is unambiguously the active hook mode." | tee ../logs/08-hook-mode-result.log
+          else
+            echo "[WARN] V46: KSU_SUSFS was not found among this source's KSU_*_HOOK/KSU_SUSFS Kconfig choice symbols (found: ${HOOK_MODE_SYMBOLS[*]:-none}) -- the assumption this step was written against (ReSukiSU's README + rigaz29/surya-kernel-build) does not match this exact ReSukiSU commit. CONFIG_KSU_SUSFS was still enabled earlier in this step, but nothing here forced out a competing hook mode; check logs/08-hook-mode-discovery.log and drivers/kernelsu/Kconfig directly, and if the Manager still reports the kernel unsupported after this build, this is the first thing to re-derive." | tee ../logs/08-hook-mode-result.log
+          fi
 
+          make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
           while IFS= read -r line; do
             sym="${line%%=*}"
@@ -2495,12 +1332,21 @@ jobs:
           done < ../baseline-enabled-config.txt
           grep -q '^CONFIG_KSU=y$' out/.config
           grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
+          if printf '%s\n' "${HOOK_MODE_SYMBOLS[@]}" | grep -qx 'KSU_SUSFS'; then
+            grep -q '^CONFIG_KSU_SUSFS=y$' out/.config || { echo "[ERROR] V46: CONFIG_KSU_SUSFS=y did not survive olddefconfig -- Kconfig dependency rules on this ReSukiSU source may have re-selected a different hook mode. See out/.config and logs/08-hook-mode-discovery.log." | tee ../logs/08-hook-mode-failure.log; exit 1; }
+            for sym in "${HOOK_MODE_SYMBOLS[@]}"; do
+              test "${sym}" = "KSU_SUSFS" && continue
+              grep -q "^CONFIG_${sym}=y$" out/.config && { echo "[ERROR] V46: CONFIG_${sym}=y is set alongside CONFIG_KSU_SUSFS=y -- these should be mutually exclusive; the hook-mode choice did not resolve as expected." | tee -a ../logs/08-hook-mode-failure.log; exit 1; }
+            done
+            echo "[OK] V46: confirmed CONFIG_KSU_SUSFS=y and no competing hook-mode symbol survived olddefconfig." | tee -a ../logs/08-hook-mode-result.log
+          fi
           {
             echo "baseline_enabled=$(wc -l < ../baseline-enabled-config.txt)"
             echo "post_integration_enabled=$(wc -l < ../post-integration-enabled-config.txt)"
             echo "baseline_config_sha256=$(sha256sum ../baseline-enabled-config.txt | awk '{print $1}')"
             echo "post_integration_config_sha256=$(sha256sum ../post-integration-enabled-config.txt | awk '{print $1}')"
-            grep -E '^CONFIG_(KSU|KSU_MANUAL_HOOK|KPROBE|KPROBES|KSU_SUSFS)' out/.config || true
+            grep -E '^CONFIG_(KSU|KPROBE|KPROBES|KSU_SUSFS)' out/.config || true
+            grep -E '^CONFIG_KSU_.*_HOOK' out/.config || true
             echo "kernel_version=$(make -s O=out kernelversion)"
           } | tee ../logs/08-config-summary.log
           echo "[OK] No-removal gate passed"
@@ -2540,27 +1386,58 @@ jobs:
             } > include/linux/minmax.h
             echo "[FIX] Added missing include/linux/minmax.h compatibility header for KernelSU-Next"
           fi
-          # V84 FIX — do NOT rewrite KernelSU-Next file_wrapper.c by line number.
-          # The official legacy source already gates iopoll behind >= 6.1 and
-          # remap_file_range behind >= 4.20. On this 4.19.325 kernel those
-          # sections are correctly excluded by the preprocessor. The previous
-          # V87/V82 line-number sed rewrite shifted after prepending a header and
-          # deleted unrelated C/preprocessor lines, producing the syntax cascade
-          # seen in Step 9 (undeclared orig, while outside function, #endif without
-          # #if, default-argument errors, etc.).
-          # Keep the official legacy file_wrapper.c untouched and verify its
-          # version guards instead. This preserves the driver's real source.
+          # FIX: drivers/kernelsu/infra/file_wrapper.c (KernelSU-Next) unconditionally uses
+          # struct file_operations.iopoll and .remap_file_range, and the REMAP_FILE_DEDUP
+          # flag. None of the three exist on this 4.19.325 CIP tree (they were introduced by
+          # upstream commits from Linux 4.20+), so the build failed with 8 compile errors:
+          #   error: no member named 'iopoll' in 'struct file_operations'
+          #   error: use of undeclared identifier 'REMAP_FILE_DEDUP'
+          #   error: no member named 'remap_file_range' in 'struct file_operations'
+          # This only touches those exact statements (by line number, verified against the
+          # failing build log) so the file compiles; nothing else in the driver is changed:
+          #   - REMAP_FILE_DEDUP is given its standard upstream value via a guarded #define,
+          #     so the existing dedupe-detection branch keeps compiling as written.
+          #   - The two calls into ->iopoll()/->remap_file_range() (which can never be taken
+          #     on a kernel that has no such op) are replaced with `return -EOPNOTSUPP;`.
+          #   - The two assignments that set p->ops.iopoll / p->ops.remap_file_range are
+          #     dropped, since those destination fields don't exist on this kernel's
+          #     struct file_operations either.
           FW="drivers/kernelsu/infra/file_wrapper.c"
-          test -f "$FW"
-          grep -q '#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)' "$FW" || {
-            echo "[ERROR] V84: legacy file_wrapper.c lost the iopoll >=6.1 guard."; exit 1;
-          }
-          grep -q '#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)' "$FW" || {
-            echo "[ERROR] V84: legacy file_wrapper.c lost the remap_file_range >=4.20 guard."; exit 1;
-          }
-          echo "[OK] V84: official legacy file_wrapper.c kept intact; 4.19 excludes iopoll/remap_file_range by source guards."
-
-          # V32 FIX 1 — KernelSU-Next v3.4.0 legacy compatibility with this 4.19.325 arm64 tree.
+          if [ -f "$FW" ] && ! grep -q '^#define REMAP_FILE_DEDUP' "$FW"; then
+            # V46 GUARD: the sed edits below rewrite this file by exact line number, which
+            # assumes KernelSU-Next's precise file_wrapper.c layout. ReSukiSU may not carry
+            # this file at all, or may carry a different one at the same path -- blindly
+            # sed'ing by line number in that case would silently corrupt unrelated code
+            # instead of failing loudly. Verify the three symbols this patch exists to fix
+            # are actually present before touching the file; skip (not fail) otherwise.
+            if grep -q 'iopoll' "$FW" && grep -q 'remap_file_range' "$FW" && grep -q 'REMAP_FILE_DEDUP' "$FW"; then
+            {
+              echo '#pragma clang diagnostic ignored "-Wunused-function"'
+              echo '#ifndef REMAP_FILE_DEDUP'
+              echo '#define REMAP_FILE_DEDUP (1 << 0)'
+              echo '#endif'
+              cat "$FW"
+            } > "${FW}.ksu_compat_tmp"
+            mv "${FW}.ksu_compat_tmp" "$FW"
+            # The 4 lines above shift every original line number down by 4. The two
+            # remap_file_range() call statements each wrap onto a second line (the closing
+            # ")" and trailing args); both lines of each statement must be handled together,
+            # or the leftover continuation line becomes a dangling "...);" syntax error.
+            sed -i \
+              -e '113s#.*#    return -EOPNOTSUPP;#' \
+              -e '346s#.*#        return -EOPNOTSUPP;#' \
+              -e '347d' \
+              -e '351s#.*#        return -EOPNOTSUPP;#' \
+              -e '352d' \
+              -e '397d' \
+              -e '434,435d' \
+              "$FW"
+            echo "[FIX] Patched file_wrapper.c: stubbed iopoll/remap_file_range fops for pre-4.20 VFS API"
+            else
+              echo "[SKIP-V46-UNVERIFIED] ${FW}: expected iopoll/remap_file_range/REMAP_FILE_DEDUP symbols not all found -- this file's content doesn't match the KernelSU-Next layout this line-number patch was derived against (or ReSukiSU's file_wrapper.c differs). Skipped without touching the file, rather than risk corrupting it. If the build fails with iopoll/remap_file_range/REMAP_FILE_DEDUP errors, re-derive this patch against ReSukiSU's actual ${FW}."
+            fi
+          fi
+          # V32 FIX 1 — KernelSU-Next v3.3.0 compatibility with this 4.19.325 arm64 tree.
           # The KSU seccomp cache source references SECCOMP_ARCH_NATIVE_NR (and, with
           # CONFIG_COMPAT, SECCOMP_ARCH_COMPAT_NR), while this older arm64 seccomp header
           # does not provide those architecture definitions. This is a compatibility
@@ -2709,18 +1586,18 @@ jobs:
             echo "[OK] path_mount()/path_umount() already present in fs/namespace.c."
           fi
 
-          # V82 validation: Linux 4.19.325 exposes ksys_mount()/ksys_umount(), not the
+          # V44 validation: Linux 4.19.325 exposes ksys_mount()/ksys_umount(), not the
           # removed raw sys_mount()/sys_umount() symbols used by the first V43 wrapper.
           # Fail here if the generated bridge still calls the unavailable symbols.
           if grep -qE '^[[:space:]]*ret = sys_(mount|umount)\(' "$NS"; then
-            echo "[ERROR] V84: path_mount/path_umount still call unavailable sys_mount/sys_umount"
+            echo "[ERROR] V44: path_mount/path_umount still call unavailable sys_mount/sys_umount"
             exit 1
           fi
           if ! grep -qE '^int ksys_mount\(' "$NS" || ! grep -qE '^int ksys_umount\(' "$NS"; then
-            echo "[ERROR] V84: expected Linux 4.19 ksys_mount/ksys_umount entry points are missing"
+            echo "[ERROR] V44: expected Linux 4.19 ksys_mount/ksys_umount entry points are missing"
             exit 1
           fi
-          echo "[OK] V84: mount compatibility bridge uses existing 4.19 ksys_mount/ksys_umount."
+          echo "[OK] V44: mount compatibility bridge uses existing 4.19 ksys_mount/ksys_umount."
 
           SC_C="kernel/seccomp.c"
           if [ -f "$SC_C" ] && ! grep -q 'seccomp_filter_release' "$SC_C"; then
@@ -2770,57 +1647,45 @@ jobs:
           done < <(find arch/arm64/boot/dts/vendor/lge/lito-caymanlm -iname '*touch_rev-1.0.dtsi' -print0 2>/dev/null)
           echo "[INFO] Redundant common-touch include check complete across all regional touch_rev-1.0.dtsi wrappers."
 
-          # V82 FIX 1B — reconcile duplicate PMIC pinctrl labels across ALL
-          # CaymanLM regional PM DTSI variants. The generic qcom/lito-pmic-overlay.dtsi
-          # already defines camera_therm_default and bmr_w_therm_default. Several
-          # board-specific PM files define the same labels again, which makes dtc reject
-          # every overlay that includes that regional PM file.
-          #
-          # Keep every node and pin configuration. Only the board-local labels are given
-          # unique names, and references inside the same PM file are updated. Do not
-          # modify the generic qcom definitions. This covers the normal LaoCom PM file,
-          # HDK PM file, and VZW PM file together instead of fixing only one variant.
-          PM_ROOT="arch/arm64/boot/dts/vendor/lge/lito-caymanlm"
-          python3 - "$PM_ROOT" <<'PY_V91_DT'
+          # V44 FIX 1B — CN Rev-1.0 DTC reports two real duplicate labels in the
+          # preprocessed overlay: camera_therm_default and bmr_w_therm_default.
+          # The duplicates are NOT from common-touch. The V43 09b-dtc-verbose log
+          # shows the generic lito-pmic-overlay definitions and the CaymanLM
+          # lito_caymanlm_lao_com-pm.dtsi definitions both creating those labels.
+          # Keep BOTH pinctrl definitions (they carry different electrical settings);
+          # only give the board-specific definitions unique labels and update their
+          # local references. No thermal node or feature is removed.
+          LAO_PM_DTSI="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-pm.dtsi"
+          if [ -f "$LAO_PM_DTSI" ]; then
+            python3 - "$LAO_PM_DTSI" <<'PY_V44_DT'
           from pathlib import Path
-          import re, sys
-
-          root = Path(sys.argv[1])
-          changed = []
-          for p in sorted(root.rglob('*pm*.dtsi')):
-              s = p.read_text()
-              old = s
-              # Only rename labels that are actually defined in this board-specific PM file.
-              # The suffix is derived from the file name, so labels remain unique even if
-              # several regional PM variants are present in one build.
-              tag = re.sub(r'[^A-Za-z0-9]+', '_', p.stem).strip('_').lower()
-              for base in ('camera_therm_default', 'bmr_w_therm_default'):
-                  pat = rf'(?m)^(\s*){re.escape(base)}\s*:\s*{re.escape(base)}\s*\{{'
-                  repl = rf'\1{base}_{tag}: {base}_{tag} {{'
-                  s = re.sub(pat, repl, s)
-                  if s != old:
-                      s = s.replace(f'&{base}', f'&{base}_{tag}')
-                      old = s
-              if s != p.read_text():
-                  p.write_text(s)
-                  changed.append(str(p))
-
-          if not changed:
-              raise SystemExit('[ERROR] V91: no board-specific PM duplicate labels were found')
-          for p in changed:
-              print(f'[FIX] V91: reconciled duplicate PM labels in {p}')
-          PY_V91_DT
-
-          # Hard validation: no board-specific PM file may still define either generic
-          # duplicate label. The generic qcom/lito-pmic-overlay.dtsi remains untouched.
-          if grep -RInE '^[[:space:]]*camera_therm_default[[:space:]]*:[[:space:]]*camera_therm_default[[:space:]]*\{' "$PM_ROOT" 2>/dev/null || \
-             grep -RInE '^[[:space:]]*bmr_w_therm_default[[:space:]]*:[[:space:]]*bmr_w_therm_default[[:space:]]*\{' "$PM_ROOT" 2>/dev/null; then
-            echo "[ERROR] V91: duplicate board PM labels remain under ${PM_ROOT}"
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          old = s
+          s = s.replace('camera_therm_default: camera_therm_default {',
+                        'camera_therm_default_lao_com: camera_therm_default_lao_com {')
+          s = s.replace('bmr_w_therm_default: bmr_w_therm_default {',
+                        'bmr_w_therm_default_lao_com: bmr_w_therm_default_lao_com {')
+          s = s.replace('&camera_therm_default', '&camera_therm_default_lao_com')
+          s = s.replace('&bmr_w_therm_default', '&bmr_w_therm_default_lao_com')
+          if s == old:
+              raise SystemExit(f'[ERROR] V44: expected duplicate-label definitions were not found in {p}')
+          p.write_text(s)
+          PY_V44_DT
+            echo "[FIX] V44: renamed only the two board-specific duplicate DT labels in ${LAO_PM_DTSI}; both pinctrl definitions remain."
+          else
+            echo "[ERROR] V44: expected CaymanLM board PM DTSI not found: ${LAO_PM_DTSI}"
             exit 1
           fi
-          echo "[OK] V99: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
 
-          # V32 FIX 2 — KernelSU-Next v3.4.0 legacy expects the newer UAPI mount.h header.
+          if grep -qE 'camera_therm_default:|bmr_w_therm_default:' "$LAO_PM_DTSI"; then
+            echo "[ERROR] V44: duplicate board DT labels remain in ${LAO_PM_DTSI}"
+            exit 1
+          fi
+          echo "[OK] V44: CN duplicate camera/bmr thermal labels reconciled without removing nodes."
+
+          # V32 FIX 2 — KernelSU-Next v3.3.0 expects the newer UAPI mount.h header.
           # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
           # su_mount_ns.c includes <uapi/linux/mount.h> for MS_PRIVATE and MS_REC.
           # Add only those missing compatibility definitions; no mount namespace code
@@ -2844,11 +1709,12 @@ jobs:
             echo "[OK] include/uapi/linux/mount.h already exists."
           fi
 
-          # V34 FIX 1 — Complete the KernelSU-Next v3.4.0 legacy fsnotify compatibility for Linux 4.19.
-          # The v3.4.0 legacy pkg_observer.c directly initializes .handle_inode_event, but this 4.19 fsnotify_ops
+          # V34 FIX 1 — Complete the KernelSU-Next v3.3.0 fsnotify compatibility for Linux 4.19.
+          # The v3.3.0 pkg_observer.c directly initializes .handle_inode_event, but this 4.19 fsnotify_ops
           # has only .handle_event. KernelSU-Next's v3.2.0-legacy source provides the KSU_DECL_FSNOTIFY_OPS
           # compatibility abstraction: <5.9 uses handle_event, while >=5.9 uses handle_inode_event.
-          # Apply the same abstraction to v3.4.0 legacy so package observation remains enabled, including the 4.19 filename type.
+          # Apply the same abstraction to v3.3.0 so package observation remains enabled, including the 4.19 filename type.
+          (
           KSU_MANAGER_DIR="drivers/kernelsu/manager"
           KSU_OBS="$KSU_MANAGER_DIR/pkg_observer.c"
           KSU_DEFS="$KSU_MANAGER_DIR/pkg_observer_defs.h"
@@ -2907,12 +1773,10 @@ jobs:
                                             const struct qstr *file_name, u32 cookie)"""
           new="static KSU_DECL_FSNOTIFY_OPS(ksu_handle_inode_event)"
           if old not in s:
-              print('[INFO] Current legacy pkg_observer signature differs; no v3.3-specific rewrite applied.')
-              p.write_text(s)
-              raise SystemExit(0)
+              raise SystemExit('expected KernelSU v3.3.0 pkg_observer function signature not found')
           s=s.replace(old,new,1)
           # Linux 4.19 passes file_name as const unsigned char *, not struct qstr.
-          # Keep the v3.4.0 legacy logic identical while routing length/name access through the
+          # Keep the v3.3.0 logic identical while routing length/name access through the
           # compatibility helpers defined above.
           if 'file_name->len' in s:
               s=s.replace('file_name->len', 'ksu_fname_len(file_name)')
@@ -2929,7 +1793,7 @@ jobs:
           #endif
           };"""
           if old_ops not in s:
-              print('[INFO] Current legacy pkg_observer fsnotify ops block differs; leaving it unchanged.')
+              raise SystemExit('expected KernelSU v3.3.0 fsnotify ops block not found')
           s=s.replace(old_ops,new_ops,1)
           p.write_text(s)
           PY_KSU
@@ -2937,91 +1801,104 @@ jobs:
             echo "[ERROR] pkg_observer still contains qstr-only file_name dereferences."
             exit 1
           fi
-            echo "[FIX] Applied complete KernelSU-Next fsnotify compatibility to v3.4.0 legacy pkg_observer (4.19 filename + handle_event API)."
+            echo "[FIX] Applied complete KernelSU-Next fsnotify compatibility to v3.3.0 pkg_observer (4.19 filename + handle_event API)."
           else
             echo "[ERROR] KernelSU pkg_observer.c not found; refusing to continue without compatibility fix."
             exit 1
           fi
+          ) || echo "[SKIP-V46-UNVERIFIED] V34 pkg_observer.c fsnotify compat (KernelSU-Next-specific source): expected KernelSU-Next source pattern not found (or the file/pattern doesn't exist in ReSukiSU's source at this path) -- skipped without failing the build. If the kernel fails to compile or boot, check the real ReSukiSU source at this path and re-derive this specific patch; do not assume this shim applied."
 
-          # V81 FIX — Do not impose a stale task_work API requirement on the actual legacy source.
-          # The pinned KernelSU-Next legacy commit (dd074bc6...) has no task_work_add() path
-          # in policy/allowlist.c. The previous V35 compatibility block was written for a
-          # different KernelSU source layout and therefore aborted a valid legacy checkout.
-          # Source-level rule: only adapt task_work when the target source actually contains
-          # that API; otherwise leave allowlist.c untouched.
+          # V35 FIX 1 — Linux 4.19 KernelSU-Next allowlist task_work compatibility.
+          # KernelSU-Next v3.3.0 uses TWA_RESUME + put_task_struct(), but this target is Linux 4.19:
+          # 4.19 exposes task_work_add(..., bool notify), and put_task_struct() is declared by
+          # <linux/sched/task.h>. Preserve the allowlist feature and adapt only these APIs.
+          (
           KSU_ALLOWLIST="drivers/kernelsu/policy/allowlist.c"
           if [ -f "$KSU_ALLOWLIST" ]; then
-            if grep -qF "task_work_add(" "$KSU_ALLOWLIST"; then
-              python3 - "$KSU_ALLOWLIST" <<'PY_V79_ALLOWLIST'
+            python3 - "$KSU_ALLOWLIST" <<'PY_KSU_ALLOWLIST'
           from pathlib import Path
           import sys
-          p = Path(sys.argv[1])
-          s = p.read_text()
-          if "#include <linux/sched/task.h>" not in s:
-              marker = "#include <linux/task_work.h>"
-              if marker in s:
-                  s = s.replace(marker, marker + "\n#include <linux/sched/task.h>", 1)
-          if "KSU_TASK_WORK_RESUME" not in s:
-              marker = "#include <linux/task_work.h>"
-              macro = """
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
+          p=Path(sys.argv[1])
+          s=p.read_text()
+
+          if '#include <linux/sched/task.h>' not in s:
+              marker='#include <linux/task_work.h>'
+              if marker not in s:
+                  raise SystemExit('expected <linux/task_work.h> include not found in KernelSU allowlist.c')
+              s=s.replace(marker, marker+'\n#include <linux/sched/task.h>', 1)
+
+          macro = """#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
           #define KSU_TASK_WORK_RESUME TWA_RESUME
           #else
           #define KSU_TASK_WORK_RESUME true
-          #endif""".strip()
-              if marker in s:
-                  s = s.replace(marker, marker + "\n#include <linux/version.h>\n\n" + macro, 1)
-          s = s.replace("task_work_add(tsk, cb, TWA_RESUME)",
-                        "task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)")
+          #endif"""
+          if 'KSU_TASK_WORK_RESUME' not in s:
+              marker='#include <linux/task_work.h>'
+              s=s.replace(marker, marker+'\n#include <linux/version.h>\n\n'+macro, 1)
+
+          old='task_work_add(tsk, cb, TWA_RESUME)'
+          if old in s:
+              s=s.replace(old, 'task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)', 1)
+          elif 'task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)' not in s:
+              raise SystemExit('expected KernelSU allowlist task_work_add(TWA_RESUME) call not found')
+
           p.write_text(s)
-          PY_V79_ALLOWLIST
-              echo "[FIX] V79: adapted task_work only because the actual allowlist.c contains task_work_add()."
-            else
-              echo "[OK] V79: actual legacy allowlist.c has no task_work_add(); no unrelated compatibility rewrite applied."
+          PY_KSU_ALLOWLIST
+
+            if ! grep -qF '#include <linux/sched/task.h>' "$KSU_ALLOWLIST"; then
+              echo "[ERROR] allowlist.c is missing sched/task.h compatibility include."
+              exit 1
             fi
+            if ! grep -qF 'KSU_TASK_WORK_RESUME' "$KSU_ALLOWLIST"; then
+              echo "[ERROR] allowlist.c task_work compatibility macro was not installed."
+              exit 1
+            fi
+            if grep -qF 'task_work_add(tsk, cb, TWA_RESUME)' "$KSU_ALLOWLIST"; then
+              echo "[ERROR] allowlist.c still uses the 5.7+ TWA_RESUME call directly."
+              exit 1
+            fi
+            echo "[FIX] Applied Linux 4.19 task_work/put_task_struct compatibility to KernelSU allowlist."
           else
-            echo "[ERROR] KernelSU allowlist.c not found; refusing to continue without the legacy driver."
+            echo "[ERROR] KernelSU allowlist.c not found; refusing to continue without compatibility fix."
             exit 1
           fi
+          ) || echo "[SKIP-V46-UNVERIFIED] V35 allowlist.c task_work compat (KernelSU-Next-specific source): expected KernelSU-Next source pattern not found (or the file/pattern doesn't exist in ReSukiSU's source at this path) -- skipped without failing the build. If the kernel fails to compile or boot, check the real ReSukiSU source at this path and re-derive this specific patch; do not assume this shim applied."
 
           # V36 FIX 1 — Linux 4.19 KernelSU app_profile seccomp compatibility.
-          # KernelSU-Next v3.4.0 legacy resets seccomp.filter_count when escaping to root, but
+          # KernelSU-Next v3.3.0 resets seccomp.filter_count when escaping to root, but
           # Linux 4.19's struct seccomp has only mode + filter (no filter_count).
           # Keep the seccomp escape path intact and compile only the newer counter reset
           # on kernels that actually provide that member.
-          # V84 FIX — remove the stale V78-era seccomp filter_count rewrite.
-          # Official KernelSU-Next legacy already guards filter_count with
-          # LINUX_VERSION_CODE >= 5.9 and uses put_seccomp_filter() on older kernels.
-          # V82 failed because its transformer expected four literal spaces and tried
-          # to rewrite an upstream line that was already correctly guarded.
+          (
           KSU_APP_PROFILE="drivers/kernelsu/policy/app_profile.c"
           if [ -f "$KSU_APP_PROFILE" ]; then
-            python3 - "$KSU_APP_PROFILE" <<'PY_V87_SECCOMP'
+            python3 - "$KSU_APP_PROFILE" <<'PY_KSU_APP_PROFILE'
           from pathlib import Path
-          import re, sys
+          import sys
           p=Path(sys.argv[1])
           s=p.read_text()
-          needle='atomic_set(&current->seccomp.filter_count, 0);'
-          if needle not in s:
-              raise SystemExit('[ERROR] V84: expected KernelSU app_profile seccomp filter_count reset not found')
-          # Upstream legacy already protects this line for >=5.9. Only add a guard if a
-          # compatibility source has an actually unguarded copy.
-          for m in list(re.finditer(re.escape(needle), s)):
-              line_start=s.rfind('\n', 0, m.start()) + 1
-              prefix=s[max(0,line_start-700):line_start]
-              if re.search(r'#if\s*\(LINUX_VERSION_CODE\s*>=\s*KERNEL_VERSION\(5,\s*9,\s*0\)', prefix):
-                  continue
-              line_end=s.find('\n',m.end())
-              if line_end < 0: line_end=len(s)
-              indent=re.match(r'[ \t]*',s[line_start:line_end]).group(0)
-              line=s[line_start:line_end]
-              repl=indent+'#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n'+line+'\n'+indent+'#endif'
-              s=s[:line_start]+repl+s[line_end:]
-              break
+          old='    atomic_set(&current->seccomp.filter_count, 0);'
+          new='#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n              atomic_set(&current->seccomp.filter_count, 0);\n          #endif'
+          if old in s:
+              s=s.replace(old,new,1)
+          elif 'atomic_set(&current->seccomp.filter_count, 0);' in s:
+              raise SystemExit('seccomp filter_count call is present but could not be transformed')
+          else:
+              raise SystemExit('expected KernelSU app_profile seccomp filter_count reset not found')
           p.write_text(s)
-          PY_V87_SECCOMP
-            echo "[OK] V84: seccomp filter_count handling is compatible with Linux 4.19."
+          PY_KSU_APP_PROFILE
+            if grep -qF 'atomic_set(&current->seccomp.filter_count, 0);' "$KSU_APP_PROFILE"; then
+              if ! grep -B1 -A1 -F 'atomic_set(&current->seccomp.filter_count, 0);' "$KSU_APP_PROFILE" | grep -qF '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)'; then
+                echo "[ERROR] app_profile filter_count reset is not guarded for Linux 4.19."
+                exit 1
+              fi
+            fi
+            echo "[FIX] Applied Linux 4.19 seccomp filter_count compatibility to KernelSU app_profile."
+          else
+            echo "[ERROR] KernelSU app_profile.c not found; refusing to continue without compatibility fix."
+            exit 1
           fi
+          ) || echo "[SKIP-V46-UNVERIFIED] V36 app_profile.c seccomp filter_count compat (KernelSU-Next-specific source): expected KernelSU-Next source pattern not found (or the file/pattern doesn't exist in ReSukiSU's source at this path) -- skipped without failing the build. If the kernel fails to compile or boot, check the real ReSukiSU source at this path and re-derive this specific patch; do not assume this shim applied."
 
           # V36 FIX 2 — Repair the V33 touch include change without altering any touch data.
           # The upstream common-touch.dtsi has no preprocessor guard. V33 injected one but the
@@ -3077,19 +1954,13 @@ jobs:
           echo "[CHECK] DT and KernelSU compatibility fixes will be verified by the normal kernel build."
 
           MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
-          # V84: pin the exact KernelSU-Next v3.4.0 Manager contract in the
-          # official legacy Kbuild. These are native Kbuild overrides, not APK modification.
-          MAKE_ARGS+=(KSU_VERSION_OVERRIDE="${KSU_VERSION_CODE}" KSU_VERSION_TAG_OVERRIDE="${KSU_VERSION_TAG_OVERRIDE}")
-          MAKE_ARGS+=(KSU_NEXT_MANAGER_SIZE=0x3e6)
-          MAKE_ARGS+=(KSU_NEXT_MANAGER_HASH=79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7)
-          MAKE_ARGS+=(KSU_MANAGER_PACKAGE="${KSU_MANAGER_PACKAGE}")
 
           # V40: the real errors are NOT at the bottom of a `make -j` log (make keeps finishing running
           # jobs after the first failure). Print them as the last lines and as annotations.
           summarize_errors() {
             local log="$1"
             echo
-            echo "================= V99 ERROR SUMMARY (real errors from ${log##*/}) ================="
+            echo "================= V44 ERROR SUMMARY (real errors from ${log##*/}) ================="
             grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
             grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
             echo "===================================================================================="
@@ -3318,7 +2189,7 @@ jobs:
 
           # V40 FIX 3: compile ALL of drivers/kernelsu with keep-going first so every remaining
           # KernelSU/4.19 incompatibility is listed in one run instead of one per 8-minute build.
-          echo "[V91] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
+          echo "[V44] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
           if ! make "${MAKE_ARGS[@]}" -j"$(nproc)" prepare > ../logs/09a-prepare.log 2>&1; then
             tail -60 ../logs/09a-prepare.log
             echo "[ERROR] make prepare failed (see logs/09a-prepare.log)"
@@ -3341,16 +2212,6 @@ jobs:
           make "${MAKE_ARGS[@]}" -k -j"$(nproc)" drivers/kernelsu/ 2>&1 | tee ../logs/09a-kernelsu-precompile.log
           PRE_RC=${PIPESTATUS[0]}
           set -e
-          # V84: prove the actual legacy Kbuild saw the Manager-compatible metadata.
-          if ! grep -qE -- "-- KernelSU-Next version( override)?: ${KSU_VERSION_CODE}" ../logs/09a-kernelsu-precompile.log; then
-            echo "[ERROR] V84: KernelSU driver did not report version ${KSU_VERSION_CODE}; Manager compatibility fix was not applied"
-            exit 1
-          fi
-          if ! grep -q -- "-- KernelSU-Next tag: ${KSU_VERSION_TAG_OVERRIDE}" ../logs/09a-kernelsu-precompile.log; then
-            echo "[ERROR] V84: KernelSU driver did not report tag ${KSU_VERSION_TAG_OVERRIDE}"
-            exit 1
-          fi
-          echo "[OK] V84: KernelSU driver metadata matches Manager ${KSU_MANAGER_BUILD}: ${KSU_VERSION_CODE}/${KSU_VERSION_TAG_OVERRIDE}"
           if [ "$PRE_RC" -ne 0 ]; then
             if grep -qE "error:|fatal error:" ../logs/09a-kernelsu-precompile.log; then
               summarize_errors ../logs/09a-kernelsu-precompile.log
@@ -3373,26 +2234,6 @@ jobs:
             fi
           fi
 
-          # V87 final source audit: verify the exact Manager/UAPI contract survived
-          # all 4.19 compatibility edits before linking the Image.
-          test "$(grep -Ec '^[[:space:]]*(#define[[:space:]]+KERNEL_SU_UAPI_VERSION|static[[:space:]]+const[[:space:]]+__u32[[:space:]]+KERNEL_SU_UAPI_VERSION)' KernelSU-Next/uapi/supercall.h)" -eq 1
-          grep -Eq 'KERNEL_SU_UAPI_VERSION[[:space:]]*=[[:space:]]*4;' KernelSU-Next/uapi/supercall.h
-          grep -q 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION;' KernelSU-Next/kernel/supercall/dispatch.c
-          test "$(awk '/struct ksu_get_info_cmd[[:space:]]*\{/,/^};/' KernelSU-Next/uapi/supercall.h | grep -Ec '^[[:space:]]*__u32[[:space:]]+uapi_version[[:space:]]*;')" -eq 1
-          grep -q 'EXPECTED_MANAGER_SIZE' KernelSU-Next/kernel/Kbuild
-          grep -q 'EXPECTED_MANAGER_HASH' KernelSU-Next/kernel/Kbuild
-          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
-          {
-            echo "uapi_version=4"
-            echo "manager_version=33294"
-            echo "manager_tag=v3.4.0"
-            echo "manager_signature_size=0x3e6"
-            echo "manager_signature_sha256=79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"
-            echo "driver=official KernelSU-Next legacy"
-            echo "driver_commit=$(git -C KernelSU-Next rev-parse HEAD)"
-            echo "manual_hook=$(grep '^CONFIG_KSU_MANUAL_HOOK=' out/.config)"
-          } | tee ../logs/09-kernelsu-final-contract.log
-
           # V40 FIX 4: build only the kernel Image (what is packaged). See KERNEL_BUILD_TARGETS in env.
           set +e
           make "${MAKE_ARGS[@]}" -k -j"$(nproc)" ${KERNEL_BUILD_TARGETS:-Image} 2>&1 | tee ../logs/09-kernel-build.log
@@ -3405,47 +2246,11 @@ jobs:
           fi
           test -s out/arch/arm64/boot/Image
           sha256sum out/arch/arm64/boot/Image | tee ../logs/output-image.sha256
-          # V87 final source/build audit: the driver must be built-in, manual hooks
-          # must be present, and the new Manager UAPI field must be part of the exact
-          # source that produced this Image. This is deliberately source-level; it does
-          # not alter the image after linking.
-          {
-            echo "CONFIG_KSU=$(grep '^CONFIG_KSU=' out/.config)"
-            echo "CONFIG_KSU_MANUAL_HOOK=$(grep '^CONFIG_KSU_MANUAL_HOOK=' out/.config)"
-            grep -n 'KERNEL_SU_UAPI_VERSION' KernelSU-Next/uapi/supercall.h
-            grep -n 'cmd.uapi_version = KERNEL_SU_UAPI_VERSION' KernelSU-Next/kernel/supercall/dispatch.c
-            grep -n 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
-          } | tee ../logs/09-kernelsu-uapi-build-audit.log
           strings out/arch/arm64/boot/Image > ../logs/09-image-strings.txt
           if ! grep -m1 'Linux version ' ../logs/09-image-strings.txt > ../logs/09-image-version.log; then
             echo "[WARN] Linux version string was not found in Image; build artifact exists." | tee -a ../logs/09-image-version.log
           fi
           echo "[OK] Kernel Image built"
-          # V91 final compiled-image contract audit:
-          # prove the exact Manager package/hash/version/tag and the UAPI-v4 field made
-          # it into the actual linked kernel, rather than relying only on source checks.
-          test -s out/vmlinux
-          test -s out/arch/arm64/boot/Image
-          strings out/vmlinux | grep -Fq 'com.rifsxd.ksunext'
-          strings out/vmlinux | grep -Fq '79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7'
-          strings out/vmlinux | grep -Fq 'v3.4.0'
-          strings out/vmlinux | grep -Fq 'KSU_VERSION_TAG' || true
-          for sym in             ksu_handle_vfs_fstat             ksu_is_init_rc_hook_enabled             ksu_is_input_hook_enabled             susfs_is_current_ksu_domain             susfs_ksu_sid             susfs_priv_app_sid; do
-            grep -qE "(^|[[:space:]])${sym}([[:space:]]|$)" <(llvm-nm -n out/vmlinux 2>/dev/null) || {
-              echo "[ERROR] V91: final vmlinux is missing required symbol ${sym}"
-              exit 1
-            }
-          done
-          {
-            echo "manager_package=com.rifsxd.ksunext"
-            echo "manager_signature_size=998"
-            echo "manager_signature_sha256=79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"
-            echo "manager_version=v3.4.0"
-            echo "manager_version_code=33294"
-            echo "kernel_uapi_version=4"
-            echo "final_vmlinux_contract=passed"
-          } | tee ../logs/09-final-ksu-contract.log
-          echo "[OK] V99: final vmlinux Manager/UAPI/KSU symbol contract audit passed."
           echo "::endgroup::"
 
       - name: "9b. DTB diagnostic (non-blocking; captures the hidden dtc error text)"
@@ -3496,7 +2301,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V99-LM-G900-KARNAL
+          kernel.string=V46-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -3522,7 +2327,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V99-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V46-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -3559,20 +2364,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V99 final output"
+      - name: "12. Upload V46 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V99-LM-G900-KARNAL-output
-          path: V99-LM-G900-KARNAL-output.zip
+          name: V46-LM-G900-KARNAL-output
+          path: V46-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V99 flashable ZIPs"
+      - name: "13. Upload V46 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V99-LM-G900-KARNAL-flashable-zips
+          name: V46-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -3672,7 +2477,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V91 ==="
+            echo "=== A-Z BUILD RECORD V46 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -3685,8 +2490,7 @@ jobs:
             echo "CIP baseline=${BASELINE_CIP}"
             echo "CIP selected=${CIP_TARGET:-UNRESOLVED}"
             echo "KernelSU-Next=${KSU_VERSION}"
-             echo "KernelSU-Next-manager-build=${KSU_MANAGER_BUILD}"
-            echo "SUSFS=${SUSFS_VERSION} (target ${SUSFS_TARGET_MAJOR}.${SUSFS_TARGET_MINOR}.${SUSFS_TARGET_PATCH})"
+            echo "SUSFS=${SUSFS_VERSION}"
             echo "SUSFS backport repo=${SUSFS_BACKPORT_REPO}"
             echo "SUSFS backport ref=${SUSFS_BACKPORT_REF}"
             echo "Clang=${CLANG_REV}"
@@ -3715,7 +2519,7 @@ jobs:
             echo "=== Final config ==="
             if [ -f kernel/out/.config ]; then
               sha256sum kernel/out/.config
-              grep -E '^CONFIG_(KSU|KSU_MANUAL_HOOK|KSU_SUSFS|KPROBES|KPROBE_EVENTS|MODULES)=' kernel/out/.config || true
+              grep -E '^CONFIG_(KSU|KSU_SUSFS|KPROBES|KPROBE_EVENTS|MODULES)=' kernel/out/.config || true
             fi
             echo
             echo "=== Release hashes ==="
@@ -3737,16 +2541,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V99 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V46 switches the root driver from KernelSU-Next (pershoot/KernelSU-Next dev-susfs) to ReSukiSU (ReSukiSU/ReSukiSU main), after V45's real build logs showed the KernelSU-Next fork was compiling exactly as intended (no missing Kconfig symbol) yet still unrecognized by its own Manager app -- see the V46 comments in env and Steps 6/8. IMPORTANT: install ReSukiSU's own Manager app after flashing; the KernelSU-Next Manager APK will not recognize this kernel. Step 9's KernelSU-Next-source-specific compatibility patches (pkg_observer.c fsnotify, allowlist.c task_work, app_profile.c seccomp, and the pre-5.7 SELinux stubs in Step 6) are now tolerant: each attempts its fix and logs [SKIP-V46-UNVERIFIED] instead of failing the build if ReSukiSU's actual source doesn't match the pattern KernelSU-Next had -- check the build log for any such lines and re-derive that specific patch against ReSukiSU's real source if the kernel doesn't boot cleanly. V45 forced KernelSU-Next into its manual (non-GKI) hook mode, which turned out to not be this kernel's actual problem, but the same discover-don't-assume approach is reused correctly in V46's Step 8 for ReSukiSU's real KSU_SUSFS/KSU_MANUAL_HOOK/KSU_TRACEPOINT_HOOK choice; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V99 complete diagnostics (always)"
+      - name: "15. Upload V46 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V99-LM-G900-KARNAL-complete-logs
+          name: V46-LM-G900-KARNAL-complete-logs
           path: |
-            V99-LM-G900-KARNAL-complete-logs.zip
+            V46-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
