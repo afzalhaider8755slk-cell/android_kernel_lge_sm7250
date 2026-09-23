@@ -1933,22 +1933,55 @@ jobs:
               for name, bit in expected.items()
           )
 
-          marker = re.compile(
-              r'(?ms)(#ifdef\s+CONFIG_KSU_SUSFS_SUS_KSTAT\s*)'
-              r'(?:#define\s+KSTAT_SPOOF_[A-Z0-9_]+.*?\n)+'
-              r'(\s*struct\s+st_susfs_sus_kstat\s*\{)'
-          )
-          m = marker.search(s)
-          if not m:
-              raise SystemExit('[ERROR] SUSFS KSTAT macro block could not be located in include/linux/susfs_def.h')
+          # V99-R8: do not assume a particular whitespace/comment layout between
+          # the SUS_KSTAT #ifdef and its struct. The pinned 4.19 backport has the
+          # documented flag sequence, but a 3-way/semantic port may preserve comments
+          # or formatting. Normalize only the KSTAT flag definitions inside that
+          # CONFIG_KSU_SUSFS_SUS_KSTAT block, preserving the surrounding source.
+          lines = s.splitlines(keepends=True)
+          start = None
+          end = None
+          depth = 0
+          for i, line in enumerate(lines):
+              if re.match(r'^\s*#ifdef\s+CONFIG_KSU_SUSFS_SUS_KSTAT\s*$', line):
+                  start = i
+                  break
+          if start is None:
+              raise SystemExit('[ERROR] CONFIG_KSU_SUSFS_SUS_KSTAT block not found in include/linux/susfs_def.h')
 
-          replacement = m.group(1) + canonical + '\n' + m.group(2)
-          s2 = s[:m.start()] + replacement + s[m.end():]
+          for i in range(start + 1, len(lines)):
+              if re.match(r'^\s*struct\s+st_susfs_sus_kstat\s*\{', lines[i]):
+                  end = i
+                  break
+              if re.match(r'^\s*#endif\b', lines[i]):
+                  break
+          if end is None:
+              raise SystemExit('[ERROR] SUSFS KSTAT struct boundary not found in include/linux/susfs_def.h')
+
+          define_re = re.compile(r'^\s*#define\s+(KSTAT_SPOOF_[A-Z0-9_]+)\s+.*?(?:\r?\n|$)')
+          kstat_names = set(expected)
+          existing = []
+          kept = []
+          for line in lines[start + 1:end]:
+              dm = define_re.match(line)
+              if dm and dm.group(1) in kstat_names:
+                  existing.append(dm.group(1))
+                  continue
+              kept.append(line)
+
+          # Insert one canonical definition block immediately after the KSTAT #ifdef.
+          # Only the known typo is corrected; all other source-derived bits remain 0..11.
+          canonical_lines = [
+              f'#define {name} (1 << {bit})\n'
+              for name, bit in expected.items()
+          ]
+          lines2 = lines[:start + 1] + canonical_lines + kept + lines[end:]
+          s2 = ''.join(lines2)
           p.write_text(s2)
-          print('[FIX] SUSFS 2.3.0 KSTAT block canonicalized from pinned 4.19 source; C-time seconds uses (1 << 8).')
+          print('[FIX] SUSFS 2.3.0 KSTAT definitions normalized from pinned source; C-time seconds uses (1 << 8).')
 
           # Cross-setup invariant: exactly one definition of every KSTAT flag,
-          # with the source-derived bit values 0..11, and no legacy typo.
+          # with source-derived bit values 0..11, and no legacy typo anywhere.
           define_re = re.compile(
               r'^\s*#define\s+(KSTAT_SPOOF_[A-Z0-9_]+)\s+'
               r'\(\s*1\s*<<\s*(\d+)\s*\)\s*(?:/\*.*?\*/|//.*)?\s*$', re.M)
