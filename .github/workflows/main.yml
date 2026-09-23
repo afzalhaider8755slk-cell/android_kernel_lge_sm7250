@@ -1895,7 +1895,7 @@ jobs:
           # checkout created by its official setup script. Staging the entire tree
           # produces the misleading "adding embedded git repository" warning.
 
-          # V99-R9: canonical source-derived SUSFS 2.3.0 KSTAT definition repair.
+          # V99-R11: canonical source-derived SUSFS 2.3.0 KSTAT definition repair.
           # The exact pinned SUSFS 2.3.0 4.19 patch places the KSTAT flag block
           # in include/linux/susfs.h (NOT susfs_def.h). It defines one consecutive
           # bit per field (0..11), except for its known typo:
@@ -1907,9 +1907,14 @@ jobs:
           from pathlib import Path
           import re
 
-          p = Path('include/linux/susfs.h')
+          p = Path('kernel/include/linux/susfs.h')
           if not p.is_file():
-              raise SystemExit('[ERROR] SUSFS KSTAT definition file is missing: include/linux/susfs.h')
+              raise SystemExit('[ERROR] SUSFS KSTAT definition file is missing: kernel/include/linux/susfs.h')
+          # V99-R11: Step 7 executes from the workspace root. Keep the
+          # kernel source path explicit so cwd changes cannot produce a false
+          # "missing file" error.
+          if not Path('kernel/include/linux/susfs.h').is_file():
+              raise SystemExit('[ERROR] V99-R11: kernel/include/linux/susfs.h is absent after SUSFS port')
           s = p.read_text()
 
           expected = {
@@ -2003,7 +2008,25 @@ jobs:
               s2, re.M)
           if old:
               raise SystemExit('[ERROR] SUSFS KSTAT old (1 < 8) typo remains after canonical repair')
+          # Cross-setup invariant: validate the integrated kernel tree itself,
+          # not the downloaded patch or workflow logs.
+          bad = []
+          for q in Path('kernel').rglob('*'):
+              if not q.is_file() or '.git' in q.parts:
+                  continue
+              try:
+                  t = q.read_text(errors='ignore')
+              except Exception:
+                  continue
+              if re.search(r'KSTAT_SPOOF_CTIME_TV_SEC\s*\(\s*1\s*<\s*8\s*\)', t):
+                  bad.append(str(q))
+          if bad:
+              raise SystemExit(
+                  '[ERROR] SUSFS KSTAT legacy (1 < 8) remains in integrated kernel source: '
+                  + ', '.join(bad[:20])
+              )
           print('[OK] SUSFS 2.3.0 KSTAT flags verified as unique bits 0..11.')
+          print('[OK] V99-R11 integrated-kernel scan: no (1 < 8) KSTAT typo remains.')
           PY_SUSFS_KSTAT_FIX
 
           echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE}."
@@ -2015,7 +2038,7 @@ jobs:
           set -Eeuo pipefail
           echo "::group::[7b/15] SUSFS 2.3.0 compatibility audit"
           cd kernel
-          # V99-R9 cross-setup guard: Setup 7 must leave one canonical KSTAT
+          # V99-R11 cross-setup guard: Setup 7 must leave one canonical KSTAT
           # definition block for Setup 7b and all later SUSFS userspace/runtime
           # consumers. This is an invariant check, not an alternate value.
           python3 - <<'PY_KSTAT_CROSS_SETUP_AUDIT'
