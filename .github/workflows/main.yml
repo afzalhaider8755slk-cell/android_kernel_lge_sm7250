@@ -1832,6 +1832,189 @@ jobs:
           chmod +x logs/07-susfs-inline-hook-patches.sh
           (cd kernel && bash ../logs/07-susfs-inline-hook-patches.sh) 2>&1 | tee logs/07-susfs-inline-hooks.log
 
+          # ------------------------------------------------------------------
+          # V99-R12: reconcile the pinned legacy KernelSU ABI AFTER the external
+          # SUSFS inline-hook script has modified fs/exec.c/open.c/stat.c.
+          #
+          # The pinned KernelSU-Next commit dd074bc6... defines
+          # ksu_su_compat_enabled as a plain bool. The SUSFS helper script was
+          # written for a newer static-key ABI and also expects a newer
+          # ksu_handle_post_execveat_sucompat() contract. Neither may be
+          # invented/forced into this exact 4.19 legacy driver.
+          #
+          # Therefore:
+          #   1) keep the legacy bool ABI;
+          #   2) convert only the generated call-sites back to bool tests;
+          #   3) remove the unsupported post-exec symbol/call;
+          #   4) preserve the real legacy ksu_handle_execveat_sucompat() path;
+          #   5) fail if any stale static-key/post-exec contract remains.
+          # ------------------------------------------------------------------
+          python3 - <<'PY_R12_LEGACY_SUSFS_RECONCILE' > logs/07-susfs-legacy-abi-reconcile.log 2>&1
+          from pathlib import Path
+          import re
+          import subprocess
+
+          kernel = Path("kernel")
+          ksu = kernel / "KernelSU-Next/kernel"
+          sucompat_c = ksu / "feature/sucompat.c"
+          sucompat_h = ksu / "feature/sucompat.h"
+
+          EXPECTED_KSU = "dd074bc6c4b33ca4cdf7da05838c71a26ebd6a66"
+          resolved = subprocess.check_output(
+              ["git", "-C", "KernelSU-Next", "rev-parse", "HEAD"], text=True
+          ).strip()
+          if resolved != EXPECTED_KSU:
+              raise SystemExit(
+                  f"[ERROR] R12 legacy ABI reconciliation: expected pinned "
+                  f"KernelSU commit {EXPECTED_KSU}, got {resolved}"
+              )
+
+          c = sucompat_c.read_text(errors="replace")
+          h = sucompat_h.read_text(errors="replace")
+
+          if not re.search(
+              r"(?m)^\s*bool\s+ksu_su_compat_enabled\s+__read_mostly\s*=\s*true\s*;",
+              c,
+          ):
+              raise SystemExit(
+                  "[ERROR] R12: pinned legacy sucompat bool definition is not present"
+              )
+          if not re.search(
+              r"(?m)^\s*extern\s+bool\s+ksu_su_compat_enabled\s*;",
+              h,
+          ):
+              raise SystemExit(
+                  "[ERROR] R12: pinned legacy sucompat extern bool declaration is not present"
+              )
+          if re.search(r"DEFINE_STATIC_KEY_TRUE\s*\(\s*ksu_su_compat_enabled\s*\)", c):
+              raise SystemExit(
+                  "[ERROR] R12: legacy sucompat was already converted to an incompatible static-key definition"
+              )
+
+          # The external SUSFS inline script declares this legacy symbol as a
+          # static_key_true in the three manual-hook call sites. Restore the exact
+          # legacy declaration and condition semantics there.
+          hook_files = [
+              kernel / "fs/exec.c",
+              kernel / "fs/open.c",
+              kernel / "fs/stat.c",
+          ]
+
+          for p in hook_files:
+              if not p.is_file():
+                  raise SystemExit(f"[ERROR] R12: expected manual-hook file missing: {p}")
+              s = p.read_text(errors="replace")
+
+              s = re.sub(
+                  r"extern\s+struct\s+static_key_true\s+ksu_su_compat_enabled\s*;",
+                  "extern bool ksu_su_compat_enabled;",
+                  s,
+              )
+              s = re.sub(
+                  r"static_branch_likely\s*\(\s*&\s*ksu_su_compat_enabled\s*\)",
+                  "ksu_su_compat_enabled",
+                  s,
+              )
+              s = re.sub(
+                  r"static_branch_unlikely\s*\(\s*&\s*ksu_su_compat_enabled\s*\)",
+                  "ksu_su_compat_enabled",
+                  s,
+              )
+
+              p.write_text(s)
+
+          # The pinned legacy sucompat.c has no post-exec helper. The inline
+          # script's declaration/call is a newer integration contract, not part
+          # of SUSFS 2.3.0 itself and not part of dd074bc6 legacy KSU.
+          exec_c = kernel / "fs/exec.c"
+          s = exec_c.read_text(errors="replace")
+
+          s = re.sub(
+              r"(?ms)^\s*extern\s+int\s+ksu_handle_post_execveat_sucompat\s*"
+              r"\(\s*int\s*\*fd,\s*struct\s+filename\s*\*\*filename_ptr,\s*"
+              r"void\s+\*argv,\s*void\s+\*envp,\s*int\s+\*flags,\s*int\s+\*retval\s*\)\s*;\s*",
+              "",
+              s,
+          )
+
+          # Remove the helper's temporary session flag; it only existed to feed
+          # the unsupported post-exec function.
+          s = re.sub(
+              r"(?ms)#ifdef CONFIG_KSU_SUSFS\s+bool\s+is_su_session\s*=\s*false;\s*"
+              r"#endif\s*(?=\n)",
+              "",
+              s,
+          )
+
+          # Convert the generated assignments into direct legacy calls. The
+          # return value of both legacy hook functions is intentionally ignored
+          # by the existing manual-hook ABI.
+          s = s.replace(
+              "is_su_session = !ksu_handle_execveat(\\&fd, \\&filename, \\&argv, \\&envp, \\&flags);",
+              "ksu_handle_execveat(\\&fd, \\&filename, \\&argv, \\&envp, \\&flags);",
+          )
+          s = s.replace(
+              "is_su_session = !ksu_handle_execveat_sucompat(\\&fd, \\&filename, \\&argv, \\&envp, \\&flags);",
+              "ksu_handle_execveat_sucompat(\\&fd, \\&filename, \\&argv, \\&envp, \\&flags);",
+          )
+
+          # The shell-escaped log copy uses literal backslashes; the real source
+          # contains normal '&' characters. Handle both forms defensively.
+          s = s.replace(
+              "is_su_session = !ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);",
+              "ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);",
+          )
+          s = s.replace(
+              "is_su_session = !ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);",
+              "ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);",
+          )
+
+          # Remove the unsupported post-exec call block, if the external script
+          # inserted it.
+          s = re.sub(
+              r"(?ms)#ifdef CONFIG_KSU_SUSFS\s+if\s*\(\s*unlikely\s*\(\s*is_su_session\s*\)\s*\)\s*"
+              r"\(void\)\s*ksu_handle_post_execveat_sucompat\s*\(\s*&fd,\s*&filename,\s*&argv,\s*&envp,\s*&flags,\s*&retval\s*\)\s*;\s*"
+              r"#endif\s*(?=//\s*#ifdef CONFIG_KSU_SUSFS|$)",
+              "",
+              s,
+          )
+
+          exec_c.write_text(s)
+
+          # Hard contract checks. These prevent a future workflow edit from
+          # silently reintroducing the same ABI mismatch.
+          all_c = "\n".join(
+              p.read_text(errors="replace")
+              for p in kernel.rglob("*")
+              if p.is_file() and p.suffix in {".c", ".h"}
+          )
+
+          if re.search(
+              r"static_branch_(?:likely|unlikely|enable|disable)\s*\(\s*&\s*ksu_su_compat_enabled",
+              all_c,
+          ):
+              raise SystemExit(
+                  "[ERROR] R12: static-key operations still target legacy bool ksu_su_compat_enabled"
+              )
+
+          if "ksu_handle_post_execveat_sucompat" in all_c:
+              raise SystemExit(
+                  "[ERROR] R12: unsupported post-exec sucompat symbol remains in the integrated legacy tree"
+              )
+
+          if "extern bool ksu_su_compat_enabled;" not in exec_c.read_text():
+              raise SystemExit("[ERROR] R12: fs/exec.c lost the legacy bool declaration")
+          if "ksu_handle_execveat_sucompat" not in exec_c.read_text():
+              raise SystemExit("[ERROR] R12: real legacy execveat sucompat hook was removed")
+
+          print("[OK] R12: pinned legacy KernelSU bool ABI preserved.")
+          print("[OK] R12: SUSFS inline call-sites reconciled to legacy 4.19 ABI.")
+          print("[OK] R12: unsupported post-exec helper removed rather than fabricated.")
+          print("[OK] R12: no static-key operations remain against ksu_su_compat_enabled.")
+          print("[OK] R12: legacy ksu_handle_execveat_sucompat path preserved.")
+          PY_R12_LEGACY_SUSFS_RECONCILE
+
+
           if git -C kernel ls-files -u | grep -q .; then
             echo "[ERROR] Inline SUSFS hook stage left unmerged index entries." | tee logs/07-susfs-failure.log
             exit 1
@@ -2064,30 +2247,30 @@ jobs:
               raise SystemExit('[ERROR] 7b legacy KSTAT (1 < 8) remains')
           print('[OK] 7b KSTAT cross-setup contract: unique source-derived bits 0..11')
           PY_KSTAT_CROSS_SETUP_AUDIT
-          # Decide the sucompat ABI from the actual SUSFS post-patch call sites.
+          # The pinned legacy driver is authoritative here. SUSFS must consume
+          # that ABI; the workflow must never rewrite the driver to satisfy a
+          # newer static-key contract.
           python3 - <<'PY_SUSFS_ABI'
           from pathlib import Path
           import re
           root=Path('KernelSU-Next/kernel')
-          c=root/'feature/sucompat.c'; h=root/'feature/sucompat.h'
-          tree=''.join(p.read_text(errors='ignore') for p in root.rglob('*.c'))
-          needs_static=bool(re.search(r'static_branch_(?:likely|unlikely|enable|disable)\s*\(\s*&?ksu_su_compat_enabled', tree))
-          cs=c.read_text(); hs=h.read_text()
-          if needs_static:
-              if 'bool ksu_su_compat_enabled __read_mostly = true;' in cs:
-                  cs=cs.replace('bool ksu_su_compat_enabled __read_mostly = true;', 'DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);')
-              if '#include <linux/jump_label.h>' not in cs:
-                  cs=cs.replace('#include <linux/fs.h>\n', '#include <linux/fs.h>\n#include <linux/jump_label.h>\n', 1)
-              hs=re.sub(r'(?m)^\s*extern\s+(?:bool|struct\s+static_key_true)\s+ksu_su_compat_enabled\s*;', 'extern struct static_key_true ksu_su_compat_enabled;', hs, count=1)
-              if '#include <linux/jump_label.h>' not in hs:
-                  hs=hs.replace('#include <linux/types.h>\n', '#include <linux/types.h>\n#include <linux/jump_label.h>\n', 1)
-              cs=cs.replace('*value = ksu_su_compat_enabled ? 1 : 0;', '*value = static_key_enabled(&ksu_su_compat_enabled) ? 1 : 0;')
-              cs=cs.replace('ksu_su_compat_enabled = enable;', 'if (enable)\n        static_branch_enable(&ksu_su_compat_enabled);\n    else\n        static_branch_disable(&ksu_su_compat_enabled);')
-              cs=cs.replace('if (!ksu_su_compat_enabled)', 'if (!static_branch_likely(&ksu_su_compat_enabled))')
-              print('[FIX] SUSFS post-patch call sites require static-key ABI; converted legacy switch.')
-          else:
-              print('[OK] SUSFS post-patch call sites do not require static-key ABI; legacy bool retained.')
-          c.write_text(cs); h.write_text(hs)
+          c=(root/'feature/sucompat.c').read_text(errors='replace')
+          h=(root/'feature/sucompat.h').read_text(errors='replace')
+          if not re.search(r'(?m)^\s*bool\s+ksu_su_compat_enabled\s+__read_mostly\s*=\s*true\s*;', c):
+              raise SystemExit('[ERROR] 7b: legacy ksu_su_compat_enabled bool definition is missing')
+          if not re.search(r'(?m)^\s*extern\s+bool\s+ksu_su_compat_enabled\s*;', h):
+              raise SystemExit('[ERROR] 7b: legacy ksu_su_compat_enabled bool declaration is missing')
+          tree='\n'.join(
+              p.read_text(errors='ignore')
+              for p in root.parent.parent.rglob('*')
+              if p.is_file() and p.suffix in {'.c','.h'}
+          )
+          if re.search(r'static_branch_(?:likely|unlikely|enable|disable)\s*\(\s*&\s*ksu_su_compat_enabled', tree):
+              raise SystemExit('[ERROR] 7b: static-key operation still targets legacy bool ksu_su_compat_enabled')
+          if 'ksu_handle_post_execveat_sucompat' in tree:
+              raise SystemExit('[ERROR] 7b: unsupported post-exec sucompat contract remains in legacy tree')
+          print('[OK] 7b: exact legacy bool sucompat ABI preserved; no static-key conversion.')
+          print('[OK] 7b: unsupported post-exec helper is absent by design for pinned legacy KSU.')
           PY_SUSFS_ABI
           grep -q 'u32 susfs_ksu_sid' KernelSU-Next/kernel/selinux/selinux.c
           grep -q 'susfs_set_batch_sid();' KernelSU-Next/kernel/selinux/rules.c
@@ -2104,15 +2287,15 @@ jobs:
           test -f include/linux/susfs_def.h
           grep -Rqs 'CONFIG_KSU_SUSFS' fs include drivers/kernelsu
 
-          # This symbol is a SUSFS 2.3.0 post-exec contract, not a pre-SUSFS
-          # KernelSU legacy contract. Verify it only after Step 7's inline
-          # hook stage has had a chance to add the corresponding call site.
+          # The pinned SUSFS 2.3.0 patch does not define a post-exec
+          # ksu_handle_post_execveat_sucompat() API, and the pinned legacy
+          # KernelSU commit does not provide it either. Requiring or inventing
+          # this symbol would mix a newer ABI into the exact 4.19 legacy tree.
           if grep -Rqs --exclude-dir=.git 'ksu_handle_post_execveat_sucompat' fs include drivers/kernelsu; then
-            echo '[OK] SUSFS post-exec sucompat contract is present after Step 7.' | tee -a ../logs/07b-susfs-23-audit.log
-          else
-            echo '[ERROR] SUSFS 2.3.0 post-exec sucompat contract is missing after Step 7.' | tee -a ../logs/07b-susfs-23-audit.log
+            echo '[ERROR] Unsupported post-exec sucompat API leaked into the pinned legacy tree.' | tee -a ../logs/07b-susfs-23-audit.log
             exit 1
           fi
+          echo '[OK] Legacy KSU/SUSFS contract: no unsupported post-exec sucompat API is present.' | tee -a ../logs/07b-susfs-23-audit.log
 
           # Kernel/user-space ABI markers introduced/used by modern SUSFS 2.x.
           # We accept either the direct kernel symbol or the compatibility wrapper
@@ -2240,7 +2423,6 @@ jobs:
             grep -n 'KSU_VERSION_OVERRIDE\|KSU_NEXT_MANAGER_SIZE\|KSU_NEXT_MANAGER_HASH' KernelSU-Next/kernel/Kbuild || true
             grep -n 'EXPECTED_MANAGER_SIZE\|EXPECTED_MANAGER_HASH' KernelSU-Next/kernel/Kbuild || true
           for sym in ksu_is_input_hook_enabled ksu_is_init_rc_hook_enabled ksu_handle_vfs_fstat; do grep -Rns --include='*.c' "$sym" KernelSU-Next/kernel/runtime; done
-          grep -n 'ksu_handle_post_execveat_sucompat' KernelSU-Next/kernel/feature/sucompat.c || true
           grep -n 'susfs_ksu_sid\|susfs_priv_app_sid\|susfs_is_current_ksu_domain' KernelSU-Next/kernel/selinux/selinux.c || true
             grep -n 'is_manager_apk\|check_v2_signature' KernelSU-Next/kernel/manager/apk_sign.c || true
             grep -n 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || true
@@ -3243,7 +3425,7 @@ jobs:
           strings out/vmlinux | grep -Fq '79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7'
           strings out/vmlinux | grep -Fq 'v3.4.0'
           strings out/vmlinux | grep -Fq 'KSU_VERSION_TAG' || true
-          for sym in             ksu_handle_post_execveat_sucompat             ksu_handle_vfs_fstat             ksu_is_init_rc_hook_enabled             ksu_is_input_hook_enabled             susfs_is_current_ksu_domain             susfs_ksu_sid             susfs_priv_app_sid; do
+          for sym in             ksu_handle_vfs_fstat             ksu_is_init_rc_hook_enabled             ksu_is_input_hook_enabled             susfs_is_current_ksu_domain             susfs_ksu_sid             susfs_priv_app_sid; do
             grep -qE "(^|[[:space:]])${sym}([[:space:]]|$)" <(llvm-nm -n out/vmlinux 2>/dev/null) || {
               echo "[ERROR] V91: final vmlinux is missing required symbol ${sym}"
               exit 1
