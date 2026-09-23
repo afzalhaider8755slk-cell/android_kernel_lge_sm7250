@@ -1860,8 +1860,13 @@ jobs:
           sucompat_h = ksu / "feature/sucompat.h"
 
           EXPECTED_KSU = "dd074bc6c4b33ca4cdf7da05838c71a26ebd6a66"
+          ksu_repo = kernel / "KernelSU-Next"
+          if not ksu_repo.is_dir():
+              raise SystemExit(
+                  f"[ERROR] R13: expected embedded KernelSU repository is missing: {ksu_repo}"
+              )
           resolved = subprocess.check_output(
-              ["git", "-C", "KernelSU-Next", "rev-parse", "HEAD"], text=True
+              ["git", "-C", str(ksu_repo), "rev-parse", "HEAD"], text=True
           ).strip()
           if resolved != EXPECTED_KSU:
               raise SystemExit(
