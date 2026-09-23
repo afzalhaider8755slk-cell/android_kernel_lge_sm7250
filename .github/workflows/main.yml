@@ -1909,15 +1909,26 @@ jobs:
           if not p.is_file():
               raise SystemExit('[ERROR] SUSFS KSTAT definition file is missing: include/linux/susfs_def.h')
           s = p.read_text()
-          bad = '#define KSTAT_SPOOF_CTIME_TV_SEC (1 < 8)'
-          good = '#define KSTAT_SPOOF_CTIME_TV_SEC (1 << 8)'
-          if bad in s:
-              s2 = s.replace(bad, good, 1)
-              if s2 == s:
-                  raise SystemExit('[ERROR] SUSFS KSTAT typo was detected but not changed')
+          # The pinned SUSFS 2.3.0 patch has one known typo: (1 < 8).
+          # Match the preprocessor expression semantically (whitespace/comments
+          # may differ after the 4.19 port) instead of requiring one exact line
+          # layout. The replacement remains the verified bit-8 value.
+          bad_re = re.compile(
+              r'(?m)^(\s*#define\s+KSTAT_SPOOF_CTIME_TV_SEC\s+)'
+              r'\(\s*1\s*<\s*8\s*\)(\s*(?:/\*.*?\*/|//.*)?\s*)$'
+          )
+          good_re = re.compile(
+              r'(?m)^\s*#define\s+KSTAT_SPOOF_CTIME_TV_SEC\s+'
+              r'\(\s*1\s*<<\s*8\s*\)'
+          )
+          if bad_re.search(s):
+              s2, count = bad_re.subn(r'\1(1 << 8)\2', s, count=1)
+              if count != 1:
+                  raise SystemExit('[ERROR] SUSFS KSTAT typo was detected but could not be repaired')
               p.write_text(s2)
               print('[FIX] SUSFS 2.3.0 KSTAT C-time seconds flag: (1 < 8) -> (1 << 8)')
-          elif good in s:
+          elif good_re.search(s):
+              s2 = s
               print('[OK] SUSFS KSTAT C-time seconds flag is already source-correct: (1 << 8)')
           else:
               raise SystemExit('[ERROR] SUSFS KSTAT C-time seconds definition is neither the known typo nor the verified 2.3.0 value')
@@ -1936,10 +1947,32 @@ jobs:
               'KSTAT_SPOOF_BLOCKS': 10,
               'KSTAT_SPOOF_BLKSIZE': 11,
           }
+          # Parse definitions instead of assuming one exact whitespace layout.
+          # Require exactly one definition of every expected flag and the exact
+          # source-derived shift value; duplicates/malformed definitions fail.
+          define_re = re.compile(
+              r'^\s*#define\s+(KSTAT_SPOOF_[A-Z0-9_]+)\s+'
+              r'\(\s*1\s*<<\s*(\d+)\s*\)\s*(?:/\*.*?\*/|//.*)?\s*$'
+          )
+          defs = {}
+          for line in s2.splitlines():
+              m = define_re.match(line)
+              if m:
+                  defs.setdefault(m.group(1), []).append(int(m.group(2)))
           for name, bit in expected.items():
-              m = re.search(r'^\s*#define\s+' + re.escape(name) + r'\s+\(1\s*<<\s*(\d+)\)\s*$', s2 if 's2' in locals() else s, re.M)
-              if not m or int(m.group(1)) != bit:
-                  raise SystemExit(f'[ERROR] SUSFS KSTAT definition mismatch for {name}; expected (1 << {bit})')
+              values = defs.get(name, [])
+              if values != [bit]:
+                  raise SystemExit(
+                      f'[ERROR] SUSFS KSTAT definition mismatch for {name}: '
+                      f'found {values!r}, expected exactly [(1 << {bit})]'
+                  )
+          bad_any = re.search(
+              r'^\s*#define\s+KSTAT_SPOOF_CTIME_TV_SEC\s+'
+              r'\(\s*1\s*<\s*8\s*\)',
+              s2, re.M
+          )
+          if bad_any:
+              raise SystemExit('[ERROR] SUSFS KSTAT old (1 < 8) typo remains after repair')
           print('[OK] SUSFS 2.3.0 KSTAT flags verified as unique bits 0..11.')
           PY_SUSFS_KSTAT_FIX
 
@@ -2020,9 +2053,32 @@ jobs:
           # V99-R5: the known SUSFS 2.3.0 KSTAT typo is repaired in Step 7 before
           # this audit. Verify the repaired source here so the later Step 8 config
           # and Step 9 build cannot proceed with a colliding feature bit.
-          grep -q '^#define KSTAT_SPOOF_CTIME_TV_SEC (1 << 8)$' include/linux/susfs_def.h
-          if grep -Rqs 'KSTAT_SPOOF_CTIME_TV_SEC.*(1 < 8)' fs include drivers/kernelsu; then
+          python3 - <<'PY_SUSFS_KSTAT_AUDIT'
+          from pathlib import Path
+          import re
+
+          p = Path('include/linux/susfs_def.h')
+          s = p.read_text() if p.is_file() else ''
+          good = re.search(
+              r'^\s*#define\s+KSTAT_SPOOF_CTIME_TV_SEC\s+'
+              r'\(\s*1\s*<<\s*8\s*\)\s*(?:/\*.*?\*/|//.*)?\s*$',
+              s, re.M
+          )
+          bad = re.search(
+              r'^\s*#define\s+KSTAT_SPOOF_CTIME_TV_SEC\s+'
+              r'\(\s*1\s*<\s*8\s*\)',
+              s, re.M
+          )
+          if not good or bad:
+              raise SystemExit('[ERROR] SUSFS 2.3.0 KSTAT C-time seconds definition is not source-correct after Step 7')
+          print('[OK] SUSFS 2.3.0 KSTAT C-time seconds definition is source-correct after Step 7.')
+          PY_SUSFS_KSTAT_AUDIT
+          if grep -Rqs 'KSTAT_SPOOF_CTIME_TV_SEC[[:space:]]*(1[[:space:]]*<[[:space:]]*8)' fs include drivers/kernelsu; then
             echo '[ERROR] SUSFS 2.3.0 KSTAT collision still present after Step 7 repair.' | tee -a ../logs/07b-susfs-23-audit.log
+            exit 1
+          fi
+          if grep -RqsE '^[[:space:]]*#define[[:space:]]+KSTAT_SPOOF_CTIME_TV_SEC[[:space:]]+\(1[[:space:]]*<[[:space:]]*8\)' fs include drivers/kernelsu; then
+            echo '[ERROR] SUSFS 2.3.0 KSTAT old typo remains in another kernel-side source location.' | tee -a ../logs/07b-susfs-23-audit.log
             exit 1
           fi
           echo '[OK] SUSFS 2.3.0 KSTAT bit namespace is source-correct and collision-free.' | tee -a ../logs/07b-susfs-23-audit.log
