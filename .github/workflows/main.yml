@@ -2106,38 +2106,77 @@ jobs:
             fi
           done
 
-          # V99-R5: the known SUSFS 2.3.0 KSTAT typo is repaired in Step 7 before
-          # this audit. Verify the repaired source here so the later Step 8 config
-          # and Step 9 build cannot proceed with a colliding feature bit.
+          # V99-R10 cross-setup correction:
+          # SUSFS 2.3.0 KSTAT definitions live in include/linux/susfs.h
+          # in the exact pinned f15603b... patch. They are NOT in
+          # include/linux/susfs_def.h. Verify the same source-derived 0..11
+          # namespace here so Step 7b cannot audit a different file than Step 7.
           python3 - <<'PY_SUSFS_KSTAT_AUDIT'
           from pathlib import Path
           import re
 
-          p = Path('include/linux/susfs_def.h')
-          s = p.read_text() if p.is_file() else ''
-          good = re.search(
-              r'^\s*#define\s+KSTAT_SPOOF_CTIME_TV_SEC\s+'
-              r'\(\s*1\s*<<\s*8\s*\)\s*(?:/\*.*?\*/|//.*)?\s*$',
-              s, re.M
+          p = Path('include/linux/susfs.h')
+          if not p.is_file():
+              raise SystemExit('[ERROR] SUSFS 2.3.0 KSTAT definition file missing: include/linux/susfs.h')
+          s = p.read_text()
+
+          expected = {
+              'KSTAT_SPOOF_INO': 0,
+              'KSTAT_SPOOF_DEV': 1,
+              'KSTAT_SPOOF_NLINK': 2,
+              'KSTAT_SPOOF_SIZE': 3,
+              'KSTAT_SPOOF_ATIME_TV_SEC': 4,
+              'KSTAT_SPOOF_ATIME_TV_NSEC': 5,
+              'KSTAT_SPOOF_MTIME_TV_SEC': 6,
+              'KSTAT_SPOOF_MTIME_TV_NSEC': 7,
+              'KSTAT_SPOOF_CTIME_TV_SEC': 8,
+              'KSTAT_SPOOF_CTIME_TV_NSEC': 9,
+              'KSTAT_SPOOF_BLOCKS': 10,
+              'KSTAT_SPOOF_BLKSIZE': 11,
+          }
+
+          rx = re.compile(
+              r'^\s*#define\s+(KSTAT_SPOOF_[A-Z0-9_]+)\s+'
+              r'\(\s*1\s*<<\s*(\d+)\s*\)\s*(?:/\*.*?\*/|//.*)?\s*$',
+              re.M
           )
-          bad = re.search(
+          defs = {}
+          for m in rx.finditer(s):
+              defs.setdefault(m.group(1), []).append(int(m.group(2)))
+
+          for name, bit in expected.items():
+              values = defs.get(name, [])
+              if values != [bit]:
+                  raise SystemExit(
+                      f'[ERROR] SUSFS 2.3.0 KSTAT definition mismatch for {name}: '
+                      f'found {values!r}, expected exactly [{bit}]'
+                  )
+
+          if re.search(
               r'^\s*#define\s+KSTAT_SPOOF_CTIME_TV_SEC\s+'
               r'\(\s*1\s*<\s*8\s*\)',
               s, re.M
-          )
-          if not good or bad:
-              raise SystemExit('[ERROR] SUSFS 2.3.0 KSTAT C-time seconds definition is not source-correct after Step 7')
-          print('[OK] SUSFS 2.3.0 KSTAT C-time seconds definition is source-correct after Step 7.')
+          ):
+              raise SystemExit('[ERROR] SUSFS 2.3.0 KSTAT legacy typo (1 < 8) remains in include/linux/susfs.h')
+
+          # The pinned patch defines this struct in the same KSTAT section.
+          if not re.search(
+              r'#ifdef\s+CONFIG_KSU_SUSFS_SUS_KSTAT[\s\S]*?'
+              r'struct\s+st_susfs_sus_kstat\s*\{',
+              s
+          ):
+              raise SystemExit('[ERROR] SUSFS 2.3.0 KSTAT struct/source section is missing or malformed in include/linux/susfs.h')
+
+          print('[OK] SUSFS 2.3.0 KSTAT source contract verified in include/linux/susfs.h: unique bits 0..11; C-time seconds is (1 << 8).')
           PY_SUSFS_KSTAT_AUDIT
-          if grep -Rqs 'KSTAT_SPOOF_CTIME_TV_SEC[[:space:]]*(1[[:space:]]*<[[:space:]]*8)' fs include drivers/kernelsu; then
-            echo '[ERROR] SUSFS 2.3.0 KSTAT collision still present after Step 7 repair.' | tee -a ../logs/07b-susfs-23-audit.log
+
+          # Cross-setup invariant: the known typo must not survive anywhere
+          # in kernel-side SUSFS/KSU sources after Step 7.
+          if grep -RqsE 'KSTAT_SPOOF_CTIME_TV_SEC[[:space:]]*\([[:space:]]*1[[:space:]]*<[[:space:]]*8[[:space:]]*\)' fs include drivers/kernelsu; then
+            echo '[ERROR] SUSFS 2.3.0 KSTAT legacy (1 < 8) remains in another kernel-side source location.' | tee -a ../logs/07b-susfs-23-audit.log
             exit 1
           fi
-          if grep -RqsE '^[[:space:]]*#define[[:space:]]+KSTAT_SPOOF_CTIME_TV_SEC[[:space:]]+\(1[[:space:]]*<[[:space:]]*8\)' fs include drivers/kernelsu; then
-            echo '[ERROR] SUSFS 2.3.0 KSTAT old typo remains in another kernel-side source location.' | tee -a ../logs/07b-susfs-23-audit.log
-            exit 1
-          fi
-          echo '[OK] SUSFS 2.3.0 KSTAT bit namespace is source-correct and collision-free.' | tee -a ../logs/07b-susfs-23-audit.log
+          echo '[OK] SUSFS 2.3.0 KSTAT cross-setup source contract is consistent.' | tee -a ../logs/07b-susfs-23-audit.log
 
           # Record the complete feature namespace so the next stages can prove
           # that every compatible SUSFS option survived olddefconfig.
