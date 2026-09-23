@@ -1895,6 +1895,54 @@ jobs:
           # checkout created by its official setup script. Staging the entire tree
           # produces the misleading "adding embedded git repository" warning.
 
+          # V99-R5: source-correct SUSFS 2.3.0 KSTAT compatibility repair.
+          # The pinned 2.3.0 backport contains a documented typo in the C-time
+          # seconds flag: (1 < 8) evaluates to 1 and collides with bit 0
+          # (KSTAT_SPOOF_INO). The adjacent SUSFS 2.3.0 flags establish the
+          # intended one-bit-per-field sequence, so the only source-correct value
+          # here is (1 << 8). Do not substitute an arbitrary bit/value.
+          python3 - <<'PY_SUSFS_KSTAT_FIX'
+          from pathlib import Path
+          import re
+
+          p = Path('include/linux/susfs_def.h')
+          if not p.is_file():
+              raise SystemExit('[ERROR] SUSFS KSTAT definition file is missing: include/linux/susfs_def.h')
+          s = p.read_text()
+          bad = '#define KSTAT_SPOOF_CTIME_TV_SEC (1 < 8)'
+          good = '#define KSTAT_SPOOF_CTIME_TV_SEC (1 << 8)'
+          if bad in s:
+              s2 = s.replace(bad, good, 1)
+              if s2 == s:
+                  raise SystemExit('[ERROR] SUSFS KSTAT typo was detected but not changed')
+              p.write_text(s2)
+              print('[FIX] SUSFS 2.3.0 KSTAT C-time seconds flag: (1 < 8) -> (1 << 8)')
+          elif good in s:
+              print('[OK] SUSFS KSTAT C-time seconds flag is already source-correct: (1 << 8)')
+          else:
+              raise SystemExit('[ERROR] SUSFS KSTAT C-time seconds definition is neither the known typo nor the verified 2.3.0 value')
+
+          expected = {
+              'KSTAT_SPOOF_INO': 0,
+              'KSTAT_SPOOF_DEV': 1,
+              'KSTAT_SPOOF_NLINK': 2,
+              'KSTAT_SPOOF_SIZE': 3,
+              'KSTAT_SPOOF_ATIME_TV_SEC': 4,
+              'KSTAT_SPOOF_ATIME_TV_NSEC': 5,
+              'KSTAT_SPOOF_MTIME_TV_SEC': 6,
+              'KSTAT_SPOOF_MTIME_TV_NSEC': 7,
+              'KSTAT_SPOOF_CTIME_TV_SEC': 8,
+              'KSTAT_SPOOF_CTIME_TV_NSEC': 9,
+              'KSTAT_SPOOF_BLOCKS': 10,
+              'KSTAT_SPOOF_BLKSIZE': 11,
+          }
+          for name, bit in expected.items():
+              m = re.search(r'^\s*#define\s+' + re.escape(name) + r'\s+\(1\s*<<\s*(\d+)\)\s*$', s2 if 's2' in locals() else s, re.M)
+              if not m or int(m.group(1)) != bit:
+                  raise SystemExit(f'[ERROR] SUSFS KSTAT definition mismatch for {name}; expected (1 << {bit})')
+          print('[OK] SUSFS 2.3.0 KSTAT flags verified as unique bits 0..11.')
+          PY_SUSFS_KSTAT_FIX
+
           echo "[OK] SUSFS ${SUSFS_VERSION} 4.19 backport integrated using ${APPLY_MODE}."
           echo "::endgroup::"
 
@@ -1969,11 +2017,15 @@ jobs:
             fi
           done
 
-          # Detect the known v2.3.0 kstat bit typo if the port carries it.
+          # V99-R5: the known SUSFS 2.3.0 KSTAT typo is repaired in Step 7 before
+          # this audit. Verify the repaired source here so the later Step 8 config
+          # and Step 9 build cannot proceed with a colliding feature bit.
+          grep -q '^#define KSTAT_SPOOF_CTIME_TV_SEC (1 << 8)$' include/linux/susfs_def.h
           if grep -Rqs 'KSTAT_SPOOF_CTIME_TV_SEC.*(1 < 8)' fs include drivers/kernelsu; then
-            echo '[ERROR] Known SUSFS v2.3.0 KSTAT bit collision detected: (1 < 8)' | tee -a ../logs/07b-susfs-23-audit.log
+            echo '[ERROR] SUSFS 2.3.0 KSTAT collision still present after Step 7 repair.' | tee -a ../logs/07b-susfs-23-audit.log
             exit 1
           fi
+          echo '[OK] SUSFS 2.3.0 KSTAT bit namespace is source-correct and collision-free.' | tee -a ../logs/07b-susfs-23-audit.log
 
           # Record the complete feature namespace so the next stages can prove
           # that every compatible SUSFS option survived olddefconfig.
