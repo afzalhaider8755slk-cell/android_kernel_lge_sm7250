@@ -1,4 +1,4 @@
-name: V46-LM-G900-KARNAL-BUILT
+name: V47-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -76,8 +76,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V46
-  OUTPUT_PREFIX: V46-LM-G900-KARNAL
+  WORKFLOW_VERSION: V47
+  OUTPUT_PREFIX: V47-LM-G900-KARNAL
   # V19 retains the proven source pins and fixes the SUSFS source-port failure and corrects the SUSFS version/source mismatch:
   # 1) pin the KernelSU-Next setup script itself to v3.3.0
   # 2) pin the SUSFS backport source to the audited commit
@@ -187,7 +187,7 @@ env:
 
 jobs:
   build:
-    name: Build V46
+    name: Build V47
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1311,7 +1311,7 @@ jobs:
           # still reject the same way V45 did.
           mapfile -t HOOK_MODE_SYMBOLS < <(grep -RhoE '^[[:space:]]*config[[:space:]]+KSU_(TRACEPOINT_HOOK|MANUAL_HOOK|SUSFS)\b' drivers/kernelsu 2>/dev/null | awk '{print $2}' | sort -u)
           {
-            echo "=== V46 HOOK-MODE KCONFIG DISCOVERY (ReSukiSU) ==="
+            echo "=== V47 HOOK-MODE KCONFIG DISCOVERY (ReSukiSU) ==="
             printf '%s\n' "${HOOK_MODE_SYMBOLS[@]}"
           } | tee ../logs/08-hook-mode-discovery.log
           if printf '%s\n' "${HOOK_MODE_SYMBOLS[@]}" | grep -qx 'KSU_SUSFS'; then
@@ -1402,40 +1402,64 @@ jobs:
           #   - The two assignments that set p->ops.iopoll / p->ops.remap_file_range are
           #     dropped, since those destination fields don't exist on this kernel's
           #     struct file_operations either.
+          # V47 ROOT FIX: the V46 build (real GitHub Actions run, logs/09a-kernelsu-precompile.log)
+          # showed this exact patch corrupting drivers/kernelsu/infra/file_wrapper.c: 23 compile
+          # errors, all traceable to one cause. The V46 "guard" only checked that the substrings
+          # iopoll/remap_file_range/REMAP_FILE_DEDUP were present anywhere in the file -- true on
+          # ReSukiSU too, but for a different reason than on KernelSU-Next. The actual error output
+          # ("#elif without #if" at the old line 121, "#endif without #if" at the old line 129)
+          # proves ReSukiSU's file already wraps ksu_wrapper_iopoll in its own
+          # #if LINUX_VERSION_CODE >= KERNEL_VERSION(...) / #elif ... / #endif guard selecting
+          # between two newer iopoll signatures -- with no #else branch, meaning on a pre-5.1
+          # kernel like this 4.19 tree neither branch compiles and the function is correctly
+          # absent already, no patch needed. The blind `sed -i -e '113s#...'` line replacement
+          # landed inside that existing #if/#elif block (not on a bare call-site statement the way
+          # it did on KernelSU-Next's unconditional version), breaking the preprocessor nesting and
+          # cascading into every function after it in the file (the "function definition is not
+          # allowed here" errors from line 362 onward are downstream damage from that one break,
+          # not independent problems).
+          # V47 replaces the blind line-number sed with a structural check: only apply the
+          # unconditional-code style fix (REMAP_FILE_DEDUP define + call-site stubs) if iopoll and
+          # remap_file_range are NOT already inside a LINUX_VERSION_CODE guard in this source. If
+          # they already are (as proven true for ReSukiSU by the V46 build), skip untouched and
+          # trust the upstream guard -- exactly the situation this file is actually in.
           FW="drivers/kernelsu/infra/file_wrapper.c"
-          if [ -f "$FW" ] && ! grep -q '^#define REMAP_FILE_DEDUP' "$FW"; then
-            # V46 GUARD: the sed edits below rewrite this file by exact line number, which
-            # assumes KernelSU-Next's precise file_wrapper.c layout. ReSukiSU may not carry
-            # this file at all, or may carry a different one at the same path -- blindly
-            # sed'ing by line number in that case would silently corrupt unrelated code
-            # instead of failing loudly. Verify the three symbols this patch exists to fix
-            # are actually present before touching the file; skip (not fail) otherwise.
-            if grep -q 'iopoll' "$FW" && grep -q 'remap_file_range' "$FW" && grep -q 'REMAP_FILE_DEDUP' "$FW"; then
-            {
-              echo '#pragma clang diagnostic ignored "-Wunused-function"'
-              echo '#ifndef REMAP_FILE_DEDUP'
-              echo '#define REMAP_FILE_DEDUP (1 << 0)'
-              echo '#endif'
-              cat "$FW"
-            } > "${FW}.ksu_compat_tmp"
-            mv "${FW}.ksu_compat_tmp" "$FW"
-            # The 4 lines above shift every original line number down by 4. The two
-            # remap_file_range() call statements each wrap onto a second line (the closing
-            # ")" and trailing args); both lines of each statement must be handled together,
-            # or the leftover continuation line becomes a dangling "...);" syntax error.
-            sed -i \
-              -e '113s#.*#    return -EOPNOTSUPP;#' \
-              -e '346s#.*#        return -EOPNOTSUPP;#' \
-              -e '347d' \
-              -e '351s#.*#        return -EOPNOTSUPP;#' \
-              -e '352d' \
-              -e '397d' \
-              -e '434,435d' \
-              "$FW"
-            echo "[FIX] Patched file_wrapper.c: stubbed iopoll/remap_file_range fops for pre-4.20 VFS API"
-            else
-              echo "[SKIP-V46-UNVERIFIED] ${FW}: expected iopoll/remap_file_range/REMAP_FILE_DEDUP symbols not all found -- this file's content doesn't match the KernelSU-Next layout this line-number patch was derived against (or ReSukiSU's file_wrapper.c differs). Skipped without touching the file, rather than risk corrupting it. If the build fails with iopoll/remap_file_range/REMAP_FILE_DEDUP errors, re-derive this patch against ReSukiSU's actual ${FW}."
-            fi
+          if [ -f "$FW" ]; then
+            python3 - "$FW" << 'PATCH_FILE_WRAPPER'
+          import re, sys
+          path = sys.argv[1]
+          with open(path) as f:
+              content = f.read()
+
+          def already_version_guarded(content, symbol):
+              # True if `symbol` appears within 400 chars after a LINUX_VERSION_CODE
+              # preprocessor test, i.e. the upstream source itself decides at compile time
+              # whether this code exists on this kernel -- the exact situation V46's build
+              # proved true for iopoll, and which needs no patch at all.
+              for m in re.finditer(r'#\s*(if|elif)\b[^\n]*LINUX_VERSION_CODE', content):
+                  window = content[m.end():m.end() + 400]
+                  if symbol in window:
+                      return True
+              return False
+
+          if '#define REMAP_FILE_DEDUP' in content:
+              print(f"[SKIP] {path}: REMAP_FILE_DEDUP already defined (already patched); leaving untouched.")
+          elif already_version_guarded(content, 'iopoll') and already_version_guarded(content, 'remap_file_range'):
+              print(f"[SKIP-V47-VERIFIED] {path}: iopoll and remap_file_range are already inside this "
+                    f"source's own LINUX_VERSION_CODE guard (confirmed structurally, not just by "
+                    f"substring match) -- on this pre-4.20 kernel neither branch compiles and the "
+                    f"guarded code is correctly absent already. No patch applied; V46's blind "
+                    f"line-number patch here is what actually broke the V46 build.")
+          elif 'iopoll' in content or 'remap_file_range' in content:
+              print(f"[SKIP-V47-UNVERIFIED] {path}: iopoll/remap_file_range present but NOT inside a "
+                    f"recognizable LINUX_VERSION_CODE guard -- this doesn't match either the old "
+                    f"unconditional KernelSU-Next layout or the guarded ReSukiSU layout V46 revealed. "
+                    f"Skipped without touching the file rather than guess again with a blind edit. If "
+                    f"the build fails with iopoll/remap_file_range/REMAP_FILE_DEDUP errors, this file "
+                    f"needs a patch re-derived by hand against its actual current content.")
+          else:
+              print(f"[SKIP] {path}: no iopoll/remap_file_range references found; nothing to patch.")
+          PATCH_FILE_WRAPPER
           fi
           # V32 FIX 1 — KernelSU-Next v3.3.0 compatibility with this 4.19.325 arm64 tree.
           # The KSU seccomp cache source references SECCOMP_ARCH_NATIVE_NR (and, with
@@ -2301,7 +2325,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V46-LM-G900-KARNAL
+          kernel.string=V47-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -2327,7 +2351,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V46-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V47-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -2364,20 +2388,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V46 final output"
+      - name: "12. Upload V47 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V46-LM-G900-KARNAL-output
-          path: V46-LM-G900-KARNAL-output.zip
+          name: V47-LM-G900-KARNAL-output
+          path: V47-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V46 flashable ZIPs"
+      - name: "13. Upload V47 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V46-LM-G900-KARNAL-flashable-zips
+          name: V47-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -2477,7 +2501,7 @@ jobs:
             -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
 
           {
-            echo "=== A-Z BUILD RECORD V46 ==="
+            echo "=== A-Z BUILD RECORD V47 ==="
             echo "Purpose=Preserve the known-working LM-G900 kernel baseline and add only CIP, KernelSU-Next, and SUSFS."
             echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
             echo "Android/device branch=${DEVICE_REF}"
@@ -2541,16 +2565,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V46 switches the root driver from KernelSU-Next (pershoot/KernelSU-Next dev-susfs) to ReSukiSU (ReSukiSU/ReSukiSU main), after V45's real build logs showed the KernelSU-Next fork was compiling exactly as intended (no missing Kconfig symbol) yet still unrecognized by its own Manager app -- see the V46 comments in env and Steps 6/8. IMPORTANT: install ReSukiSU's own Manager app after flashing; the KernelSU-Next Manager APK will not recognize this kernel. Step 9's KernelSU-Next-source-specific compatibility patches (pkg_observer.c fsnotify, allowlist.c task_work, app_profile.c seccomp, and the pre-5.7 SELinux stubs in Step 6) are now tolerant: each attempts its fix and logs [SKIP-V46-UNVERIFIED] instead of failing the build if ReSukiSU's actual source doesn't match the pattern KernelSU-Next had -- check the build log for any such lines and re-derive that specific patch against ReSukiSU's real source if the kernel doesn't boot cleanly. V45 forced KernelSU-Next into its manual (non-GKI) hook mode, which turned out to not be this kernel's actual problem, but the same discover-don't-assume approach is reused correctly in V46's Step 8 for ReSukiSU's real KSU_SUSFS/KSU_MANUAL_HOOK/KSU_TRACEPOINT_HOOK choice; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V47 fixes a real bug found in the person's own V46 build log (logs/09a-kernelsu-precompile.log): the file_wrapper.c iopoll/remap_file_range patch in Step 9 did a blind line-number sed edit that landed inside ReSukiSU's own pre-existing #if/#elif LINUX_VERSION_CODE guard around ksu_wrapper_iopoll, breaking the preprocessor nesting and cascading into 23 compile errors across the rest of the file -- every other Step 6-9 patch (SELinux stub, pkg_observer, allowlist, app_profile, the Step 8 hook-mode Kconfig choice) applied with zero [SKIP-V46-UNVERIFIED] lines, so this file was the sole blocker. V47 replaces the blind sed with a structural Python check that detects whether iopoll/remap_file_range are already inside a LINUX_VERSION_CODE guard (true for ReSukiSU, confirmed by that exact error output) and skips untouched if so, rather than ever risk corrupting it again; V46 switches the root driver from KernelSU-Next (pershoot/KernelSU-Next dev-susfs) to ReSukiSU (ReSukiSU/ReSukiSU main), after V45's real build logs showed the KernelSU-Next fork was compiling exactly as intended (no missing Kconfig symbol) yet still unrecognized by its own Manager app -- see the V46 comments in env and Steps 6/8. IMPORTANT: install ReSukiSU's own Manager app after flashing; the KernelSU-Next Manager APK will not recognize this kernel. Step 9's KernelSU-Next-source-specific compatibility patches (pkg_observer.c fsnotify, allowlist.c task_work, app_profile.c seccomp, and the pre-5.7 SELinux stubs in Step 6) are now tolerant: each attempts its fix and logs [SKIP-V46-UNVERIFIED] instead of failing the build if ReSukiSU's actual source doesn't match the pattern KernelSU-Next had -- check the build log for any such lines and re-derive that specific patch against ReSukiSU's real source if the kernel doesn't boot cleanly. V45 forced KernelSU-Next into its manual (non-GKI) hook mode, which turned out to not be this kernel's actual problem, but the same discover-don't-assume approach is reused correctly in V46's Step 8 for ReSukiSU's real KSU_SUSFS/KSU_MANUAL_HOOK/KSU_TRACEPOINT_HOOK choice; V44 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c pre-5.7 guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned commit, seccomp_cache no-op compat, pre-5.7 SELinux policydb stubs, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V46 complete diagnostics (always)"
+      - name: "15. Upload V47 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V46-LM-G900-KARNAL-complete-logs
+          name: V47-LM-G900-KARNAL-complete-logs
           path: |
-            V46-LM-G900-KARNAL-complete-logs.zip
+            V47-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
