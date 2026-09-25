@@ -1,5 +1,4 @@
-
-name: V106-LM-G900-KARNAL-SukiSU-Builtin
+name: V106-LM-G900-KARNAL-SukiSU-Builtin-Fixed
 
 on:
   workflow_dispatch:
@@ -8,555 +7,191 @@ permissions:
   contents: read
 
 env:
-  KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
-  KERNEL_REF: sixteen
-  KERNEL_COMMIT: 720c8d37ab7727af24c275bead988d6345ad174b
-  DEVICE_REPO: https://github.com/Hirashi-so/android_device_lge_caymanlm.git
-  DEVICE_REF: sixteen
-  COMMON_DEVICE_REPO: https://github.com/Hirashi-so/android_device_lge_sm7250-common.git
-  COMMON_DEVICE_REF: sixteen
-  VENDOR_REPO: https://github.com/Hirashi-so/proprietary_vendor_lge_caymanlm.git
-  VENDOR_REF: sixteen
-  BASELINE_KERNEL_SHA256: 85dd6083fd5a34135f301de661cae5f90b1aee82f4f5aa8d6dee30eacd34659d
-  BASELINE_KERNEL_VERSION: 4.19.325
-  BASELINE_CIP: v4.19.325-cip132
-  CIP_TARGET: v4.19.325-cip133
-  KSU_REPO: SukiSU-Ultra/SukiSU-Ultra
-  KSU_REF: builtin
-  KSU_COMMIT: b20dee702035af09cb2ecb5f35443bbc1747f3e6
-  KSU_MANAGER_BUILD: 4.2.0
-  KSU_MANAGER_PACKAGE: com.sukisu.ultra
-  KSU_MANAGER_SIGNATURE_SHA256: 947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef
-  CLANG_REV: clang-r563880c
-  CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V106
-  OUTPUT_PREFIX: V106-LM-G900-KARNAL
-  KERNEL_BUILD_TARGET: Image
+  SOURCE_COMMIT: 720c8d37ab7727af24c275bead988d6345ad174b
+  KERNEL_VERSION: 4.19.325
+  CIP_TAG: v4.19.325-cip133
+  DEFCONFIG: vendor/lineageos_cayman_defconfig
+  ARCH: arm64
+  SukiSU_COMMIT: b20dee702035af09cb2ecb5f35443bbc1747f3e6
+  SukiSU_VERSION: v4.2.0
+  CLANG_VERSION: clang-r563880c
 
 jobs:
-  build:
-    name: LM-G900N 4.19.325 SukiSU builtin
+  LM-G900N:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 60
+
     steps:
-      - name: "1. Checkout exact kernel baseline"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          mkdir -p logs diagnostics
-          git clone --branch "${KERNEL_REF}" "${KERNEL_REPO}" kernel
-          git -C kernel fetch --tags --force --prune
-          git -C kernel checkout --detach "${KERNEL_COMMIT}"
-          test "$(git -C kernel rev-parse HEAD)" = "${KERNEL_COMMIT}"
-          test "$(make -s -C kernel kernelversion)" = "${BASELINE_KERNEL_VERSION}"
-          git -C kernel status --short > baseline-git-status.txt
-          printf 'SOURCE_COMMIT=%s\nSOURCE_BRANCH=%s\nKERNEL_VERSION=%s\n' \
-            "$(git -C kernel rev-parse HEAD)" "${KERNEL_REF}" "$(make -s -C kernel kernelversion)" > source-info.txt
+      - name: 1. Checkout exact kernel baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          fetch-depth: 0
 
-      - name: "2. Prepare Android Clang"
-        shell: bash
+      - name: 2. Install host dependencies
         run: |
-          set -Eeuo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bc bison build-essential ccache clang flex gcc-aarch64-linux-gnu git lld libssl-dev libelf-dev libncurses-dev python3 rsync unzip zip wget curl device-tree-compiler patch
-          curl -fL --retry 5 --retry-delay 2 \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" \
-            -o "/tmp/${CLANG_REV}.tar.gz"
-          mkdir -p "clang-prebuilt/${CLANG_REV}"
-          tar -xzf "/tmp/${CLANG_REV}.tar.gz" -C "clang-prebuilt/${CLANG_REV}"
-          test -x "clang-prebuilt/${CLANG_REV}/bin/clang"
-          test -x "clang-prebuilt/${CLANG_REV}/bin/ld.lld"
-          "clang-prebuilt/${CLANG_REV}/bin/clang" --version | tee toolchain-version.txt
-          echo "CLANG_BIN=${GITHUB_WORKSPACE}/clang-prebuilt/${CLANG_REV}/bin" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex git \
+            libelf-dev libssl-dev lz4 python3 rsync unzip \
+            wget xz-utils zip
 
-      - name: "3. Verify device tree and defconfig"
+      - name: 3. Prepare Android Clang r563880c
         shell: bash
         run: |
-          set -Eeuo pipefail
-          git clone --depth=1 --branch "${DEVICE_REF}" "${DEVICE_REPO}" device-caymanlm
-          git clone --depth=1 --branch "${COMMON_DEVICE_REF}" "${COMMON_DEVICE_REPO}" device-sm7250-common
-          git clone --depth=1 --branch "${VENDOR_REF}" "${VENDOR_REPO}" vendor-caymanlm
-          mkdir -p diagnostics/device-tree
-          cp device-caymanlm/BoardConfig.mk diagnostics/device-tree/BoardConfig.mk
-          cp device-sm7250-common/BoardConfigCommon.mk diagnostics/device-tree/BoardConfigCommon.mk
-          cp vendor-caymanlm/BoardConfigVendor.mk diagnostics/device-tree/BoardConfigVendor.mk
-          TARGET_KERNEL_CONFIG="$({ grep -E '^[[:space:]]*TARGET_KERNEL_CONFIG[[:space:]]*:?=' device-caymanlm/BoardConfig.mk || true; } | tail -n1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+$//')"
-          test "${TARGET_KERNEL_CONFIG}" = "vendor/lineageos_cayman_defconfig"
-          echo "TARGET_KERNEL_CONFIG=${TARGET_KERNEL_CONFIG}" >> "$GITHUB_ENV"
-          test -f "kernel/arch/arm64/configs/${TARGET_KERNEL_CONFIG}"
-          cp "kernel/arch/arm64/configs/${TARGET_KERNEL_CONFIG}" baseline-defconfig.txt
-          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
-          export PATH="${CLANG_BIN}:$PATH"
-          make -C kernel O=out "${TARGET_KERNEL_CONFIG}" > logs/defconfig.log 2>&1
-          test -f kernel/out/.config
-          test -f kernel/out/include/config/auto.conf
-          test -f kernel/out/include/generated/autoconf.h
-          awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' kernel/out/.config | sort > baseline-enabled-config.txt
-          sha256sum baseline-enabled-config.txt > logs/baseline-enabled-config.sha256
-          sha256sum baseline-defconfig.txt > logs/baseline-defconfig.sha256
-          printf 'baseline_kernel_sha256=%s\nbaseline_kernel_version=%s\nbaseline_cip=%s\ndefconfig=%s\n' \
-            "${BASELINE_KERNEL_SHA256}" "${BASELINE_KERNEL_VERSION}" "${BASELINE_CIP}" "${TARGET_KERNEL_CONFIG}" > baseline-info.txt
-          # V103: V99 device-tree sources are the baseline and are intentionally not modified here.
-          # In particular, do not change any IP/network configuration or SELinux cmdline in this step.
-          sha256sum diagnostics/device-tree/BoardConfig.mk diagnostics/device-tree/BoardConfigCommon.mk diagnostics/device-tree/BoardConfigVendor.mk > logs/device-tree-source-sha256.txt
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/clang-prebuilt"
+          cd "$GITHUB_WORKSPACE/clang-prebuilt"
+          curl -L --fail --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2026/${CLANG_VERSION}.tar.gz" \
+            -o clang.tar.gz
+          tar -xzf clang.tar.gz
+          test -x "${CLANG_VERSION}/bin/clang"
+          "${CLANG_VERSION}/bin/clang" --version
 
-      - name: "4. Apply V99-compatible CIP 133 only"
+      - name: 4. Apply CIP 132 -> 133 as a source-level dependency
         shell: bash
         run: |
-          set -Eeuo pipefail
-          cd kernel
-          git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-          git fetch --no-tags cip "refs/tags/${BASELINE_CIP}:refs/tags/${BASELINE_CIP}" "refs/tags/${CIP_TARGET}:refs/tags/${CIP_TARGET}"
-          # V106: preserve the V99 working order exactly. Step 3 has already
-          # generated kernel/out/.config; never reset/clean the tree here because
-          # cleaning the working tree would delete out/ and make this legacy tree fail before any
-          # new SukiSU code is reached. V99 passed this stage using the same 3-way
-          # fallback without cleaning the configured build output.
-          test -f out/.config
-          git diff --binary "${BASELINE_CIP}..${CIP_TARGET}" > ../logs/cip-132-to-133.patch
-          if git apply --check --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-direct-check.log 2>&1; then
-            git apply --index --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-apply.log 2>&1
-            echo direct > ../logs/cip-selected.txt
-          else
-            if ! git apply --3way --check --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-3way-check.log 2>&1; then
-              cat ../logs/cip-direct-check.log ../logs/cip-3way-check.log
-              exit 1
-            fi
-            if grep -Eiq 'with conflicts|CONFLICT|error:|does not apply|patch failed' ../logs/cip-3way-check.log; then
-              cat ../logs/cip-3way-check.log
-              exit 1
-            fi
-            git apply --3way --index --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-apply.log 2>&1
-            echo 3way > ../logs/cip-selected.txt
-          fi
+          set -euo pipefail
+          git remote add cip https://git.kernel.org/pub/scm/linux/kernel/git/cip/linux-cip.git || true
+          git fetch --no-tags cip \
+            "refs/tags/v4.19.325-cip132:refs/tags/v4.19.325-cip132" \
+            "refs/tags/v4.19.325-cip133:refs/tags/v4.19.325-cip133"
+          git diff --binary v4.19.325-cip132..v4.19.325-cip133 > /tmp/cip-132-to-133.patch
+          git apply --3way --index /tmp/cip-132-to-133.patch
           git diff --check
-          # Source-level contract for this exact Linux 4.19.325 vendor tree:
-          # kernelversion is a Makefile-only value (VERSION/PATCHLEVEL/SUBLEVEL),
-          # while kernelrelease is configuration-dependent because setlocalversion()
-          # consumes the generated config. Do NOT invoke kernelversion through O=out:
-          # the out-tree recursive Makefile includes include/config/auto.conf before
-          # the target is evaluated. On this 4.19 tree that produces the misleading
-          # "Kernel configuration is invalid" error even though CIP applied cleanly.
-          # Read VERSION/PATCHLEVEL/SUBLEVEL directly from the source Makefile, then
-          # use the already-configured out tree only for kernelrelease.
-          test -f out/.config
-          test -f out/include/config/auto.conf
-          test -f out/include/generated/autoconf.h
-          KERNEL_VERSION_FROM_SOURCE="$(awk -F= '
-            /^[[:space:]]*VERSION[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); v=$2}
-            /^[[:space:]]*PATCHLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); p=$2}
-            /^[[:space:]]*SUBLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); s=$2}
-            END {print v "." p "." s}
-          ' Makefile)"
-          test "${KERNEL_VERSION_FROM_SOURCE}" = "${BASELINE_KERNEL_VERSION}"
-          printf 'source_kernelversion=%s\n' "${KERNEL_VERSION_FROM_SOURCE}" > ../logs/kernelversion-after-cip.txt
-          KERNEL_RELEASE="$(make -s O=out kernelrelease)"
-          printf '%s\n' "${KERNEL_RELEASE}" > ../logs/kernelrelease-after-cip.txt
-          case "${KERNEL_RELEASE}" in
-            4.19.325-cip133-st17-perf*) ;;
-            *) echo "[ERROR] CIP result is not the expected 4.19.325-cip133-st17-perf lineage: ${KERNEL_RELEASE}"; exit 1 ;;
-          esac
+          grep -qxF '4.19.325-cip133' localversion-cip
 
-      - name: "5. Integrate exact SukiSU builtin commit"
+      - name: 5. Integrate exact SukiSU v4.2.0 builtin commit
         shell: bash
         run: |
-          set -Eeuo pipefail
-          cd kernel
+          set -euo pipefail
           rm -rf KernelSU
-          git init -q KernelSU
-          git -C KernelSU remote add origin "https://github.com/${KSU_REPO}.git"
-          git -C KernelSU fetch --depth=1 origin "${KSU_COMMIT}"
-          git -C KernelSU fetch --no-tags origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
-          git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"
-          git -C KernelSU checkout --detach "${KSU_COMMIT}"
-          test "$(git -C KernelSU rev-parse HEAD)" = "${KSU_COMMIT}"
-          test -f KernelSU/kernel/Kconfig
-          test -f KernelSU/kernel/Makefile
-          test -f KernelSU/kernel/setup.sh
-          test -f KernelSU/kernel/manager/apk_sign.c
-          grep -q "${KSU_MANAGER_SIGNATURE_SHA256}" KernelSU/kernel/manager/apk_sign.c
-          grep -q '0x35c' KernelSU/kernel/manager/apk_sign.c
-          grep -Rqs 'config KSU_SUSFS' KernelSU/kernel
-          grep -Rqs 'susfs_ksu_sid' KernelSU/kernel
-          grep -Rqs 'susfs_priv_app_sid' KernelSU/kernel
-          grep -Rqs 'susfs_is_current_ksu_domain' KernelSU/kernel
-          # V100 error: the source has (void), so the old grep for () was a false failure.
-          grep -Eq 'void[[:space:]]+apply_kernelsu_rules[[:space:]]*\([[:space:]]*void[[:space:]]*\)' KernelSU/kernel/selinux/rules.c
-          grep -Eq 'void[[:space:]]+setup_ksu_cred[[:space:]]*\([[:space:]]*void[[:space:]]*\)' KernelSU/kernel/selinux/selinux.c
-          grep -q 'security_secctx_to_secid' KernelSU/kernel/selinux/selinux.c
-          grep -q 'KERNEL_SU_CONTEXT' KernelSU/kernel/selinux/selinux.h
-          grep -q 'handle_sepolicy' KernelSU/kernel/selinux/rules.c
-          ln -sf "$(realpath --relative-to=drivers "$(pwd)/KernelSU/kernel")" drivers/kernelsu
-          grep -qF 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
-          grep -qF 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          git clone --filter=blob:none https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
+          cd KernelSU
+          git checkout --detach "$SukiSU_COMMIT"
+          cd "$GITHUB_WORKSPACE"
+
+          rm -rf drivers/kernelsu
+          ln -s "$GITHUB_WORKSPACE/KernelSU/kernel" drivers/kernelsu
+
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+
+          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || \
+            sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+      - name: 6. Apply 4.19 generated-header compatibility fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch -p1 < "$GITHUB_WORKSPACE/0001-sukisu-4.2.0-legacy-compile-h.patch"
+
+      - name: 7. Configure kernel and generate shared headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/clang-prebuilt/${CLANG_VERSION}/bin:$PATH"
+          export LLVM=1
+          export LLVM_IAS=1
+          export ARCH="${ARCH}"
+
+          mkdir -p out
+          make O=out ARCH=arm64 "${DEFCONFIG}"
+          make O=out ARCH=arm64 olddefconfig
+
+          # This is the producer side of generated/compile.h.
+          make O=out ARCH=arm64 prepare scripts
+          make O=out ARCH=arm64 init/version.o
+
+          test -f out/include/generated/autoconf.h || \
+            test -f out/include/generated/autoconf.h
+          test -f out/include/generated/compile.h
+          test -f out/include/generated/utsrelease.h
+
+      - name: 8. Enforce SukiSU/SUSFS feature contract before build
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/clang-prebuilt/${CLANG_VERSION}/bin:$PATH"
+
           test -L drivers/kernelsu
-          {
-            echo "requested_manager=${KSU_MANAGER_BUILD}"
-            echo "manager_package=${KSU_MANAGER_PACKAGE}"
-            echo "builtin_branch=${KSU_REF}"
-            echo "resolved_commit=$(git -C KernelSU rev-parse HEAD)"
-            echo "manager_signature_sha256=${KSU_MANAGER_SIGNATURE_SHA256}"
-            echo "builtin_susfs=yes"
-          } | tee ../logs/sukisu-resolved.txt
+          test -f drivers/kernelsu/kernel_includes.h
+          ! grep -q 'generated/compile.h' drivers/kernelsu/kernel_includes.h
 
-      - name: "6. Source-aware 4.19 fixes and DT reconciliation"
+          scripts/config --file out/.config --enable KSU
+          scripts/config --file out/.config --enable KSU_FEATURE_ADBROOT
+          scripts/config --file out/.config --enable KPM
+          scripts/config --file out/.config --enable KSU_SUSFS
+
+          # Do not silently disable requested SUSFS functionality.
+          # The kernel-side SUSFS implementation must exist before CONFIG_KSU_SUSFS=y.
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+
+          make O=out ARCH=arm64 olddefconfig
+          test "$(scripts/config --file out/.config --state KSU)" = "y"
+          test "$(scripts/config --file out/.config --state KPM)" = "y"
+          test "$(scripts/config --file out/.config --state KSU_SUSFS)" = "y"
+
+      - name: 9. Build SukiSU subtree, then Image
         shell: bash
         run: |
-          set -Eeuo pipefail
-          cd kernel
-          test -f drivers/kernelsu/manager/pkg_observer_compat.h
-          grep -q 'KSU_DECL_FSNOTIFY_OPS' drivers/kernelsu/manager/pkg_observer_compat.h
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/clang-prebuilt/${CLANG_VERSION}/bin:$PATH"
+          export LLVM=1
+          export LLVM_IAS=1
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export KBUILD_BUILD_USER=build-user
+          export KBUILD_BUILD_HOST=build-host
 
-          if grep -Rqs '#include <linux/minmax.h>' drivers/kernelsu && [ ! -f include/linux/minmax.h ]; then
-            mkdir -p include/linux
-            cat > include/linux/minmax.h <<'EOF_MINMAX'
-          #ifndef _LINUX_MINMAX_H
-          #define _LINUX_MINMAX_H
-          #include <linux/kernel.h>
-          #ifndef in_range
-          #define in_range(val, start, len) ((unsigned long)(val) - (unsigned long)(start) < (unsigned long)(len))
-          #endif
-          #endif
-          EOF_MINMAX
-          fi
+          make O=out ARCH=arm64 M=drivers/kernelsu modules
+          test -f out/drivers/kernelsu/kernelsu.ko
 
-          if grep -Rqs '#include <uapi/linux/mount.h>' drivers/kernelsu && [ ! -f include/uapi/linux/mount.h ]; then
-            mkdir -p include/uapi/linux
-            cat > include/uapi/linux/mount.h <<'EOF_MOUNT'
-          #ifndef _UAPI_LINUX_MOUNT_H
-          #define _UAPI_LINUX_MOUNT_H
-          #ifndef MS_REC
-          #define MS_REC 16384
-          #endif
-          #ifndef MS_PRIVATE
-          #define MS_PRIVATE (1 << 18)
-          #endif
-          #endif
-          EOF_MOUNT
-          fi
+          make -j"$(nproc)" O=out ARCH=arm64 Image
 
-          for f in drivers/kernelsu/supercall/supercall.c drivers/kernelsu/policy/allowlist.c; do
-            if [ -f "$f" ] && grep -q 'TWA_RESUME' "$f" && ! grep -q 'KSU_TASK_WORK_NOTIFY' "$f"; then
-              python3 - "$f" <<'PY_TASKWORK'
-          from pathlib import Path
-          import sys
-          p = Path(sys.argv[1])
-          s = p.read_text()
-          if '#include <linux/version.h>' not in s:
-              s = '#include <linux/version.h>\n' + s
-          marker = '#include <linux/task_work.h>'
-          macro = "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)\n#define KSU_TASK_WORK_NOTIFY TWA_RESUME\n#else\n#define KSU_TASK_WORK_NOTIFY true\n#endif"
-          if 'KSU_TASK_WORK_NOTIFY' not in s:
-              if marker in s:
-                  s = s.replace(marker, marker + '\n' + macro, 1)
-              else:
-                  s = s.replace('#include <linux/version.h>', '#include <linux/version.h>\n#include <linux/task_work.h>\n' + macro, 1)
-          s = s.replace('task_work_add(current, &tw->cb, TWA_RESUME)', 'task_work_add(current, &tw->cb, KSU_TASK_WORK_NOTIFY)')
-          s = s.replace('task_work_add(tsk, cb, TWA_RESUME)', 'task_work_add(tsk, cb, KSU_TASK_WORK_NOTIFY)')
-          p.write_text(s)
-          PY_TASKWORK
-            fi
-          done
+          test -f out/arch/arm64/boot/Image
 
-          NS=fs/namespace.c
-          if grep -Rqs 'extern int path_mount(' drivers/kernelsu && ! grep -qE '^int path_mount\(' "$NS"; then
-            cat >> "$NS" <<'EOF_PATHMOUNT'
+      - name: 10. Final contracts and blocking verification
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          /* V103: Linux 4.19 bridge for SukiSU path_mount(). */
-          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page)
-          {
-              char *buf, *dir_name;
-              mm_segment_t old_fs;
-              long ret;
-              buf = (char *)__get_free_page(GFP_KERNEL);
-              if (!buf) return -ENOMEM;
-              dir_name = d_path(path, buf, PAGE_SIZE);
-              if (IS_ERR(dir_name)) { free_page((unsigned long)buf); return PTR_ERR(dir_name); }
-              old_fs = get_fs();
-              set_fs(KERNEL_DS);
-              ret = ksys_mount((char __user *)dev_name, (char __user *)dir_name, (char __user *)type_page, flags, (void __user *)data_page);
-              set_fs(old_fs);
-              free_page((unsigned long)buf);
-              return ret;
-          }
-          EOF_PATHMOUNT
-          fi
-          if grep -Rqs 'extern int path_umount(' drivers/kernelsu && ! grep -qE '^int path_umount\(' "$NS"; then
-            cat >> "$NS" <<'EOF_PATHUMOUNT'
+          test -f out/include/generated/compile.h
+          test -f out/include/generated/utsrelease.h
+          test -f out/arch/arm64/boot/Image
+          test -f out/drivers/kernelsu/kernelsu.ko
 
-          /* V103: Linux 4.19 bridge for SukiSU path_umount(). */
-          int path_umount(struct path *path, int flags)
-          {
-              char *buf, *name;
-              mm_segment_t old_fs;
-              long ret;
-              buf = (char *)__get_free_page(GFP_KERNEL);
-              if (!buf) return -ENOMEM;
-              name = d_path(path, buf, PAGE_SIZE);
-              if (IS_ERR(name)) { free_page((unsigned long)buf); return PTR_ERR(name); }
-              old_fs = get_fs();
-              set_fs(KERNEL_DS);
-              ret = ksys_umount((char __user *)name, flags);
-              set_fs(old_fs);
-              free_page((unsigned long)buf);
-              return ret;
-          }
-          EOF_PATHUMOUNT
-          fi
+          grep -q '^CONFIG_KSU=y$' out/.config
+          grep -q '^CONFIG_KPM=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
 
-          if grep -Rqs 'seccomp_filter_release' drivers/kernelsu && ! grep -q 'void seccomp_filter_release(' kernel/seccomp.c; then
-            cat >> kernel/seccomp.c <<'EOF_SECCOMP'
-
-          #ifdef CONFIG_SECCOMP
-          /* V103: Linux 4.19 bridge for SukiSU seccomp release API. */
-          void seccomp_filter_release(struct task_struct *tsk) { put_seccomp_filter(tsk); }
-          #endif
-          EOF_SECCOMP
-          fi
-
-          DP=drivers/kernelsu/supercall/dispatch.c
-          if [ -f "$DP" ] && grep -Eq 'tasklist_lock|task_pgrp\(|task_session\(' "$DP" && ! grep -q 'V103 sched compatibility' "$DP"; then
-            sed -i '1i #include <linux/sched/signal.h>' "$DP"
-            sed -i '1i #include <linux/sched/task.h>' "$DP"
-            sed -i '1i /* V103 sched compatibility */' "$DP"
-          fi
-
-          # Linux 4.19 lacks the post-5.7 selinux_state members used by SukiSU's
-          # optional selinux_hide implementation. Guard only this optional feature;
-          # never weaken SELinux or replace the real KSU policy injector.
-          SH=drivers/kernelsu/feature/selinux_hide.c
-          if [ -f "$SH" ] && grep -q 'selinux_state.status_lock' "$SH" && ! grep -q 'V103 4.19 selinux_hide guard' "$SH"; then
-            cp "$SH" ../logs/selinux_hide.original.c
-            {
-              echo '#include <linux/version.h>'
-              echo '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)'
-              cat "$SH"
-              echo '#else'
-              echo '#include <linux/init.h>'
-              echo '/* V103 4.19 selinux_hide guard: unsupported post-5.7 SELinux ABI. */'
-              echo 'void __init ksu_selinux_hide_init(void) {}'
-              echo 'void __exit ksu_selinux_hide_exit(void) {}'
-              echo 'void ksu_selinux_hide_drop_backup_if_unused(void) {}'
-              echo '#endif /* V103 4.19 selinux_hide guard */'
-            } > "$SH.tmp"
-            mv "$SH.tmp" "$SH"
-          fi
-
-          # The real 4.19 policy injector must remain active. This directly addresses
-          # the old setexeccon(u:r:ksu:s0) failure instead of hiding it with permissive SELinux.
-          grep -Eq 'void[[:space:]]+apply_kernelsu_rules[[:space:]]*\([[:space:]]*void[[:space:]]*\)' drivers/kernelsu/selinux/rules.c
-          grep -q 'ksu_allow(db, KERNEL_SU_DOMAIN, ALL, ALL, ALL)' drivers/kernelsu/selinux/rules.c
-          grep -q 'setup_selinux' drivers/kernelsu/selinux/selinux.c
-
-          # DT: remove only duplicate common-touch includes.
-          while IFS= read -r -d '' f; do
-            sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$f"
-          done < <(find arch/arm64/boot/dts/vendor/lge/lito-caymanlm -type f -iname '*touch_rev-1.0.dtsi' -print0)
-
-          # DT: rename only board-local PM labels that duplicate the generic qcom labels.
-          PM_ROOT=arch/arm64/boot/dts/vendor/lge/lito-caymanlm
-          while IFS= read -r -d '' f; do
-            tag="$(basename "$f" .dtsi | tr -c 'A-Za-z0-9' '_' | tr '[:upper:]' '[:lower:]' | sed 's/_*$//')"
-            for base in camera_therm_default bmr_w_therm_default; do
-              if grep -qE "^[[:space:]]*${base}[[:space:]]*:[[:space:]]*${base}[[:space:]]*\{" "$f"; then
-                sed -i -E "s/^([[:space:]]*)${base}[[:space:]]*:[[:space:]]*${base}[[:space:]]*\{/\1${base}_${tag}: ${base}_${tag} {/" "$f"
-                sed -i "s/&${base}/\&${base}_${tag}/g" "$f"
-              fi
-            done
-          done < <(find "$PM_ROOT" -type f -iname '*pm*.dtsi' -print0)
-
-          if grep -RInE '^[[:space:]]*(camera_therm_default|bmr_w_therm_default)[[:space:]]*:[[:space:]]*\1[[:space:]]*\{' "$PM_ROOT" 2>/dev/null; then
-            echo '[ERROR] Duplicate board PM labels remain.'
-            exit 1
-          fi
+          grep -q '4.19.325-cip133' localversion-cip
           git diff --check
-          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then exit 1; fi
 
-      - name: "7. Enable all compatible SukiSU/SUSFS features and enforce no-removal"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          cd kernel
-          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
-          export PATH="${CLANG_BIN}:$PATH"
-          make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/pre-sukisu-defconfig.log 2>&1
-          ./scripts/config --file out/.config --enable KSU --enable KSU_FEATURE_ADBROOT --enable KPM --enable KSU_SUSFS
-          for sym in KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP; do
-            grep -Eq "^[[:space:]]*config[[:space:]]+${sym}([[:space:]]|$)" drivers/kernelsu/Kconfig
-            ./scripts/config --file out/.config --enable "${sym}"
-          done
-          make O=out olddefconfig > ../logs/sukisu-olddefconfig.log 2>&1
-          for sym in CONFIG_KSU CONFIG_KSU_FEATURE_ADBROOT CONFIG_KPM CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP; do
-            grep -q "^${sym}=y$" out/.config || { echo "[ERROR] ${sym} is not y"; exit 1; }
-          done
-          awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
-          while IFS= read -r line; do
-            sym="${line%%=*}"
-            case "$sym" in CONFIG_KSU*|CONFIG_KPM) continue ;; esac
-            grep -Fxq "$line" ../post-integration-enabled-config.txt || { echo "[ERROR] Baseline config changed: $line"; exit 1; }
-          done < ../baseline-enabled-config.txt
-
-      - name: "8. Build SukiSU subtree, then Image"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          cd kernel
-          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
-          export PATH="${CLANG_BIN}:$PATH"
-          MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
-          MAKE_ARGS+=(KSU_MANAGER_PACKAGE="${KSU_MANAGER_PACKAGE}")
-          make O=out security/selinux/ > ../logs/selinux-build.log 2>&1
-          set +e
-          make "${MAKE_ARGS[@]}" -k -j"$(nproc)" M=drivers/kernelsu > ../logs/ksu-prebuild.log 2>&1
-          rc=$?
-          set -e
-          grep -nE '(error:|fatal error:|undefined reference|undefined symbol|Error [0-9]+$)' ../logs/ksu-prebuild.log | head -100 || true
-          test "$rc" -eq 0 || exit "$rc"
-          make "${MAKE_ARGS[@]}" -j"$(nproc)" "${KERNEL_BUILD_TARGET}" > ../logs/kernel-build.log 2>&1
-          test -s out/vmlinux
-          test -s out/arch/arm64/boot/Image
-          sha256sum out/arch/arm64/boot/Image > ../logs/Image.sha256
-
-      - name: "9. Final contracts and blocking DTB verification"
+      - name: 11. Upload kernel artifacts
         if: success()
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          cd kernel
-          export PATH="${CLANG_BIN}:$PATH"
-          strings out/vmlinux | grep -Fq "${KSU_MANAGER_SIGNATURE_SHA256}"
-          for sym in ksu_handle_execveat ksu_handle_faccessat ksu_handle_stat ksu_handle_setresuid ksu_handle_sys_reboot setup_ksu_cred apply_kernelsu_rules susfs_ksu_sid susfs_priv_app_sid; do
-            llvm-nm -n out/vmlinux | grep -Eq "[[:space:]]${sym}$" || { echo "[ERROR] Missing ${sym}"; exit 1; }
-          done
-          grep -A12 -B3 'void apply_kernelsu_rules(void)' drivers/kernelsu/selinux/rules.c | grep -q 'ksu_allow'
-          test ! -d susfs-backport
-          ! find . -type f \( -iname '*susfs*patch*' -o -iname '*nongki*build*' \) -print -quit | grep -q .
-          make O=out dtbs > ../logs/dtbs-final.log 2>&1
-          test -s out/arch/arm64/boot/Image
-
-      - name: "10. Package and create device runtime validation"
-        if: success()
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          rm -rf release work-anykernel
-          mkdir -p release/build-info release/logs release/checksums work-anykernel
-          cp kernel/out/arch/arm64/boot/Image release/kernel-image
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git work-anykernel
-          rm -rf work-anykernel/.git work-anykernel/modules work-anykernel/ramdisk
-          cp kernel/out/arch/arm64/boot/Image work-anykernel/Image
-          cat > work-anykernel/anykernel.sh <<'AK3'
-          # AnyKernel3 Ramdisk Mod Script
-          properties() { '
-          kernel.string=V106-LM-G900-KARNAL-SukiSU-builtin
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=0
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=caymanlm
-          '; }
-          BLOCK=auto;
-          IS_SLOT_DEVICE=auto;
-          RAMDISK_COMPRESSION=auto;
-          PATCH_VBMETA_FLAG=auto;
-          . tools/ak3-core.sh;
-          dump_boot;
-          write_boot;
-          AK3
-          (cd work-anykernel && zip -qr ../release/AnyKernel3-OrangeFox-Flashable.zip .)
-          mkdir -p release/kernel-payload
-          cp kernel/out/arch/arm64/boot/Image release/kernel-payload/Image
-          cp baseline-info.txt source-info.txt toolchain-version.txt baseline-enabled-config.txt post-integration-enabled-config.txt release/build-info/
-          cp logs/* release/logs/ 2>/dev/null || true
-          (cd release/kernel-payload && zip -qr ../kernel.zip .)
-          rm -rf release/kernel-payload
-          cat > release/build-info/device-root-module-validation.sh <<'EOF_VALIDATE'
-          #!/system/bin/sh
-          set -u
-          echo '== kernel =='; uname -a
-          echo '== root =='; su -c id || exit 10
-          echo '== SELinux context =='; su -c 'cat /proc/self/attr/current'
-          echo '== KSU paths =='; su -c 'ls -ld /data/adb /data/adb/ksu /data/adb/ksu/bin /data/adb/modules /data/adb/modules_update'
-          echo '== KSU processes =='; su -c 'ps -A | grep -E "ksud|ksu" || true'
-          echo '== KSU SELinux log =='; su -c 'dmesg | grep -Ei "KernelSU|SukiSU|ksud|setexeccon|security_secctx_to_secid|apply_kernelsu_rules|Cached su SID" | tail -200 || true'
-          echo '== module smoke test =='; echo 'Install one known-safe module, reboot once, then run:'
-          echo 'su -c "ls -la /data/adb/modules"'
-          echo 'su -c "mount | grep /data/adb/modules || true"'
-          echo 'The old fatal setexeccon(u:r:ksu:s0) Invalid argument must not appear.'
-          EOF_VALIDATE
-          chmod +x release/build-info/device-root-module-validation.sh
-          sha256sum release/kernel-image release/kernel.zip release/AnyKernel3-OrangeFox-Flashable.zip > release/checksums/SHA256SUMS
-          (cd release && zip -qr "../${OUTPUT_PREFIX}-output.zip" .)
-
-      - name: "11. Verify artifacts twice"
-        if: success()
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          test -s "${OUTPUT_PREFIX}-output.zip"
-          test -s release/kernel.zip
-          test -s release/AnyKernel3-OrangeFox-Flashable.zip
-          unzip -t "${OUTPUT_PREFIX}-output.zip"
-          unzip -t release/kernel.zip
-          unzip -t release/AnyKernel3-OrangeFox-Flashable.zip
-          unzip -t "${OUTPUT_PREFIX}-output.zip"
-          sha256sum "${OUTPUT_PREFIX}-output.zip" release/kernel.zip release/AnyKernel3-OrangeFox-Flashable.zip
-
-      - name: "12. Collect complete diagnostics"
-        if: always()
-        shell: bash
-        env:
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          set +e
-          mkdir -p diagnostics/logs
-          printf 'job_status=%s\nworkflow=%s\nsource_commit=%s\ncip_target=%s\nsukisu_commit=%s\ndefconfig=%s\n' \
-            "${JOB_STATUS}" "${WORKFLOW_VERSION}" "${KERNEL_COMMIT}" "${CIP_TARGET}" "${KSU_COMMIT}" "${TARGET_KERNEL_CONFIG:-UNRESOLVED}" > diagnostics/run-summary.txt
-          cp -a logs/. diagnostics/logs/ 2>/dev/null || true
-          cp -a baseline-info.txt baseline-defconfig.txt baseline-enabled-config.txt post-integration-enabled-config.txt source-info.txt toolchain-version.txt baseline-git-status.txt diagnostics/ 2>/dev/null || true
-          if [ -d kernel ]; then
-            { git -C kernel status --short; echo; git -C kernel rev-parse HEAD; echo; find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print; } > diagnostics/kernel-state.txt 2>&1
-          fi
-          rm -f "${OUTPUT_PREFIX}-complete-logs.zip"
-          (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
-
-      - name: "13. Upload successful output"
-        if: success()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
-          name: V106-LM-G900-KARNAL-output
-          path: V106-LM-G900-KARNAL-output.zip
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: "14. Upload kernel artifacts"
-        if: success()
-        uses: actions/upload-artifact@v6
-        with:
-          name: V106-LM-G900-KARNAL-kernel
+          name: V106-LM-G900N-SukiSU-v4.2.0-fixed
           path: |
-            release/kernel-image
-            release/kernel.zip
-            release/AnyKernel3-OrangeFox-Flashable.zip
+            out/arch/arm64/boot/Image
+            out/drivers/kernelsu/kernelsu.ko
+            out/.config
+            out/include/generated/compile.h
+            out/include/generated/utsrelease.h
           if-no-files-found: error
-          retention-days: 30
 
-      - name: "15. Upload complete diagnostics"
+      - name: 12. Upload diagnostics on every run
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
-          name: V106-LM-G900-KARNAL-complete-logs
+          name: V106-LM-G900N-SukiSU-diagnostics
           path: |
-            V106-LM-G900-KARNAL-complete-logs.zip
-            diagnostics/
-            logs/
-            baseline-info.txt
-            baseline-defconfig.txt
-            baseline-enabled-config.txt
-            post-integration-enabled-config.txt
-            baseline-git-status.txt
-            source-info.txt
-            toolchain-version.txt
+            out/.config
+            /tmp/cip-132-to-133.patch
+            KernelSU/kernel/Makefile
+            KernelSU/kernel/kernel_includes.h
           if-no-files-found: warn
-          retention-days: 30
