@@ -1,5 +1,5 @@
 
-name: V101-LM-G900-KARNAL-SukiSU-Builtin
+name: V102-LM-G900-KARNAL-SukiSU-Builtin
 
 on:
   workflow_dispatch:
@@ -29,8 +29,8 @@ env:
   KSU_MANAGER_SIGNATURE_SHA256: 947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V101
-  OUTPUT_PREFIX: V101-LM-G900-KARNAL
+  WORKFLOW_VERSION: V102
+  OUTPUT_PREFIX: V102-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -69,7 +69,7 @@ jobs:
           "clang-prebuilt/${CLANG_REV}/bin/clang" --version | tee toolchain-version.txt
           echo "CLANG_BIN=${GITHUB_WORKSPACE}/clang-prebuilt/${CLANG_REV}/bin" >> "$GITHUB_ENV"
 
-      - name: "3. Verify device tree and defconfig"
+      - name: "3. Verify and securely reconcile device tree and defconfig"
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -77,9 +77,36 @@ jobs:
           git clone --depth=1 --branch "${COMMON_DEVICE_REF}" "${COMMON_DEVICE_REPO}" device-sm7250-common
           git clone --depth=1 --branch "${VENDOR_REF}" "${VENDOR_REPO}" vendor-caymanlm
           mkdir -p diagnostics/device-tree
+          cp device-caymanlm/BoardConfig.mk diagnostics/device-tree/BoardConfig.mk.original
+          cp device-sm7250-common/BoardConfigCommon.mk diagnostics/device-tree/BoardConfigCommon.mk.original
+          cp vendor-caymanlm/BoardConfigVendor.mk diagnostics/device-tree/BoardConfigVendor.mk.original
+
+          # Exact source-level security defect found in V101: the two pinned device trees
+          # explicitly inject androidboot.selinux=permissive. On this Android 16 userdebug
+          # build that is a real SELinux mode request, so it must be removed rather than
+          # masked, bypassed, or replaced with a guessed kernel value. AOSP init treats the
+          # permissive cmdline as permissive when ALLOW_PERMISSIVE_SELINUX is enabled.
+          # Only these two verified source lines are allowed to be changed here.
+          grep -Fqx 'androidboot.selinux=permissive \' device-caymanlm/BoardConfig.mk
+          grep -Fqx 'BOARD_KERNEL_CMDLINE += androidboot.selinux=permissive' device-sm7250-common/BoardConfigCommon.mk
+          ! grep -RInE 'androidboot\.selinux[=:]permissive' vendor-caymanlm 2>/dev/null
+          test "$(grep -RhoE 'androidboot\.selinux[=:]permissive' device-caymanlm device-sm7250-common vendor-caymanlm 2>/dev/null | wc -l)" -eq 2
+
+          sed -i '/^androidboot\.selinux=permissive[[:space:]]*\\[[:space:]]*$/d' device-caymanlm/BoardConfig.mk
+          sed -i '/^BOARD_KERNEL_CMDLINE[[:space:]]*+=[[:space:]]*androidboot\.selinux=permissive[[:space:]]*$/d' device-sm7250-common/BoardConfigCommon.mk
+          ! grep -RInE 'androidboot\.selinux[=:]permissive' device-caymanlm device-sm7250-common vendor-caymanlm 2>/dev/null
+
           cp device-caymanlm/BoardConfig.mk diagnostics/device-tree/BoardConfig.mk
           cp device-sm7250-common/BoardConfigCommon.mk diagnostics/device-tree/BoardConfigCommon.mk
           cp vendor-caymanlm/BoardConfigVendor.mk diagnostics/device-tree/BoardConfigVendor.mk
+          diff -u diagnostics/device-tree/BoardConfig.mk.original diagnostics/device-tree/BoardConfig.mk > logs/BoardConfig.mk-selinux-fix.diff || test $? -eq 1
+          diff -u diagnostics/device-tree/BoardConfigCommon.mk.original diagnostics/device-tree/BoardConfigCommon.mk > logs/BoardConfigCommon.mk-selinux-fix.diff || test $? -eq 1
+          test "$(grep -c '^[[:space:]]*androidboot\.hardware=caymanlm' device-caymanlm/BoardConfig.mk)" -eq 1
+          test "$(grep -c '^[[:space:]]*panic=0' device-caymanlm/BoardConfig.mk)" -eq 1
+          test "$(grep -c '^[[:space:]]*androidboot.init_fatal_reboot_target=recovery' device-caymanlm/BoardConfig.mk)" -eq 1
+          test "$(grep -c '^[[:space:]]*msm_watchdog_v2.disable=1' device-caymanlm/BoardConfig.mk)" -eq 1
+          grep -q 'androidboot.usbcontroller=a600000.dwc3' device-sm7250-common/BoardConfigCommon.mk
+
           TARGET_KERNEL_CONFIG="$({ grep -E '^[[:space:]]*TARGET_KERNEL_CONFIG[[:space:]]*:?=' device-caymanlm/BoardConfig.mk || true; } | tail -n1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+$//')"
           test "${TARGET_KERNEL_CONFIG}" = "vendor/lineageos_cayman_defconfig"
           echo "TARGET_KERNEL_CONFIG=${TARGET_KERNEL_CONFIG}" >> "$GITHUB_ENV"
@@ -93,10 +120,6 @@ jobs:
           sha256sum baseline-defconfig.txt > logs/baseline-defconfig.sha256
           printf 'baseline_kernel_sha256=%s\nbaseline_kernel_version=%s\nbaseline_cip=%s\ndefconfig=%s\n' \
             "${BASELINE_KERNEL_SHA256}" "${BASELINE_KERNEL_VERSION}" "${BASELINE_CIP}" "${TARGET_KERNEL_CONFIG}" > baseline-info.txt
-          if grep -RInE 'androidboot\.selinux[=:]permissive' device-caymanlm device-sm7250-common vendor-caymanlm 2>/dev/null; then
-            echo '[ERROR] Device trees inject permissive SELinux; refusing to hide KSU SELinux defects.'
-            exit 1
-          fi
 
       - name: "4. Apply clean CIP 133 only"
         shell: bash
@@ -125,6 +148,12 @@ jobs:
           fi
           git diff --check
           test "$(make -s kernelversion)" = "${BASELINE_KERNEL_VERSION}"
+          KERNEL_RELEASE="$(make -s kernelrelease)"
+          printf '%s\n' "${KERNEL_RELEASE}" > ../logs/kernelrelease-after-cip.txt
+          case "${KERNEL_RELEASE}" in
+            4.19.325-cip133-st17-perf*) ;;
+            *) echo "[ERROR] CIP result is not the expected 4.19.325-cip133-st17-perf lineage: ${KERNEL_RELEASE}"; exit 1 ;;
+          esac
 
       - name: "5. Integrate exact SukiSU builtin commit"
         shell: bash
@@ -417,7 +446,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V101-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V102-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
