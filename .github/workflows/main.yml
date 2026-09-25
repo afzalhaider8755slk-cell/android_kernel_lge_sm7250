@@ -1,5 +1,5 @@
 
-name: V106-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V107-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -27,10 +27,17 @@ env:
   KSU_MANAGER_BUILD: 4.2.0
   KSU_MANAGER_PACKAGE: com.sukisu.ultra
   KSU_MANAGER_SIGNATURE_SHA256: 947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef
+  # Kernel-side SUSFS 2.3.0 is required by SukiSU builtin on this legacy 4.19 tree.
+  # This is the same SUSFS 2.3.0 integration used by the V99 contract; it is not a
+  # second root provider and is applied before the SukiSU 4.19 source compatibility audit.
+  SUSFS_KERNEL_PATCH_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
+  SUSFS_KERNEL_PATCH_REF: f15603b246d7ce6008af8bdefa0a34b3df28326a
+  SUSFS_KERNEL_PATCH_PATH: Patches/Patch/susfs_patch_to_4.19.patch
+  SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V106-V99-FEATURES-PRESERVED
-  OUTPUT_PREFIX: V106-LM-G900-KARNAL
+  WORKFLOW_VERSION: V107-V99-FEATURES-PRESERVED-SUKISU-SUSFS
+  OUTPUT_PREFIX: V107-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -107,7 +114,7 @@ jobs:
           cd kernel
           git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
           git fetch --no-tags cip "refs/tags/${BASELINE_CIP}:refs/tags/${BASELINE_CIP}" "refs/tags/${CIP_TARGET}:refs/tags/${CIP_TARGET}"
-          # V106: preserve the V99 working order exactly. Step 3 has already
+          ## V107: preserve the V99 working order exactly. Step 3 has already
           # generated kernel/out/.config; never reset/clean the tree here because
           # cleaning the working tree would delete out/ and make this legacy tree fail before any
           # new SukiSU code is reached. V99 passed this stage using the same 3-way
@@ -166,8 +173,14 @@ jobs:
           git init -q KernelSU
           git -C KernelSU remote add origin "https://github.com/${KSU_REPO}.git"
           git -C KernelSU fetch --depth=1 origin "${KSU_COMMIT}"
-          git -C KernelSU fetch --no-tags origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
-          git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"
+          git -C KernelSU fetch --no-tags --depth=64 origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
+          # The commit is pinned independently; the ancestry check is only a guard
+          # that the pinned commit belongs to the requested builtin line. If the
+          # remote branch history is shallow, deepen it before checking ancestry.
+          if ! git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"; then
+            git -C KernelSU fetch --no-tags --deepen=256 origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
+            git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"
+          fi
           git -C KernelSU checkout --detach "${KSU_COMMIT}"
           test "$(git -C KernelSU rev-parse HEAD)" = "${KSU_COMMIT}"
           test -f KernelSU/kernel/Kconfig
@@ -199,11 +212,62 @@ jobs:
             echo "builtin_susfs=yes"
           } | tee ../logs/sukisu-resolved.txt
 
-      - name: "6. Source-aware 4.19 fixes and DT reconciliation"
+      - name: "6. Source-aware SUSFS 2.3.0 integration, 4.19 fixes and DT reconciliation"
         shell: bash
         run: |
           set -Eeuo pipefail
           cd kernel
+
+          # SukiSU builtin provides the KernelSU-side SUSFS ABI/features, but its
+          # kernel_includes.h deliberately includes <linux/susfs.h>. On this
+          # non-GKI 4.19.325 tree the kernel-side SUSFS implementation is therefore
+          # a required source dependency; the previous V106 workflow enabled the
+          # Kconfig symbols without actually integrating fs/susfs.c and headers.
+          # That is exactly why the build reported: "linux/susfs.h: file not found".
+          # Apply the same pinned SUSFS v2.3.0 kernel patch contract used by V99,
+          # before any SukiSU compatibility bridge can consume those symbols.
+          test ! -e fs/susfs.c
+          test ! -e include/linux/susfs.h
+          test ! -e include/linux/susfs_def.h
+
+          git -C .. clone --depth=1 --no-checkout "${SUSFS_KERNEL_PATCH_REPO}" susfs-kernel-source
+          git -C ../susfs-kernel-source fetch --no-tags origin "${SUSFS_KERNEL_PATCH_REF}"
+          git -C ../susfs-kernel-source checkout --detach "${SUSFS_KERNEL_PATCH_REF}"
+          test "$(git -C ../susfs-kernel-source rev-parse HEAD)" = "${SUSFS_KERNEL_PATCH_REF}"
+          test -f "../susfs-kernel-source/${SUSFS_KERNEL_PATCH_PATH}"
+          cp "../susfs-kernel-source/${SUSFS_KERNEL_PATCH_PATH}" ../logs/susfs-2.3.0.patch
+          test "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" = "f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+
+          # Refuse a partial/fuzzy application. Prefer direct application; if the
+          # legacy vendor tree needs context relocation, allow only Git's 3-way
+          # resolver and fail if it reports any unresolved conflict.
+          if git apply --check --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-direct-check.log 2>&1; then
+            git apply --index --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-apply.log 2>&1
+            echo direct > ../logs/susfs-selected.txt
+          else
+            if ! git apply --3way --check --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-3way-check.log 2>&1; then
+              cat ../logs/susfs-direct-check.log ../logs/susfs-3way-check.log
+              exit 1
+            fi
+            if grep -Eiq 'with conflicts|CONFLICT|error:|does not apply|patch failed|rej' ../logs/susfs-3way-check.log; then
+              cat ../logs/susfs-3way-check.log
+              exit 1
+            fi
+            git apply --3way --index --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-apply.log 2>&1
+            echo 3way > ../logs/susfs-selected.txt
+          fi
+
+          git diff --check
+          git diff --cached --check
+          test -s fs/susfs.c
+          test -s include/linux/susfs.h
+          test -s include/linux/susfs_def.h
+          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          printf 'susfs_version=%s\npatch_ref=%s\npatch_sha256=%s\n' \
+            "${SUSFS_EXPECTED_VERSION}" "${SUSFS_KERNEL_PATCH_REF}" \
+            "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" > ../logs/susfs-resolved.txt
+
           test -f drivers/kernelsu/manager/pkg_observer_compat.h
           grep -q 'KSU_DECL_FSNOTIFY_OPS' drivers/kernelsu/manager/pkg_observer_compat.h
 
@@ -370,7 +434,20 @@ jobs:
             exit 1
           fi
           git diff --check
+          git diff --cached --check
           if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then exit 1; fi
+
+          # Cross-setup contract: SukiSU's KSU-side SUSFS ABI and the kernel-side
+          # SUSFS implementation must be present as one coherent source graph.
+          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -q 'susfs_is_current_ksu_domain' fs/susfs.c
+          grep -q 'setup_selinux' fs/susfs.c
+          grep -q 'CONFIG_KSU_SUSFS_SUS_PATH' fs/namei.c
+          grep -q 'CONFIG_KSU_SUSFS_SUS_MOUNT' fs/namespace.c
+          grep -q 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c
+          grep -q 'CONFIG_KSU_SUSFS_SUS_MAP' fs/proc/task_mmu.c
+          grep -q 'CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG' fs/proc/cmdline.c
+          grep -q 'CONFIG_KSU_SUSFS_OPEN_REDIRECT' fs/namei.c
 
       - name: "7. Enable all compatible SukiSU/SUSFS features and enforce no-removal"
         shell: bash
@@ -380,13 +457,13 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
           make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/pre-sukisu-defconfig.log 2>&1
-          ./scripts/config --file out/.config --enable KSU --enable KSU_FEATURE_ADBROOT --enable KPM --enable KSU_SUSFS
+          ./scripts/config --file out/.config --enable KSU --enable KSU_FEATURE_ADBROOT --enable KSU_DEBUG --enable KPM --enable KSU_SUSFS
           for sym in KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP; do
             grep -Eq "^[[:space:]]*config[[:space:]]+${sym}([[:space:]]|$)" drivers/kernelsu/Kconfig
             ./scripts/config --file out/.config --enable "${sym}"
           done
           make O=out olddefconfig > ../logs/sukisu-olddefconfig.log 2>&1
-          for sym in CONFIG_KSU CONFIG_KSU_FEATURE_ADBROOT CONFIG_KPM CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP; do
+          for sym in CONFIG_KSU CONFIG_KSU_FEATURE_ADBROOT CONFIG_KSU_DEBUG CONFIG_KPM CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_THREAD_INFO_IN_TASK; do
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] ${sym} is not y"; exit 1; }
           done
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
@@ -406,7 +483,7 @@ jobs:
           MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
           MAKE_ARGS+=(KSU_MANAGER_PACKAGE="${KSU_MANAGER_PACKAGE}")
 
-          # V106 FIX ONLY:
+          # V107 source-level build order fix:
           # SukiSU v4.2.0 kernel_includes.h consumes generated/compile.h.
           # On this Linux 4.19 O=out build, that header is produced by the
           # init/version.o dependency chain. Generate the shared headers before
@@ -416,6 +493,11 @@ jobs:
           make O=out init/version.o > ../logs/generated-compile-header.log 2>&1
           test -s out/include/generated/compile.h
           test -s out/include/generated/utsrelease.h
+          # kernel_includes.h includes <generated/compile.h>; assert the exact
+          # include-tree target and the generated file before M=drivers/kernelsu.
+          test -r out/include/generated/compile.h
+          test -r out/include/generated/utsrelease.h
+          test -r out/include/config/auto.conf
 
           make O=out security/selinux/ > ../logs/selinux-build.log 2>&1
           set +e
@@ -443,8 +525,16 @@ jobs:
             llvm-nm -n out/vmlinux | grep -Eq "[[:space:]]${sym}$" || { echo "[ERROR] Missing ${sym}"; exit 1; }
           done
           grep -A12 -B3 'void apply_kernelsu_rules(void)' drivers/kernelsu/selinux/rules.c | grep -q 'ksu_allow'
+          # Do not allow an unpinned/alternate SUSFS source to sneak into the tree.
+          test -s fs/susfs.c
+          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          test -f ../logs/susfs-2.3.0.patch
+          test "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" = "f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+          grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
+          for sym in CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP; do
+            grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
+          done
           test ! -d susfs-backport
-          ! find . -type f \( -iname '*susfs*patch*' -o -iname '*nongki*build*' \) -print -quit | grep -q .
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -462,7 +552,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V106-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V107-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -539,8 +629,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V106-LM-G900-KARNAL-output
-          path: V106-LM-G900-KARNAL-output.zip
+          name: V107-LM-G900-KARNAL-output
+          path: V107-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -548,7 +638,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V106-LM-G900-KARNAL-kernel
+          name: V107-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -560,9 +650,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V106-LM-G900-KARNAL-complete-logs
+          name: V107-LM-G900-KARNAL-complete-logs
           path: |
-            V106-LM-G900-KARNAL-complete-logs.zip
+            V107-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
