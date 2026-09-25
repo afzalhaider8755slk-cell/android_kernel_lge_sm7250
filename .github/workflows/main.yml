@@ -1,5 +1,5 @@
 
-name: V123-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V124-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,13 +37,13 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V123-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
-  OUTPUT_PREFIX: V123-LM-G900-KARNAL
+  WORKFLOW_VERSION: V124-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
+  OUTPUT_PREFIX: V124-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
   build:
-    name: LM-G900N 4.19.325 SukiSU builtin (V123)
+    name: LM-G900N 4.19.325 SukiSU builtin (V124)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -252,7 +252,7 @@ jobs:
           set -Eeuo pipefail
           cd kernel
           trap 'rc=$?; printf "[ERROR] Step-6 failed: rc=%s line=%s command=%s\\n" "$rc" "$LINENO" "$BASH_COMMAND" | tee -a ../logs/step6-failure.log' ERR
-          # V123 KPM source-level compatibility fix:
+          # V124 KPM source-level compatibility fix:
           # SukiSU v4.2.0-b20 KPM uses the modern access_ok(addr, size) API,
           # while this exact ARM64 Linux 4.19 tree exposes access_ok(type, addr, size).
           # The pinned SukiSU source already provides ksu_access_ok() in
@@ -906,6 +906,30 @@ jobs:
             mv "$SH.tmp" "$SH"
           fi
 
+          # The two selinux_hide lifecycle functions form a C API between runtime/ksud.c
+          # and feature/selinux_hide.c. V123 supplied the legacy 4.19 definitions,
+          # but ksud.c still needs explicit declarations before it is compiled.
+          SHH=drivers/kernelsu/feature/selinux_hide.h
+          KSD=drivers/kernelsu/runtime/ksud.c
+          test -f "$SHH"
+          test -f "$KSD"
+          if ! grep -q 'ksu_selinux_hide_handle_post_fs_data(void);' "$SHH"; then
+            {
+              echo '/* V124: selinux_hide lifecycle API used by runtime/ksud.c. */'
+              echo 'void ksu_selinux_hide_handle_post_fs_data(void);'
+              echo 'void ksu_selinux_hide_handle_second_stage(void);'
+              cat "$SHH"
+            } > "$SHH.tmp"
+            mv "$SHH.tmp" "$SHH"
+          fi
+          if ! grep -Fq '#include "../feature/selinux_hide.h"' "$KSD"; then
+            sed -i '1i #include "../feature/selinux_hide.h"' "$KSD"
+          fi
+          grep -q 'ksu_selinux_hide_handle_post_fs_data(void);' "$SHH"
+          grep -q 'ksu_selinux_hide_handle_second_stage(void);' "$SHH"
+          grep -Fq '#include "../feature/selinux_hide.h"' "$KSD"
+          printf '%s\n' 'selinux_hide API declaration/include: PASS' > ../logs/selinux-hide-api-declaration.log
+
           # The real 4.19 policy injector must remain active. This directly addresses
           # the old setexeccon(u:r:ksu:s0) failure instead of hiding it with permissive SELinux.
           grep -Eq 'void[[:space:]]+apply_kernelsu_rules[[:space:]]*\([[:space:]]*void[[:space:]]*\)' drivers/kernelsu/selinux/rules.c
@@ -1085,7 +1109,7 @@ jobs:
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
-          test "${OUTPUT_PREFIX}" = "V123-LM-G900-KARNAL"
+          test "${OUTPUT_PREFIX}" = "V124-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -1103,7 +1127,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V123-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V124-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1150,7 +1174,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           # Artifact identity contract: release/diagnostics must never carry stale
-          # pre-V123 artifact prefixes. The current V123 prefix is intentionally present.
+          # pre-V124 artifact prefixes. The current V124 prefix is intentionally present.
           if grep -RInE 'V109-LM-G900-KARNAL|V110-LM-G900-KARNAL|V111-LM-G900-KARNAL|V112-LM-G900-KARNAL|V113-LM-G900-KARNAL|V114-LM-G900-KARNAL' release diagnostics 2>/dev/null; then
             echo "[ERROR] stale artifact/version prefix detected"
             exit 1
@@ -1186,8 +1210,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V123-LM-G900-KARNAL-output
-          path: V123-LM-G900-KARNAL-output.zip
+          name: V124-LM-G900-KARNAL-output
+          path: V124-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1195,7 +1219,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V123-LM-G900-KARNAL-kernel
+          name: V124-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -1207,9 +1231,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V123-LM-G900-KARNAL-complete-logs
+          name: V124-LM-G900-KARNAL-complete-logs
           path: |
-            V123-LM-G900-KARNAL-complete-logs.zip
+            V124-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
