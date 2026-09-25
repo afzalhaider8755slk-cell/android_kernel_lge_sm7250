@@ -1,5 +1,5 @@
 
-name: V110-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V111-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,8 +37,8 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V110-V99-FEATURES-PRESERVED-SUKISU-SUSFS-BLOBSHA-FIX
-  OUTPUT_PREFIX: V110-LM-G900-KARNAL
+  WORKFLOW_VERSION: V111-V99-FEATURES-PRESERVED-SUKISU-SUSFS-4FILE-PORT-ARTIFACT-FIX
+  OUTPUT_PREFIX: V111-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -307,24 +307,273 @@ jobs:
             "${SUSFS_KERNEL_PATCH_PATH}" "${SUSFS_KERNEL_PATCH_URL}" \
             "${ACTUAL_SUSFS_PATCH_BLOB_SHA}" "${ACTUAL_SUSFS_PATCH_SHA256}" > ../logs/susfs-source-resolved.txt
 
-          # Refuse a partial/fuzzy application. Prefer direct application; if the
-          # legacy vendor tree needs context relocation, allow only Git's 3-way
-          # resolver and fail if it reports any unresolved conflict.
+          # SUSFS 2.3.0 is a single pinned patch, but this exact 4.19 vendor tree
+          # has four known source-context differences. A normal 3-way check reports
+          # those as conflicts even though the remaining hunks are clean. The correct
+          # response is NOT to reject the patch and NOT to re-apply the whole patch:
+          # apply the clean hunks once, isolate exactly the four audited files, then
+          # port only their source-version-specific hunks and verify the final source.
           if git apply --check --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-direct-check.log 2>&1; then
             git apply --index --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-apply.log 2>&1
             echo direct > ../logs/susfs-selected.txt
+            APPLY_MODE=direct
           else
-            if ! git apply --3way --check --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-3way-check.log 2>&1; then
-              cat ../logs/susfs-direct-check.log ../logs/susfs-3way-check.log
+            echo "[SUSFS] direct preflight is incompatible with this vendor source; using audited 4-file 3-way path."
+            if git apply --3way --check --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-3way-check.log 2>&1; then
+              THREEWAY_CHECK_RC=0
+            else
+              THREEWAY_CHECK_RC=$?
+            fi
+            echo "threeway_check_rc=${THREEWAY_CHECK_RC}" | tee ../logs/susfs-compatibility-summary.log
+            cat ../logs/susfs-direct-check.log | tee -a ../logs/susfs-compatibility-summary.log
+            cat ../logs/susfs-3way-check.log | tee -a ../logs/susfs-compatibility-summary.log
+
+            # `git apply --3way --check` can report expected source-context conflicts
+            # and still prove that Git can resolve the remaining patch topology.
+            # Do not grep for the word "conflicts" here: the four audited files are
+            # expected. We require the exact four-file conflict set after the real apply.
+            EXPECTED_CONFLICTS=(fs/namespace.c fs/proc/cmdline.c fs/proc/task_mmu.c fs/super.c)
+            if ! grep -Eiq 'with conflicts|Falling back to direct application' ../logs/susfs-3way-check.log; then
+              if [ "${THREEWAY_CHECK_RC}" -ne 0 ]; then
+                echo "[ERROR] SUSFS 3-way preflight failed without the expected audited conflict signature."
+                exit 1
+              fi
+            fi
+
+            if git apply --3way --index --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-3way-apply.log 2>&1; then
+              THREEWAY_APPLY_RC=0
+            else
+              THREEWAY_APPLY_RC=$?
+            fi
+            echo "threeway_apply_rc=${THREEWAY_APPLY_RC}" | tee -a ../logs/susfs-compatibility-summary.log
+            cat ../logs/susfs-3way-apply.log | tee -a ../logs/susfs-compatibility-summary.log
+
+            mapfile -t CONFLICT_FILES < <(git diff --name-only --diff-filter=U | sort)
+            printf '%s\n' "${CONFLICT_FILES[@]:-}" | tee ../logs/susfs-conflicted-files.txt
+            if [ "${#CONFLICT_FILES[@]}" -ne 4 ]; then
+              echo "[ERROR] SUSFS produced ${#CONFLICT_FILES[@]} conflict files; expected exactly 4 audited files." | tee ../logs/susfs-failure.log
               exit 1
             fi
-            if grep -Eiq 'with conflicts|CONFLICT|error:|does not apply|patch failed|rej' ../logs/susfs-3way-check.log; then
-              cat ../logs/susfs-3way-check.log
-              exit 1
-            fi
-            git apply --3way --index --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-apply.log 2>&1
-            echo 3way > ../logs/susfs-selected.txt
+            for f in "${EXPECTED_CONFLICTS[@]}"; do
+              printf '%s\n' "${CONFLICT_FILES[@]}" | grep -Fxq "${f}" || {
+                echo "[ERROR] Expected SUSFS conflict file missing: ${f}" | tee -a ../logs/susfs-failure.log
+                exit 1
+              }
+            done
+
+            # Capture the 3-way stages before resolving. This is evidence that the
+            # conflict is source-context-only and prevents accidental whole-patch replay.
+            for f in "${CONFLICT_FILES[@]}"; do
+              safe="$(printf '%s' "${f}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
+              git show ":1:${f}" > "../logs/susfs-base-${safe}.txt" 2>/dev/null || true
+              git show ":2:${f}" > "../logs/susfs-ours-${safe}.txt" 2>/dev/null || true
+              git show ":3:${f}" > "../logs/susfs-theirs-${safe}.txt" 2>/dev/null || true
+              git checkout --ours -- "${f}"
+              git add -- "${f}"
+            done
+
+            : > ../logs/susfs-semantic-port.log
+            for f in "${CONFLICT_FILES[@]}"; do
+              safe="$(printf '%s' "${f}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
+              python3 - "../logs/susfs-2.3.0.patch" "${f}" "../logs/susfs-file-${safe}.patch" <<'PY_PATCH_EXTRACT'
+          import pathlib, sys
+          patch = pathlib.Path(sys.argv[1]).read_text()
+          target = sys.argv[2]
+          out = pathlib.Path(sys.argv[3])
+          needle = f'a/{target} b/{target}'
+          for part in patch.split('diff --git ')[1:]:
+              if part.startswith(needle):
+                  out.write_text('diff --git ' + part)
+                  break
+          else:
+              raise SystemExit(f'No SUSFS patch section for {target}')
+          PY_PATCH_EXTRACT
+              # This command is an expected source-context probe. Guard it with if
+              # so set -e/-E does not turn an expected non-zero patch result into a
+              # premature Step-6 exit before all four files are processed.
+              if patch -d kernel -p1 --forward --batch --fuzz=0 -i "../logs/susfs-file-${safe}.patch" > "../logs/susfs-file-${safe}.apply.log" 2>&1; then
+                FILE_PATCH_RC=0
+              else
+                FILE_PATCH_RC=$?
+              fi
+              cat "../logs/susfs-file-${safe}.apply.log" | tee -a ../logs/susfs-semantic-port.log
+              echo "${f}: patch_rc=${FILE_PATCH_RC}" | tee -a ../logs/susfs-semantic-port.log
+            done
+
+            # Exact source reconciliation for the captured LM-G900 4.19.325 tree.
+            # These are the four and only four source-context adaptations allowed by
+            # the debugging contract. No generic GKI rewrite and no unrelated source
+            # mutation is permitted.
+            python3 - "${GITHUB_WORKSPACE}/kernel" <<'PY_RECON' | tee -a ../logs/susfs-semantic-port.log
+          import pathlib, re, sys
+          root = pathlib.Path(sys.argv[1])
+          
+          EXPECTED_REJECTS = {
+              "fs/namespace.c": {(26, 10, 26, 21), (1098, 7, 1254, 22)},
+              "fs/proc/cmdline.c": {(4, 8, 4, 20)},
+              "fs/proc/task_mmu.c": {(1670, 7, 1728, 15)},
+              "fs/super.c": {(36, 8, 36, 16)},
+          }
+          HUNK_RE = re.compile(r"^@@ -(\d+),(\d+) \+(\d+),(\d+) @@")
+          
+          def insert_after_once(text, marker, block, label):
+              if block.strip() in text:
+                  return text
+              pos = text.find(marker)
+              if pos < 0:
+                  raise SystemExit(f"{label}: anchor missing")
+              pos += len(marker)
+              return text[:pos] + block + text[pos:]
+          
+          def namespace_port(s):
+              if "#include <linux/susfs_def.h>" not in s:
+                  s = insert_after_once(s, "#include <linux/fs_context.h>\n",
+            "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS\n\n",
+            "fs/namespace.c include")
+              if "#define CL_COPY_MNT_NS BIT(25)" not in s:
+                  s = insert_after_once(s, '#include "internal.h"\n',
+            "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n\n#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n",
+            "fs/namespace.c declarations")
+              marker = "\tsb = fc->root->d_sb;\n\n"
+              if "susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: \"none\")" not in s:
+                  old = marker + '\tmnt = alloc_vfsmnt(fc->source ?: "none");\n'
+                  new = marker + """#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          \tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
+          \t\tif (susfs_is_current_ksu_domain()) {
+          \t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none");
+          \t\t\tgoto bypass_orig_flow;
+          \t\t}
+          \t}
+          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          
+          \tmnt = alloc_vfsmnt(fc->source ?: "none");
+          #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          bypass_orig_flow:
+          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          """
+                  if old not in s:
+            raise SystemExit("fs/namespace.c: vfs_create_mount anchor missing")
+                  s = s.replace(old, new, 1)
+              return s
+          
+          def cmdline_port(s):
+              if "extern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);" not in s:
+                  s = insert_after_once(s, "#include <linux/slab.h>\n",
+            "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\nextern struct static_key_false susfs_is_fake_cmdline_or_bootconfig_buffer_set;\nextern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);\n#endif\n\n",
+            "fs/proc/cmdline.c declarations")
+              fn = "static int cmdline_proc_show(struct seq_file *m, void *v)\n{\n"
+              if "susfs_spoof_cmdline_or_bootconfig(m);" not in s:
+                  s = insert_after_once(s, fn,
+            "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n\tif (static_branch_likely(&susfs_is_fake_cmdline_or_bootconfig_buffer_set)) {\n\t\tsusfs_spoof_cmdline_or_bootconfig(m);\n\t\tseq_putc(m, '\\n');\n\t\treturn 0;\n\t}\n#endif\n",
+            "fs/proc/cmdline.c show")
+              return s
+          
+          def task_mmu_port(s):
+              marker = "static ssize_t pagemap_read(struct file *file, char __user *buf,"
+              section_start = s.find(marker)
+              if section_start < 0:
+                  raise SystemExit("fs/proc/task_mmu.c: pagemap_read anchor missing")
+              section = s[section_start:]
+              if "SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))" not in section:
+                  old = """\t\tret = mmap_read_lock_killable(mm);
+          \t\tif (ret)
+          \t\t\tgoto out_free;
+          \t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);
+          \t\tmmap_read_unlock(mm);
+          \t\tstart_vaddr = end;"""
+                  new = """\t\tret = mmap_read_lock_killable(mm);
+          \t\tif (ret)
+          \t\t\tgoto out_free;
+          #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+          \t\tvma = find_vma(mm, start_vaddr);
+          \t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+          \t\t\tgoto bypass_orig_flow;
+          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+          \t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);
+          #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+          bypass_orig_flow:
+          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+          \t\tmmap_read_unlock(mm);
+          \t\tstart_vaddr = end;"""
+                  if old not in s:
+            raise SystemExit("fs/proc/task_mmu.c: exact mmap_read_lock_killable pagemap anchor missing")
+                  s = s.replace(old, new, 1)
+              return s
+          
+          def super_port(s):
+              if "#include <linux/susfs_def.h>" not in s:
+                  s = insert_after_once(s, "#include <linux/user_namespace.h>\n",
+            "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS\n",
+            "fs/super.c include")
+              if "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;" not in s:
+                  s = s.replace('#include "internal.h"\n',
+            "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n#include \"internal.h\"\n", 1)
+              return s
+          
+          ports = {
+              "fs/namespace.c": namespace_port,
+              "fs/proc/cmdline.c": cmdline_port,
+              "fs/proc/task_mmu.c": task_mmu_port,
+              "fs/super.c": super_port,
+          }
+          for rel, fn in ports.items():
+              p = root / rel
+              p.write_text(fn(p.read_text()))
+          
+          for rel, expected in EXPECTED_REJECTS.items():
+              rej = root / (rel + ".rej")
+              if rej.exists():
+                  got = set()
+                  for line in rej.read_text(errors="replace").splitlines():
+            m = HUNK_RE.match(line)
+            if m:
+                got.add(tuple(map(int, m.groups())))
+                  if got != expected:
+            raise SystemExit(f"unexpected reject set in {rel}: {sorted(got)}")
+                  rej.unlink()
+              orig = root / (rel + ".orig")
+              if orig.exists():
+                  orig.unlink()
+          
+          checks = {
+              "fs/namespace.c": ["#include <linux/susfs_def.h>", "CL_COPY_MNT_NS", "susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: \"none\")", "susfs_get_non_sus_mnt_id_from_mnt", "susfs_get_non_sus_vfsmnt_from_vfsmnt"],
+              "fs/proc/cmdline.c": ["susfs_spoof_cmdline_or_bootconfig", "susfs_is_fake_cmdline_or_bootconfig_buffer_set", "updated_command_line"],
+              "fs/proc/task_mmu.c": ["susfs_sus_kstat_spoof_show_map_vma", "SUSFS_IS_INODE_OPEN_REDIRECT", "SUSFS_IS_INODE_SUS_MAP", "find_vma(mm, start_vaddr)", "mmap_read_lock_killable(mm)", "mmap_read_unlock(mm)"],
+              "fs/super.c": ["#include <linux/susfs_def.h>", "susfs_is_current_ksu_domain", "DEFAULT_KSU_MNT_MINOR_DEV"],
+          }
+          for rel, needles in checks.items():
+              s = (root / rel).read_text()
+              for needle in needles:
+                  if needle not in s:
+            raise SystemExit(f"missing semantic SUSFS marker: {rel}: {needle}")
+          leftovers = list(root.rglob("*.rej")) + list(root.rglob("*.orig"))
+          if leftovers:
+              raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
+          print("[OK] Exact four-file SUSFS reconciliation completed for LM-G900 4.19.325.")
+          PY_RECON
+
+            APPLY_MODE="3way+exact-4-file-port"
           fi
+
+          echo "apply_mode=${APPLY_MODE}" | tee ../logs/susfs-selected.txt
+          if git ls-files -u | grep -q .; then
+            echo "[ERROR] SUSFS application left unmerged index entries." | tee ../logs/susfs-failure.log
+            git status --short | tee -a ../logs/susfs-failure.log
+            exit 1
+          fi
+          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+            echo "[ERROR] SUSFS application left reject/original files." | tee ../logs/susfs-failure.log
+            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a ../logs/susfs-failure.log
+            exit 1
+          fi
+          git diff --check
+          git diff --cached --check
+          test -s fs/susfs.c
+          test -s include/linux/susfs.h
+          test -s include/linux/susfs_def.h
+          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          printf 'apply_mode=%s\n' "${APPLY_MODE}" > ../logs/susfs-apply-mode.txt
 
           git diff --check
           git diff --cached --check
@@ -606,6 +855,7 @@ jobs:
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
+          test "${OUTPUT_PREFIX}" = "V111-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -623,7 +873,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V110-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V111-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -700,8 +950,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V109-LM-G900-KARNAL-output
-          path: V109-LM-G900-KARNAL-output.zip
+          name: V111-LM-G900-KARNAL-output
+          path: V111-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -709,7 +959,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V109-LM-G900-KARNAL-kernel
+          name: V111-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -721,9 +971,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V109-LM-G900-KARNAL-complete-logs
+          name: V111-LM-G900-KARNAL-complete-logs
           path: |
-            V109-LM-G900-KARNAL-complete-logs.zip
+            V111-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
