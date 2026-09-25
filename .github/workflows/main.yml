@@ -1,4 +1,4 @@
-name: V100-LM-G900-KARNAL-SukiSU-v4.2.0-builtSUSFS
+name: V101-LM-G900-KARNAL-SukiSU-v4.2.0-builtSUSFS
 
 on:
   workflow_dispatch:
@@ -37,11 +37,12 @@ env:
   SUSFS_PATCH_BLOB_SHA256: f9d8ed735f461ed982d2c49b338e35c17f4378e5
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V100
-  OUTPUT_PREFIX: V100-LM-G900-KARNAL-SukiSU
+  WORKFLOW_VERSION: V101
+  OUTPUT_PREFIX: V101-LM-G900-KARNAL-SukiSU
 
+jobs:
   build:
-    name: Build V100
+    name: Build V101
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1438,7 +1439,7 @@ env:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V100-LM-G900-KARNAL-SukiSU-v4.2.0
+          kernel.string=V101-LM-G900-KARNAL-SukiSU-v4.2.0
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1464,7 +1465,7 @@ env:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V100-LM-G900-KARNAL-SukiSU-v4.2.0-builtSUSFS"
+            echo "workflow_name=V101-LM-G900-KARNAL-SukiSU-v4.2.0-builtSUSFS"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1594,10 +1595,10 @@ env:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V100-LM-G900-KARNAL-SukiSU-artifacts
+          name: V101-LM-G900-KARNAL-SukiSU-artifacts
           path: |
-            V100-LM-G900-KARNAL-SukiSU-output.zip
-            V100-LM-G900-KARNAL-SukiSU-diagnostics.zip
+            V101-LM-G900-KARNAL-SukiSU-output.zip
+            V101-LM-G900-KARNAL-SukiSU-diagnostics.zip
             release/kernel.zip
             release/AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: warn
