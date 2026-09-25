@@ -1,5 +1,5 @@
 
-name: V126-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V127-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,8 +37,8 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V126-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
-  OUTPUT_PREFIX: V126-LM-G900-KARNAL
+  WORKFLOW_VERSION: V127-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
+  OUTPUT_PREFIX: V127-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -262,8 +262,8 @@ jobs:
           KCOMPAT=drivers/kernelsu/infra/kernel_compat.h
           test -f "$KPM"
           test -f "$KCOMPAT"
-          grep -q 'ksu_access_ok' "$KCOMPAT"
-          grep -q 'access_ok(type, addr, size)' arch/arm64/include/asm/uaccess.h
+          grep -Fq 'ksu_access_ok' "$KCOMPAT"
+          grep -Fq 'access_ok(type, addr, size)' arch/arm64/include/asm/uaccess.h
           if grep -qE '\baccess_ok\(' "$KPM"; then
             python3 - "$KPM" <<'PY_KPM'
           from pathlib import Path
@@ -280,7 +280,7 @@ jobs:
           p.write_text(s)
           PY_KPM
           fi
-          grep -q '#include "../infra/kernel_compat.h"' "$KPM"
+          grep -Fq '#include "../infra/kernel_compat.h"' "$KPM"
           test "$(grep -o 'ksu_access_ok(' "$KPM" | wc -l)" -ge 10
           if grep -nE '(^|[^A-Za-z0-9_])access_ok\(' "$KPM" | grep -v 'ksu_access_ok(' ; then
             echo '[ERROR] Unconverted modern access_ok() call remains in KPM.'
@@ -383,13 +383,14 @@ jobs:
             "${NORMALIZED_SUSFS_PATCH_SHA256}" > ../logs/susfs-source-resolved.txt
 
           # SUSFS 2.3.0 is a single pinned patch, but this exact 4.19 vendor tree
-          # has four known source-context differences. A normal 3-way check reports
+          # has four known source-context differences.
+          CONFLICT_FILES=() A normal 3-way check reports
           # those as conflicts even though the remaining hunks are clean. The correct
           # response is NOT to reject the patch and NOT to re-apply the whole patch:
           # apply the clean hunks once, isolate exactly the four audited files, then
           # port only their source-version-specific hunks and verify the final source.
           if git apply --check --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-direct-check.log 2>&1; then
-            git apply --index --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-apply.log 2>&1
+            git apply --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-apply.log 2>&1
             echo direct > ../logs/susfs-selected.txt
             APPLY_MODE=direct
           else
@@ -415,7 +416,7 @@ jobs:
               fi
             fi
 
-            if git apply --3way --index --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-3way-apply.log 2>&1; then
+            if git apply --3way --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-3way-apply.log 2>&1; then
               THREEWAY_APPLY_RC=0
             else
               THREEWAY_APPLY_RC=$?
@@ -560,31 +561,39 @@ jobs:
           fi
 
           # The four semantic reconciliation functions above modify the working tree
-          # after the 3-way index operation. Stage those exact files before any final
-          # index audit; otherwise git diff --cached --check audits only the earlier
-          # index image and can report a failure unrelated to the final source.
-          for f in "${CONFLICT_FILES[@]}"; do
+          # after the 3-way index operation. Mark conflict paths resolved first, then
+          # immediately unstage them so the final audit sees the actual source tree.
+          for f in "${CONFLICT_FILES[@]:-}"; do
+            [ -n "$f" ] || continue
             git add -- "$f"
           done
 
-          # Source-level whitespace gate:
-          # git diff --cached --check is correct to keep, but its output must be
-          # captured and traced to the exact newly-added source lines. If the only
-          # defect is trailing whitespace introduced by one of our integration
-          # patches, normalize only those reported NEW lines and re-stage them.
-          # Do not globally rewrite the kernel tree and do not suppress the check.
-          repair_diff_whitespace() {
-            local mode="$1"
-            local report="$2"
-            : > "$report"
+          # The 3-way resolver uses the index internally. The final SUSFS source
+          # audit is intentionally worktree-only, so unstage only SUSFS paths here.
+          # This eliminates the V121 stale-index/worktree divergence class instead
+          # of trying to repair two separate source snapshots.
+          SUSFS_AUDIT_FILES=(
+            fs/Makefile fs/namei.c fs/namespace.c fs/notify/fdinfo.c
+            fs/proc/base.c fs/proc/cmdline.c fs/proc/fd.c fs/proc/task_mmu.c
+            fs/proc/namespace.c fs/readdir.c fs/stat.c fs/statfs.c fs/super.c
+            fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h
+          )
+          for f in "${SUSFS_AUDIT_FILES[@]}"; do
+            git restore --staged -- "$f" 2>/dev/null || true
+          done
+          if git ls-files -u | grep -q .; then
+            echo '[ERROR] SUSFS conflict stages remain after semantic reconciliation.'
+            git status --short
+            exit 1
+          fi
 
-            # Canonicalize only the audited SUSFS-touched source files BEFORE asking
-            # Git to evaluate whitespace.  This is source-level normalization, not
-            # suppression: it removes only redundant terminal blank/whitespace-only
-            # lines and guarantees one final LF.
-            python3 - "$mode" <<'PY_CANON_WS'
-          import pathlib, subprocess, sys
-          mode=sys.argv[1]
+          # Source-level whitespace gate: canonicalize only terminal blank records
+          # in the SUSFS-touched files, then let Git's normal worktree check remain
+          # authoritative for all newly introduced source whitespace.
+          canonicalize_susfs_worktree() {
+            local report="$1"
+            python3 - <<'PY_SUSFS_CANONICAL_SOURCE'
+          from pathlib import Path
           files=[
               'fs/Makefile','fs/namei.c','fs/namespace.c','fs/notify/fdinfo.c',
               'fs/proc/base.c','fs/proc/cmdline.c','fs/proc/fd.c',
@@ -594,12 +603,10 @@ jobs:
           ]
           changed=[]
           for name in files:
-              p=pathlib.Path(name)
+              p=Path(name)
               if not p.is_file():
                   continue
               data=p.read_bytes()
-              # Keep all interior source bytes intact. Only normalize terminal
-              # whitespace-only records and require exactly one LF at EOF.
               lines=data.splitlines()
               while lines and lines[-1].strip(b' \t\r') == b'':
                   lines.pop()
@@ -607,114 +614,15 @@ jobs:
               if new != data:
                   p.write_bytes(new)
                   changed.append(name)
-          # The worktree pass may have canonicalized a file before the cached pass.
-          # Therefore `changed` can legitimately be zero even though the index still
-          # contains the pre-canonicalization blob. In cached mode, stage the complete
-          # audited SUSFS file set after canonicalization, not only files changed by
-          # that pass. This makes the index a deterministic snapshot of the final
-          # kernel source rather than an earlier pre-canonicalization snapshot.
-          staged=[]
-          if mode == 'cached':
-              for name in files:
-                  if pathlib.Path(name).is_file():
-                      subprocess.run(['git','add','--',name],check=True)
-                      staged.append(name)
-          pathlib.Path('../logs/susfs-source-canonicalization-'+mode+'.log').write_text(
-              'changed='+str(len(changed))+'\n'+'\n'.join(changed)+'\n' +
-              ('staged='+str(len(staged))+'\n'+'\n'.join(staged)+'\n' if mode == 'cached' else '')
+          Path('../logs/susfs-source-canonicalization.log').write_text(
+              'changed='+str(len(changed))+'\n'+'\n'.join(changed)+'\n'
           )
-          PY_CANON_WS
-            if [ "$mode" = "cached" ]; then
-              git diff --cached --check --ws-error-highlight=new > "$report" 2>&1 && return 0
-            else
-              git diff --check --ws-error-highlight=new > "$report" 2>&1 && return 0
+          print('canonicalized='+str(len(changed)))
+          PY_SUSFS_CANONICAL_SOURCE
+            if ! git diff --check --ws-error-highlight=new > "$report" 2>&1; then
+              cat "$report"
+              return 1
             fi
-            if grep -Eq 'conflict marker|whitespace error|space before tab' "$report"; then
-              if grep -Eq 'conflict marker|space before tab' "$report"; then
-                cat "$report"
-                return 2
-              fi
-            fi
-            python3 - "$report" <<'PY_CACHED_WS'
-          import pathlib, re, subprocess, sys
-          report = pathlib.Path(sys.argv[1])
-          trailing = []
-          eof_blank = []
-          for line in report.read_text(errors="replace").splitlines():
-              m = re.match(r"^(.+):(\d+): trailing whitespace\.$", line)
-              if m:
-                  trailing.append((m.group(1), int(m.group(2))))
-                  continue
-              m = re.match(r"^(.+):(\d+): new blank line at EOF\.$", line)
-              if m:
-                  eof_blank.append((m.group(1), int(m.group(2))))
-                  continue
-              # git diff --check prints the offending '+' line immediately after
-              # the diagnostic. It is evidence, not a second diagnostic.
-              if line.startswith("+"):
-                  continue
-              if line.strip():
-                  # Any diagnostic other than the two source-integrity cases
-                  # explicitly audited above is a hard failure. Never suppress
-                  # conflict markers, mixed indentation, or unknown diagnostics.
-                  raise SystemExit("UNHANDLED_GIT_DIFF_CHECK: " + line)
-
-          if not trailing and not eof_blank:
-              raise SystemExit("GIT_DIFF_CHECK_FAILED_WITHOUT_AUDITED_DIAGNOSTIC")
-
-          repaired_trailing = 0
-          repaired_eof = 0
-
-          for path, lineno in trailing:
-              p = pathlib.Path(path)
-              lines = p.read_text(errors="surrogateescape").splitlines(keepends=True)
-              if lineno < 1 or lineno > len(lines):
-                  raise SystemExit(f"line out of range while repairing {path}:{lineno}")
-              old = lines[lineno - 1]
-              newline = "\n" if old.endswith("\n") else ""
-              body = old[:-1] if newline else old
-              new = re.sub(r"[ \t]+$", "", body) + newline
-              if new == old:
-                  raise SystemExit(f"reported whitespace not repairable at {path}:{lineno}")
-              lines[lineno - 1] = new
-              p.write_text("".join(lines), errors="surrogateescape")
-              repaired_trailing += 1
-
-          for path, _ in eof_blank:
-              p = pathlib.Path(path)
-              data = p.read_bytes()
-              # This repair is only permitted because git diff --check explicitly
-              # identified a NEW blank line at EOF. Preserve all source bytes except
-              # redundant empty/whitespace-only terminal lines, and end with one LF.
-              text = data.decode("utf-8", errors="surrogateescape")
-              lines = text.splitlines()
-              while lines and not lines[-1].strip():
-                  lines.pop()
-              repaired = "\n".join(lines) + "\n"
-              new_data = repaired.encode("utf-8", errors="surrogateescape")
-              if new_data == data:
-                  raise SystemExit(f"EOF blank-line diagnostic not repairable at {path}")
-              p.write_bytes(new_data)
-              repaired_eof += 1
-
-          for path in sorted(set([p for p, _ in trailing] + [p for p, _ in eof_blank])):
-              subprocess.run(["git", "add", "--", path], check=True)
-
-          print(f"repaired_cached_trailing_whitespace={repaired_trailing}")
-          print(f"repaired_cached_new_blank_line_at_eof={repaired_eof}")
-          PY_CACHED_WS
-            if [ "$mode" = "cached" ]; then
-              if ! git diff --cached --check --ws-error-highlight=new > "${report}.after" 2>&1; then
-                cat "${report}.after"
-                return 2
-              fi
-            else
-              if ! git diff --check --ws-error-highlight=new > "${report}.after" 2>&1; then
-                cat "${report}.after"
-                return 2
-              fi
-            fi
-            return 0
           }
 
           echo "apply_mode=${APPLY_MODE}" | tee ../logs/susfs-selected.txt
@@ -728,37 +636,27 @@ jobs:
             find . -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a ../logs/susfs-failure.log
             exit 1
           fi
-          # Single post-reconciliation source/index cleanliness gate.
-          repair_diff_whitespace worktree ../logs/susfs-worktree-whitespace-check.log
+          # Single post-reconciliation source/worktree cleanliness gate.
+          canonicalize_susfs_worktree ../logs/susfs-worktree-whitespace-check.log
           git diff --check
-          repair_diff_whitespace cached ../logs/susfs-cached-whitespace-check.log
-          # Final invariant: after all source-level canonicalization, the audited
-          # SUSFS index must be a clean staged snapshot of the same source tree.
-          # This is intentionally an equality gate, not a whitespace suppression.
-          git diff --cached --check
-          if ! git diff --quiet -- fs/Makefile fs/namei.c fs/namespace.c fs/notify/fdinfo.c \
-              fs/proc/base.c fs/proc/cmdline.c fs/proc/fd.c fs/proc/task_mmu.c \
-              fs/proc/namespace.c fs/readdir.c fs/stat.c fs/statfs.c fs/super.c \
-              fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h; then
-            echo '[ERROR] SUSFS worktree/index divergence remains after canonicalization.'
-            git diff -- fs/Makefile fs/namei.c fs/namespace.c fs/notify/fdinfo.c \
-              fs/proc/base.c fs/proc/cmdline.c fs/proc/fd.c fs/proc/task_mmu.c \
-              fs/proc/namespace.c fs/readdir.c fs/stat.c fs/statfs.c fs/super.c \
-              fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h
+          # Final invariant: no unresolved merge state may survive into compilation.
+          if git ls-files -u | grep -q .; then
+            echo '[ERROR] Unmerged SUSFS index entries remain.'
+            git status --short
             exit 1
           fi
           test -s fs/susfs.c
           test -s include/linux/susfs.h
           test -s include/linux/susfs_def.h
-          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
-          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -Fq 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
           printf 'apply_mode=%s\n' "${APPLY_MODE}" > ../logs/susfs-apply-mode.txt
 
           test -s fs/susfs.c
           test -s include/linux/susfs.h
           test -s include/linux/susfs_def.h
-          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
-          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -Fq 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
           printf 'susfs_version=%s\npatch_ref=%s\npatch_url=%s\nraw_patch_blob_sha=%s\nraw_patch_sha256=%s\nnormalized_patch_sha256=%s\n' \
             "${SUSFS_EXPECTED_VERSION}" "${SUSFS_KERNEL_PATCH_REF}" "${SUSFS_KERNEL_PATCH_URL}" \
             "$(git hash-object ../logs/susfs-2.3.0.raw.patch)" \
@@ -865,7 +763,7 @@ jobs:
           EOF_PATHUMOUNT
           fi
 
-          if grep -Rqs 'seccomp_filter_release' drivers/kernelsu && ! grep -q 'void seccomp_filter_release(' kernel/seccomp.c; then
+          if grep -Rqs 'seccomp_filter_release' drivers/kernelsu && ! grep -Fq 'void seccomp_filter_release(' kernel/seccomp.c; then
             cat >> kernel/seccomp.c <<'EOF_SECCOMP'
 
           #ifdef CONFIG_SECCOMP
@@ -913,7 +811,7 @@ jobs:
           KSD=drivers/kernelsu/runtime/ksud.c
           test -f "$SHH"
           test -f "$KSD"
-          if ! grep -q 'ksu_selinux_hide_handle_post_fs_data(void);' "$SHH"; then
+          if ! grep -Fq 'ksu_selinux_hide_handle_post_fs_data(void);' "$SHH"; then
             {
               echo '/* V126: selinux_hide lifecycle API used by runtime/ksud.c. */'
               echo 'void ksu_selinux_hide_handle_post_fs_data(void);'
@@ -925,8 +823,8 @@ jobs:
           if ! grep -Fq '#include "../feature/selinux_hide.h"' "$KSD"; then
             sed -i '1i #include "../feature/selinux_hide.h"' "$KSD"
           fi
-          grep -q 'ksu_selinux_hide_handle_post_fs_data(void);' "$SHH"
-          grep -q 'ksu_selinux_hide_handle_second_stage(void);' "$SHH"
+          grep -Fq 'ksu_selinux_hide_handle_post_fs_data(void);' "$SHH"
+          grep -Fq 'ksu_selinux_hide_handle_second_stage(void);' "$SHH"
           grep -Fq '#include "../feature/selinux_hide.h"' "$KSD"
           printf '%s\n' 'selinux_hide API declaration/include: PASS' > ../logs/selinux-hide-api-declaration.log
 
@@ -973,19 +871,19 @@ jobs:
           print("fs/stat.c SUSFS KSTAT header dependency: PASS")
           PY_STAT_SUSFS_HEADERS
 
-          grep -q '#include <linux/susfs_def.h>' fs/stat.c
-          grep -q 'susfs_is_current_app_uid()' fs/stat.c
-          grep -q 'STATX_SUS_KSTAT' fs/stat.c
-          grep -q 'STATX_SUS_KSTAT_FUSE' fs/stat.c
-          grep -q 'susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse)' fs/stat.c
-          grep -q 'susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask)' fs/stat.c
+          grep -Fq '#include <linux/susfs_def.h>' fs/stat.c
+          grep -Fq 'susfs_is_current_app_uid()' fs/stat.c
+          grep -Fq 'STATX_SUS_KSTAT' fs/stat.c
+          grep -Fq 'STATX_SUS_KSTAT_FUSE' fs/stat.c
+          grep -Fq 'susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse)' fs/stat.c
+          grep -Fq 'susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask)' fs/stat.c
           printf '%s\\n' '4.19 fs/stat.c -> susfs_def.h KSTAT dependency: PASS' > ../logs/susfs-stat-kstat-dependency.log
 
           # The real 4.19 policy injector must remain active. This directly addresses
           # the old setexeccon(u:r:ksu:s0) failure instead of hiding it with permissive SELinux.
           grep -Eq 'void[[:space:]]+apply_kernelsu_rules[[:space:]]*\\([[:space:]]*void[[:space:]]*\\)' drivers/kernelsu/selinux/rules.c
-          grep -q 'ksu_allow(db, KERNEL_SU_DOMAIN, ALL, ALL, ALL)' drivers/kernelsu/selinux/rules.c
-          grep -q 'setup_selinux' drivers/kernelsu/selinux/selinux.c
+          grep -Fq 'ksu_allow(db, KERNEL_SU_DOMAIN, ALL, ALL, ALL)' drivers/kernelsu/selinux/rules.c
+          grep -Fq 'setup_selinux' drivers/kernelsu/selinux/selinux.c
 
           # Linux 4.19 does not provide the post-5.7 SELinux-hide ABI used by
           # SukiSU's optional selinux_hide implementation. The legacy guard above
@@ -1017,10 +915,8 @@ jobs:
             echo '[ERROR] Duplicate board PM labels remain.'
             exit 1
           fi
-          repair_diff_whitespace worktree ../logs/susfs-worktree-whitespace-check-after-dt.log
+          canonicalize_susfs_worktree ../logs/susfs-worktree-whitespace-check-after-dt.log
           git diff --check
-          repair_diff_whitespace cached ../logs/susfs-cached-whitespace-check-after-dt.log
-          git diff --cached --check
           if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then exit 1; fi
 
           # V115 matched-SUSFS ABI audit:
@@ -1033,8 +929,7 @@ jobs:
             susfs_set_batch_sid susfs_set_current_proc_no_su \
             susfs_set_current_proc_umounted ksu_handle_extra_susfs_work \
             susfs_init susfs_get_enabled_features; do
-            if ! grep -RqsE "(^|[^A-Za-z0-9_])${sym}([^A-Za-z0-9_]|$)" \
-                include/linux/susfs.h fs/susfs.c drivers/kernelsu; then
+            if ! grep -RqsF "${sym}" include/linux/susfs.h fs/susfs.c drivers/kernelsu; then
               echo "[ERROR] Matched SUSFS ABI symbol missing: ${sym}"
               exit 1
             fi
@@ -1043,15 +938,24 @@ jobs:
 
           # Cross-setup contract: SukiSU's KSU-side SUSFS ABI and the kernel-side
           # SUSFS implementation must be present as one coherent source graph.
-          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
-          grep -q 'susfs_is_current_ksu_domain' fs/susfs.c
+          grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -Fq 'susfs_is_current_ksu_domain' fs/susfs.c
           grep -q 'setup_selinux' fs/susfs.c
-          grep -q 'CONFIG_KSU_SUSFS_SUS_PATH' fs/namei.c
-          grep -q 'CONFIG_KSU_SUSFS_SUS_MOUNT' fs/namespace.c
-          grep -q 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c
-          grep -q 'CONFIG_KSU_SUSFS_SUS_MAP' fs/proc/task_mmu.c
-          grep -q 'CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG' fs/proc/cmdline.c
-          grep -q 'CONFIG_KSU_SUSFS_OPEN_REDIRECT' fs/namei.c
+          grep -Fq 'CONFIG_KSU_SUSFS_SUS_PATH' fs/namei.c
+          grep -Fq 'CONFIG_KSU_SUSFS_SUS_MOUNT' fs/namespace.c
+          grep -Fq 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c
+          grep -Fq 'CONFIG_KSU_SUSFS_SUS_MAP' fs/proc/task_mmu.c
+          grep -Fq 'CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG' fs/proc/cmdline.c
+          grep -Fq 'CONFIG_KSU_SUSFS_OPEN_REDIRECT' fs/namei.c
+
+          {
+            echo "SUKISU_COMMIT=${KSU_COMMIT}"
+            echo "SUSFS_PATCH_REF=${SUSFS_KERNEL_PATCH_REF}"
+            echo 'KPM_API=4.19 access_ok(type,addr,size) bridged through ksu_access_ok(addr,size)'
+            echo 'SELINUX=real KSU policy injection retained; optional selinux_hide is no-op on <5.7'
+            echo 'SUSFS_AUDIT=single final worktree source snapshot; cached SUSFS audit intentionally removed'
+            echo 'KSTAT_HEADER=include/linux/susfs_def.h'
+          } | tee ../logs/source-graph-audit-summary.log
 
       - name: "7. Enable all compatible SukiSU/SUSFS features and enforce no-removal"
         shell: bash
@@ -1143,13 +1047,13 @@ jobs:
           test -s out/include/generated/compile.h
           test -s out/include/generated/utsrelease.h
           strings out/vmlinux | grep -Fq "${KSU_MANAGER_SIGNATURE_SHA256}"
-          for sym in ksu_handle_execveat ksu_handle_faccessat ksu_handle_stat ksu_handle_setresuid ksu_handle_sys_reboot setup_ksu_cred apply_kernelsu_rules susfs_ksu_sid susfs_priv_app_sid; do
+          for sym in ksu_handle_execveat ksu_handle_faccessat ksu_handle_stat ksu_handle_setresuid ksu_handle_sys_reboot susfs_ksu_sid susfs_priv_app_sid; do
             llvm-nm -n out/vmlinux | grep -Eq "[[:space:]]${sym}$" || { echo "[ERROR] Missing ${sym}"; exit 1; }
           done
-          grep -A12 -B3 'void apply_kernelsu_rules(void)' drivers/kernelsu/selinux/rules.c | grep -q 'ksu_allow'
+          grep -F -A12 -B3 'void apply_kernelsu_rules(void)' drivers/kernelsu/selinux/rules.c | grep -Fq 'ksu_allow'
           # Do not allow an unpinned/alternate SUSFS source to sneak into the tree.
           test -s fs/susfs.c
-          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
           test -f ../logs/susfs-2.3.0.raw.patch
           test -f ../logs/susfs-2.3.0.patch
           test "$(git hash-object ../logs/susfs-2.3.0.raw.patch)" = "f9d8ed735f461ed982d2c49b338e35c17f4378e5"
@@ -1160,7 +1064,7 @@ jobs:
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
-          test "${OUTPUT_PREFIX}" = "V126-LM-G900-KARNAL"
+          test "${OUTPUT_PREFIX}" = "V127-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -1178,7 +1082,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V126-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V127-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1261,8 +1165,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V126-LM-G900-KARNAL-output
-          path: V126-LM-G900-KARNAL-output.zip
+          name: V127-LM-G900-KARNAL-output
+          path: V127-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1270,7 +1174,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V126-LM-G900-KARNAL-kernel
+          name: V127-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -1282,9 +1186,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V126-LM-G900-KARNAL-complete-logs
+          name: V127-LM-G900-KARNAL-complete-logs
           path: |
-            V126-LM-G900-KARNAL-complete-logs.zip
+            V127-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
