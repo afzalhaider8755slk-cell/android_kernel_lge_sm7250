@@ -1,5 +1,5 @@
 
-name: V117-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V118-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,13 +37,13 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V117-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
-  OUTPUT_PREFIX: V117-LM-G900-KARNAL
+  WORKFLOW_VERSION: V118-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
+  OUTPUT_PREFIX: V118-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
   build:
-    name: LM-G900N 4.19.325 SukiSU builtin (V117)
+    name: LM-G900N 4.19.325 SukiSU builtin (V118)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -252,7 +252,7 @@ jobs:
           set -Eeuo pipefail
           cd kernel
           trap 'rc=$?; printf "[ERROR] Step-6 failed: rc=%s line=%s command=%s\\n" "$rc" "$LINENO" "$BASH_COMMAND" | tee -a ../logs/step6-failure.log' ERR
-          # V117 KPM source-level compatibility fix:
+          # V118 KPM source-level compatibility fix:
           # SukiSU v4.2.0-b20 KPM uses the modern access_ok(addr, size) API,
           # while this exact ARM64 Linux 4.19 tree exposes access_ok(type, addr, size).
           # The pinned SukiSU source already provides ksu_access_ok() in
@@ -309,11 +309,11 @@ jobs:
           # Fetch the exact immutable raw blob instead, then verify its SHA-256 before
           # touching the kernel tree. This removes the failing Git ref/checkout layer
           # while preserving the exact same kernel-side SUSFS 2.3.0 source.
-          rm -f ../logs/susfs-2.3.0.patch
+          rm -f ../logs/susfs-2.3.0.raw.patch ../logs/susfs-2.3.0.patch
           curl -fL --retry 6 --retry-delay 2 --retry-all-errors \
             --connect-timeout 20 --max-time 120 \
-            "${SUSFS_KERNEL_PATCH_URL}" -o ../logs/susfs-2.3.0.patch
-          test -s ../logs/susfs-2.3.0.patch
+            "${SUSFS_KERNEL_PATCH_URL}" -o ../logs/susfs-2.3.0.raw.patch
+          test -s ../logs/susfs-2.3.0.raw.patch
           # V109 source-level fix for the V108 failure:
           # do not feed a generated line through sha256sum -c. The V108 runner
           # reached the downloaded immutable patch successfully, then coreutils
@@ -329,21 +329,58 @@ jobs:
           #   2) sha256sum              -> immutable byte-level SHA-256
           EXPECTED_SUSFS_PATCH_BLOB_SHA="f9d8ed735f461ed982d2c49b338e35c17f4378e5"
           EXPECTED_SUSFS_PATCH_SHA256="8035f1a344e07b5d133ae44b46d505ce59096fbc391b1e92bf9a0f42192408c6"
-          ACTUAL_SUSFS_PATCH_BLOB_SHA="$(git hash-object ../logs/susfs-2.3.0.patch)"
-          ACTUAL_SUSFS_PATCH_SHA256="$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')"
+          ACTUAL_SUSFS_PATCH_BLOB_SHA="$(git hash-object ../logs/susfs-2.3.0.raw.patch)"
+          ACTUAL_SUSFS_PATCH_SHA256="$(sha256sum ../logs/susfs-2.3.0.raw.patch | awk '{print $1}')"
           {
-            printf 'expected_blob_sha=%s\n' "${EXPECTED_SUSFS_PATCH_BLOB_SHA}"
-            printf 'actual_blob_sha=%s\n' "${ACTUAL_SUSFS_PATCH_BLOB_SHA}"
-            printf 'expected_sha256=%s\n' "${EXPECTED_SUSFS_PATCH_SHA256}"
-            printf 'actual_sha256=%s\n' "${ACTUAL_SUSFS_PATCH_SHA256}"
-            printf 'patch_bytes=%s\n' "$(wc -c < ../logs/susfs-2.3.0.patch)"
+            printf 'expected_raw_blob_sha=%s\n' "${EXPECTED_SUSFS_PATCH_BLOB_SHA}"
+            printf 'actual_raw_blob_sha=%s\n' "${ACTUAL_SUSFS_PATCH_BLOB_SHA}"
+            printf 'expected_raw_sha256=%s\n' "${EXPECTED_SUSFS_PATCH_SHA256}"
+            printf 'actual_raw_sha256=%s\n' "${ACTUAL_SUSFS_PATCH_SHA256}"
+            printf 'raw_patch_bytes=%s\n' "$(wc -c < ../logs/susfs-2.3.0.raw.patch)"
           } > ../logs/susfs-sha256-verification.txt
           test "${ACTUAL_SUSFS_PATCH_BLOB_SHA}" = "${EXPECTED_SUSFS_PATCH_BLOB_SHA}"
           test "${ACTUAL_SUSFS_PATCH_SHA256}" = "${EXPECTED_SUSFS_PATCH_SHA256}"
-          printf 'patch_repo=%s\npatch_ref=%s\npatch_path=%s\npatch_url=%s\npatch_blob_sha=%s\npatch_sha256=%s\n' \
+
+          # The pinned SUSFS patch contains five upstream trailing-whitespace artifacts
+          # in added lines. They are byte-level patch noise, not kernel semantics, but
+          # the final repository contract correctly rejects them via git diff --check.
+          # Normalize ONLY added lines in a derived patch before any application. This
+          # preserves the immutable raw artifact/hash above while ensuring both git-apply
+          # and the per-file semantic-port path receive the same clean patch input.
+          cp ../logs/susfs-2.3.0.raw.patch ../logs/susfs-2.3.0.patch
+          python3 - <<'PY_SUSFS_WS'
+          from pathlib import Path
+          raw = Path("../logs/susfs-2.3.0.raw.patch").read_text()
+          out = []
+          fixed = 0
+          for line in raw.splitlines(keepends=True):
+              if line.startswith("+") and not line.startswith("+++"):
+                  body = line.rstrip("\r\n")
+                  nl = line[len(body):]
+                  clean = body.rstrip(" \t")
+                  if clean != body:
+                      fixed += 1
+                      line = clean + nl
+              out.append(line)
+          Path("../logs/susfs-2.3.0.patch").write_text("".join(out))
+          if fixed != 5:
+              raise SystemExit(f"unexpected SUSFS patch whitespace-fix count: {fixed} (expected 5)")
+          PY_SUSFS_WS
+          NORMALIZED_SUSFS_PATCH_SHA256="$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')"
+          test -s ../logs/susfs-2.3.0.patch
+          if grep -nE '^\+[^+].*[[:blank:]]$' ../logs/susfs-2.3.0.patch; then
+            echo '[ERROR] Normalized SUSFS patch still contains trailing whitespace on an added line.'
+            exit 1
+          fi
+          printf 'raw_blob_sha=%s\nraw_sha256=%s\nraw_bytes=%s\nnormalized_sha256=%s\n' \
+            "${ACTUAL_SUSFS_PATCH_BLOB_SHA}" "${ACTUAL_SUSFS_PATCH_SHA256}" \
+            "$(wc -c < ../logs/susfs-2.3.0.raw.patch)" "${NORMALIZED_SUSFS_PATCH_SHA256}" \
+            > ../logs/susfs-whitespace-preflight.log
+          printf 'patch_repo=%s\npatch_ref=%s\npatch_path=%s\npatch_url=%s\nraw_blob_sha=%s\nraw_sha256=%s\nnormalized_sha256=%s\n' \
             "${SUSFS_KERNEL_PATCH_REPO}" "${SUSFS_KERNEL_PATCH_REF}" \
             "${SUSFS_KERNEL_PATCH_PATH}" "${SUSFS_KERNEL_PATCH_URL}" \
-            "${ACTUAL_SUSFS_PATCH_BLOB_SHA}" "${ACTUAL_SUSFS_PATCH_SHA256}" > ../logs/susfs-source-resolved.txt
+            "${ACTUAL_SUSFS_PATCH_BLOB_SHA}" "${ACTUAL_SUSFS_PATCH_SHA256}" \
+            "${NORMALIZED_SUSFS_PATCH_SHA256}" > ../logs/susfs-source-resolved.txt
 
           # SUSFS 2.3.0 is a single pinned patch, but this exact 4.19 vendor tree
           # has four known source-context differences. A normal 3-way check reports
@@ -533,6 +570,7 @@ jobs:
             find . -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a ../logs/susfs-failure.log
             exit 1
           fi
+          # Single post-reconciliation source/index cleanliness gate.
           git diff --check
           git diff --cached --check
           test -s fs/susfs.c
@@ -542,16 +580,15 @@ jobs:
           grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
           printf 'apply_mode=%s\n' "${APPLY_MODE}" > ../logs/susfs-apply-mode.txt
 
-          git diff --check
-          git diff --cached --check
           test -s fs/susfs.c
           test -s include/linux/susfs.h
           test -s include/linux/susfs_def.h
           grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
           grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
-          printf 'susfs_version=%s\npatch_ref=%s\npatch_url=%s\npatch_blob_sha=%s\npatch_sha256=%s\n' \
+          printf 'susfs_version=%s\npatch_ref=%s\npatch_url=%s\nraw_patch_blob_sha=%s\nraw_patch_sha256=%s\nnormalized_patch_sha256=%s\n' \
             "${SUSFS_EXPECTED_VERSION}" "${SUSFS_KERNEL_PATCH_REF}" "${SUSFS_KERNEL_PATCH_URL}" \
-            "$(git hash-object ../logs/susfs-2.3.0.patch)" \
+            "$(git hash-object ../logs/susfs-2.3.0.raw.patch)" \
+            "$(sha256sum ../logs/susfs-2.3.0.raw.patch | awk '{print $1}')" \
             "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" > ../logs/susfs-resolved.txt
 
           test -f drivers/kernelsu/manager/pkg_observer_compat.h
@@ -850,15 +887,17 @@ jobs:
           # Do not allow an unpinned/alternate SUSFS source to sneak into the tree.
           test -s fs/susfs.c
           grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          test -f ../logs/susfs-2.3.0.raw.patch
           test -f ../logs/susfs-2.3.0.patch
-          test "$(git hash-object ../logs/susfs-2.3.0.patch)" = "f9d8ed735f461ed982d2c49b338e35c17f4378e5"
-          test "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" = "8035f1a344e07b5d133ae44b46d505ce59096fbc391b1e92bf9a0f42192408c6"
+          test "$(git hash-object ../logs/susfs-2.3.0.raw.patch)" = "f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+          test "$(sha256sum ../logs/susfs-2.3.0.raw.patch | awk '{print $1}')" = "8035f1a344e07b5d133ae44b46d505ce59096fbc391b1e92bf9a0f42192408c6"
+          ! grep -nE '^\+[^+].*[[:blank:]]$' ../logs/susfs-2.3.0.patch
           grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
           for sym in CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP; do
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
-          test "${OUTPUT_PREFIX}" = "V117-LM-G900-KARNAL"
+          test "${OUTPUT_PREFIX}" = "V118-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -876,7 +915,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V117-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V118-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -923,7 +962,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           # Artifact identity contract: release/diagnostics must never carry stale
-          # pre-V117 artifact prefixes. The current V117 prefix is intentionally present.
+          # pre-V118 artifact prefixes. The current V118 prefix is intentionally present.
           if grep -RInE 'V109-LM-G900-KARNAL|V110-LM-G900-KARNAL|V111-LM-G900-KARNAL|V112-LM-G900-KARNAL|V113-LM-G900-KARNAL|V114-LM-G900-KARNAL' release diagnostics 2>/dev/null; then
             echo "[ERROR] stale artifact/version prefix detected"
             exit 1
@@ -959,8 +998,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V117-LM-G900-KARNAL-output
-          path: V117-LM-G900-KARNAL-output.zip
+          name: V118-LM-G900-KARNAL-output
+          path: V118-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -968,7 +1007,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V117-LM-G900-KARNAL-kernel
+          name: V118-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -980,9 +1019,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V117-LM-G900-KARNAL-complete-logs
+          name: V118-LM-G900-KARNAL-complete-logs
           path: |
-            V117-LM-G900-KARNAL-complete-logs.zip
+            V118-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
