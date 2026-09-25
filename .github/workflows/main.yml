@@ -1,5 +1,5 @@
 
-name: V116-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V117-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,13 +37,13 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V116-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
-  OUTPUT_PREFIX: V116-LM-G900-KARNAL
+  WORKFLOW_VERSION: V117-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
+  OUTPUT_PREFIX: V117-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
   build:
-    name: LM-G900N 4.19.325 SukiSU builtin (V116)
+    name: LM-G900N 4.19.325 SukiSU builtin (V117)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -252,7 +252,7 @@ jobs:
           set -Eeuo pipefail
           cd kernel
           trap 'rc=$?; printf "[ERROR] Step-6 failed: rc=%s line=%s command=%s\\n" "$rc" "$LINENO" "$BASH_COMMAND" | tee -a ../logs/step6-failure.log' ERR
-          # V116 KPM source-level compatibility fix:
+          # V117 KPM source-level compatibility fix:
           # SukiSU v4.2.0-b20 KPM uses the modern access_ok(addr, size) API,
           # while this exact ARM64 Linux 4.19 tree exposes access_ok(type, addr, size).
           # The pinned SukiSU source already provides ksu_access_ok() in
@@ -858,7 +858,7 @@ jobs:
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
-          test "${OUTPUT_PREFIX}" = "V116-LM-G900-KARNAL"
+          test "${OUTPUT_PREFIX}" = "V117-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -876,7 +876,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V116-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V117-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -923,7 +923,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           # Artifact identity contract: release/diagnostics must never carry stale
-          # pre-V116 artifact prefixes. The current V116 prefix is intentionally present.
+          # pre-V117 artifact prefixes. The current V117 prefix is intentionally present.
           if grep -RInE 'V109-LM-G900-KARNAL|V110-LM-G900-KARNAL|V111-LM-G900-KARNAL|V112-LM-G900-KARNAL|V113-LM-G900-KARNAL|V114-LM-G900-KARNAL' release diagnostics 2>/dev/null; then
             echo "[ERROR] stale artifact/version prefix detected"
             exit 1
@@ -959,8 +959,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V116-LM-G900-KARNAL-output
-          path: V116-LM-G900-KARNAL-output.zip
+          name: V117-LM-G900-KARNAL-output
+          path: V117-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -968,7 +968,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V116-LM-G900-KARNAL-kernel
+          name: V117-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -980,9 +980,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V116-LM-G900-KARNAL-complete-logs
+          name: V117-LM-G900-KARNAL-complete-logs
           path: |
-            V116-LM-G900-KARNAL-complete-logs.zip
+            V117-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
