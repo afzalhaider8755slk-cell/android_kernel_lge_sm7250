@@ -1,5 +1,5 @@
 
-name: V111-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V112-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -38,7 +38,7 @@ env:
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
   WORKFLOW_VERSION: V111-V99-FEATURES-PRESERVED-SUKISU-SUSFS-4FILE-PORT-ARTIFACT-FIX
-  OUTPUT_PREFIX: V111-LM-G900-KARNAL
+  OUTPUT_PREFIX: V112-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -373,6 +373,7 @@ jobs:
             done
 
             : > ../logs/susfs-semantic-port.log
+            echo "[SUSFS] semantic patch cwd=$(pwd); kernel tree=${GITHUB_WORKSPACE}/kernel; patch inputs=../logs" | tee -a ../logs/susfs-semantic-port.log
             for f in "${CONFLICT_FILES[@]}"; do
               safe="$(printf '%s' "${f}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
               python3 - "../logs/susfs-2.3.0.patch" "${f}" "../logs/susfs-file-${safe}.patch" <<'PY_PATCH_EXTRACT'
@@ -391,7 +392,7 @@ jobs:
               # This command is an expected source-context probe. Guard it with if
               # so set -e/-E does not turn an expected non-zero patch result into a
               # premature Step-6 exit before all four files are processed.
-              if patch -d kernel -p1 --forward --batch --fuzz=0 -i "../logs/susfs-file-${safe}.patch" > "../logs/susfs-file-${safe}.apply.log" 2>&1; then
+              if patch -p1 --forward --batch --fuzz=0 -i "../logs/susfs-file-${safe}.patch" > "../logs/susfs-file-${safe}.apply.log" 2>&1; then
                 FILE_PATCH_RC=0
               else
                 FILE_PATCH_RC=$?
@@ -404,154 +405,82 @@ jobs:
             # These are the four and only four source-context adaptations allowed by
             # the debugging contract. No generic GKI rewrite and no unrelated source
             # mutation is permitted.
-            python3 - "${GITHUB_WORKSPACE}/kernel" <<'PY_RECON' | tee -a ../logs/susfs-semantic-port.log
-          import pathlib, re, sys
-          root = pathlib.Path(sys.argv[1])
-          
-          EXPECTED_REJECTS = {
-              "fs/namespace.c": {(26, 10, 26, 21), (1098, 7, 1254, 22)},
-              "fs/proc/cmdline.c": {(4, 8, 4, 20)},
-              "fs/proc/task_mmu.c": {(1670, 7, 1728, 15)},
-              "fs/super.c": {(36, 8, 36, 16)},
-          }
-          HUNK_RE = re.compile(r"^@@ -(\d+),(\d+) \+(\d+),(\d+) @@")
-          
-          def insert_after_once(text, marker, block, label):
-              if block.strip() in text:
-                  return text
-              pos = text.find(marker)
-              if pos < 0:
-                  raise SystemExit(f"{label}: anchor missing")
-              pos += len(marker)
-              return text[:pos] + block + text[pos:]
-          
-          def namespace_port(s):
-              if "#include <linux/susfs_def.h>" not in s:
-                  s = insert_after_once(s, "#include <linux/fs_context.h>\n",
-            "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS\n\n",
-            "fs/namespace.c include")
-              if "#define CL_COPY_MNT_NS BIT(25)" not in s:
-                  s = insert_after_once(s, '#include "internal.h"\n',
-            "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n\n#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n",
-            "fs/namespace.c declarations")
-              marker = "\tsb = fc->root->d_sb;\n\n"
-              if "susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: \"none\")" not in s:
-                  old = marker + '\tmnt = alloc_vfsmnt(fc->source ?: "none");\n'
-                  new = marker + """#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          \tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
-          \t\tif (susfs_is_current_ksu_domain()) {
-          \t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none");
-          \t\t\tgoto bypass_orig_flow;
-          \t\t}
-          \t}
-          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          
-          \tmnt = alloc_vfsmnt(fc->source ?: "none");
-          #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          bypass_orig_flow:
-          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          """
-                  if old not in s:
-            raise SystemExit("fs/namespace.c: vfs_create_mount anchor missing")
-                  s = s.replace(old, new, 1)
-              return s
-          
-          def cmdline_port(s):
-              if "extern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);" not in s:
-                  s = insert_after_once(s, "#include <linux/slab.h>\n",
-            "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\nextern struct static_key_false susfs_is_fake_cmdline_or_bootconfig_buffer_set;\nextern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);\n#endif\n\n",
-            "fs/proc/cmdline.c declarations")
-              fn = "static int cmdline_proc_show(struct seq_file *m, void *v)\n{\n"
-              if "susfs_spoof_cmdline_or_bootconfig(m);" not in s:
-                  s = insert_after_once(s, fn,
-            "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n\tif (static_branch_likely(&susfs_is_fake_cmdline_or_bootconfig_buffer_set)) {\n\t\tsusfs_spoof_cmdline_or_bootconfig(m);\n\t\tseq_putc(m, '\\n');\n\t\treturn 0;\n\t}\n#endif\n",
-            "fs/proc/cmdline.c show")
-              return s
-          
-          def task_mmu_port(s):
-              marker = "static ssize_t pagemap_read(struct file *file, char __user *buf,"
-              section_start = s.find(marker)
-              if section_start < 0:
-                  raise SystemExit("fs/proc/task_mmu.c: pagemap_read anchor missing")
-              section = s[section_start:]
-              if "SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))" not in section:
-                  old = """\t\tret = mmap_read_lock_killable(mm);
-          \t\tif (ret)
-          \t\t\tgoto out_free;
-          \t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);
-          \t\tmmap_read_unlock(mm);
-          \t\tstart_vaddr = end;"""
-                  new = """\t\tret = mmap_read_lock_killable(mm);
-          \t\tif (ret)
-          \t\t\tgoto out_free;
-          #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-          \t\tvma = find_vma(mm, start_vaddr);
-          \t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
-          \t\t\tgoto bypass_orig_flow;
-          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-          \t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);
-          #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-          bypass_orig_flow:
-          #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-          \t\tmmap_read_unlock(mm);
-          \t\tstart_vaddr = end;"""
-                  if old not in s:
-            raise SystemExit("fs/proc/task_mmu.c: exact mmap_read_lock_killable pagemap anchor missing")
-                  s = s.replace(old, new, 1)
-              return s
-          
-          def super_port(s):
-              if "#include <linux/susfs_def.h>" not in s:
-                  s = insert_after_once(s, "#include <linux/user_namespace.h>\n",
-            "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS\n",
-            "fs/super.c include")
-              if "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;" not in s:
-                  s = s.replace('#include "internal.h"\n',
-            "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n#include \"internal.h\"\n", 1)
-              return s
-          
-          ports = {
-              "fs/namespace.c": namespace_port,
-              "fs/proc/cmdline.c": cmdline_port,
-              "fs/proc/task_mmu.c": task_mmu_port,
-              "fs/super.c": super_port,
-          }
-          for rel, fn in ports.items():
-              p = root / rel
-              p.write_text(fn(p.read_text()))
-          
-          for rel, expected in EXPECTED_REJECTS.items():
-              rej = root / (rel + ".rej")
-              if rej.exists():
-                  got = set()
-                  for line in rej.read_text(errors="replace").splitlines():
-            m = HUNK_RE.match(line)
-            if m:
-                got.add(tuple(map(int, m.groups())))
-                  if got != expected:
-            raise SystemExit(f"unexpected reject set in {rel}: {sorted(got)}")
-                  rej.unlink()
-              orig = root / (rel + ".orig")
-              if orig.exists():
-                  orig.unlink()
-          
-          checks = {
-              "fs/namespace.c": ["#include <linux/susfs_def.h>", "CL_COPY_MNT_NS", "susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: \"none\")", "susfs_get_non_sus_mnt_id_from_mnt", "susfs_get_non_sus_vfsmnt_from_vfsmnt"],
-              "fs/proc/cmdline.c": ["susfs_spoof_cmdline_or_bootconfig", "susfs_is_fake_cmdline_or_bootconfig_buffer_set", "updated_command_line"],
-              "fs/proc/task_mmu.c": ["susfs_sus_kstat_spoof_show_map_vma", "SUSFS_IS_INODE_OPEN_REDIRECT", "SUSFS_IS_INODE_SUS_MAP", "find_vma(mm, start_vaddr)", "mmap_read_lock_killable(mm)", "mmap_read_unlock(mm)"],
-              "fs/super.c": ["#include <linux/susfs_def.h>", "susfs_is_current_ksu_domain", "DEFAULT_KSU_MNT_MINOR_DEV"],
-          }
-          for rel, needles in checks.items():
-              s = (root / rel).read_text()
-              for needle in needles:
-                  if needle not in s:
-            raise SystemExit(f"missing semantic SUSFS marker: {rel}: {needle}")
-          leftovers = list(root.rglob("*.rej")) + list(root.rglob("*.orig"))
-          if leftovers:
-              raise SystemExit("leftover reject/original files: " + ", ".join(map(str, leftovers)))
-          print("[OK] Exact four-file SUSFS reconciliation completed for LM-G900 4.19.325.")
-          PY_RECON
-
+            RECON_B64=""
+            RECON_B64+="aW1wb3J0IHBhdGhsaWIsIHJlLCBzeXMKcm9vdCA9IHBhdGhsaWIuUGF0aChzeXMuYXJndlsxXSkKRVhQRUNURURfUkVKRUNUUyA9IHsKICAgICdmcy9uYW1l"
+            RECON_B64+="c3BhY2UuYyc6IHsoMjYsIDEwLCAyNiwgMjEpLCAoMTA5OCwgNywgMTI1NCwgMjIpfSwKICAgICdmcy9wcm9jL2NtZGxpbmUuYyc6IHsoNCwgOCwgNCwgMjAp"
+            RECON_B64+="fSwKICAgICdmcy9wcm9jL3Rhc2tfbW11LmMnOiB7KDE2NzAsIDcsIDE3MjgsIDE1KX0sCiAgICAnZnMvc3VwZXIuYyc6IHsoMzYsIDgsIDM2LCAxNil9LAp9"
+            RECON_B64+="CkhVTktfUkUgPSByZS5jb21waWxlKHInXkBAIC0oXGQrKSwoXGQrKSBcKyhcZCspLChcZCspIEBAJykKCmRlZiBpbnNlcnRfYWZ0ZXJfb25jZSh0ZXh0LCBt"
+            RECON_B64+="YXJrZXIsIGJsb2NrLCBsYWJlbCk6CiAgICBpZiBibG9jay5zdHJpcCgpIGluIHRleHQ6CiAgICAgICAgcmV0dXJuIHRleHQKICAgIHBvcyA9IHRleHQuZmlu"
+            RECON_B64+="ZChtYXJrZXIpCiAgICBpZiBwb3MgPCAwOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoZid7bGFiZWx9OiBhbmNob3IgbWlzc2luZycpCiAgICBwb3MgKz0g"
+            RECON_B64+="bGVuKG1hcmtlcikKICAgIHJldHVybiB0ZXh0Wzpwb3NdICsgYmxvY2sgKyB0ZXh0W3BvczpdCgpkZWYgbmFtZXNwYWNlX3BvcnQocyk6CiAgICBpZiAnI2lu"
+            RECON_B64+="Y2x1ZGUgPGxpbnV4L3N1c2ZzX2RlZi5oPicgbm90IGluIHM6CiAgICAgICAgcyA9IGluc2VydF9hZnRlcl9vbmNlKHMsICcjaW5jbHVkZSA8bGludXgvZnNf"
+            RECON_B64+="Y29udGV4dC5oPlxuJywgJyNpZmRlZiBDT05GSUdfS1NVX1NVU0ZTXG4jaW5jbHVkZSA8bGludXgvc3VzZnNfZGVmLmg+XG4jZW5kaWYgLy8gI2lmZGVmIENP"
+            RECON_B64+="TkZJR19LU1VfU1VTRlNcblxuJywgJ2ZzL25hbWVzcGFjZS5jIGluY2x1ZGUnKQogICAgaWYgJyNkZWZpbmUgQ0xfQ09QWV9NTlRfTlMgQklUKDI1KScgbm90"
+            RECON_B64+="IGluIHM6CiAgICAgICAgcyA9IGluc2VydF9hZnRlcl9vbmNlKHMsICcjaW5jbHVkZSAiaW50ZXJuYWwuaCJcbicsICcjaWZkZWYgQ09ORklHX0tTVV9TVVNG"
+            RECON_B64+="U19TVVNfTU9VTlRcbmV4dGVybiBib29sIHN1c2ZzX2lzX2N1cnJlbnRfa3N1X2RvbWFpbih2b2lkKTtcbmV4dGVybiBzdHJ1Y3Qgc3RhdGljX2tleV90cnVl"
+            RECON_B64+="IHN1c2ZzX2lzX3NkY2FyZF9hbmRyb2lkX2RhdGFfbm90X2RlY3J5cHRlZDtcblxuI2RlZmluZSBDTF9DT1BZX01OVF9OUyBCSVQoMjUpIC8qIHVzZWQgYnkg"
+            RECON_B64+="Y29weV9tbnRfbnMoKSAqL1xuXG4jZW5kaWYgLy8gI2lmZGVmIENPTkZJR19LU1VfU1VTRlNfU1VTX01PVU5UXG5cbicsICdmcy9uYW1lc3BhY2UuYyBkZWNs"
+            RECON_B64+="YXJhdGlvbnMnKQogICAgbWFya2VyID0gJ1x0c2IgPSBmYy0+cm9vdC0+ZF9zYjtcblxuJwogICAgaWYgJ3N1c2ZzX2FsbG9jX25vbl91bnNoYXJlX2tzdV92"
+            RECON_B64+="ZnNtbnQoZmMtPnNvdXJjZSA/OiAibm9uZSIpJyBub3QgaW4gczoKICAgICAgICBvbGQgPSBtYXJrZXIgKyAnXHRtbnQgPSBhbGxvY192ZnNtbnQoZmMtPnNv"
+            RECON_B64+="dXJjZSA/OiAibm9uZSIpO1xuJwogICAgICAgIG5ldyA9IG1hcmtlciArICcnJyNpZmRlZiBDT05GSUdfS1NVX1NVU0ZTX1NVU19NT1VOVApcdGlmIChzdGF0"
+            RECON_B64+="aWNfYnJhbmNoX3VubGlrZWx5KCZzdXNmc19pc19zZGNhcmRfYW5kcm9pZF9kYXRhX25vdF9kZWNyeXB0ZWQpKSB7Clx0XHRpZiAoc3VzZnNfaXNfY3VycmVu"
+            RECON_B64+="dF9rc3VfZG9tYWluKCkpIHsKXHRcdFx0bW50ID0gc3VzZnNfYWxsb2Nfbm9uX3Vuc2hhcmVfa3N1X3Zmc21udChmYy0+c291cmNlID86ICJub25lIik7Clx0"
+            RECON_B64+="XHRcdGdvdG8gYnlwYXNzX29yaWdfZmxvdzsKXHRcdH0KXHR9CiNlbmRpZiAvLyAjaWZkZWYgQ09ORklHX0tTVV9TVVNGU19TVVNfTU9VTlQKClx0bW50ID0g"
+            RECON_B64+="YWxsb2NfdmZzbW50KGZjLT5zb3VyY2UgPzogIm5vbmUiKTsKI2lmZGVmIENPTkZJR19LU1VfU1VTRlNfU1VTX01PVU5UCmJ5cGFzc19vcmlnX2Zsb3c6CiNl"
+            RECON_B64+="bmRpZiAvLyAjaWZkZWYgQ09ORklHX0tTVV9TVVNGU19TVVNfTU9VTlQKJycnCiAgICAgICAgaWYgb2xkIG5vdCBpbiBzOgogICAgICAgICAgICByYWlzZSBT"
+            RECON_B64+="eXN0ZW1FeGl0KCdmcy9uYW1lc3BhY2UuYzogdmZzX2NyZWF0ZV9tb3VudCBhbmNob3IgbWlzc2luZycpCiAgICAgICAgcyA9IHMucmVwbGFjZShvbGQsIG5l"
+            RECON_B64+="dywgMSkKICAgIHJldHVybiBzCgpkZWYgY21kbGluZV9wb3J0KHMpOgogICAgaWYgJ2V4dGVybiB2b2lkIHN1c2ZzX3Nwb29mX2NtZGxpbmVfb3JfYm9vdGNv"
+            RECON_B64+="bmZpZyhzdHJ1Y3Qgc2VxX2ZpbGUgKm0pOycgbm90IGluIHM6CiAgICAgICAgcyA9IGluc2VydF9hZnRlcl9vbmNlKHMsICcjaW5jbHVkZSA8bGludXgvc2xh"
+            RECON_B64+="Yi5oPlxuJywgJyNpZmRlZiBDT05GSUdfS1NVX1NVU0ZTX1NQT09GX0NNRExJTkVfT1JfQk9PVENPTkZJR1xuZXh0ZXJuIHN0cnVjdCBzdGF0aWNfa2V5X2Zh"
+            RECON_B64+="bHNlIHN1c2ZzX2lzX2Zha2VfY21kbGluZV9vcl9ib290Y29uZmlnX2J1ZmZlcl9zZXQ7XG5leHRlcm4gdm9pZCBzdXNmc19zcG9vZl9jbWRsaW5lX29yX2Jv"
+            RECON_B64+="b3Rjb25maWcoc3RydWN0IHNlcV9maWxlICptKTtcbiNlbmRpZlxuXG4nLCAnZnMvcHJvYy9jbWRsaW5lLmMgZGVjbGFyYXRpb25zJykKICAgIGZuID0gJ3N0"
+            RECON_B64+="YXRpYyBpbnQgY21kbGluZV9wcm9jX3Nob3coc3RydWN0IHNlcV9maWxlICptLCB2b2lkICp2KVxue1xuJwogICAgaWYgJ3N1c2ZzX3Nwb29mX2NtZGxpbmVf"
+            RECON_B64+="b3JfYm9vdGNvbmZpZyhtKTsnIG5vdCBpbiBzOgogICAgICAgIHMgPSBpbnNlcnRfYWZ0ZXJfb25jZShzLCBmbiwgJyNpZmRlZiBDT05GSUdfS1NVX1NVU0ZT"
+            RECON_B64+="X1NQT09GX0NNRExJTkVfT1JfQk9PVENPTkZJR1xuXHRpZiAoc3RhdGljX2JyYW5jaF9saWtlbHkoJnN1c2ZzX2lzX2Zha2VfY21kbGluZV9vcl9ib290Y29u"
+            RECON_B64+="ZmlnX2J1ZmZlcl9zZXQpKSB7XG5cdFx0c3VzZnNfc3Bvb2ZfY21kbGluZV9vcl9ib290Y29uZmlnKG0pO1xuXHRcdHNlcV9wdXRjKG0sIFwnXFxuXCcpO1xu"
+            RECON_B64+="XHRcdHJldHVybiAwO1xuXHR9XG4jZW5kaWZcbicsICdmcy9wcm9jL2NtZGxpbmUuYyBzaG93JykKICAgIHJldHVybiBzCgpkZWYgdGFza19tbXVfcG9ydChz"
+            RECON_B64+="KToKICAgIG1hcmtlciA9ICdzdGF0aWMgc3NpemVfdCBwYWdlbWFwX3JlYWQoc3RydWN0IGZpbGUgKmZpbGUsIGNoYXIgX191c2VyICpidWYsJwogICAgc2Vj"
+            RECON_B64+="dGlvbl9zdGFydCA9IHMuZmluZChtYXJrZXIpCiAgICBpZiBzZWN0aW9uX3N0YXJ0IDwgMDoKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdmcy9wcm9jL3Rh"
+            RECON_B64+="c2tfbW11LmM6IHBhZ2VtYXBfcmVhZCBhbmNob3IgbWlzc2luZycpCiAgICBzZWN0aW9uID0gc1tzZWN0aW9uX3N0YXJ0Ol0KICAgIGlmICdTVVNGU19JU19J"
+            RECON_B64+="Tk9ERV9TVVNfTUFQKGZpbGVfaW5vZGUodm1hLT52bV9maWxlKSknIG5vdCBpbiBzZWN0aW9uOgogICAgICAgIG9sZCA9ICcnJ1x0XHRyZXQgPSBtbWFwX3Jl"
+            RECON_B64+="YWRfbG9ja19raWxsYWJsZShtbSk7Clx0XHRpZiAocmV0KQpcdFx0XHRnb3RvIG91dF9mcmVlOwpcdFx0cmV0ID0gd2Fsa19wYWdlX3JhbmdlKHN0YXJ0X3Zh"
+            RECON_B64+="ZGRyLCBlbmQsICZwYWdlbWFwX3dhbGspOwpcdFx0bW1hcF9yZWFkX3VubG9jayhtbSk7Clx0XHRzdGFydF92YWRkciA9IGVuZDsnJycKICAgICAgICBuZXcg"
+            RECON_B64+="PSAnJydcdFx0cmV0ID0gbW1hcF9yZWFkX2xvY2tfa2lsbGFibGUobW0pOwpcdFx0aWYgKHJldCkKXHRcdFx0Z290byBvdXRfZnJlZTsKI2lmZGVmIENPTkZJ"
+            RECON_B64+="R19LU1VfU1VTRlNfU1VTX01BUApcdFx0dm1hID0gZmluZF92bWEobW0sIHN0YXJ0X3ZhZGRyKTsKXHRcdGlmICh2bWEgJiYgdm1hLT52bV9maWxlICYmIFNV"
+            RECON_B64+="U0ZTX0lTX0lOT0RFX1NVU19NQVAoZmlsZV9pbm9kZSh2bWEtPnZtX2ZpbGUpKSkKXHRcdFx0Z290byBieXBhc3Nfb3JpZ19mbG93OwojZW5kaWYgLy8gI2lm"
+            RECON_B64+="ZGVmIENPTkZJR19LU1VfU1VTRlNfU1VTX01BUApcdFx0cmV0ID0gd2Fsa19wYWdlX3JhbmdlKHN0YXJ0X3ZhZGRyLCBlbmQsICZwYWdlbWFwX3dhbGspOwoj"
+            RECON_B64+="aWZkZWYgQ09ORklHX0tTVV9TVVNGU19TVVNfTUFQCmJ5cGFzc19vcmlnX2Zsb3c6CiNlbmRpZiAvLyAjaWZkZWYgQ09ORklHX0tTVV9TVVNGU19TVVNfTUFQ"
+            RECON_B64+="Clx0XHRtbWFwX3JlYWRfdW5sb2NrKG1tKTsKXHRcdHN0YXJ0X3ZhZGRyID0gZW5kOycnJwogICAgICAgIGlmIG9sZCBub3QgaW4gczoKICAgICAgICAgICAg"
+            RECON_B64+="cmFpc2UgU3lzdGVtRXhpdCgnZnMvcHJvYy90YXNrX21tdS5jOiBleGFjdCBtbWFwX3JlYWRfbG9ja19raWxsYWJsZSBwYWdlbWFwIGFuY2hvciBtaXNzaW5n"
+            RECON_B64+="JykKICAgICAgICBzID0gcy5yZXBsYWNlKG9sZCwgbmV3LCAxKQogICAgcmV0dXJuIHMKCmRlZiBzdXBlcl9wb3J0KHMpOgogICAgaWYgJyNpbmNsdWRlIDxs"
+            RECON_B64+="aW51eC9zdXNmc19kZWYuaD4nIG5vdCBpbiBzOgogICAgICAgIHMgPSBpbnNlcnRfYWZ0ZXJfb25jZShzLCAnI2luY2x1ZGUgPGxpbnV4L3VzZXJfbmFtZXNw"
+            RECON_B64+="YWNlLmg+XG4nLCAnI2lmZGVmIENPTkZJR19LU1VfU1VTRlNcbiNpbmNsdWRlIDxsaW51eC9zdXNmc19kZWYuaD5cbiNlbmRpZiAvLyAjaWZkZWYgQ09ORklH"
+            RECON_B64+="X0tTVV9TVVNGU1xuJywgJ2ZzL3N1cGVyLmMgaW5jbHVkZScpCiAgICBpZiAnZXh0ZXJuIHN0cnVjdCBzdGF0aWNfa2V5X3RydWUgc3VzZnNfaXNfc2RjYXJk"
+            RECON_B64+="X2FuZHJvaWRfZGF0YV9ub3RfZGVjcnlwdGVkOycgbm90IGluIHM6CiAgICAgICAgcyA9IHMucmVwbGFjZSgnI2luY2x1ZGUgImludGVybmFsLmgiXG4nLCAn"
+            RECON_B64+="I2lmZGVmIENPTkZJR19LU1VfU1VTRlNfU1VTX01PVU5UXG5leHRlcm4gYm9vbCBzdXNmc19pc19jdXJyZW50X2tzdV9kb21haW4odm9pZCk7XG5leHRlcm4g"
+            RECON_B64+="c3RydWN0IHN0YXRpY19rZXlfdHJ1ZSBzdXNmc19pc19zZGNhcmRfYW5kcm9pZF9kYXRhX25vdF9kZWNyeXB0ZWQ7XG4jZW5kaWYgLy8gI2lmZGVmIENPTkZJ"
+            RECON_B64+="R19LU1VfU1VTRlNfU1VTX01PVU5UXG5cbiNpbmNsdWRlICJpbnRlcm5hbC5oIlxuJywgMSkKICAgIHJldHVybiBzCgpwb3J0cyA9IHsnZnMvbmFtZXNwYWNl"
+            RECON_B64+="LmMnOiBuYW1lc3BhY2VfcG9ydCwgJ2ZzL3Byb2MvY21kbGluZS5jJzogY21kbGluZV9wb3J0LCAnZnMvcHJvYy90YXNrX21tdS5jJzogdGFza19tbXVfcG9y"
+            RECON_B64+="dCwgJ2ZzL3N1cGVyLmMnOiBzdXBlcl9wb3J0fQpmb3IgcmVsLCBmbiBpbiBwb3J0cy5pdGVtcygpOgogICAgcD1yb290L3JlbAogICAgcC53cml0ZV90ZXh0"
+            RECON_B64+="KGZuKHAucmVhZF90ZXh0KCkpKQoKZm9yIHJlbCwgZXhwZWN0ZWQgaW4gRVhQRUNURURfUkVKRUNUUy5pdGVtcygpOgogICAgcmVqPXJvb3QvKHJlbCsnLnJl"
+            RECON_B64+="aicpCiAgICBpZiByZWouZXhpc3RzKCk6CiAgICAgICAgZ290PXNldCgpCiAgICAgICAgZm9yIGxpbmUgaW4gcmVqLnJlYWRfdGV4dChlcnJvcnM9J3JlcGxh"
+            RECON_B64+="Y2UnKS5zcGxpdGxpbmVzKCk6CiAgICAgICAgICAgIG09SFVOS19SRS5tYXRjaChsaW5lKQogICAgICAgICAgICBpZiBtOiBnb3QuYWRkKHR1cGxlKG1hcChp"
+            RECON_B64+="bnQsbS5ncm91cHMoKSkpKQogICAgICAgIGlmIGdvdCAhPSBleHBlY3RlZDoKICAgICAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmJ3VuZXhwZWN0ZWQgcmVq"
+            RECON_B64+="ZWN0IHNldCBpbiB7cmVsfToge3NvcnRlZChnb3QpfScpCiAgICAgICAgcmVqLnVubGluaygpCiAgICBvcmlnPXJvb3QvKHJlbCsnLm9yaWcnKQogICAgaWYg"
+            RECON_B64+="b3JpZy5leGlzdHMoKTogb3JpZy51bmxpbmsoKQoKY2hlY2tzPXsKJ2ZzL25hbWVzcGFjZS5jJzpbJyNpbmNsdWRlIDxsaW51eC9zdXNmc19kZWYuaD4nLCdD"
+            RECON_B64+="TF9DT1BZX01OVF9OUycsJ3N1c2ZzX2FsbG9jX25vbl91bnNoYXJlX2tzdV92ZnNtbnQoZmMtPnNvdXJjZSA/OiAibm9uZSIpJywnc3VzZnNfZ2V0X25vbl9z"
+            RECON_B64+="dXNfbW50X2lkX2Zyb21fbW50Jywnc3VzZnNfZ2V0X25vbl9zdXNfdmZzbW50X2Zyb21fdmZzbW50J10sCidmcy9wcm9jL2NtZGxpbmUuYyc6WydzdXNmc19z"
+            RECON_B64+="cG9vZl9jbWRsaW5lX29yX2Jvb3Rjb25maWcnLCdzdXNmc19pc19mYWtlX2NtZGxpbmVfb3JfYm9vdGNvbmZpZ19idWZmZXJfc2V0JywndXBkYXRlZF9jb21t"
+            RECON_B64+="YW5kX2xpbmUnXSwKJ2ZzL3Byb2MvdGFza19tbXUuYyc6WydzdXNmc19zdXNfa3N0YXRfc3Bvb2Zfc2hvd19tYXBfdm1hJywnU1VTRlNfSVNfSU5PREVfT1BF"
+            RECON_B64+="Tl9SRURJUkVDVCcsJ1NVU0ZTX0lTX0lOT0RFX1NVU19NQVAnLCdmaW5kX3ZtYShtbSwgc3RhcnRfdmFkZHIpJywnbW1hcF9yZWFkX2xvY2tfa2lsbGFibGUo"
+            RECON_B64+="bW0pJywnbW1hcF9yZWFkX3VubG9jayhtbSknXSwKJ2ZzL3N1cGVyLmMnOlsnI2luY2x1ZGUgPGxpbnV4L3N1c2ZzX2RlZi5oPicsJ3N1c2ZzX2lzX2N1cnJl"
+            RECON_B64+="bnRfa3N1X2RvbWFpbicsJ0RFRkFVTFRfS1NVX01OVF9NSU5PUl9ERVYnXX0KZm9yIHJlbCxuZWVkbGVzIGluIGNoZWNrcy5pdGVtcygpOgogICAgcz0ocm9v"
+            RECON_B64+="dC9yZWwpLnJlYWRfdGV4dCgpCiAgICBmb3IgbmVlZGxlIGluIG5lZWRsZXM6CiAgICAgICAgaWYgbmVlZGxlIG5vdCBpbiBzOiByYWlzZSBTeXN0ZW1FeGl0"
+            RECON_B64+="KGYnbWlzc2luZyBzZW1hbnRpYyBTVVNGUyBtYXJrZXI6IHtyZWx9OiB7bmVlZGxlfScpCmxlZnRvdmVycz1saXN0KHJvb3Qucmdsb2IoJyoucmVqJykpK2xp"
+            RECON_B64+="c3Qocm9vdC5yZ2xvYignKi5vcmlnJykpCmlmIGxlZnRvdmVyczogcmFpc2UgU3lzdGVtRXhpdCgnbGVmdG92ZXIgcmVqZWN0L29yaWdpbmFsIGZpbGVzOiAn"
+            RECON_B64+="KycsICcuam9pbihtYXAoc3RyLGxlZnRvdmVycykpKQpwcmludCgnT0snKQ=="
+            printf "%s" "$RECON_B64" | base64 -d > /tmp/susfs-reconcile.py
+            python3 /tmp/susfs-reconcile.py "${GITHUB_WORKSPACE}/kernel" | tee -a ../logs/susfs-semantic-port.log
             APPLY_MODE="3way+exact-4-file-port"
           fi
 
@@ -855,7 +784,7 @@ jobs:
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
-          test "${OUTPUT_PREFIX}" = "V111-LM-G900-KARNAL"
+          test "${OUTPUT_PREFIX}" = "V112-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -873,7 +802,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V111-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V112-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -919,6 +848,11 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          # Artifact identity contract: release/diagnostics must never carry stale V109/V110/V111 names.
+          if grep -RInE 'V109-LM-G900-KARNAL|V110-LM-G900-KARNAL|V111-LM-G900-KARNAL' release diagnostics 2>/dev/null; then
+            echo "[ERROR] stale artifact/version prefix detected"
+            exit 1
+          fi
           test -s "${OUTPUT_PREFIX}-output.zip"
           test -s release/kernel.zip
           test -s release/AnyKernel3-OrangeFox-Flashable.zip
@@ -950,8 +884,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V111-LM-G900-KARNAL-output
-          path: V111-LM-G900-KARNAL-output.zip
+          name: V112-LM-G900-KARNAL-output
+          path: V112-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -959,7 +893,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V111-LM-G900-KARNAL-kernel
+          name: V112-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -971,9 +905,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V111-LM-G900-KARNAL-complete-logs
+          name: V112-LM-G900-KARNAL-complete-logs
           path: |
-            V111-LM-G900-KARNAL-complete-logs.zip
+            V112-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
