@@ -1,5 +1,5 @@
 
-name: V121-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V122-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,13 +37,13 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V121-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
-  OUTPUT_PREFIX: V121-LM-G900-KARNAL
+  WORKFLOW_VERSION: V122-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
+  OUTPUT_PREFIX: V122-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
   build:
-    name: LM-G900N 4.19.325 SukiSU builtin (V121)
+    name: LM-G900N 4.19.325 SukiSU builtin (V122)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -252,7 +252,7 @@ jobs:
           set -Eeuo pipefail
           cd kernel
           trap 'rc=$?; printf "[ERROR] Step-6 failed: rc=%s line=%s command=%s\\n" "$rc" "$LINENO" "$BASH_COMMAND" | tee -a ../logs/step6-failure.log' ERR
-          # V121 KPM source-level compatibility fix:
+          # V122 KPM source-level compatibility fix:
           # SukiSU v4.2.0-b20 KPM uses the modern access_ok(addr, size) API,
           # while this exact ARM64 Linux 4.19 tree exposes access_ok(type, addr, size).
           # The pinned SukiSU source already provides ksu_access_ok() in
@@ -607,11 +607,21 @@ jobs:
               if new != data:
                   p.write_bytes(new)
                   changed.append(name)
+          # The worktree pass may have canonicalized a file before the cached pass.
+          # Therefore `changed` can legitimately be zero even though the index still
+          # contains the pre-canonicalization blob. In cached mode, stage the complete
+          # audited SUSFS file set after canonicalization, not only files changed by
+          # that pass. This makes the index a deterministic snapshot of the final
+          # kernel source rather than an earlier pre-canonicalization snapshot.
+          staged=[]
           if mode == 'cached':
-              for name in changed:
-                  subprocess.run(['git','add','--',name],check=True)
+              for name in files:
+                  if pathlib.Path(name).is_file():
+                      subprocess.run(['git','add','--',name],check=True)
+                      staged.append(name)
           pathlib.Path('../logs/susfs-source-canonicalization-'+mode+'.log').write_text(
-              'changed='+str(len(changed))+'\n'+'\n'.join(changed)+'\n'
+              'changed='+str(len(changed))+'\n'+'\n'.join(changed)+'\n' +
+              ('staged='+str(len(staged))+'\n'+'\n'.join(staged)+'\n' if mode == 'cached' else '')
           )
           PY_CANON_WS
             if [ "$mode" = "cached" ]; then
@@ -722,7 +732,21 @@ jobs:
           repair_diff_whitespace worktree ../logs/susfs-worktree-whitespace-check.log
           git diff --check
           repair_diff_whitespace cached ../logs/susfs-cached-whitespace-check.log
+          # Final invariant: after all source-level canonicalization, the audited
+          # SUSFS index must be a clean staged snapshot of the same source tree.
+          # This is intentionally an equality gate, not a whitespace suppression.
           git diff --cached --check
+          if ! git diff --quiet -- fs/Makefile fs/namei.c fs/namespace.c fs/notify/fdinfo.c \
+              fs/proc/base.c fs/proc/cmdline.c fs/proc/fd.c fs/proc/task_mmu.c \
+              fs/proc/namespace.c fs/readdir.c fs/stat.c fs/statfs.c fs/super.c \
+              fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h; then
+            echo '[ERROR] SUSFS worktree/index divergence remains after canonicalization.'
+            git diff -- fs/Makefile fs/namei.c fs/namespace.c fs/notify/fdinfo.c \
+              fs/proc/base.c fs/proc/cmdline.c fs/proc/fd.c fs/proc/task_mmu.c \
+              fs/proc/namespace.c fs/readdir.c fs/stat.c fs/statfs.c fs/super.c \
+              fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h
+            exit 1
+          fi
           test -s fs/susfs.c
           test -s include/linux/susfs.h
           test -s include/linux/susfs_def.h
@@ -1049,7 +1073,7 @@ jobs:
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
-          test "${OUTPUT_PREFIX}" = "V121-LM-G900-KARNAL"
+          test "${OUTPUT_PREFIX}" = "V122-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -1067,7 +1091,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V121-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V122-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1114,7 +1138,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           # Artifact identity contract: release/diagnostics must never carry stale
-          # pre-V121 artifact prefixes. The current V121 prefix is intentionally present.
+          # pre-V122 artifact prefixes. The current V122 prefix is intentionally present.
           if grep -RInE 'V109-LM-G900-KARNAL|V110-LM-G900-KARNAL|V111-LM-G900-KARNAL|V112-LM-G900-KARNAL|V113-LM-G900-KARNAL|V114-LM-G900-KARNAL' release diagnostics 2>/dev/null; then
             echo "[ERROR] stale artifact/version prefix detected"
             exit 1
@@ -1150,8 +1174,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V121-LM-G900-KARNAL-output
-          path: V121-LM-G900-KARNAL-output.zip
+          name: V122-LM-G900-KARNAL-output
+          path: V122-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1159,7 +1183,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V121-LM-G900-KARNAL-kernel
+          name: V122-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -1171,9 +1195,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V121-LM-G900-KARNAL-complete-logs
+          name: V122-LM-G900-KARNAL-complete-logs
           path: |
-            V121-LM-G900-KARNAL-complete-logs.zip
+            V122-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
