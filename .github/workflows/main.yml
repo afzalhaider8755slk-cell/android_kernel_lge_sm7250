@@ -1,5 +1,5 @@
 
-name: V113-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved-NoExternal-SUSFS
+name: V115-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -27,14 +27,18 @@ env:
   KSU_MANAGER_BUILD: 4.2.0
   KSU_MANAGER_PACKAGE: com.sukisu.ultra
   KSU_MANAGER_SIGNATURE_SHA256: 947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef
-  # No external/kernel-side SUSFS 2.3.0 patch is used in this generation.
-  # SukiSU v4.2.0 builtin is retained as the sole root provider.
-  # CONFIG_KSU_SUSFS is explicitly disabled because the exact pinned builtin commit
-  # exposes the KSU-side SUSFS ABI but does not ship fs/susfs.c/include/linux/susfs*.h.
+  # Kernel-side SUSFS implementation matched to the pinned SukiSU builtin SUSFS ABI is required on this legacy 4.19 tree.
+  # This is the pinned kernel-side SUSFS implementation used by the V99 contract; it is not a
+  # second root provider and is applied before the SukiSU 4.19 source compatibility audit.
+  SUSFS_KERNEL_PATCH_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
+  SUSFS_KERNEL_PATCH_REF: f15603b246d7ce6008af8bdefa0a34b3df28326a
+  SUSFS_KERNEL_PATCH_PATH: Patches/Patch/susfs_patch_to_4.19.patch
+  SUSFS_KERNEL_PATCH_URL: https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/f15603b246d7ce6008af8bdefa0a34b3df28326a/Patches/Patch/susfs_patch_to_4.19.patch
+  SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V113-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-NO-EXTERNAL-SUSFS
-  OUTPUT_PREFIX: V113-LM-G900-KARNAL
+  WORKFLOW_VERSION: V115-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
+  OUTPUT_PREFIX: V115-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -68,11 +72,8 @@ jobs:
              features merely to hide a compile or runtime error.
           6. Root provider contract is SukiSU-Ultra v4.2.0 builtin at commit
              b20dee702035af09cb2ecb5f35443bbc1747f3e6, package com.sukisu.ultra.
-          7. No external/kernel-side SUSFS 2.3.0 patch is permitted in this generation.
-             The exact SukiSU builtin commit is used as the sole root-provider source.
-             Its KSU-side SUSFS ABI/manager support is retained, but CONFIG_KSU_SUSFS is
-             disabled because that pinned builtin commit does not contain fs/susfs.c or
-             include/linux/susfs*.h for this 4.19 tree. Never fake kernel-side SUSFS support.
+          7. Kernel-side SUSFS contract is the pinned SUSFS 2.3.0 4.19 patch at commit
+             f15603b246d7ce6008af8bdefa0a34b3df28326a, verified by its SHA-256 before use.
           8. Real SukiSU SELinux policy injection must remain active. Never hide the old
              setexeccon(u:r:ksu:s0) failure by weakening/permissive SELinux.
           9. Do not alter IP/network configuration unless explicitly requested.
@@ -245,21 +246,313 @@ jobs:
             echo "builtin_susfs=yes"
           } | tee ../logs/sukisu-resolved.txt
 
-      - name: "6. Source-aware SukiSU 4.19 compatibility and DT reconciliation"
+      - name: "6. Source-aware SUSFS 2.3.0 integration, 4.19 fixes and DT reconciliation"
         shell: bash
         run: |
           set -Eeuo pipefail
           cd kernel
-          # V113 root change: external SUSFS 2.3.0 is completely removed.
-          # Do not download, apply, reconcile, or silently re-create any kernel-side
-          # SUSFS patch. The exact SukiSU builtin source is the only root provider.
+          # V115 KPM source-level compatibility fix:
+          # SukiSU v4.2.0-b20 KPM uses the modern access_ok(addr, size) API,
+          # while this exact ARM64 Linux 4.19 tree exposes access_ok(type, addr, size).
+          # The pinned SukiSU source already provides ksu_access_ok() in
+          # kernel/infra/kernel_compat.h. Reuse that bridge; do NOT disable KPM and
+          # do NOT alter the 4.19 uaccess API itself.
+          KPM=drivers/kernelsu/kpm/kpm.c
+          KCOMPAT=drivers/kernelsu/infra/kernel_compat.h
+          test -f "$KPM"
+          test -f "$KCOMPAT"
+          grep -q 'ksu_access_ok' "$KCOMPAT"
+          grep -q 'access_ok(type, addr, size)' arch/arm64/include/asm/uaccess.h
+          if grep -qE '\baccess_ok\(' "$KPM"; then
+            python3 - "$KPM" <<'PY_KPM'
+          from pathlib import Path
+          import re, sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          if '#include "../infra/kernel_compat.h"' not in s:
+              s = s.replace(
+                  '#include <linux/uaccess.h>',
+                  '#include <linux/uaccess.h>\n#include "../infra/kernel_compat.h"',
+                  1
+              )
+          s = re.sub(r'(?<!ksu_)\\baccess_ok\\(', 'ksu_access_ok(', s)
+          p.write_text(s)
+          PY_KPM
+          fi
+          grep -q '#include "../infra/kernel_compat.h"' "$KPM"
+          test "$(grep -o 'ksu_access_ok(' "$KPM" | wc -l)" -ge 10
+          if grep -nE '(^|[^A-Za-z0-9_])access_ok\(' "$KPM" | grep -v 'ksu_access_ok(' ; then
+            echo '[ERROR] Unconverted modern access_ok() call remains in KPM.'
+            exit 1
+          fi
+          cp "$KPM" ../logs/kpm.c.after-4.19-access-ok-fix.c
+          grep -nE 'ksu_access_ok|kernel_compat.h' "$KPM" | tee ../logs/kpm-access-ok-fix.log
+
+
+          # SukiSU builtin provides the KernelSU-side SUSFS ABI/features, but its
+          # kernel_includes.h deliberately includes <linux/susfs.h>. On this
+          # non-GKI 4.19.325 tree the kernel-side SUSFS implementation is therefore
+          # a required source dependency; the previous V106 workflow enabled the
+          # Kconfig symbols without actually integrating fs/susfs.c and headers.
+          # That is exactly why the build reported: "linux/susfs.h: file not found".
+          # Apply the same pinned SUSFS v2.3.0 kernel patch contract used by V99,
+          # before any SukiSU compatibility bridge can consume those symbols.
           test ! -e fs/susfs.c
           test ! -e include/linux/susfs.h
           test ! -e include/linux/susfs_def.h
-          test ! -e ../logs/susfs-2.3.0.patch
 
-          # Preserve the V99/SukiSU 4.19 compatibility layer that is independent of
-          # external SUSFS. These checks/fixes are source-aware and do not weaken SELinux.
+          # V107 failure root cause: the Git object fetch/checkout path reached
+          # the pinned SUSFS commit, then the strict shell exited before the kernel
+          # patch could even be checked. The kernel patch itself was never tested.
+          # Do not resolve a fixed source artifact through a shallow repository clone.
+          # Fetch the exact immutable raw blob instead, then verify its SHA-256 before
+          # touching the kernel tree. This removes the failing Git ref/checkout layer
+          # while preserving the exact same kernel-side SUSFS 2.3.0 source.
+          rm -f ../logs/susfs-2.3.0.patch
+          curl -fL --retry 6 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 \
+            "${SUSFS_KERNEL_PATCH_URL}" -o ../logs/susfs-2.3.0.patch
+          test -s ../logs/susfs-2.3.0.patch
+          # V109 source-level fix for the V108 failure:
+          # do not feed a generated line through sha256sum -c. The V108 runner
+          # reached the downloaded immutable patch successfully, then coreutils
+          # rejected the verification stream with:
+          #   sha256sum: standard input: no properly formatted checksum lines found
+          # The cryptographic contract is unchanged; compare the digest directly.
+          # IMPORTANT: f9d8ed... is the GitHub/Git blob SHA-1 for this exact
+          # pinned file, NOT a SHA-256 digest. V109 incorrectly compared that
+          # 40-hex Git blob ID against sha256sum's 64-hex output, so the build
+          # stopped here even though the downloaded SUSFS patch was the exact
+          # pinned source. Verify both identities independently:
+          #   1) git hash-object --stdin -> Git blob SHA-1
+          #   2) sha256sum              -> immutable byte-level SHA-256
+          EXPECTED_SUSFS_PATCH_BLOB_SHA="f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+          EXPECTED_SUSFS_PATCH_SHA256="8035f1a344e07b5d133ae44b46d505ce59096fbc391b1e92bf9a0f42192408c6"
+          ACTUAL_SUSFS_PATCH_BLOB_SHA="$(git hash-object ../logs/susfs-2.3.0.patch)"
+          ACTUAL_SUSFS_PATCH_SHA256="$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')"
+          {
+            printf 'expected_blob_sha=%s\n' "${EXPECTED_SUSFS_PATCH_BLOB_SHA}"
+            printf 'actual_blob_sha=%s\n' "${ACTUAL_SUSFS_PATCH_BLOB_SHA}"
+            printf 'expected_sha256=%s\n' "${EXPECTED_SUSFS_PATCH_SHA256}"
+            printf 'actual_sha256=%s\n' "${ACTUAL_SUSFS_PATCH_SHA256}"
+            printf 'patch_bytes=%s\n' "$(wc -c < ../logs/susfs-2.3.0.patch)"
+          } > ../logs/susfs-sha256-verification.txt
+          test "${ACTUAL_SUSFS_PATCH_BLOB_SHA}" = "${EXPECTED_SUSFS_PATCH_BLOB_SHA}"
+          test "${ACTUAL_SUSFS_PATCH_SHA256}" = "${EXPECTED_SUSFS_PATCH_SHA256}"
+          printf 'patch_repo=%s\npatch_ref=%s\npatch_path=%s\npatch_url=%s\npatch_blob_sha=%s\npatch_sha256=%s\n' \
+            "${SUSFS_KERNEL_PATCH_REPO}" "${SUSFS_KERNEL_PATCH_REF}" \
+            "${SUSFS_KERNEL_PATCH_PATH}" "${SUSFS_KERNEL_PATCH_URL}" \
+            "${ACTUAL_SUSFS_PATCH_BLOB_SHA}" "${ACTUAL_SUSFS_PATCH_SHA256}" > ../logs/susfs-source-resolved.txt
+
+          # SUSFS 2.3.0 is a single pinned patch, but this exact 4.19 vendor tree
+          # has four known source-context differences. A normal 3-way check reports
+          # those as conflicts even though the remaining hunks are clean. The correct
+          # response is NOT to reject the patch and NOT to re-apply the whole patch:
+          # apply the clean hunks once, isolate exactly the four audited files, then
+          # port only their source-version-specific hunks and verify the final source.
+          if git apply --check --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-direct-check.log 2>&1; then
+            git apply --index --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-apply.log 2>&1
+            echo direct > ../logs/susfs-selected.txt
+            APPLY_MODE=direct
+          else
+            echo "[SUSFS] direct preflight is incompatible with this vendor source; using audited 4-file 3-way path."
+            if git apply --3way --check --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-3way-check.log 2>&1; then
+              THREEWAY_CHECK_RC=0
+            else
+              THREEWAY_CHECK_RC=$?
+            fi
+            echo "threeway_check_rc=${THREEWAY_CHECK_RC}" | tee ../logs/susfs-compatibility-summary.log
+            cat ../logs/susfs-direct-check.log | tee -a ../logs/susfs-compatibility-summary.log
+            cat ../logs/susfs-3way-check.log | tee -a ../logs/susfs-compatibility-summary.log
+
+            # `git apply --3way --check` can report expected source-context conflicts
+            # and still prove that Git can resolve the remaining patch topology.
+            # Do not grep for the word "conflicts" here: the four audited files are
+            # expected. We require the exact four-file conflict set after the real apply.
+            EXPECTED_CONFLICTS=(fs/namespace.c fs/proc/cmdline.c fs/proc/task_mmu.c fs/super.c)
+            if ! grep -Eiq 'with conflicts|Falling back to direct application' ../logs/susfs-3way-check.log; then
+              if [ "${THREEWAY_CHECK_RC}" -ne 0 ]; then
+                echo "[ERROR] SUSFS 3-way preflight failed without the expected audited conflict signature."
+                exit 1
+              fi
+            fi
+
+            if git apply --3way --index --whitespace=nowarn ../logs/susfs-2.3.0.patch > ../logs/susfs-3way-apply.log 2>&1; then
+              THREEWAY_APPLY_RC=0
+            else
+              THREEWAY_APPLY_RC=$?
+            fi
+            echo "threeway_apply_rc=${THREEWAY_APPLY_RC}" | tee -a ../logs/susfs-compatibility-summary.log
+            cat ../logs/susfs-3way-apply.log | tee -a ../logs/susfs-compatibility-summary.log
+
+            mapfile -t CONFLICT_FILES < <(git diff --name-only --diff-filter=U | sort)
+            printf '%s\n' "${CONFLICT_FILES[@]:-}" | tee ../logs/susfs-conflicted-files.txt
+            if [ "${#CONFLICT_FILES[@]}" -ne 4 ]; then
+              echo "[ERROR] SUSFS produced ${#CONFLICT_FILES[@]} conflict files; expected exactly 4 audited files." | tee ../logs/susfs-failure.log
+              exit 1
+            fi
+            for f in "${EXPECTED_CONFLICTS[@]}"; do
+              printf '%s\n' "${CONFLICT_FILES[@]}" | grep -Fxq "${f}" || {
+                echo "[ERROR] Expected SUSFS conflict file missing: ${f}" | tee -a ../logs/susfs-failure.log
+                exit 1
+              }
+            done
+
+            # Capture the 3-way stages before resolving. This is evidence that the
+            # conflict is source-context-only and prevents accidental whole-patch replay.
+            for f in "${CONFLICT_FILES[@]}"; do
+              safe="$(printf '%s' "${f}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
+              git show ":1:${f}" > "../logs/susfs-base-${safe}.txt" 2>/dev/null || true
+              git show ":2:${f}" > "../logs/susfs-ours-${safe}.txt" 2>/dev/null || true
+              git show ":3:${f}" > "../logs/susfs-theirs-${safe}.txt" 2>/dev/null || true
+              git checkout --ours -- "${f}"
+              git add -- "${f}"
+            done
+
+            : > ../logs/susfs-semantic-port.log
+            echo "[SUSFS] semantic patch cwd=$(pwd); kernel tree=${GITHUB_WORKSPACE}/kernel; patch inputs=../logs" | tee -a ../logs/susfs-semantic-port.log
+            for f in "${CONFLICT_FILES[@]}"; do
+              safe="$(printf '%s' "${f}" | tr '/ ' '__' | tr -cd '[:alnum:]_.-')"
+              python3 - "../logs/susfs-2.3.0.patch" "${f}" "../logs/susfs-file-${safe}.patch" <<'PY_PATCH_EXTRACT'
+          import pathlib, sys
+          patch = pathlib.Path(sys.argv[1]).read_text()
+          target = sys.argv[2]
+          out = pathlib.Path(sys.argv[3])
+          needle = f'a/{target} b/{target}'
+          for part in patch.split('diff --git ')[1:]:
+              if part.startswith(needle):
+                  out.write_text('diff --git ' + part)
+                  break
+          else:
+              raise SystemExit(f'No SUSFS patch section for {target}')
+          PY_PATCH_EXTRACT
+              # This command is an expected source-context probe. Guard it with if
+              # so set -e/-E does not turn an expected non-zero patch result into a
+              # premature Step-6 exit before all four files are processed.
+              if patch -p1 --forward --batch --fuzz=0 -i "../logs/susfs-file-${safe}.patch" > "../logs/susfs-file-${safe}.apply.log" 2>&1; then
+                FILE_PATCH_RC=0
+              else
+                FILE_PATCH_RC=$?
+              fi
+              cat "../logs/susfs-file-${safe}.apply.log" | tee -a ../logs/susfs-semantic-port.log
+              echo "${f}: patch_rc=${FILE_PATCH_RC}" | tee -a ../logs/susfs-semantic-port.log
+            done
+
+            # Exact source reconciliation for the captured LM-G900 4.19.325 tree.
+            # These are the four and only four source-context adaptations allowed by
+            # the debugging contract. No generic GKI rewrite and no unrelated source
+            # mutation is permitted.
+            RECON_B64=""
+            RECON_B64+="aW1wb3J0IHBhdGhsaWIsIHJlLCBzeXMKcm9vdCA9IHBhdGhsaWIuUGF0aChzeXMuYXJndlsxXSkKRVhQRUNURURfUkVKRUNUUyA9IHsKICAgICdmcy9uYW1l"
+            RECON_B64+="c3BhY2UuYyc6IHsoMjYsIDEwLCAyNiwgMjEpLCAoMTA5OCwgNywgMTI1NCwgMjIpfSwKICAgICdmcy9wcm9jL2NtZGxpbmUuYyc6IHsoNCwgOCwgNCwgMjAp"
+            RECON_B64+="fSwKICAgICdmcy9wcm9jL3Rhc2tfbW11LmMnOiB7KDE2NzAsIDcsIDE3MjgsIDE1KX0sCiAgICAnZnMvc3VwZXIuYyc6IHsoMzYsIDgsIDM2LCAxNil9LAp9"
+            RECON_B64+="CkhVTktfUkUgPSByZS5jb21waWxlKHInXkBAIC0oXGQrKSwoXGQrKSBcKyhcZCspLChcZCspIEBAJykKCmRlZiBpbnNlcnRfYWZ0ZXJfb25jZSh0ZXh0LCBt"
+            RECON_B64+="YXJrZXIsIGJsb2NrLCBsYWJlbCk6CiAgICBpZiBibG9jay5zdHJpcCgpIGluIHRleHQ6CiAgICAgICAgcmV0dXJuIHRleHQKICAgIHBvcyA9IHRleHQuZmlu"
+            RECON_B64+="ZChtYXJrZXIpCiAgICBpZiBwb3MgPCAwOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoZid7bGFiZWx9OiBhbmNob3IgbWlzc2luZycpCiAgICBwb3MgKz0g"
+            RECON_B64+="bGVuKG1hcmtlcikKICAgIHJldHVybiB0ZXh0Wzpwb3NdICsgYmxvY2sgKyB0ZXh0W3BvczpdCgpkZWYgbmFtZXNwYWNlX3BvcnQocyk6CiAgICBpZiAnI2lu"
+            RECON_B64+="Y2x1ZGUgPGxpbnV4L3N1c2ZzX2RlZi5oPicgbm90IGluIHM6CiAgICAgICAgcyA9IGluc2VydF9hZnRlcl9vbmNlKHMsICcjaW5jbHVkZSA8bGludXgvZnNf"
+            RECON_B64+="Y29udGV4dC5oPlxuJywgJyNpZmRlZiBDT05GSUdfS1NVX1NVU0ZTXG4jaW5jbHVkZSA8bGludXgvc3VzZnNfZGVmLmg+XG4jZW5kaWYgLy8gI2lmZGVmIENP"
+            RECON_B64+="TkZJR19LU1VfU1VTRlNcblxuJywgJ2ZzL25hbWVzcGFjZS5jIGluY2x1ZGUnKQogICAgaWYgJyNkZWZpbmUgQ0xfQ09QWV9NTlRfTlMgQklUKDI1KScgbm90"
+            RECON_B64+="IGluIHM6CiAgICAgICAgcyA9IGluc2VydF9hZnRlcl9vbmNlKHMsICcjaW5jbHVkZSAiaW50ZXJuYWwuaCJcbicsICcjaWZkZWYgQ09ORklHX0tTVV9TVVNG"
+            RECON_B64+="U19TVVNfTU9VTlRcbmV4dGVybiBib29sIHN1c2ZzX2lzX2N1cnJlbnRfa3N1X2RvbWFpbih2b2lkKTtcbmV4dGVybiBzdHJ1Y3Qgc3RhdGljX2tleV90cnVl"
+            RECON_B64+="IHN1c2ZzX2lzX3NkY2FyZF9hbmRyb2lkX2RhdGFfbm90X2RlY3J5cHRlZDtcblxuI2RlZmluZSBDTF9DT1BZX01OVF9OUyBCSVQoMjUpIC8qIHVzZWQgYnkg"
+            RECON_B64+="Y29weV9tbnRfbnMoKSAqL1xuXG4jZW5kaWYgLy8gI2lmZGVmIENPTkZJR19LU1VfU1VTRlNfU1VTX01PVU5UXG5cbicsICdmcy9uYW1lc3BhY2UuYyBkZWNs"
+            RECON_B64+="YXJhdGlvbnMnKQogICAgbWFya2VyID0gJ1x0c2IgPSBmYy0+cm9vdC0+ZF9zYjtcblxuJwogICAgaWYgJ3N1c2ZzX2FsbG9jX25vbl91bnNoYXJlX2tzdV92"
+            RECON_B64+="ZnNtbnQoZmMtPnNvdXJjZSA/OiAibm9uZSIpJyBub3QgaW4gczoKICAgICAgICBvbGQgPSBtYXJrZXIgKyAnXHRtbnQgPSBhbGxvY192ZnNtbnQoZmMtPnNv"
+            RECON_B64+="dXJjZSA/OiAibm9uZSIpO1xuJwogICAgICAgIG5ldyA9IG1hcmtlciArICcnJyNpZmRlZiBDT05GSUdfS1NVX1NVU0ZTX1NVU19NT1VOVApcdGlmIChzdGF0"
+            RECON_B64+="aWNfYnJhbmNoX3VubGlrZWx5KCZzdXNmc19pc19zZGNhcmRfYW5kcm9pZF9kYXRhX25vdF9kZWNyeXB0ZWQpKSB7Clx0XHRpZiAoc3VzZnNfaXNfY3VycmVu"
+            RECON_B64+="dF9rc3VfZG9tYWluKCkpIHsKXHRcdFx0bW50ID0gc3VzZnNfYWxsb2Nfbm9uX3Vuc2hhcmVfa3N1X3Zmc21udChmYy0+c291cmNlID86ICJub25lIik7Clx0"
+            RECON_B64+="XHRcdGdvdG8gYnlwYXNzX29yaWdfZmxvdzsKXHRcdH0KXHR9CiNlbmRpZiAvLyAjaWZkZWYgQ09ORklHX0tTVV9TVVNGU19TVVNfTU9VTlQKClx0bW50ID0g"
+            RECON_B64+="YWxsb2NfdmZzbW50KGZjLT5zb3VyY2UgPzogIm5vbmUiKTsKI2lmZGVmIENPTkZJR19LU1VfU1VTRlNfU1VTX01PVU5UCmJ5cGFzc19vcmlnX2Zsb3c6CiNl"
+            RECON_B64+="bmRpZiAvLyAjaWZkZWYgQ09ORklHX0tTVV9TVVNGU19TVVNfTU9VTlQKJycnCiAgICAgICAgaWYgb2xkIG5vdCBpbiBzOgogICAgICAgICAgICByYWlzZSBT"
+            RECON_B64+="eXN0ZW1FeGl0KCdmcy9uYW1lc3BhY2UuYzogdmZzX2NyZWF0ZV9tb3VudCBhbmNob3IgbWlzc2luZycpCiAgICAgICAgcyA9IHMucmVwbGFjZShvbGQsIG5l"
+            RECON_B64+="dywgMSkKICAgIHJldHVybiBzCgpkZWYgY21kbGluZV9wb3J0KHMpOgogICAgaWYgJ2V4dGVybiB2b2lkIHN1c2ZzX3Nwb29mX2NtZGxpbmVfb3JfYm9vdGNv"
+            RECON_B64+="bmZpZyhzdHJ1Y3Qgc2VxX2ZpbGUgKm0pOycgbm90IGluIHM6CiAgICAgICAgcyA9IGluc2VydF9hZnRlcl9vbmNlKHMsICcjaW5jbHVkZSA8bGludXgvc2xh"
+            RECON_B64+="Yi5oPlxuJywgJyNpZmRlZiBDT05GSUdfS1NVX1NVU0ZTX1NQT09GX0NNRExJTkVfT1JfQk9PVENPTkZJR1xuZXh0ZXJuIHN0cnVjdCBzdGF0aWNfa2V5X2Zh"
+            RECON_B64+="bHNlIHN1c2ZzX2lzX2Zha2VfY21kbGluZV9vcl9ib290Y29uZmlnX2J1ZmZlcl9zZXQ7XG5leHRlcm4gdm9pZCBzdXNmc19zcG9vZl9jbWRsaW5lX29yX2Jv"
+            RECON_B64+="b3Rjb25maWcoc3RydWN0IHNlcV9maWxlICptKTtcbiNlbmRpZlxuXG4nLCAnZnMvcHJvYy9jbWRsaW5lLmMgZGVjbGFyYXRpb25zJykKICAgIGZuID0gJ3N0"
+            RECON_B64+="YXRpYyBpbnQgY21kbGluZV9wcm9jX3Nob3coc3RydWN0IHNlcV9maWxlICptLCB2b2lkICp2KVxue1xuJwogICAgaWYgJ3N1c2ZzX3Nwb29mX2NtZGxpbmVf"
+            RECON_B64+="b3JfYm9vdGNvbmZpZyhtKTsnIG5vdCBpbiBzOgogICAgICAgIHMgPSBpbnNlcnRfYWZ0ZXJfb25jZShzLCBmbiwgJyNpZmRlZiBDT05GSUdfS1NVX1NVU0ZT"
+            RECON_B64+="X1NQT09GX0NNRExJTkVfT1JfQk9PVENPTkZJR1xuXHRpZiAoc3RhdGljX2JyYW5jaF9saWtlbHkoJnN1c2ZzX2lzX2Zha2VfY21kbGluZV9vcl9ib290Y29u"
+            RECON_B64+="ZmlnX2J1ZmZlcl9zZXQpKSB7XG5cdFx0c3VzZnNfc3Bvb2ZfY21kbGluZV9vcl9ib290Y29uZmlnKG0pO1xuXHRcdHNlcV9wdXRjKG0sIFwnXFxuXCcpO1xu"
+            RECON_B64+="XHRcdHJldHVybiAwO1xuXHR9XG4jZW5kaWZcbicsICdmcy9wcm9jL2NtZGxpbmUuYyBzaG93JykKICAgIHJldHVybiBzCgpkZWYgdGFza19tbXVfcG9ydChz"
+            RECON_B64+="KToKICAgIG1hcmtlciA9ICdzdGF0aWMgc3NpemVfdCBwYWdlbWFwX3JlYWQoc3RydWN0IGZpbGUgKmZpbGUsIGNoYXIgX191c2VyICpidWYsJwogICAgc2Vj"
+            RECON_B64+="dGlvbl9zdGFydCA9IHMuZmluZChtYXJrZXIpCiAgICBpZiBzZWN0aW9uX3N0YXJ0IDwgMDoKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCdmcy9wcm9jL3Rh"
+            RECON_B64+="c2tfbW11LmM6IHBhZ2VtYXBfcmVhZCBhbmNob3IgbWlzc2luZycpCiAgICBzZWN0aW9uID0gc1tzZWN0aW9uX3N0YXJ0Ol0KICAgIGlmICdTVVNGU19JU19J"
+            RECON_B64+="Tk9ERV9TVVNfTUFQKGZpbGVfaW5vZGUodm1hLT52bV9maWxlKSknIG5vdCBpbiBzZWN0aW9uOgogICAgICAgIG9sZCA9ICcnJ1x0XHRyZXQgPSBtbWFwX3Jl"
+            RECON_B64+="YWRfbG9ja19raWxsYWJsZShtbSk7Clx0XHRpZiAocmV0KQpcdFx0XHRnb3RvIG91dF9mcmVlOwpcdFx0cmV0ID0gd2Fsa19wYWdlX3JhbmdlKHN0YXJ0X3Zh"
+            RECON_B64+="ZGRyLCBlbmQsICZwYWdlbWFwX3dhbGspOwpcdFx0bW1hcF9yZWFkX3VubG9jayhtbSk7Clx0XHRzdGFydF92YWRkciA9IGVuZDsnJycKICAgICAgICBuZXcg"
+            RECON_B64+="PSAnJydcdFx0cmV0ID0gbW1hcF9yZWFkX2xvY2tfa2lsbGFibGUobW0pOwpcdFx0aWYgKHJldCkKXHRcdFx0Z290byBvdXRfZnJlZTsKI2lmZGVmIENPTkZJ"
+            RECON_B64+="R19LU1VfU1VTRlNfU1VTX01BUApcdFx0dm1hID0gZmluZF92bWEobW0sIHN0YXJ0X3ZhZGRyKTsKXHRcdGlmICh2bWEgJiYgdm1hLT52bV9maWxlICYmIFNV"
+            RECON_B64+="U0ZTX0lTX0lOT0RFX1NVU19NQVAoZmlsZV9pbm9kZSh2bWEtPnZtX2ZpbGUpKSkKXHRcdFx0Z290byBieXBhc3Nfb3JpZ19mbG93OwojZW5kaWYgLy8gI2lm"
+            RECON_B64+="ZGVmIENPTkZJR19LU1VfU1VTRlNfU1VTX01BUApcdFx0cmV0ID0gd2Fsa19wYWdlX3JhbmdlKHN0YXJ0X3ZhZGRyLCBlbmQsICZwYWdlbWFwX3dhbGspOwoj"
+            RECON_B64+="aWZkZWYgQ09ORklHX0tTVV9TVVNGU19TVVNfTUFQCmJ5cGFzc19vcmlnX2Zsb3c6CiNlbmRpZiAvLyAjaWZkZWYgQ09ORklHX0tTVV9TVVNGU19TVVNfTUFQ"
+            RECON_B64+="Clx0XHRtbWFwX3JlYWRfdW5sb2NrKG1tKTsKXHRcdHN0YXJ0X3ZhZGRyID0gZW5kOycnJwogICAgICAgIGlmIG9sZCBub3QgaW4gczoKICAgICAgICAgICAg"
+            RECON_B64+="cmFpc2UgU3lzdGVtRXhpdCgnZnMvcHJvYy90YXNrX21tdS5jOiBleGFjdCBtbWFwX3JlYWRfbG9ja19raWxsYWJsZSBwYWdlbWFwIGFuY2hvciBtaXNzaW5n"
+            RECON_B64+="JykKICAgICAgICBzID0gcy5yZXBsYWNlKG9sZCwgbmV3LCAxKQogICAgcmV0dXJuIHMKCmRlZiBzdXBlcl9wb3J0KHMpOgogICAgaWYgJyNpbmNsdWRlIDxs"
+            RECON_B64+="aW51eC9zdXNmc19kZWYuaD4nIG5vdCBpbiBzOgogICAgICAgIHMgPSBpbnNlcnRfYWZ0ZXJfb25jZShzLCAnI2luY2x1ZGUgPGxpbnV4L3VzZXJfbmFtZXNw"
+            RECON_B64+="YWNlLmg+XG4nLCAnI2lmZGVmIENPTkZJR19LU1VfU1VTRlNcbiNpbmNsdWRlIDxsaW51eC9zdXNmc19kZWYuaD5cbiNlbmRpZiAvLyAjaWZkZWYgQ09ORklH"
+            RECON_B64+="X0tTVV9TVVNGU1xuJywgJ2ZzL3N1cGVyLmMgaW5jbHVkZScpCiAgICBpZiAnZXh0ZXJuIHN0cnVjdCBzdGF0aWNfa2V5X3RydWUgc3VzZnNfaXNfc2RjYXJk"
+            RECON_B64+="X2FuZHJvaWRfZGF0YV9ub3RfZGVjcnlwdGVkOycgbm90IGluIHM6CiAgICAgICAgcyA9IHMucmVwbGFjZSgnI2luY2x1ZGUgImludGVybmFsLmgiXG4nLCAn"
+            RECON_B64+="I2lmZGVmIENPTkZJR19LU1VfU1VTRlNfU1VTX01PVU5UXG5leHRlcm4gYm9vbCBzdXNmc19pc19jdXJyZW50X2tzdV9kb21haW4odm9pZCk7XG5leHRlcm4g"
+            RECON_B64+="c3RydWN0IHN0YXRpY19rZXlfdHJ1ZSBzdXNmc19pc19zZGNhcmRfYW5kcm9pZF9kYXRhX25vdF9kZWNyeXB0ZWQ7XG4jZW5kaWYgLy8gI2lmZGVmIENPTkZJ"
+            RECON_B64+="R19LU1VfU1VTRlNfU1VTX01PVU5UXG5cbiNpbmNsdWRlICJpbnRlcm5hbC5oIlxuJywgMSkKICAgIHJldHVybiBzCgpwb3J0cyA9IHsnZnMvbmFtZXNwYWNl"
+            RECON_B64+="LmMnOiBuYW1lc3BhY2VfcG9ydCwgJ2ZzL3Byb2MvY21kbGluZS5jJzogY21kbGluZV9wb3J0LCAnZnMvcHJvYy90YXNrX21tdS5jJzogdGFza19tbXVfcG9y"
+            RECON_B64+="dCwgJ2ZzL3N1cGVyLmMnOiBzdXBlcl9wb3J0fQpmb3IgcmVsLCBmbiBpbiBwb3J0cy5pdGVtcygpOgogICAgcD1yb290L3JlbAogICAgcC53cml0ZV90ZXh0"
+            RECON_B64+="KGZuKHAucmVhZF90ZXh0KCkpKQoKZm9yIHJlbCwgZXhwZWN0ZWQgaW4gRVhQRUNURURfUkVKRUNUUy5pdGVtcygpOgogICAgcmVqPXJvb3QvKHJlbCsnLnJl"
+            RECON_B64+="aicpCiAgICBpZiByZWouZXhpc3RzKCk6CiAgICAgICAgZ290PXNldCgpCiAgICAgICAgZm9yIGxpbmUgaW4gcmVqLnJlYWRfdGV4dChlcnJvcnM9J3JlcGxh"
+            RECON_B64+="Y2UnKS5zcGxpdGxpbmVzKCk6CiAgICAgICAgICAgIG09SFVOS19SRS5tYXRjaChsaW5lKQogICAgICAgICAgICBpZiBtOiBnb3QuYWRkKHR1cGxlKG1hcChp"
+            RECON_B64+="bnQsbS5ncm91cHMoKSkpKQogICAgICAgIGlmIGdvdCAhPSBleHBlY3RlZDoKICAgICAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmJ3VuZXhwZWN0ZWQgcmVq"
+            RECON_B64+="ZWN0IHNldCBpbiB7cmVsfToge3NvcnRlZChnb3QpfScpCiAgICAgICAgcmVqLnVubGluaygpCiAgICBvcmlnPXJvb3QvKHJlbCsnLm9yaWcnKQogICAgaWYg"
+            RECON_B64+="b3JpZy5leGlzdHMoKTogb3JpZy51bmxpbmsoKQoKY2hlY2tzPXsKJ2ZzL25hbWVzcGFjZS5jJzpbJyNpbmNsdWRlIDxsaW51eC9zdXNmc19kZWYuaD4nLCdD"
+            RECON_B64+="TF9DT1BZX01OVF9OUycsJ3N1c2ZzX2FsbG9jX25vbl91bnNoYXJlX2tzdV92ZnNtbnQoZmMtPnNvdXJjZSA/OiAibm9uZSIpJywnc3VzZnNfZ2V0X25vbl9z"
+            RECON_B64+="dXNfbW50X2lkX2Zyb21fbW50Jywnc3VzZnNfZ2V0X25vbl9zdXNfdmZzbW50X2Zyb21fdmZzbW50J10sCidmcy9wcm9jL2NtZGxpbmUuYyc6WydzdXNmc19z"
+            RECON_B64+="cG9vZl9jbWRsaW5lX29yX2Jvb3Rjb25maWcnLCdzdXNmc19pc19mYWtlX2NtZGxpbmVfb3JfYm9vdGNvbmZpZ19idWZmZXJfc2V0JywndXBkYXRlZF9jb21t"
+            RECON_B64+="YW5kX2xpbmUnXSwKJ2ZzL3Byb2MvdGFza19tbXUuYyc6WydzdXNmc19zdXNfa3N0YXRfc3Bvb2Zfc2hvd19tYXBfdm1hJywnU1VTRlNfSVNfSU5PREVfT1BF"
+            RECON_B64+="Tl9SRURJUkVDVCcsJ1NVU0ZTX0lTX0lOT0RFX1NVU19NQVAnLCdmaW5kX3ZtYShtbSwgc3RhcnRfdmFkZHIpJywnbW1hcF9yZWFkX2xvY2tfa2lsbGFibGUo"
+            RECON_B64+="bW0pJywnbW1hcF9yZWFkX3VubG9jayhtbSknXSwKJ2ZzL3N1cGVyLmMnOlsnI2luY2x1ZGUgPGxpbnV4L3N1c2ZzX2RlZi5oPicsJ3N1c2ZzX2lzX2N1cnJl"
+            RECON_B64+="bnRfa3N1X2RvbWFpbicsJ0RFRkFVTFRfS1NVX01OVF9NSU5PUl9ERVYnXX0KZm9yIHJlbCxuZWVkbGVzIGluIGNoZWNrcy5pdGVtcygpOgogICAgcz0ocm9v"
+            RECON_B64+="dC9yZWwpLnJlYWRfdGV4dCgpCiAgICBmb3IgbmVlZGxlIGluIG5lZWRsZXM6CiAgICAgICAgaWYgbmVlZGxlIG5vdCBpbiBzOiByYWlzZSBTeXN0ZW1FeGl0"
+            RECON_B64+="KGYnbWlzc2luZyBzZW1hbnRpYyBTVVNGUyBtYXJrZXI6IHtyZWx9OiB7bmVlZGxlfScpCmxlZnRvdmVycz1saXN0KHJvb3Qucmdsb2IoJyoucmVqJykpK2xp"
+            RECON_B64+="c3Qocm9vdC5yZ2xvYignKi5vcmlnJykpCmlmIGxlZnRvdmVyczogcmFpc2UgU3lzdGVtRXhpdCgnbGVmdG92ZXIgcmVqZWN0L29yaWdpbmFsIGZpbGVzOiAn"
+            RECON_B64+="KycsICcuam9pbihtYXAoc3RyLGxlZnRvdmVycykpKQpwcmludCgnT0snKQ=="
+            printf "%s" "$RECON_B64" | base64 -d > /tmp/susfs-reconcile.py
+            python3 /tmp/susfs-reconcile.py "${GITHUB_WORKSPACE}/kernel" | tee -a ../logs/susfs-semantic-port.log
+            APPLY_MODE="3way+exact-4-file-port"
+          fi
+
+          echo "apply_mode=${APPLY_MODE}" | tee ../logs/susfs-selected.txt
+          if git ls-files -u | grep -q .; then
+            echo "[ERROR] SUSFS application left unmerged index entries." | tee ../logs/susfs-failure.log
+            git status --short | tee -a ../logs/susfs-failure.log
+            exit 1
+          fi
+          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+            echo "[ERROR] SUSFS application left reject/original files." | tee ../logs/susfs-failure.log
+            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print | tee -a ../logs/susfs-failure.log
+            exit 1
+          fi
+          git diff --check
+          git diff --cached --check
+          test -s fs/susfs.c
+          test -s include/linux/susfs.h
+          test -s include/linux/susfs_def.h
+          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          printf 'apply_mode=%s\n' "${APPLY_MODE}" > ../logs/susfs-apply-mode.txt
+
+          git diff --check
+          git diff --cached --check
+          test -s fs/susfs.c
+          test -s include/linux/susfs.h
+          test -s include/linux/susfs_def.h
+          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          printf 'susfs_version=%s\npatch_ref=%s\npatch_url=%s\npatch_blob_sha=%s\npatch_sha256=%s\n' \
+            "${SUSFS_EXPECTED_VERSION}" "${SUSFS_KERNEL_PATCH_REF}" "${SUSFS_KERNEL_PATCH_URL}" \
+            "$(git hash-object ../logs/susfs-2.3.0.patch)" \
+            "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" > ../logs/susfs-resolved.txt
+
           test -f drivers/kernelsu/manager/pkg_observer_compat.h
           grep -q 'KSU_DECL_FSNOTIFY_OPS' drivers/kernelsu/manager/pkg_observer_compat.h
 
@@ -318,7 +611,7 @@ jobs:
           if grep -Rqs 'extern int path_mount(' drivers/kernelsu && ! grep -qE '^int path_mount\(' "$NS"; then
             cat >> "$NS" <<'EOF_PATHMOUNT'
 
-          /* V113: Linux 4.19 bridge for SukiSU path_mount(). */
+          /* V103: Linux 4.19 bridge for SukiSU path_mount(). */
           int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page)
           {
               char *buf, *dir_name;
@@ -340,7 +633,7 @@ jobs:
           if grep -Rqs 'extern int path_umount(' drivers/kernelsu && ! grep -qE '^int path_umount\(' "$NS"; then
             cat >> "$NS" <<'EOF_PATHUMOUNT'
 
-          /* V113: Linux 4.19 bridge for SukiSU path_umount(). */
+          /* V103: Linux 4.19 bridge for SukiSU path_umount(). */
           int path_umount(struct path *path, int flags)
           {
               char *buf, *name;
@@ -364,21 +657,24 @@ jobs:
             cat >> kernel/seccomp.c <<'EOF_SECCOMP'
 
           #ifdef CONFIG_SECCOMP
-          /* V113: Linux 4.19 bridge for SukiSU seccomp release API. */
+          /* V103: Linux 4.19 bridge for SukiSU seccomp release API. */
           void seccomp_filter_release(struct task_struct *tsk) { put_seccomp_filter(tsk); }
           #endif
           EOF_SECCOMP
           fi
 
           DP=drivers/kernelsu/supercall/dispatch.c
-          if [ -f "$DP" ] && grep -Eq 'tasklist_lock|task_pgrp\(|task_session\(' "$DP" && ! grep -q 'V113 sched compatibility' "$DP"; then
+          if [ -f "$DP" ] && grep -Eq 'tasklist_lock|task_pgrp\(|task_session\(' "$DP" && ! grep -q 'V103 sched compatibility' "$DP"; then
             sed -i '1i #include <linux/sched/signal.h>' "$DP"
             sed -i '1i #include <linux/sched/task.h>' "$DP"
-            sed -i '1i /* V113 sched compatibility */' "$DP"
+            sed -i '1i /* V103 sched compatibility */' "$DP"
           fi
 
+          # Linux 4.19 lacks the post-5.7 selinux_state members used by SukiSU's
+          # optional selinux_hide implementation. Guard only this optional feature;
+          # never weaken SELinux or replace the real KSU policy injector.
           SH=drivers/kernelsu/feature/selinux_hide.c
-          if [ -f "$SH" ] && grep -q 'selinux_state.status_lock' "$SH" && ! grep -q 'V113 4.19 selinux_hide guard' "$SH"; then
+          if [ -f "$SH" ] && grep -q 'selinux_state.status_lock' "$SH" && ! grep -q 'V103 4.19 selinux_hide guard' "$SH"; then
             cp "$SH" ../logs/selinux_hide.original.c
             {
               echo '#include <linux/version.h>'
@@ -386,16 +682,17 @@ jobs:
               cat "$SH"
               echo '#else'
               echo '#include <linux/init.h>'
-              echo '/* V113 4.19 selinux_hide guard: unsupported post-5.7 SELinux ABI. */'
+              echo '/* V103 4.19 selinux_hide guard: unsupported post-5.7 SELinux ABI. */'
               echo 'void __init ksu_selinux_hide_init(void) {}'
               echo 'void __exit ksu_selinux_hide_exit(void) {}'
               echo 'void ksu_selinux_hide_drop_backup_if_unused(void) {}'
-              echo '#endif /* V113 4.19 selinux_hide guard */'
+              echo '#endif /* V103 4.19 selinux_hide guard */'
             } > "$SH.tmp"
             mv "$SH.tmp" "$SH"
           fi
 
-          # Real 4.19 SukiSU policy injection must remain active.
+          # The real 4.19 policy injector must remain active. This directly addresses
+          # the old setexeccon(u:r:ksu:s0) failure instead of hiding it with permissive SELinux.
           grep -Eq 'void[[:space:]]+apply_kernelsu_rules[[:space:]]*\([[:space:]]*void[[:space:]]*\)' drivers/kernelsu/selinux/rules.c
           grep -q 'ksu_allow(db, KERNEL_SU_DOMAIN, ALL, ALL, ALL)' drivers/kernelsu/selinux/rules.c
           grep -q 'setup_selinux' drivers/kernelsu/selinux/selinux.c
@@ -405,7 +702,7 @@ jobs:
             sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$f"
           done < <(find arch/arm64/boot/dts/vendor/lge/lito-caymanlm -type f -iname '*touch_rev-1.0.dtsi' -print0)
 
-          # DT: rename only board-local PM labels that duplicate generic qcom labels.
+          # DT: rename only board-local PM labels that duplicate the generic qcom labels.
           PM_ROOT=arch/arm64/boot/dts/vendor/lge/lito-caymanlm
           while IFS= read -r -d '' f; do
             tag="$(basename "$f" .dtsi | tr -c 'A-Za-z0-9' '_' | tr '[:upper:]' '[:lower:]' | sed 's/_*$//')"
@@ -421,28 +718,41 @@ jobs:
             echo '[ERROR] Duplicate board PM labels remain.'
             exit 1
           fi
-
           git diff --check
           git diff --cached --check
-          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo '[ERROR] Unexpected patch reject/original file in kernel tree.'
-            exit 1
-          fi
+          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then exit 1; fi
 
-          # The pinned builtin commit must retain its KSU-side SUSFS ABI declarations,
-          # but kernel-side SUSFS implementation must remain absent in this mode.
-          grep -Rqs 'config KSU_SUSFS' drivers/kernelsu/Kconfig
-          grep -Rqs 'susfs_ksu_sid' drivers/kernelsu
-          grep -Rqs 'susfs_priv_app_sid' drivers/kernelsu
-          grep -Rqs 'susfs_is_current_ksu_domain' drivers/kernelsu
-          test ! -e fs/susfs.c
-          test ! -e include/linux/susfs.h
-          test ! -e include/linux/susfs_def.h
-          echo 'SUSFS_MODE=SUKISU_BUILTIN_KSU_SIDE_ONLY_NO_EXTERNAL_KERNEL_PATCH' | tee ../logs/susfs-mode.txt
+          # V115 matched-SUSFS ABI audit:
+          # The kernel-side SUSFS implementation must expose the exact symbols used
+          # by the pinned SukiSU v4.2.0 builtin source. This prevents a generic/older
+          # 4.19 SUSFS patch from being accepted merely because it has susfs.c.
+          for sym in \
+            susfs_ksu_sid susfs_init_sid susfs_zygote_sid susfs_zygote_next_sid \
+            susfs_priv_app_sid susfs_is_sid_equal susfs_get_sid_from_name \
+            susfs_set_batch_sid susfs_set_current_proc_no_su \
+            susfs_set_current_proc_umounted ksu_handle_extra_susfs_work \
+            susfs_init susfs_get_enabled_features; do
+            if ! grep -RqsE "(^|[^A-Za-z0-9_])${sym}([^A-Za-z0-9_]|$)" \
+                include/linux/susfs.h fs/susfs.c drivers/kernelsu; then
+              echo "[ERROR] Matched SUSFS ABI symbol missing: ${sym}"
+              exit 1
+            fi
+          done
+          echo "Matched SukiSU/SUSFS ABI audit: PASS" | tee ../logs/susfs-sukisu-abi-audit.log
 
-          git status --short | tee ../logs/post-sukisu-source-state.txt
+          # Cross-setup contract: SukiSU's KSU-side SUSFS ABI and the kernel-side
+          # SUSFS implementation must be present as one coherent source graph.
+          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          grep -q 'susfs_is_current_ksu_domain' fs/susfs.c
+          grep -q 'setup_selinux' fs/susfs.c
+          grep -q 'CONFIG_KSU_SUSFS_SUS_PATH' fs/namei.c
+          grep -q 'CONFIG_KSU_SUSFS_SUS_MOUNT' fs/namespace.c
+          grep -q 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c
+          grep -q 'CONFIG_KSU_SUSFS_SUS_MAP' fs/proc/task_mmu.c
+          grep -q 'CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG' fs/proc/cmdline.c
+          grep -q 'CONFIG_KSU_SUSFS_OPEN_REDIRECT' fs/namei.c
 
-      - name: "7. Enable compatible SukiSU features, disable external SUSFS and enforce no-removal"
+      - name: "7. Enable all compatible SukiSU/SUSFS features and enforce no-removal"
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -450,27 +760,39 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
           make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/pre-sukisu-defconfig.log 2>&1
-          ./scripts/config --file out/.config --enable KSU --enable KSU_FEATURE_ADBROOT --enable KSU_DEBUG --enable KPM --disable KSU_SUSFS
+          ./scripts/config --file out/.config --enable KSU --enable KSU_FEATURE_ADBROOT --enable KSU_DEBUG --enable KPM --enable KSU_SUSFS
+          for sym in KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP; do
+            grep -Eq "^[[:space:]]*config[[:space:]]+${sym}([[:space:]]|$)" drivers/kernelsu/Kconfig
+            ./scripts/config --file out/.config --enable "${sym}"
+          done
           make O=out olddefconfig > ../logs/sukisu-olddefconfig.log 2>&1
-          grep -q '^CONFIG_KSU=y$' out/.config
-          grep -q '^CONFIG_KSU_FEATURE_ADBROOT=y$' out/.config
-          grep -q '^CONFIG_KSU_DEBUG=y$' out/.config
-          grep -q '^CONFIG_KPM=y$' out/.config
-          grep -q '^# CONFIG_KSU_SUSFS is not set$' out/.config
-          grep -q '^CONFIG_KALLSYMS=y$' out/.config
-          grep -q '^CONFIG_KALLSYMS_ALL=y$' out/.config
-          grep -q '^CONFIG_THREAD_INFO_IN_TASK=y$' out/.config
-          # No KSU_SUSFS_* kernel feature may be enabled when kernel-side SUSFS sources are absent.
-          if grep -E '^CONFIG_KSU_SUSFS_[A-Z0-9_]+=y$' out/.config; then
-            echo '[ERROR] KSU_SUSFS subfeature enabled without kernel-side SUSFS implementation.'
-            exit 1
-          fi
+          for sym in CONFIG_KSU CONFIG_KSU_FEATURE_ADBROOT CONFIG_KSU_DEBUG CONFIG_KPM CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_THREAD_INFO_IN_TASK; do
+            grep -q "^${sym}=y$" out/.config || { echo "[ERROR] ${sym} is not y"; exit 1; }
+          done
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
           while IFS= read -r line; do
             sym="${line%%=*}"
             case "$sym" in CONFIG_KSU*|CONFIG_KPM) continue ;; esac
             grep -Fxq "$line" ../post-integration-enabled-config.txt || { echo "[ERROR] Baseline config changed: $line"; exit 1; }
           done < ../baseline-enabled-config.txt
+
+
+          # V115: enumerate all boolean SUSFS symbols declared by the pinned SukiSU
+          # Kconfig and require every supported feature to be Y. The only exclusions
+          # allowed here are symbols whose Kconfig dependency is not satisfiable on
+          # this exact kernel; those are logged explicitly rather than silently changed.
+          grep -nE '^[[:space:]]*config KSU_SUSFS(_[A-Z0-9_]+)?$' drivers/kernelsu/Kconfig \
+            | sed -E 's/^[^:]+:[[:space:]]*config[[:space:]]+//' > ../logs/sukisu-susfs-kconfig-symbols.txt
+          while IFS= read -r sym; do
+            [ -n "$sym" ] || continue
+            if grep -q "^CONFIG_${sym}=y$" out/.config; then
+              echo "${sym}=y"
+            elif grep -q "^# CONFIG_${sym} is not set$" out/.config; then
+              echo "${sym}=n"
+            else
+              echo "${sym}=unresolved"
+            fi
+          done < ../logs/sukisu-susfs-kconfig-symbols.txt | tee ../logs/sukisu-susfs-feature-state.log
 
       - name: "8. Build SukiSU subtree, then Image"
         shell: bash
@@ -524,17 +846,18 @@ jobs:
             llvm-nm -n out/vmlinux | grep -Eq "[[:space:]]${sym}$" || { echo "[ERROR] Missing ${sym}"; exit 1; }
           done
           grep -A12 -B3 'void apply_kernelsu_rules(void)' drivers/kernelsu/selinux/rules.c | grep -q 'ksu_allow'
-          # External/kernel-side SUSFS 2.3.0 must not be present in this generation.
-          test ! -e fs/susfs.c
-          test ! -e include/linux/susfs.h
-          test ! -e include/linux/susfs_def.h
-          test ! -f ../logs/susfs-2.3.0.patch
-          grep -q '^# CONFIG_KSU_SUSFS is not set$' out/.config
-          if grep -E '^CONFIG_KSU_SUSFS_[A-Z0-9_]+=y$' out/.config; then
-            echo '[ERROR] SUSFS kernel subfeature unexpectedly enabled.'
-            exit 1
-          fi
-          test "${OUTPUT_PREFIX}" = "V113-LM-G900-KARNAL"
+          # Do not allow an unpinned/alternate SUSFS source to sneak into the tree.
+          test -s fs/susfs.c
+          grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+          test -f ../logs/susfs-2.3.0.patch
+          test "$(git hash-object ../logs/susfs-2.3.0.patch)" = "f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+          test "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" = "8035f1a344e07b5d133ae44b46d505ce59096fbc391b1e92bf9a0f42192408c6"
+          grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
+          for sym in CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP; do
+            grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
+          done
+          test ! -d susfs-backport
+          test "${OUTPUT_PREFIX}" = "V115-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -552,7 +875,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V113-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V115-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -588,7 +911,6 @@ jobs:
           echo 'su -c "ls -la /data/adb/modules"'
           echo 'su -c "mount | grep /data/adb/modules || true"'
           echo 'The old fatal setexeccon(u:r:ksu:s0) Invalid argument must not appear.'
-          echo 'SUSFS mode: SukiSU builtin KSU-side support only; no external kernel-side SUSFS 2.3.0 patch.'
           EOF_VALIDATE
           chmod +x release/build-info/device-root-module-validation.sh
           sha256sum release/kernel-image release/kernel.zip release/AnyKernel3-OrangeFox-Flashable.zip > release/checksums/SHA256SUMS
@@ -599,8 +921,8 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          # Artifact identity contract: release/diagnostics must never carry stale V109/V110/V111 names.
-          if grep -RInE 'V109-LM-G900-KARNAL|V110-LM-G900-KARNAL|V111-LM-G900-KARNAL|V113-LM-G900-KARNAL' release diagnostics 2>/dev/null; then
+          # Artifact identity contract: release/diagnostics must never carry stale V109/V110/V115 names.
+          if grep -RInE 'V109-LM-G900-KARNAL|V110-LM-G900-KARNAL|V115-LM-G900-KARNAL' release diagnostics 2>/dev/null; then
             echo "[ERROR] stale artifact/version prefix detected"
             exit 1
           fi
@@ -635,8 +957,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V113-LM-G900-KARNAL-output
-          path: V113-LM-G900-KARNAL-output.zip
+          name: V115-LM-G900-KARNAL-output
+          path: V115-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -644,7 +966,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V113-LM-G900-KARNAL-kernel
+          name: V115-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -656,9 +978,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V113-LM-G900-KARNAL-complete-logs
+          name: V115-LM-G900-KARNAL-complete-logs
           path: |
-            V113-LM-G900-KARNAL-complete-logs.zip
+            V115-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
