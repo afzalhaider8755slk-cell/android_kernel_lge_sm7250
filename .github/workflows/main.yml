@@ -1,5 +1,5 @@
 
-name: V125-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V126-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,13 +37,13 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V125-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
-  OUTPUT_PREFIX: V125-LM-G900-KARNAL
+  WORKFLOW_VERSION: V126-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
+  OUTPUT_PREFIX: V126-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
   build:
-    name: LM-G900N 4.19.325 SukiSU builtin (V125)
+    name: LM-G900N 4.19.325 SukiSU builtin (V126)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -252,7 +252,7 @@ jobs:
           set -Eeuo pipefail
           cd kernel
           trap 'rc=$?; printf "[ERROR] Step-6 failed: rc=%s line=%s command=%s\\n" "$rc" "$LINENO" "$BASH_COMMAND" | tee -a ../logs/step6-failure.log' ERR
-          # V125 KPM source-level compatibility fix:
+          # V126 KPM source-level compatibility fix:
           # SukiSU v4.2.0-b20 KPM uses the modern access_ok(addr, size) API,
           # while this exact ARM64 Linux 4.19 tree exposes access_ok(type, addr, size).
           # The pinned SukiSU source already provides ksu_access_ok() in
@@ -915,7 +915,7 @@ jobs:
           test -f "$KSD"
           if ! grep -q 'ksu_selinux_hide_handle_post_fs_data(void);' "$SHH"; then
             {
-              echo '/* V125: selinux_hide lifecycle API used by runtime/ksud.c. */'
+              echo '/* V126: selinux_hide lifecycle API used by runtime/ksud.c. */'
               echo 'void ksu_selinux_hide_handle_post_fs_data(void);'
               echo 'void ksu_selinux_hide_handle_second_stage(void);'
               cat "$SHH"
@@ -940,14 +940,21 @@ jobs:
           p = Path("fs/stat.c")
           s = p.read_text()
 
-          include_block = '#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\\n#include <linux/susfs.h>\\n#include <linux/susfs_def.h>\\n#endif\\n'
+          include_block = (
+              '#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n'
+              '#include <linux/susfs_def.h>\n'
+              '#endif\n'
+          )
 
           if "CONFIG_KSU_SUSFS_SUS_KSTAT" not in s:
               raise SystemExit("fs/stat.c has no SUSFS KSTAT consumer block")
 
-          need_h = "#include <linux/susfs.h>"
+          # The pinned SUSFS 2.3.0 4.19 patch defines the KSTAT helper and
+          # STATX_SUS_KSTAT(_FUSE) constants in susfs_def.h. Its fs/stat.c
+          # hunk already supplies the two SUSFS function externs locally, so
+          # susfs_def.h is the exact missing header dependency for this file.
           need_d = "#include <linux/susfs_def.h>"
-          if need_h not in s or need_d not in s:
+          if need_d not in s:
               lines = s.splitlines(True)
               last_linux_include = -1
               for i, line in enumerate(lines):
@@ -966,10 +973,13 @@ jobs:
           print("fs/stat.c SUSFS KSTAT header dependency: PASS")
           PY_STAT_SUSFS_HEADERS
 
-          grep -q '#include <linux/susfs.h>' fs/stat.c
           grep -q '#include <linux/susfs_def.h>' fs/stat.c
-          grep -Eq 'susfs_is_current_app_uid[[:space:]]*\\(' fs/stat.c
-          grep -Eq 'STATX_SUS_KSTAT(_FUSE)?' fs/stat.c
+          grep -q 'susfs_is_current_app_uid()' fs/stat.c
+          grep -q 'STATX_SUS_KSTAT' fs/stat.c
+          grep -q 'STATX_SUS_KSTAT_FUSE' fs/stat.c
+          grep -q 'susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse)' fs/stat.c
+          grep -q 'susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask)' fs/stat.c
+          printf '%s\\n' '4.19 fs/stat.c -> susfs_def.h KSTAT dependency: PASS' > ../logs/susfs-stat-kstat-dependency.log
 
           # The real 4.19 policy injector must remain active. This directly addresses
           # the old setexeccon(u:r:ksu:s0) failure instead of hiding it with permissive SELinux.
@@ -1150,7 +1160,7 @@ jobs:
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
-          test "${OUTPUT_PREFIX}" = "V125-LM-G900-KARNAL"
+          test "${OUTPUT_PREFIX}" = "V126-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -1168,7 +1178,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V125-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V126-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1215,7 +1225,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           # Artifact identity contract: release/diagnostics must never carry stale
-          # pre-V125 artifact prefixes. The current V125 prefix is intentionally present.
+          # pre-V126 artifact prefixes. The current V126 prefix is intentionally present.
           if grep -RInE 'V109-LM-G900-KARNAL|V110-LM-G900-KARNAL|V111-LM-G900-KARNAL|V112-LM-G900-KARNAL|V113-LM-G900-KARNAL|V114-LM-G900-KARNAL' release diagnostics 2>/dev/null; then
             echo "[ERROR] stale artifact/version prefix detected"
             exit 1
@@ -1251,8 +1261,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V125-LM-G900-KARNAL-output
-          path: V125-LM-G900-KARNAL-output.zip
+          name: V126-LM-G900-KARNAL-output
+          path: V126-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1260,7 +1270,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V125-LM-G900-KARNAL-kernel
+          name: V126-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -1272,9 +1282,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V125-LM-G900-KARNAL-complete-logs
+          name: V126-LM-G900-KARNAL-complete-logs
           path: |
-            V125-LM-G900-KARNAL-complete-logs.zip
+            V126-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
