@@ -1,5 +1,5 @@
 
-name: V119-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V120-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,13 +37,13 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V119-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
-  OUTPUT_PREFIX: V119-LM-G900-KARNAL
+  WORKFLOW_VERSION: V120-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
+  OUTPUT_PREFIX: V120-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
   build:
-    name: LM-G900N 4.19.325 SukiSU builtin (V119)
+    name: LM-G900N 4.19.325 SukiSU builtin (V120)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -252,7 +252,7 @@ jobs:
           set -Eeuo pipefail
           cd kernel
           trap 'rc=$?; printf "[ERROR] Step-6 failed: rc=%s line=%s command=%s\\n" "$rc" "$LINENO" "$BASH_COMMAND" | tee -a ../logs/step6-failure.log' ERR
-          # V119 KPM source-level compatibility fix:
+          # V120 KPM source-level compatibility fix:
           # SukiSU v4.2.0-b20 KPM uses the modern access_ok(addr, size) API,
           # while this exact ARM64 Linux 4.19 tree exposes access_ok(type, addr, size).
           # The pinned SukiSU source already provides ksu_access_ok() in
@@ -591,39 +591,70 @@ jobs:
             python3 - "$report" <<'PY_CACHED_WS'
           import pathlib, re, subprocess, sys
           report = pathlib.Path(sys.argv[1])
-          bad = []
+          trailing = []
+          eof_blank = []
           for line in report.read_text(errors="replace").splitlines():
               m = re.match(r"^(.+):(\d+): trailing whitespace\.$", line)
               if m:
-                  bad.append((m.group(1), int(m.group(2))))
+                  trailing.append((m.group(1), int(m.group(2))))
+                  continue
+              m = re.match(r"^(.+):(\d+): new blank line at EOF\.$", line)
+              if m:
+                  eof_blank.append((m.group(1), int(m.group(2))))
                   continue
               # git diff --check prints the offending '+' line immediately after
               # the diagnostic. It is evidence, not a second diagnostic.
               if line.startswith("+"):
                   continue
               if line.strip():
-                  # Any diagnostic other than trailing-whitespace is a hard
-                  # source-integrity failure; never suppress conflict markers or
-                  # mixed-indent errors.
+                  # Any diagnostic other than the two source-integrity cases
+                  # explicitly audited above is a hard failure. Never suppress
+                  # conflict markers, mixed indentation, or unknown diagnostics.
                   raise SystemExit("UNHANDLED_GIT_DIFF_CHECK: " + line)
-          if not bad:
-              raise SystemExit("GIT_DIFF_CHECK_FAILED_WITHOUT_TRAILING_WHITESPACE_DIAGNOSTIC")
-          for path, lineno in bad:
+
+          if not trailing and not eof_blank:
+              raise SystemExit("GIT_DIFF_CHECK_FAILED_WITHOUT_AUDITED_DIAGNOSTIC")
+
+          repaired_trailing = 0
+          repaired_eof = 0
+
+          for path, lineno in trailing:
               p = pathlib.Path(path)
               lines = p.read_text(errors="surrogateescape").splitlines(keepends=True)
               if lineno < 1 or lineno > len(lines):
                   raise SystemExit(f"line out of range while repairing {path}:{lineno}")
-              old = lines[lineno-1]
+              old = lines[lineno - 1]
               newline = "\n" if old.endswith("\n") else ""
               body = old[:-1] if newline else old
               new = re.sub(r"[ \t]+$", "", body) + newline
               if new == old:
                   raise SystemExit(f"reported whitespace not repairable at {path}:{lineno}")
-              lines[lineno-1] = new
+              lines[lineno - 1] = new
               p.write_text("".join(lines), errors="surrogateescape")
-          for path, _ in sorted(set(bad)):
+              repaired_trailing += 1
+
+          for path, _ in eof_blank:
+              p = pathlib.Path(path)
+              data = p.read_bytes()
+              # This repair is only permitted because git diff --check explicitly
+              # identified a NEW blank line at EOF. Preserve all source bytes except
+              # redundant empty/whitespace-only terminal lines, and end with one LF.
+              text = data.decode("utf-8", errors="surrogateescape")
+              lines = text.splitlines()
+              while lines and not lines[-1].strip():
+                  lines.pop()
+              repaired = "\n".join(lines) + "\n"
+              new_data = repaired.encode("utf-8", errors="surrogateescape")
+              if new_data == data:
+                  raise SystemExit(f"EOF blank-line diagnostic not repairable at {path}")
+              p.write_bytes(new_data)
+              repaired_eof += 1
+
+          for path in sorted(set([p for p, _ in trailing] + [p for p, _ in eof_blank])):
               subprocess.run(["git", "add", "--", path], check=True)
-          print(f"repaired_cached_trailing_whitespace={len(bad)}")
+
+          print(f"repaired_cached_trailing_whitespace={repaired_trailing}")
+          print(f"repaired_cached_new_blank_line_at_eof={repaired_eof}")
           PY_CACHED_WS
             if [ "$mode" = "cached" ]; then
               if ! git diff --cached --check --ws-error-highlight=new > "${report}.after" 2>&1; then
@@ -981,7 +1012,7 @@ jobs:
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
-          test "${OUTPUT_PREFIX}" = "V119-LM-G900-KARNAL"
+          test "${OUTPUT_PREFIX}" = "V120-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -999,7 +1030,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V119-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V120-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1046,7 +1077,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           # Artifact identity contract: release/diagnostics must never carry stale
-          # pre-V119 artifact prefixes. The current V119 prefix is intentionally present.
+          # pre-V120 artifact prefixes. The current V120 prefix is intentionally present.
           if grep -RInE 'V109-LM-G900-KARNAL|V110-LM-G900-KARNAL|V111-LM-G900-KARNAL|V112-LM-G900-KARNAL|V113-LM-G900-KARNAL|V114-LM-G900-KARNAL' release diagnostics 2>/dev/null; then
             echo "[ERROR] stale artifact/version prefix detected"
             exit 1
@@ -1082,8 +1113,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V119-LM-G900-KARNAL-output
-          path: V119-LM-G900-KARNAL-output.zip
+          name: V120-LM-G900-KARNAL-output
+          path: V120-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1091,7 +1122,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V119-LM-G900-KARNAL-kernel
+          name: V120-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -1103,9 +1134,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V119-LM-G900-KARNAL-complete-logs
+          name: V120-LM-G900-KARNAL-complete-logs
           path: |
-            V119-LM-G900-KARNAL-complete-logs.zip
+            V120-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
