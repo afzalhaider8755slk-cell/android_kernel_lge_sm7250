@@ -1,4 +1,5 @@
-name: V100-LM-G900-KARNAL-BUILT
+
+name: V101-LM-G900-KARNAL-SukiSU-Builtin
 
 on:
   workflow_dispatch:
@@ -10,1032 +11,187 @@ env:
   KERNEL_REPO: https://github.com/afzalhaider8755slk-cell/android_kernel_lge_sm7250.git
   KERNEL_REF: sixteen
   KERNEL_COMMIT: 720c8d37ab7727af24c275bead988d6345ad174b
-
   DEVICE_REPO: https://github.com/Hirashi-so/android_device_lge_caymanlm.git
   DEVICE_REF: sixteen
   COMMON_DEVICE_REPO: https://github.com/Hirashi-so/android_device_lge_sm7250-common.git
   COMMON_DEVICE_REF: sixteen
   VENDOR_REPO: https://github.com/Hirashi-so/proprietary_vendor_lge_caymanlm.git
   VENDOR_REF: sixteen
-
   BASELINE_KERNEL_SHA256: 85dd6083fd5a34135f301de661cae5f90b1aee82f4f5aa8d6dee30eacd34659d
   BASELINE_KERNEL_VERSION: 4.19.325
   BASELINE_CIP: v4.19.325-cip132
-  CIP_PREFIX: v4.19.325-cip
-
-  KSU_VERSION: v4.2.0
-  KSU_MANAGER_BUILD: 4.2.0
-  # SukiSU-Ultra Manager package for the requested 4.2.0 target.
-  # Kbuild passes this to apk_sign.c so the kernel-side Manager check is
-  # package+certificate bound, not merely certificate-bound.
-  KSU_MANAGER_PACKAGE: com.sukisu.ultra
-  # Retained metadata slots for the baseline workflow; SukiSU builtin owns
-  # its kernel-side version/signature contract and these are not used as a
-  # synthetic manager override.
-  KSU_VERSION_CODE: 0
-  KSU_VERSION_TAG_OVERRIDE: v4.2.0
-  # SukiSU builtin is the self-contained non-GKI source tree used here.
-  # It carries its own hook implementation and built-in SUSFS; no external
-  # SUSFS source layer is stacked on top.
-  KSU_REPO_OWNER: SukiSU-Ultra
-  KSU_REPO: SukiSU-Ultra
+  CIP_TARGET: v4.19.325-cip133
+  KSU_REPO: SukiSU-Ultra/SukiSU-Ultra
   KSU_REF: builtin
-  # V82 adds only the KSU_SUSFS Kconfig namespace to the legacy driver so the
-  # existing SUSFS 2.3 backport/inline-hook layer remains enabled. No SUSFS source,
-  # CIP, DT, packaging, or unrelated kernel feature is removed.
-  # V40: only arch/arm64/boot/Image is packaged (AnyKernel3 keeps the device DTB/DTBO), so only the
-  # Image target is built. A plain `make` also builds every DTB and lito-caymanlm_cn-rev-1.0_overlay.dtbo
-  # still aborts it ("Input tree has errors"), which stops the whole make before the Image is done.
-  KERNEL_BUILD_TARGETS: Image
-  # V84: SUSFS acquisition and the audited 4.19 backport remain exactly the same
-  # as the previous successful build. Only the KernelSU-Next driver source/integration
-  # path and the requested v3.4.0 version are changed in this release.
-  # V97: SUSFS 2.3.0 target for the 4.19 non-GKI port. This is a
-  # compatibility port, not a claim that upstream ships an untouched 2.3.0
-  # kernel-4.19 patch. The workflow must verify the kernel-side SUSFS API and
-  # the userspace-facing feature contract before declaring support.
-  SUSFS_TARGET_MAJOR: 2
-  SUSFS_TARGET_MINOR: 3
-  SUSFS_TARGET_PATCH: 0
-  SUSFS_VERSION: 2.3.0
-  # SUS_SU is intentionally NOT forced on for this 4.19 manual-hook kernel.
-  # Upstream SUSFS documents SUS_SU as unsupported for non-GKI/manual-hook
-  # integration; all other compatible SUSFS facilities remain enabled.
-  SUSFS_NON_GKI_SUS_SU: false
-  SUSFS_BACKPORT_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
-  SUSFS_BACKPORT_REF: mainline
-  SUSFS_BACKPORT_COMMIT: f15603b246d7ce6008af8bdefa0a34b3df28326a
-  SUSFS_PATCH_PATH: Patches/Patch/susfs_patch_to_4.19.patch
-  SUSFS_PATCH_BLOB_SHA256: f9d8ed735f461ed982d2c49b338e35c17f4378e5
-  # This repo documents susfs_patch_to_<kernel>.patch + susfs_inline_hook_patches.sh
-  # as the two-layer non-GKI SUSFS integration path.
-
+  KSU_COMMIT: b20dee702035af09cb2ecb5f35443bbc1747f3e6
+  KSU_MANAGER_BUILD: 4.2.0
+  KSU_MANAGER_PACKAGE: com.sukisu.ultra
+  KSU_MANAGER_SIGNATURE_SHA256: 947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V100
-  OUTPUT_PREFIX: V100-LM-G900-KARNAL
-  # Historical integration notes are retained for auditability; active KSU source is
-  # the official KernelSU-Next legacy branch configured above.
-  # 2) pin the SUSFS backport source to the audited commit
-  # 3) discover the actual 4.19 backport filename used by that source
-  # 4) try a strict direct apply first, then a Git 3-way merge against the staged CIP+KSUN tree
-  # 5) reject any unresolved conflicts, .rej/.orig files, or conflict markers
-  # 6) verify CONFIG_KSU_SUSFS exists before enabling it
-  # 7) fetch the SUSFS backport with retryable Git transport instead of one fragile clone
-  # 8) enforce that the pinned 4.19 patch and inline-hook script both declare SUSFS 2.3.x
-  #
-  # V23 fixes the actual, reproducible Step-7 abort seen on every V22 run:
-  # 9) the per-file `patch -p1` call for the four audited conflict files (fs/namespace.c,
-  #    fs/proc/cmdline.c, fs/proc/task_mmu.c, fs/super.c) was wrapped in `set +e ... set -e`,
-  #    which does NOT stop bash's ERR trap from firing on the expected/audited hunk failure.
-  #    Because `set -E` is also active, the trap fired a second time inside the `(cd kernel && ...)`
-  #    subshell too (wrong cwd -> "tee: ... No such file or directory" noise), then again in the
-  #    outer shell, aborting Step 7 on the very first expected failure (fs/namespace.c) every time,
-  #    before the semantic source port, the other 3 files, or the inline-hook stage ever ran.
-  #    Fixed with the same `if <cmd>; then rc=0; else rc=$?; fi` guard already used correctly for
-  #    the 3-way `git apply`, and `patch -d kernel` instead of a `(cd kernel && ...)` subshell so
-  #    there is no subshell for the inherited ERR trap to misfire inside.
-  #
-  # V24 fixes what Step 7 hits once V23's fix lets it run to completion: the patch apply,
-  # semantic four-file port, and inline-hook layer (fs/exec.c, fs/open.c, etc.) all succeed,
-  # but the final "config KSU_SUSFS" Kconfig check always fails. Researched and confirmed this
-  # is a genuine source-compatibility gap, not a script bug: SUSFS 2.x's inline hooks expect
-  # ksu_su_compat_enabled, ksu_handle_execveat, ksu_handle_faccessat, ksu_handle_stat,
-  # ksu_handle_setresuid, and a "config KSU_SUSFS" Kconfig entry to already exist inside
-  # KernelSU's own source -- vanilla/official KernelSU-Next (KernelSU-Next/KernelSU-Next) does
-  # not carry them. Step 6 now clones KernelSU-Next's own SUSFS fork (pershoot/KernelSU-Next,
-  # branch dev-susfs) instead, which several current, independent SUSFS+KernelSU-Next projects
-  # use for this exact reason. Everything else about Step 6 (driver symlink, Makefile/Kconfig
-  # wiring, KSU_VERSION=v3.4.0 legacy baseline) is unchanged.
-  #
-  # V25: dev-susfs is an actively-moving experimental branch, so V24's exact-commit pin broke
-  # ("fatal: unable to read tree") the moment that commit was rewritten off the branch. V25
-  # tracks the branch's current tip instead of a fixed commit -- Step 6 records exactly which
-  # commit was used in logs/06-kernelsu-resolved.txt every run, and still fails immediately,
-  # inside Step 6 itself, if that commit ever stops declaring "config KSU_SUSFS".
-
-
-  # V34: V33 build log exposed two concrete regressions in the V33 compatibility edits:
-  # (1) the injected common-touch guard was left unterminated, and (2) pkg_observer was
-  # given the 4.19 fsnotify callback type but its body still dereferenced file_name as a qstr.
-  # V34 repairs only those two source-compatibility mistakes; no setup, future, overlay,
-  # touch definition, KernelSU feature, or SUSFS feature is removed.
-
-  # V40 (built from the complete V39 run-478 logs; every V39 feature/step is kept):
-  # 1) REAL ERROR 1, drivers/kernelsu/selinux/sepolicy.c (20+ errors, "too many errors emitted"):
-  #    struct flex_array vs avtab_node, struct filename_trans_key, policydb_filenametr_search,
-  #    type_val_to_struct... V39's Step-6 note assumed the policydb editing primitives compile on
-  #    older kernels; the log shows they do not. Linux 4.19 has the pre-5.7 policydb layout.
-  #    Only apply_kernelsu_rules()/handle_sepolicy() use these primitives and V39 already stubs both
-  #    for <5.7, so V40 wraps the rest of sepolicy.c: original code for >=5.7, safe no-op stubs below.
-  #    Stubs are generated from the real file (no hard-coded line numbers).
-  #    Consequence (already true in V39): KernelSU cannot inject its su SELinux rules on this kernel;
-  #    this device boots with androidboot.selinux=permissive so that is not blocking.
-  # 2) seccomp_cache.c: V32 made it compile by defining SECCOMP_ARCH_NATIVE_NR in the arm64 header. That
-  #    file mirrors the Linux 5.11+ per-filter action cache, which 4.19 does not have, so at runtime it
-  #    would write bits at offsets that are not part of a 4.19 struct seccomp_filter (kernel heap
-  #    corruption when root is granted). V40 keeps the header definitions but turns the exported cache
-  #    functions into no-ops (nothing to clear on a kernel without the cache).
-  # 3) REAL ERROR 2, DTC lito-caymanlm_cn-rev-1.0_overlay.dtbo, is STILL present in V39 (log line 2963),
-  #    so the duplicate-include theory did not clear it. It is independent of the Image, so V40 builds
-  #    the Image target only, and the non-blocking Step 9b re-runs the DTB build with V=1 and re-runs dtc
-  #    without -qq to capture the hidden dtc message in logs/09b-*.
-  # 4) All of drivers/kernelsu is compiled with `make -k` first (1-2 min): make otherwise stops at the
-  #    first failing file, so each 8-minute run revealed only one new error.
-  # 5) The last lines of a failed build are harmless CC lines; Step 9 now prints an error summary at the
-  #    end of the log.
-
-  # V41 (built from the complete V40 run-479 logs; the V40 pre-compile did its job and listed everything):
-  # 1) ~7 of the "errors" were `'flask.h' file not found` in sucompat.c, file_wrapper.c, selinux.c, rules.c,
-  #    sepolicy.c and selinux_hide.c. They were NOT real: flask.h/av_permissions.h are generated while
-  #    security/selinux/ is built, and the V40 pre-compile built drivers/kernelsu before that (the same
-  #    files had compiled fine in the V39 full build). V41 builds security/selinux/ first. This also removes
-  #    the same ordering race from the real build.
-  # 2) supercall/dispatch.c (6 errors): tasklist_lock, init_task, task_pgrp(), task_session() are only
-  #    visible through <linux/sched/task.h> and <linux/sched/signal.h> on 4.19. V41 adds those includes.
-  # 3) supercall/supercall.c: TWA_RESUME does not exist before Linux 5.7 (4.19 task_work_add() takes a
-  #    bool). V41 uses the same KSU_TASK_WORK_RESUME compat macro V35 already added for allowlist.c.
-  # 4) DTC finally has a real message (logs/09b-dtc-verbose.txt): ERROR (duplicate_label) camera_therm_default
-  #    and bmr_w_therm_default, defined in both /fragment@18 and /fragment@153 of the CN overlay. It is not the
-  #    touch include. The Image build does not depend on it; Step 9b now also lists which .dtsi files
-  #    define those labels (logs/09b-dup-label-sources.txt) so the exact duplicate include can be removed.
-
-  # V42 (built from the complete V41 run logs): V41 fixed everything except one file. The pre-compile now
-  # reports exactly 11 errors, all in drivers/kernelsu/feature/selinux_hide.c: struct selinux_state has no
-  # status_lock/status_page/policy and struct selinux_policy is incomplete. Those members/types exist only
-  # since the Linux 5.7 SELinux rewrite (4.19 keeps the status page in ss/status.c globals and the policy in
-  # services.c), so this SELinux-hiding feature cannot work on this kernel. V42 wraps the file like
-  # sepolicy.c: original code for >=5.7, safe no-op stubs below. Nothing else in KernelSU changes.
-  # The final build also uses `make -k`, so if anything else in the WHOLE kernel (SUSFS files, etc.) fails,
-  # every error is listed in one run instead of only the first.
-  # DTC (non-blocking): logs/09b-dup-label-sources.txt shows camera_therm_default and bmr_w_therm_default are
-  # defined both in qcom/lito-pmic-overlay.dtsi and in lito-caymanlm_lao_com-pm.dtsi.
-
-  # V43 (previous run; actual V43 build log analyzed for V82):
-  # V82 (built from the complete V43 run-logs.zip): the selinux_hide.c stub from V42 cleared that file, and the pre-compile
-  # moved on to the final Image link, which failed with 3 ld.lld "undefined symbol" errors: seccomp_filter_release
-  # (drivers/kernelsu/policy/app_profile.c), path_mount (drivers/kernelsu/infra/su_mount_ns.c), and path_umount
-  # (drivers/kernelsu/feature/kernel_umount.c) -- all Linux 5.9+ kernel-internal entry points this 4.19.325 tree
-  # does not have. Verified against the actual upstream commits that introduced path_mount/path_umount (Christoph
-  # Hellwig, merged for 5.9) and kernel/seccomp.c's existing put_seccomp_filter(); added as compatibility wrappers
-  # in fs/namespace.c and kernel/seccomp.c (see the "V43 FIX" comment in Step 9 for the full derivation). Nothing
-  # else in KernelSU or the kernel tree changes.
+  WORKFLOW_VERSION: V101
+  OUTPUT_PREFIX: V101-LM-G900-KARNAL
+  KERNEL_BUILD_TARGET: Image
 
 jobs:
   build:
-    name: Build V99
+    name: LM-G900N 4.19.325 SukiSU builtin
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      - name: "1. Checkout kernel source"
+      - name: "1. Checkout exact kernel baseline"
         shell: bash
         run: |
           set -Eeuo pipefail
           mkdir -p logs diagnostics
-          exec > >(tee -a logs/01-checkout.log) 2>&1
-          echo "::group::[1/15] Checkout kernel source"
           git clone --branch "${KERNEL_REF}" "${KERNEL_REPO}" kernel
-          cd kernel
-          git fetch --tags --force --prune
-          git checkout --detach "${KERNEL_COMMIT}"
-          test "$(git rev-parse HEAD)" = "${KERNEL_COMMIT}"
-          test "$(make -s kernelversion)" = "${BASELINE_KERNEL_VERSION}"
-          git status --short > ../baseline-git-status.txt
-          printf 'SOURCE_COMMIT=%s\n' "$(git rev-parse HEAD)" > ../source-info.txt
-          printf 'SOURCE_BRANCH=%s\n' "${KERNEL_REF}" >> ../source-info.txt
-          printf 'SOURCE_EXPECTED_COMMIT=%s\n' "${KERNEL_COMMIT}" >> ../source-info.txt
-          printf 'KERNEL_VERSION=%s\n' "$(make -s kernelversion)" >> ../source-info.txt
-          echo "[OK] Source: $(git rev-parse HEAD)"
-          echo "[OK] Kernel version: $(make -s kernelversion)"
-          echo "::endgroup::"
+          git -C kernel fetch --tags --force --prune
+          git -C kernel checkout --detach "${KERNEL_COMMIT}"
+          test "$(git -C kernel rev-parse HEAD)" = "${KERNEL_COMMIT}"
+          test "$(make -s -C kernel kernelversion)" = "${BASELINE_KERNEL_VERSION}"
+          git -C kernel status --short > baseline-git-status.txt
+          printf 'SOURCE_COMMIT=%s\nSOURCE_BRANCH=%s\nKERNEL_VERSION=%s\n' \
+            "$(git -C kernel rev-parse HEAD)" "${KERNEL_REF}" "$(make -s -C kernel kernelversion)" > source-info.txt
 
-      - name: "2. Prepare build tools"
+      - name: "2. Prepare Android Clang"
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[2/15] Prepare build tools"
-          {
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq bc bison build-essential ccache clang flex gcc-aarch64-linux-gnu git lld libssl-dev libelf-dev libncurses-dev python3 rsync unzip zip wget curl device-tree-compiler patch
-          } > logs/02-apt.log 2>&1
-          curl -fL --retry 5 --retry-delay 2 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" -o "/tmp/${CLANG_REV}.tar.gz" > logs/02-clang-download.log 2>&1
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison build-essential ccache clang flex gcc-aarch64-linux-gnu git lld libssl-dev libelf-dev libncurses-dev python3 rsync unzip zip wget curl device-tree-compiler patch
+          curl -fL --retry 5 --retry-delay 2 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" \
+            -o "/tmp/${CLANG_REV}.tar.gz"
           mkdir -p "clang-prebuilt/${CLANG_REV}"
-          tar -xzf "/tmp/${CLANG_REV}.tar.gz" -C "clang-prebuilt/${CLANG_REV}" > logs/02-clang-extract.log 2>&1
-          export CLANG_BIN="$GITHUB_WORKSPACE/clang-prebuilt/${CLANG_REV}/bin"
-          test -x "${CLANG_BIN}/clang"
-          test -x "${CLANG_BIN}/ld.lld"
-          "${CLANG_BIN}/clang" --version | tee logs/02-clang-version.log
-          head -n1 logs/02-clang-version.log > toolchain-version.txt
-          echo "CLANG_BIN=${CLANG_BIN}" >> "$GITHUB_ENV"
-          echo "[OK] Android Clang ${CLANG_REV}"
-          echo "::endgroup::"
+          tar -xzf "/tmp/${CLANG_REV}.tar.gz" -C "clang-prebuilt/${CLANG_REV}"
+          test -x "clang-prebuilt/${CLANG_REV}/bin/clang"
+          test -x "clang-prebuilt/${CLANG_REV}/bin/ld.lld"
+          "clang-prebuilt/${CLANG_REV}/bin/clang" --version | tee toolchain-version.txt
+          echo "CLANG_BIN=${GITHUB_WORKSPACE}/clang-prebuilt/${CLANG_REV}/bin" >> "$GITHUB_ENV"
 
-      - name: "3. Select and snapshot device defconfig"
+      - name: "3. Verify device tree and defconfig"
         shell: bash
         run: |
           set -Eeuo pipefail
-          mkdir -p logs/device-tree diagnostics/device-tree
-          exec > >(tee -a logs/03-defconfig-selection.log) 2>&1
-          echo "::group::[3/15] Select and snapshot device defconfig"
-
-          rm -rf device-caymanlm device-sm7250-common vendor-caymanlm
           git clone --depth=1 --branch "${DEVICE_REF}" "${DEVICE_REPO}" device-caymanlm
           git clone --depth=1 --branch "${COMMON_DEVICE_REF}" "${COMMON_DEVICE_REPO}" device-sm7250-common
           git clone --depth=1 --branch "${VENDOR_REF}" "${VENDOR_REPO}" vendor-caymanlm
-
-          cp device-caymanlm/BoardConfig.mk logs/device-tree/BoardConfig.mk
-          cp device-sm7250-common/BoardConfigCommon.mk logs/device-tree/BoardConfigCommon.mk
-          cp vendor-caymanlm/BoardConfigVendor.mk logs/device-tree/BoardConfigVendor.mk
-
+          mkdir -p diagnostics/device-tree
+          cp device-caymanlm/BoardConfig.mk diagnostics/device-tree/BoardConfig.mk
+          cp device-sm7250-common/BoardConfigCommon.mk diagnostics/device-tree/BoardConfigCommon.mk
+          cp vendor-caymanlm/BoardConfigVendor.mk diagnostics/device-tree/BoardConfigVendor.mk
           TARGET_KERNEL_CONFIG="$({ grep -E '^[[:space:]]*TARGET_KERNEL_CONFIG[[:space:]]*:?=' device-caymanlm/BoardConfig.mk || true; } | tail -n1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+$//')"
-          test -n "${TARGET_KERNEL_CONFIG}"
           test "${TARGET_KERNEL_CONFIG}" = "vendor/lineageos_cayman_defconfig"
-          DEFCONFIG="arch/arm64/configs/${TARGET_KERNEL_CONFIG}"
-          # V26: TARGET_KERNEL_CONFIG was only ever a local variable inside this step's own
-          # shell process. Every GitHub Actions "run:" step is a fresh shell, so Step 8 (and
-          # the defconfig= lines in Steps 12/15) reading "${TARGET_KERNEL_CONFIG}" always saw
-          # an unset variable -- Step 8's `set -u` then aborted immediately with "unbound
-          # variable" the moment execution finally reached it (previously Step 7 always failed
-          # first, so this was never exercised). Export it through $GITHUB_ENV, the same way
-          # CIP_TARGET already is elsewhere in this workflow, so it persists to every later step.
           echo "TARGET_KERNEL_CONFIG=${TARGET_KERNEL_CONFIG}" >> "$GITHUB_ENV"
-
-          {
-            echo "DEVICE_REPO=${DEVICE_REPO}"
-            echo "DEVICE_REF=${DEVICE_REF}"
-            echo "COMMON_DEVICE_REPO=${COMMON_DEVICE_REPO}"
-            echo "COMMON_DEVICE_REF=${COMMON_DEVICE_REF}"
-            echo "VENDOR_REPO=${VENDOR_REPO}"
-            echo "VENDOR_REF=${VENDOR_REF}"
-            echo "TARGET_KERNEL_CONFIG=${TARGET_KERNEL_CONFIG}"
-            echo "DEFCONFIG=${DEFCONFIG}"
-          } | tee logs/device-tree/selection.txt
-
-          cd kernel
-          test -f "${DEFCONFIG}"
-          cp "${DEFCONFIG}" ../baseline-defconfig.txt
-          sha256sum "${DEFCONFIG}" | tee ../logs/03-defconfig.sha256
-
-          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
-          export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
+          test -f "kernel/arch/arm64/configs/${TARGET_KERNEL_CONFIG}"
+          cp "kernel/arch/arm64/configs/${TARGET_KERNEL_CONFIG}" baseline-defconfig.txt
+          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
-          test -x "${CLANG_BIN}/clang"
-          test -x "${CLANG_BIN}/ld.lld"
-          make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/03-defconfig-make.log 2>&1
+          make -C kernel O=out "${TARGET_KERNEL_CONFIG}" > logs/defconfig.log 2>&1
+          awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' kernel/out/.config | sort > baseline-enabled-config.txt
+          sha256sum baseline-enabled-config.txt > logs/baseline-enabled-config.sha256
+          sha256sum baseline-defconfig.txt > logs/baseline-defconfig.sha256
+          printf 'baseline_kernel_sha256=%s\nbaseline_kernel_version=%s\nbaseline_cip=%s\ndefconfig=%s\n' \
+            "${BASELINE_KERNEL_SHA256}" "${BASELINE_KERNEL_VERSION}" "${BASELINE_CIP}" "${TARGET_KERNEL_CONFIG}" > baseline-info.txt
+          if grep -RInE 'androidboot\.selinux[=:]permissive' device-caymanlm device-sm7250-common vendor-caymanlm 2>/dev/null; then
+            echo '[ERROR] Device trees inject permissive SELinux; refusing to hide KSU SELinux defects.'
+            exit 1
+          fi
 
-          awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../baseline-enabled-config.txt
-          sha256sum ../baseline-enabled-config.txt | tee ../logs/03-baseline-enabled-config.sha256
-          {
-            echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
-            echo "baseline_kernel_version=${BASELINE_KERNEL_VERSION}"
-            echo "baseline_cip=${BASELINE_CIP}"
-            echo "defconfig=${TARGET_KERNEL_CONFIG}"
-            echo "baseline_enabled_config_count=$(wc -l < ../baseline-enabled-config.txt)"
-          } > ../baseline-info.txt
-
-          echo "[FIX] Toolchain prepared before defconfig; clang and ld.lld verified."
-          echo "[OK] Device tree explicitly selects ${TARGET_KERNEL_CONFIG}"
-          echo "[OK] Kernel defconfig exists: ${DEFCONFIG}"
-          echo "::endgroup::"
-
-      - name: "4. Resolve latest official CIP for 4.19.325"
+      - name: "4. Apply clean CIP 133 only"
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[4/15] Resolve latest official CIP"
           cd kernel
           git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-          git fetch --no-tags cip "+refs/tags/${BASELINE_CIP}:refs/tags/${BASELINE_CIP}" > ../logs/04-cip-baseline-fetch.log 2>&1
-          git ls-remote --tags --refs cip "refs/tags/${CIP_PREFIX}*" > ../logs/04-cip-tags.txt 2>&1
-          LATEST="$(awk -F/ '{print $NF}' ../logs/04-cip-tags.txt | grep -E "^${CIP_PREFIX}[0-9]+$" | sort -V | tail -n1)"
-          test -n "${LATEST}"
-          OLD_N="${BASELINE_CIP##*-cip}"; NEW_N="${LATEST##*-cip}"
-          test "${NEW_N}" -ge "${OLD_N}"
-          echo "CIP_TARGET=${LATEST}" >> "$GITHUB_ENV"
-          git fetch --no-tags cip "refs/tags/${LATEST}:refs/tags/${LATEST}" > ../logs/04-cip-target-fetch.log 2>&1
-          {
-            echo "CIP_BASELINE=${BASELINE_CIP}"
-            echo "CIP_TARGET=${LATEST}"
-            echo "baseline_commit=$(git rev-parse ${BASELINE_CIP})"
-            echo "target_commit=$(git rev-parse ${LATEST})"
-            echo "target_subject=$(git show -s --format=%s ${LATEST})"
-            git diff --stat "${BASELINE_CIP}..${LATEST}"
-          } | tee ../logs/04-cip-version.log
-          echo "[OK] Baseline: ${BASELINE_CIP}"
-          echo "[OK] Latest official 4.19.325 CIP discovered: ${LATEST}"
-          echo "::endgroup::"
-
-      - name: "5. Integrate maximum clean CIP level (incremental chain)"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[5/15] Integrate maximum clean CIP level"
-          cd kernel
-          mkdir -p ../logs/cip-checks
-          git remote get-url cip >/dev/null 2>&1 || git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
-          : > ../logs/05-cip-compatibility.log
-          : > ../logs/05-cip-failure.log
-          : > ../logs/05-cip-candidates.txt
-          {
-            echo "CIP compatibility probe"
-            echo "Source commit=$(git rev-parse HEAD)"
-            echo "Kernel version=$(make -s kernelversion)"
-            echo "Baseline tag=${BASELINE_CIP}"
-            echo "Remote=https://gitlab.com/cip-project/cip-kernel/linux-cip.git"
-            echo "Method=incremental tag-to-tag deltas, strict apply first, clean 3-way second"
-            echo
-          } | tee -a ../logs/05-cip-compatibility.log
-
-          git ls-remote --tags --refs cip "refs/tags/${CIP_PREFIX}*" > ../logs/05-cip-tags.txt 2>&1
-          mapfile -t ALL_CIP_TAGS < <(
-            awk -F/ '{print $NF}' ../logs/05-cip-tags.txt |
-              grep -E "^${CIP_PREFIX}[0-9]+$" |
-              sort -V
-          )
-          test "${#ALL_CIP_TAGS[@]}" -gt 0
-          {
-            echo "Baseline=${BASELINE_CIP}"
-            echo "All_candidates=${#ALL_CIP_TAGS[@]}"
-            printf '%s\n' "${ALL_CIP_TAGS[@]}"
-          } | tee ../logs/05-cip-candidates.txt
-
-          BASE_N="${BASELINE_CIP##*-cip}"
-          mapfile -t CIP_TAGS < <(
-            printf '%s\n' "${ALL_CIP_TAGS[@]}" |
-              awk -v base="${BASE_N}" -F-cip '$2 >= base'
-          )
-          test "${#CIP_TAGS[@]}" -gt 0
-
-          PREV_TAG="${BASELINE_CIP}"
-          SELECTED="${BASELINE_CIP}"
-          LAST_APPLY_MODE="baseline"
-          : > ../logs/05-cip-chain.log
-
-          # The V10 probe compared the entire 132->136 range directly against the
-          # LG tree. That is overly strict for a cumulative stable/CIP series:
-          # a file added by an intermediate tag (for example mm/kasan content)
-          # cannot be represented correctly when the whole range is treated as
-          # one patch against the old LG context. V11 walks 132->133->134->135->136
-          # and tests each real tag-to-tag delta on the already-integrated tree.
-          for TAG in "${CIP_TAGS[@]}"; do
-            [ "${TAG}" = "${BASELINE_CIP}" ] && continue
-            CHECK_LOG="../logs/cip-checks/${TAG}.log"
-            PATCH_FILE="../logs/cip-${PREV_TAG}-to-${TAG}.patch"
-            THREEWAY_LOG="../logs/cip-checks/${TAG}.3way"
-            : > "${CHECK_LOG}"
-            : > "${THREEWAY_LOG}"
-            echo "============================================================" | tee -a ../logs/05-cip-chain.log
-            echo "TEST=${PREV_TAG}..${TAG}" | tee -a ../logs/05-cip-chain.log
-
-            if ! git rev-parse -q --verify "refs/tags/${TAG}^{commit}" >/dev/null 2>&1; then
-              git fetch --no-tags cip "+refs/tags/${TAG}:refs/tags/${TAG}" >> "${CHECK_LOG}" 2>&1
-            fi
-            git diff --binary "${PREV_TAG}..${TAG}" > "${PATCH_FILE}"
-            {
-              echo "from=${PREV_TAG}"
-              echo "to=${TAG}"
-              echo "from_commit=$(git rev-parse ${PREV_TAG})"
-              echo "to_commit=$(git rev-parse ${TAG})"
-              echo "patch_sha256=$(sha256sum "${PATCH_FILE}" | awk '{print $1}')"
-              echo "patch_bytes=$(wc -c < "${PATCH_FILE}")"
-              echo "patch_files=$(git diff --name-only "${PREV_TAG}..${TAG}" | wc -l)"
-            } >> "${CHECK_LOG}"
-
-            if git apply --check --whitespace=nowarn "${PATCH_FILE}" > "${CHECK_LOG}.direct" 2>&1; then
-              echo "COMPATIBLE=${TAG} mode=direct" | tee -a ../logs/05-cip-compatibility.log
-              cat "${CHECK_LOG}.direct" >> "${CHECK_LOG}"
-              git apply --index --whitespace=nowarn "${PATCH_FILE}" > ../logs/05-cip-apply.log 2>&1
-              LAST_APPLY_MODE="direct"
-              SELECTED="${TAG}"
-              PREV_TAG="${TAG}"
-              echo "APPLIED=${TAG} mode=direct" | tee -a ../logs/05-cip-chain.log
-              git diff --check | tee ../logs/05-cip-diff-check.log
-              continue
-            fi
-
-            echo "DIRECT_INCOMPATIBLE=${TAG}" | tee -a ../logs/05-cip-compatibility.log
-            cat "${CHECK_LOG}.direct" >> "${CHECK_LOG}"
-
-            # Git --3way --check can exit 0 while reporting a textual conflict;
-            # V11 therefore rejects any conflict/error marker in the preflight log.
-            if git apply --3way --check --whitespace=nowarn "${PATCH_FILE}" > "${THREEWAY_LOG}" 2>&1; then
-              if ! grep -Eiq 'with conflicts|CONFLICT|error:|does not apply|patch failed' "${THREEWAY_LOG}"; then
-                echo "COMPATIBLE=${TAG} mode=3way" | tee -a ../logs/05-cip-compatibility.log
-                cat "${THREEWAY_LOG}" >> "${CHECK_LOG}"
-                git apply --3way --index --whitespace=nowarn "${PATCH_FILE}" > ../logs/05-cip-apply.log 2>&1
-                LAST_APPLY_MODE="3way"
-                SELECTED="${TAG}"
-                PREV_TAG="${TAG}"
-                echo "APPLIED=${TAG} mode=3way" | tee -a ../logs/05-cip-chain.log
-                git diff --check | tee ../logs/05-cip-diff-check.log
-                continue
-              fi
-            fi
-
-            {
-              echo "INCOMPATIBLE=${TAG}"
-              echo "=== direct ==="
-              cat "${CHECK_LOG}.direct"
-              echo "=== 3way ==="
-              cat "${THREEWAY_LOG}"
-            } | tee -a ../logs/05-cip-compatibility.log
-            cp "${THREEWAY_LOG}" "../logs/cip-checks/${TAG}.result.log"
-            echo "STOPPED_AT=${SELECTED} failed_candidate=${TAG}" | tee -a ../logs/05-cip-chain.log
-            break
-          done
-
-          # A clean baseline is always required; failure before 133 is fatal.
-          test "${SELECTED}" != "${BASELINE_CIP}" || {
-            echo "[ERROR] No CIP delta could be applied to the LG baseline." | tee ../logs/05-cip-failure.log
-            exit 1
-          }
-
-          CIP_TARGET="${SELECTED}"
-          echo "CIP_TARGET=${CIP_TARGET}" >> "$GITHUB_ENV"
-          git diff --binary "${BASELINE_CIP}..${CIP_TARGET}" > ../logs/cip-selected.patch
-          sha256sum ../logs/cip-selected.patch | tee ../logs/cip-selected.sha256
-          {
-            echo "CIP_BASELINE=${BASELINE_CIP}"
-            echo "CIP_TARGET=${CIP_TARGET}"
-            echo "final_apply_mode=${LAST_APPLY_MODE}"
-            echo "baseline_commit=$(git rev-parse ${BASELINE_CIP})"
-            echo "target_commit=$(git rev-parse ${CIP_TARGET})"
-            echo "target_subject=$(git show -s --format=%s ${CIP_TARGET})"
-            echo "target_tree=$(git rev-parse ${CIP_TARGET}^{tree})"
-            echo "kernel_version=$(make -s kernelversion)"
-            git diff --stat "${BASELINE_CIP}..${CIP_TARGET}" || true
-          } | tee ../logs/05-cip-version.log
-
-          echo "[OK] Maximum clean incremental CIP level reached: ${CIP_TARGET}"
-          echo "[INFO] If 136 stopped at an earlier tag, its exact conflict is preserved in logs/cip-checks/."
-          echo "::endgroup::"
-
-      - name: "6. Integrate SukiSU-Ultra v4.2.0 builtin driver + built-in SUSFS"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[6/15] SukiSU-Ultra v4.2.0 builtin driver + built-in SUSFS"
-          cd kernel
-
-          if test -d common/drivers; then DRIVER_DIR=common/drivers
-          elif test -d drivers; then DRIVER_DIR=drivers
-          else echo '[ERROR] "drivers/" directory not found.'; exit 127
-          fi
-          DRIVER_MAKEFILE="${DRIVER_DIR}/Makefile"
-          DRIVER_KCONFIG="${DRIVER_DIR}/Kconfig"
-
-          rm -rf KernelSU-Next
-          git clone --branch "${KSU_REF}" --single-branch             "https://github.com/${KSU_REPO_OWNER}/${KSU_REPO}" KernelSU-Next
-
-          test -f KernelSU-Next/kernel/Kconfig
-          test -f KernelSU-Next/kernel/Makefile
-          test -f KernelSU-Next/kernel/setup.sh
-
-          # The builtin branch is the SukiSU tree that already carries SUSFS.
-          # Do NOT apply the separate susfs4ksu/non-GKI patch layer later.
-          grep -Rqs "SUSFS" KernelSU-Next/kernel || {
-            echo '[ERROR] SukiSU builtin source does not contain its built-in SUSFS implementation.'
-            exit 1
-          }
-          test -f KernelSU-Next/kernel/manager/apk_sign.c
-          grep -q '947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef' KernelSU-Next/kernel/manager/apk_sign.c
-          grep -q '0x35c' KernelSU-Next/kernel/manager/apk_sign.c
-
-          ln -sf "$(realpath --relative-to="${DRIVER_DIR}" "$(pwd)/KernelSU-Next/kernel")" "${DRIVER_DIR}/kernelsu"
-          grep -q "kernelsu" "${DRIVER_MAKEFILE}" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "${DRIVER_MAKEFILE}"
-          grep -q 'source "drivers/kernelsu/Kconfig"' "${DRIVER_KCONFIG}" || sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "${DRIVER_KCONFIG}"
-
-          test -L drivers/kernelsu
-          test -f drivers/kernelsu/Kconfig
-          KSU_KCONFIG="drivers/kernelsu/Kconfig"
-          grep -Eq '^[[:space:]]*config[[:space:]]+KSU([[:space:]]|$)' "$KSU_KCONFIG"
-          grep -Eq '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' "$KSU_KCONFIG"
-
-          # SukiSU builtin supplies its own hook/SUSFS implementation; there is
-          # intentionally no separate KSU_MANUAL_HOOK symbol required here.
-          for sym in ksu_handle_execveat ksu_handle_faccessat ksu_handle_stat ksu_handle_setresuid ksu_handle_sys_reboot; do
-            grep -Rqs --include='*.c' --include='*.h' "$sym" KernelSU-Next/kernel || {
-              echo "[ERROR] SukiSU builtin source missing required hook symbol: $sym"; exit 1;
-            }
-          done
-
-          KSU_COMMIT="$(git -C KernelSU-Next rev-parse HEAD)"
-          KSU_TAG="$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
-          {
-            echo "requested_manager=${KSU_VERSION}"
-            echo "manager_package=${KSU_MANAGER_PACKAGE}"
-            echo "repo=${KSU_REPO_OWNER}/${KSU_REPO}@${KSU_REF}"
-            echo "resolved_describe=${KSU_TAG}"
-            echo "resolved_commit=${KSU_COMMIT}"
-            echo "built_in_susfs=yes"
-            echo "sukisu_manager_signature_size=0x35c"
-            echo "sukisu_manager_signature_sha256=947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef"
-          } | tee ../logs/06-sukisu-resolved.txt
-          echo "[OK] SukiSU-Ultra builtin source integrated; built-in SUSFS confirmed; external SUSFS source is intentionally not applied."
-          echo "::endgroup::"
-      - name: "6a. Source-aware SukiSU/4.19 compatibility audit"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[6a/15] Source-aware SukiSU/4.19 compatibility audit"
-          cd kernel
-          test -d KernelSU-Next/kernel
-
-          # Preserve the V99 4.19 root-policy work, but never inject the old
-          # KernelSU-Next-specific SUSFS ABI stubs into SukiSU builtin.
-          for p in             KernelSU-Next/kernel/selinux/rules.c             KernelSU-Next/kernel/selinux/selinux.c             KernelSU-Next/kernel/manager/apk_sign.c; do
-            test -f "$p" || { echo "[ERROR] required SukiSU source missing: $p"; exit 1; }
-          done
-
-          grep -q 'void apply_kernelsu_rules()' KernelSU-Next/kernel/selinux/rules.c || {
-            echo "[ERROR] SukiSU SELinux policy injection entry point is missing."; exit 1;
-          }
-          grep -q 'ksu_type' KernelSU-Next/kernel/selinux/rules.c || {
-            echo "[ERROR] SukiSU SELinux KSU type/domain rules are missing."; exit 1;
-          }
-
-          # Built-in SUSFS must expose the SID helpers used by the runtime policy
-          # path; no duplicate helper definitions are generated here.
-          grep -Rqs 'susfs_ksu_sid' KernelSU-Next/kernel || {
-            echo "[ERROR] built-in SUSFS KSU SID support is missing."; exit 1;
-          }
-          grep -Rqs 'susfs_priv_app_sid' KernelSU-Next/kernel || {
-            echo "[ERROR] built-in SUSFS private-app SID support is missing."; exit 1;
-          }
-
-          {
-            echo "selinux_policy_injection=preserved"
-            echo "sukisu_builtin_susfs=yes"
-            echo "external_susfs_inline_hook_injection=disabled"
-            echo "kernel_compat_target=4.19.325"
-          } | tee ../logs/06a-sukisu-4.19-source-audit.log
-          echo "[OK] SukiSU builtin source contract and V99 4.19 SELinux policy path verified."
-          echo "::endgroup::"
-      - name: '6b. Cross-setup SukiSU/SUSFS/Manager contract audit'
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[6b/15] Cross-setup SukiSU/SUSFS/Manager contract audit"
-          cd kernel
-          test -d KernelSU-Next/kernel
-          test -L drivers/kernelsu
-          test -f drivers/kernelsu/Kconfig
-          grep -Eq '^[[:space:]]*config[[:space:]]+KSU([[:space:]]|$)' drivers/kernelsu/Kconfig
-          grep -Eq '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' drivers/kernelsu/Kconfig
-          grep -Rqs '947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef' KernelSU-Next/kernel/manager/apk_sign.c
-          grep -Rqs '0x35c' KernelSU-Next/kernel/manager/apk_sign.c
-          grep -Rqs 'SUSFS' KernelSU-Next/kernel
-          {
-            echo "driver=SukiSU-Ultra builtin"
-            echo "manager=${KSU_VERSION}"
-            echo "manager_package=${KSU_MANAGER_PACKAGE}"
-            echo "builtin_susfs=yes"
-            echo "external_susfs_patch=not_applied"
-            echo "manager_signature_size=0x35c"
-            echo "manager_signature_sha256=947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef"
-          } | tee ../logs/06b-sukisu-contract-audit.log
-          echo "[OK] SukiSU builtin/SUSFS/Manager contract is consistent across setup stages."
-          echo "::endgroup::"
-      - name: '7. Preserve built-in SUSFS (do not apply external SUSFS 2.3 backport)'
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[7/15] Preserve SukiSU builtin SUSFS"
-          cd kernel
-          test -d KernelSU-Next/kernel
-          grep -Rqs 'SUSFS' KernelSU-Next/kernel
-          test -f KernelSU-Next/kernel/manager/apk_sign.c
-
-          # V100 change: SukiSU-Ultra's builtin branch is already the self-contained
-          # SUSFS variant. Applying the old external 4.19 SUSFS patch/inline-hook
-          # layer on top would create a second SUSFS implementation and is therefore
-          # deliberately skipped. The SUSFS feature itself is NOT removed.
-          {
-            echo "susfs_mode=builtin"
-            echo "susfs_version_target=${SUSFS_VERSION}"
-            echo "external_backport_repo=${SUSFS_BACKPORT_REPO}"
-            echo "external_backport_ref=${SUSFS_BACKPORT_REF}"
-            echo "external_backport_apply=skipped_because_builtin"
-            echo "builtin_source=KernelSU-Next/kernel"
-          } | tee ../logs/07-susfs-builtin.log
-          echo "[OK] Built-in SUSFS retained; external SUSFS patch layer not applied."
-          echo "::endgroup::"
-      - name: "7b. Built-in SUSFS non-GKI compatibility audit"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[7b/15] Built-in SUSFS non-GKI compatibility audit"
-          cd kernel
-          test -d KernelSU-Next/kernel
-          grep -Rqs 'SUSFS' KernelSU-Next/kernel
-          grep -Rqs 'susfs_ksu_sid' KernelSU-Next/kernel
-          grep -Rqs 'susfs_priv_app_sid' KernelSU-Next/kernel
-          grep -Rqs 'susfs_is_current_ksu_domain' KernelSU-Next/kernel || true
-          grep -Rqs 'config KSU_SUSFS' KernelSU-Next/kernel || grep -Rqs 'config[[:space:]]*KSU_SUSFS' KernelSU-Next/kernel
-          {
-            echo "mode=builtin"
-            echo "non_gki_kernel=4.19.325"
-            echo "sukisu_version=${KSU_VERSION}"
-            echo "builtin_susfs=yes"
-            echo "external_patch_layer=disabled"
-          } | tee ../logs/07b-sukisu-susfs-audit.log
-          echo "[OK] SukiSU builtin SUSFS source audit completed."
-          echo "::endgroup::"
-      - name: "8. Configure features and enforce no-removal policy"
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo "::group::[8/15] Configure features"
-          cd kernel
-          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
-          export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
-          export PATH="${CLANG_BIN}:$PATH"
-
-          exec > >(tee -a ../logs/09-step9-full.log) 2>&1
-          trap 'rc=$?; echo "[ERROR] V100 Step 8 aborted: rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" | tee -a ../logs/09-step8-failure.log; exit ${rc}' ERR
-
-          {
-            echo "=== V100 PRE-BUILD SOURCE AUDIT ==="
-            echo "kernel_commit=$(git rev-parse HEAD)"
-            echo "sukisu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
-            echo "sukisu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
-            echo "requested_manager=${KSU_VERSION}/${KSU_MANAGER_BUILD}"
-            echo "manager_package=${KSU_MANAGER_PACKAGE}"
-            echo "builtin_susfs=yes"
-            grep -n 'KSU_SUSFS' KernelSU-Next/kernel/Kconfig || true
-            grep -n '947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef' KernelSU-Next/kernel/manager/apk_sign.c || true
-          } | tee ../logs/09-sukisu-prebuild-audit.log
-
-          make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/08-defconfig.log 2>&1
-
-          grep -RqsE "^[[:space:]]*config[[:space:]]+KSU([[:space:]]|$)" drivers/kernelsu || {
-            echo "[ERROR] KSU Kconfig symbol is missing after SukiSU integration."; exit 1;
-          }
-          grep -RqsE "^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)" drivers/kernelsu || {
-            echo "[ERROR] built-in SUSFS Kconfig symbol is missing after SukiSU integration."; exit 1;
-          }
-
-          ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS
-
-          # SukiSU builtin does not require the old KernelSU-Next KSU_MANUAL_HOOK
-          # Kconfig symbol. If the baseline/source still defines it, keep it enabled;
-          # otherwise the builtin hook implementation is the authoritative path.
-          if grep -qE '^config[[:space:]]+KSU_MANUAL_HOOK([[:space:]]|$)' drivers/kernelsu/Kconfig; then
-            ./scripts/config --file out/.config --enable KSU_MANUAL_HOOK
-          fi
-
-          make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
-
-          grep -q '^CONFIG_KSU=y$' out/.config
-          grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
-
-          awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
-          while IFS= read -r line; do
-            sym="${line%%=*}"
-            grep -q "^${sym}=" ../post-integration-enabled-config.txt || {
-              echo "[ERROR] Baseline feature removed: ${sym}" | tee ../logs/08-no-removal-failure.log
+          git fetch --no-tags cip "refs/tags/${BASELINE_CIP}:refs/tags/${BASELINE_CIP}" "refs/tags/${CIP_TARGET}:refs/tags/${CIP_TARGET}"
+          git diff --binary "${BASELINE_CIP}..${CIP_TARGET}" > ../logs/cip-132-to-133.patch
+          if git apply --check --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-direct-check.log 2>&1; then
+            git apply --index --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-apply.log 2>&1
+            echo direct > ../logs/cip-selected.txt
+          else
+            git reset --hard "${KERNEL_COMMIT}"
+            git clean -fdx
+            if ! git apply --3way --check --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-3way-check.log 2>&1; then
+              cat ../logs/cip-direct-check.log ../logs/cip-3way-check.log
               exit 1
-            }
-          done < ../baseline-enabled-config.txt
+            fi
+            if grep -Eiq 'with conflicts|CONFLICT|error:|does not apply|patch failed' ../logs/cip-3way-check.log; then
+              cat ../logs/cip-3way-check.log
+              exit 1
+            fi
+            git apply --3way --index --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-apply.log 2>&1
+            echo 3way > ../logs/cip-selected.txt
+          fi
+          git diff --check
+          test "$(make -s kernelversion)" = "${BASELINE_KERNEL_VERSION}"
 
-          {
-            echo "CONFIG_KSU=$(grep '^CONFIG_KSU=' out/.config)"
-            echo "CONFIG_KSU_SUSFS=$(grep '^CONFIG_KSU_SUSFS=' out/.config)"
-            grep '^CONFIG_KSU_MANUAL_HOOK=' out/.config || echo "CONFIG_KSU_MANUAL_HOOK=not-defined-by-sukiSU-builtin"
-            echo "config_source=kernel/out/.config"
-            echo "builtin_susfs=yes"
-            echo "external_susfs_patch=not_applied"
-            echo "baseline_enabled=$(wc -l < ../baseline-enabled-config.txt)"
-            echo "post_integration_enabled=$(wc -l < ../post-integration-enabled-config.txt)"
-            echo "baseline_config_sha256=$(sha256sum ../baseline-enabled-config.txt | awk '{print $1}')"
-            echo "post_integration_config_sha256=$(sha256sum ../post-integration-enabled-config.txt | awk '{print $1}')"
-          } | tee ../logs/08-generated-config-contract.log
-
-          echo "[OK] No-removal gate passed; SukiSU builtin + built-in SUSFS enabled."
-          echo "::endgroup::"
-      - name: "9. Build kernel"
+      - name: "5. Integrate exact SukiSU builtin commit"
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[9/15] Build kernel"
           cd kernel
-          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
-          export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
-          export PATH="${CLANG_BIN}:$PATH"
-          # FIX: KernelSU-Next's drivers/kernelsu/feature/sucompat.c does
-          # `#include <linux/minmax.h>`, a header that only exists in upstream kernels
-          # much newer than this 4.19.325 CIP tree, so the build failed with:
-          #   fatal error: 'linux/minmax.h' file not found
-          # This adds that header only if it is missing (pure addition, nothing existing
-          # is touched or removed). It pulls in the tree's own linux/kernel.h, which on
-          # 4.19 already defines min/max/min_t/max_t/clamp/etc., and adds the one helper
-          # (in_range) that 4.19's kernel.h does not have, matching upstream's definition.
-          if [ ! -f include/linux/minmax.h ]; then
+          rm -rf KernelSU
+          git init -q KernelSU
+          git -C KernelSU remote add origin "https://github.com/${KSU_REPO}.git"
+          git -C KernelSU fetch --depth=1 origin "${KSU_COMMIT}"
+          git -C KernelSU fetch --no-tags origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
+          git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"
+          git -C KernelSU checkout --detach "${KSU_COMMIT}"
+          test "$(git -C KernelSU rev-parse HEAD)" = "${KSU_COMMIT}"
+          test -f KernelSU/kernel/Kconfig
+          test -f KernelSU/kernel/Makefile
+          test -f KernelSU/kernel/setup.sh
+          test -f KernelSU/kernel/manager/apk_sign.c
+          grep -q "${KSU_MANAGER_SIGNATURE_SHA256}" KernelSU/kernel/manager/apk_sign.c
+          grep -q '0x35c' KernelSU/kernel/manager/apk_sign.c
+          grep -Rqs 'config KSU_SUSFS' KernelSU/kernel
+          grep -Rqs 'susfs_ksu_sid' KernelSU/kernel
+          grep -Rqs 'susfs_priv_app_sid' KernelSU/kernel
+          grep -Rqs 'susfs_is_current_ksu_domain' KernelSU/kernel
+          # V100 error: the source has (void), so the old grep for () was a false failure.
+          grep -Eq 'void[[:space:]]+apply_kernelsu_rules[[:space:]]*\([[:space:]]*void[[:space:]]*\)' KernelSU/kernel/selinux/rules.c
+          grep -Eq 'void[[:space:]]+setup_ksu_cred[[:space:]]*\([[:space:]]*void[[:space:]]*\)' KernelSU/kernel/selinux/selinux.c
+          grep -q 'security_secctx_to_secid' KernelSU/kernel/selinux/selinux.c
+          grep -q 'KERNEL_SU_CONTEXT' KernelSU/kernel/selinux/selinux.h
+          grep -q 'handle_sepolicy' KernelSU/kernel/selinux/rules.c
+          ln -sf "$(realpath --relative-to=drivers "$(pwd)/KernelSU/kernel")" drivers/kernelsu
+          grep -qF 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          grep -qF 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          test -L drivers/kernelsu
+          {
+            echo "requested_manager=${KSU_MANAGER_BUILD}"
+            echo "manager_package=${KSU_MANAGER_PACKAGE}"
+            echo "builtin_branch=${KSU_REF}"
+            echo "resolved_commit=$(git -C KernelSU rev-parse HEAD)"
+            echo "manager_signature_sha256=${KSU_MANAGER_SIGNATURE_SHA256}"
+            echo "builtin_susfs=yes"
+          } | tee ../logs/sukisu-resolved.txt
+
+      - name: "6. Source-aware 4.19 fixes and DT reconciliation"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd kernel
+          test -f drivers/kernelsu/manager/pkg_observer_compat.h
+          grep -q 'KSU_DECL_FSNOTIFY_OPS' drivers/kernelsu/manager/pkg_observer_compat.h
+
+          if grep -Rqs '#include <linux/minmax.h>' drivers/kernelsu && [ ! -f include/linux/minmax.h ]; then
             mkdir -p include/linux
-            {
-              echo '#ifndef _LINUX_MINMAX_H'
-              echo '#define _LINUX_MINMAX_H'
-              echo ''
-              echo '#include <linux/kernel.h>'
-              echo ''
-              echo '#ifndef in_range'
-              echo '#define in_range(val, start, len) \'
-              echo '    ((unsigned long)(val) - (unsigned long)(start) < (unsigned long)(len))'
-              echo '#endif'
-              echo ''
-              echo '#endif /* _LINUX_MINMAX_H */'
-            } > include/linux/minmax.h
-            echo "[FIX] Added missing include/linux/minmax.h compatibility header for KernelSU-Next"
-          fi
-          # V84 FIX — do NOT rewrite KernelSU-Next file_wrapper.c by line number.
-          # The official legacy source already gates iopoll behind >= 6.1 and
-          # remap_file_range behind >= 4.20. On this 4.19.325 kernel those
-          # sections are correctly excluded by the preprocessor. The previous
-          # V87/V82 line-number sed rewrite shifted after prepending a header and
-          # deleted unrelated C/preprocessor lines, producing the syntax cascade
-          # seen in Step 9 (undeclared orig, while outside function, #endif without
-          # #if, default-argument errors, etc.).
-          # Keep the official legacy file_wrapper.c untouched and verify its
-          # version guards instead. This preserves the driver's real source.
-          FW="drivers/kernelsu/infra/file_wrapper.c"
-          test -f "$FW"
-          grep -q '#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)' "$FW" || {
-            echo "[ERROR] V84: legacy file_wrapper.c lost the iopoll >=6.1 guard."; exit 1;
-          }
-          grep -q '#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)' "$FW" || {
-            echo "[ERROR] V84: legacy file_wrapper.c lost the remap_file_range >=4.20 guard."; exit 1;
-          }
-          echo "[OK] V84: official legacy file_wrapper.c kept intact; 4.19 excludes iopoll/remap_file_range by source guards."
-
-          # V32 FIX 1 — KernelSU-Next v3.4.0 legacy compatibility with this 4.19.325 arm64 tree.
-          # The KSU seccomp cache source references SECCOMP_ARCH_NATIVE_NR (and, with
-          # CONFIG_COMPAT, SECCOMP_ARCH_COMPAT_NR), while this older arm64 seccomp header
-          # does not provide those architecture definitions. This is a compatibility
-          # definition only; it does not disable seccomp, KernelSU, SUSFS, or any feature.
-          SECCOMP_HDR="arch/arm64/include/asm/seccomp.h"
-          if [ -f "$SECCOMP_HDR" ] && ! grep -q 'SECCOMP_ARCH_NATIVE_NR' "$SECCOMP_HDR"; then
-            python3 - "$SECCOMP_HDR" <<'PY'
-          from pathlib import Path
-          p = Path(__import__("sys").argv[1])
-          s = p.read_text()
-          marker = "#endif /* _ASM_SECCOMP_H */"
-          compat = """#define SECCOMP_ARCH_NATIVE AUDIT_ARCH_AARCH64
-          #define SECCOMP_ARCH_NATIVE_NR NR_syscalls
-          #define SECCOMP_ARCH_NATIVE_NAME "aarch64"
-          #ifdef CONFIG_COMPAT
-          # define SECCOMP_ARCH_COMPAT AUDIT_ARCH_ARM
-          # define SECCOMP_ARCH_COMPAT_NR __NR_compat_syscalls
-          # define SECCOMP_ARCH_COMPAT_NAME "arm"
+            cat > include/linux/minmax.h <<'EOF_MINMAX'
+          #ifndef _LINUX_MINMAX_H
+          #define _LINUX_MINMAX_H
+          #include <linux/kernel.h>
+          #ifndef in_range
+          #define in_range(val, start, len) ((unsigned long)(val) - (unsigned long)(start) < (unsigned long)(len))
           #endif
-
-          """
-          if marker not in s:
-              raise SystemExit(f"expected marker not found in {p}")
-          p.write_text(s.replace(marker, compat + marker, 1))
-          PY
-            echo "[FIX] Added arm64 seccomp architecture/count definitions required by KSU-Next seccomp_cache.c"
-          else
-            echo "[OK] arm64 seccomp architecture/count definitions already present."
-          fi
-
-          # V43 FIX — link-time "undefined symbol" errors (path_mount, path_umount,
-          # seccomp_filter_release), verified against real upstream Linux commits rather
-          # than guessed:
-          #   ld.lld: error: undefined symbol: seccomp_filter_release
-          #     >>> referenced by app_profile.c:128 (drivers/kernelsu/policy/app_profile.c)
-          #   ld.lld: error: undefined symbol: path_mount
-          #     >>> referenced by su_mount_ns.c:154 (drivers/kernelsu/infra/su_mount_ns.c)
-          #   ld.lld: error: undefined symbol: path_umount
-          #     >>> referenced by kernel_umount.c:48 (drivers/kernelsu/feature/kernel_umount.c)
-          #
-          # path_mount()/path_umount(): confirmed via the actual upstream commits that
-          # introduced them (Christoph Hellwig, merged for Linux 5.9):
-          #   a1e6aaa3743a "fs: refactor do_mount"    -> split path_mount(dev_name,
-          #     struct path *path, type, flags, data) out of the pre-existing
-          #     do_mount(dev_name, const char __user *dir_name, type, flags, data)
-          #   41525f56e2564 "fs: refactor ksys_umount" -> split path_umount(struct path
-          #     *path, flags) out of the pre-existing ksys_umount(char __user *name, flags)
-          # In both cases the split was purely mechanical: the old entry point first
-          # resolved a user-space path string to a struct path (user_path_at()), then ran
-          # the exact same core logic the new struct-path-taking helper keeps. This
-          # 4.19.325 tree predates both commits, but do_mount()/the umount syscall path
-          # (the pre-split entry points) are still present and do the same work. Since
-          # KernelSU-Next's callers already hold a resolved struct path, the standard,
-          # long-established bridge (the same technique init/do_mounts.c itself relies on
-          # via its implicit set_fs(KERNEL_DS) during early boot) is to serialize that
-          # struct path back to a string with d_path(), temporarily switch to KERNEL_DS so
-          # the old syscall-shaped entry points can safely take a kernel buffer where they
-          # expect a __user pointer, then call sys_mount()/sys_umount() -- the raw syscall
-          # entry points, present on every kernel version including this one, so this does
-          # not depend on whether this particular 4.19.325 tree has the later do_mount()/
-          # ksys_umount() -> ksys_* naming (a separate, unrelated refactor).
-          #
-          # seccomp_filter_release(): a genuine upstream kernel/seccomp.c function (added
-          # for the copy_process()/release_task() filter-refcount-leak fix -- see the
-          # "seccomp: Release filter when copy_process() fails" thread on LKML). This
-          # 4.19 tree's kernel/seccomp.c already has the exact same reference-counted
-          # filter-chain release logic under its long-standing name,
-          # put_seccomp_filter(struct task_struct *tsk) (decrements/frees
-          # tsk->seccomp.filter and its ->prev chain) -- confirmed against a matching
-          # kernel/seccomp.c snapshot (v5.6, pre-rename). Added as a thin forwarding
-          # wrapper under the name KernelSU-Next's app_profile.c (disable_seccomp(),
-          # called on `current` while escaping to root) expects.
-          # NOTE: unlike path_mount/path_umount above, the exact argument KernelSU-Next
-          # passes to seccomp_filter_release() could not be confirmed against the actual
-          # source line (only the compiler's file:line reference, not its content, was
-          # available) -- the (struct task_struct *) signature matches put_seccomp_filter's
-          # own, semantically-identical signature and the only realistic call site
-          # (disable_seccomp() operating on `current`), so this is a well-evidenced
-          # best fit, not a blind guess, but flagged here in case a future run's
-          # disassembly/crash log ever points back to this wrapper.
-          NS="fs/namespace.c"
-          if [ -f "$NS" ] && ! grep -q '^int path_mount(' "$NS" && ! grep -q '^int path_umount(' "$NS"; then
-            cat >> "$NS" <<'NAMESPACE_COMPAT_EOF'
-
-          /* V43 compat: see the comment in the workflow's Step 9 ("V43 FIX") for the full
-           * derivation. Bridges KernelSU-Next's calls to the Linux 5.9+ path_mount()/
-           * path_umount() struct-path entry points onto this pre-5.9 tree's still-present
-           * sys_mount()/sys_umount() syscall entry points, via a temporary KERNEL_DS so a
-           * kernel-space path string is accepted where a __user pointer is expected --
-           * the same technique this kernel's own init/do_mounts.c already relies on. */
-          int path_mount(const char *dev_name, struct path *path,
-                          const char *type_page, unsigned long flags, void *data_page)
-          {
-              char *buf, *dir_name;
-              mm_segment_t old_fs;
-              long ret;
-
-              buf = (char *)__get_free_page(GFP_KERNEL);
-              if (!buf)
-                  return -ENOMEM;
-
-              dir_name = d_path(path, buf, PAGE_SIZE);
-              if (IS_ERR(dir_name)) {
-                  free_page((unsigned long)buf);
-                  return PTR_ERR(dir_name);
-              }
-
-              old_fs = get_fs();
-              set_fs(KERNEL_DS);
-              ret = ksys_mount((char __user *)dev_name, (char __user *)dir_name,
-                                (char __user *)type_page, flags, (void __user *)data_page);
-              set_fs(old_fs);
-
-              free_page((unsigned long)buf);
-              return ret;
-          }
-
-          int path_umount(struct path *path, int flags)
-          {
-              char *buf, *name;
-              mm_segment_t old_fs;
-              long ret;
-
-              buf = (char *)__get_free_page(GFP_KERNEL);
-              if (!buf)
-                  return -ENOMEM;
-
-              name = d_path(path, buf, PAGE_SIZE);
-              if (IS_ERR(name)) {
-                  free_page((unsigned long)buf);
-                  return PTR_ERR(name);
-              }
-
-              old_fs = get_fs();
-              set_fs(KERNEL_DS);
-              ret = ksys_umount((char __user *)name, flags);
-              set_fs(old_fs);
-
-              free_page((unsigned long)buf);
-              return ret;
-          }
-
-          NAMESPACE_COMPAT_EOF
-            echo "[FIX] Added path_mount()/path_umount() compat wrappers to fs/namespace.c (bridged onto existing 4.19 ksys_mount/ksys_umount)"
-          else
-            echo "[OK] path_mount()/path_umount() already present in fs/namespace.c."
-          fi
-
-          # V82 validation: Linux 4.19.325 exposes ksys_mount()/ksys_umount(), not the
-          # removed raw sys_mount()/sys_umount() symbols used by the first V43 wrapper.
-          # Fail here if the generated bridge still calls the unavailable symbols.
-          if grep -qE '^[[:space:]]*ret = sys_(mount|umount)\(' "$NS"; then
-            echo "[ERROR] V84: path_mount/path_umount still call unavailable sys_mount/sys_umount"
-            exit 1
-          fi
-          if ! grep -qE '^int ksys_mount\(' "$NS" || ! grep -qE '^int ksys_umount\(' "$NS"; then
-            echo "[ERROR] V84: expected Linux 4.19 ksys_mount/ksys_umount entry points are missing"
-            exit 1
-          fi
-          echo "[OK] V84: mount compatibility bridge uses existing 4.19 ksys_mount/ksys_umount."
-
-          SC_C="kernel/seccomp.c"
-          if [ -f "$SC_C" ] && ! grep -q 'seccomp_filter_release' "$SC_C"; then
-            cat >> "$SC_C" <<'SECCOMP_COMPAT_EOF'
-
-          #ifdef CONFIG_SECCOMP
-          /* V43 compat: see the comment in the workflow's Step 9 ("V43 FIX") for the full
-           * derivation. Newer kernels expose seccomp_filter_release(); this 4.19 tree has
-           * the same reference-counted filter-chain release logic under its long-standing
-           * name, put_seccomp_filter(struct task_struct *). Forward to it. */
-          void seccomp_filter_release(struct task_struct *tsk)
-          {
-              put_seccomp_filter(tsk);
-          }
           #endif
-
-          SECCOMP_COMPAT_EOF
-            echo "[FIX] Added seccomp_filter_release() compat wrapper to kernel/seccomp.c (forwards to put_seccomp_filter)"
-          else
-            echo "[OK] seccomp_filter_release() already present in kernel/seccomp.c."
+          EOF_MINMAX
           fi
 
-          # V32 FIX 1 — Fix the actual DTC failure without removing any touch revision.
-          # The CN Rev-1.0 overlay includes lito-caymanlm_lao_com.dtsi, which already
-          # includes lito-caymanlm_lao_com-touch.dtsi. That file includes
-          # lito-caymanlm_common-touch.dtsi. The Rev-1.0 touch wrapper then included the
-          # same common-touch.dtsi a second time. The common file defines
-          # touch_pm8150l_gpio_default, so the overlay remained invalid in V32.
-          # V32's guard attempt did not clear the actual DTC failure. V32 therefore
-          # removes ONLY the redundant include directive from the Rev-1.0 wrapper.
-          # The common touch definitions remain included once through the normal touch
-          # file, and every Rev-1.0 node/status change remains untouched.
-          #
-          # V37: V32 only patched the lao_com region's touch_rev-1.0.dtsi. The DTC failure
-          # kept recurring because it is the SAME duplicate-include mistake, present
-          # independently in other regional variants -- specifically the one actually
-          # compiled and failing in this build, lito-caymanlm_cn-rev-1.0_overlay.dtbo
-          # ("ERROR: Input tree has errors, aborting"). V32's fix is generalized here from one
-          # hardcoded lao_com path to every *touch_rev-1.0.dtsi wrapper under the lito-caymanlm
-          # tree, removing the exact same verified-redundant include line wherever it recurs,
-          # rather than hardcoding a second region-specific path.
-          while IFS= read -r -d '' TOUCH_REV; do
-            if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV"; then
-              sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$TOUCH_REV"
-              echo "[FIX] Removed redundant common-touch include from $TOUCH_REV"
-            fi
-          done < <(find arch/arm64/boot/dts/vendor/lge/lito-caymanlm -iname '*touch_rev-1.0.dtsi' -print0 2>/dev/null)
-          echo "[INFO] Redundant common-touch include check complete across all regional touch_rev-1.0.dtsi wrappers."
-
-          # V82 FIX 1B — reconcile duplicate PMIC pinctrl labels across ALL
-          # CaymanLM regional PM DTSI variants. The generic qcom/lito-pmic-overlay.dtsi
-          # already defines camera_therm_default and bmr_w_therm_default. Several
-          # board-specific PM files define the same labels again, which makes dtc reject
-          # every overlay that includes that regional PM file.
-          #
-          # Keep every node and pin configuration. Only the board-local labels are given
-          # unique names, and references inside the same PM file are updated. Do not
-          # modify the generic qcom definitions. This covers the normal LaoCom PM file,
-          # HDK PM file, and VZW PM file together instead of fixing only one variant.
-          PM_ROOT="arch/arm64/boot/dts/vendor/lge/lito-caymanlm"
-          python3 - "$PM_ROOT" <<'PY_V91_DT'
-          from pathlib import Path
-          import re, sys
-
-          root = Path(sys.argv[1])
-          changed = []
-          for p in sorted(root.rglob('*pm*.dtsi')):
-              s = p.read_text()
-              old = s
-              # Only rename labels that are actually defined in this board-specific PM file.
-              # The suffix is derived from the file name, so labels remain unique even if
-              # several regional PM variants are present in one build.
-              tag = re.sub(r'[^A-Za-z0-9]+', '_', p.stem).strip('_').lower()
-              for base in ('camera_therm_default', 'bmr_w_therm_default'):
-                  pat = rf'(?m)^(\s*){re.escape(base)}\s*:\s*{re.escape(base)}\s*\{{'
-                  repl = rf'\1{base}_{tag}: {base}_{tag} {{'
-                  s = re.sub(pat, repl, s)
-                  if s != old:
-                      s = s.replace(f'&{base}', f'&{base}_{tag}')
-                      old = s
-              if s != p.read_text():
-                  p.write_text(s)
-                  changed.append(str(p))
-
-          if not changed:
-              raise SystemExit('[ERROR] V91: no board-specific PM duplicate labels were found')
-          for p in changed:
-              print(f'[FIX] V91: reconciled duplicate PM labels in {p}')
-          PY_V91_DT
-
-          # Hard validation: no board-specific PM file may still define either generic
-          # duplicate label. The generic qcom/lito-pmic-overlay.dtsi remains untouched.
-          if grep -RInE '^[[:space:]]*camera_therm_default[[:space:]]*:[[:space:]]*camera_therm_default[[:space:]]*\{' "$PM_ROOT" 2>/dev/null || \
-             grep -RInE '^[[:space:]]*bmr_w_therm_default[[:space:]]*:[[:space:]]*bmr_w_therm_default[[:space:]]*\{' "$PM_ROOT" 2>/dev/null; then
-            echo "[ERROR] V91: duplicate board PM labels remain under ${PM_ROOT}"
-            exit 1
-          fi
-          echo "[OK] V99: all CaymanLM board PM duplicate labels reconciled; no nodes/features removed."
-
-          # V32 FIX 2 — KernelSU-Next v3.4.0 legacy expects the newer UAPI mount.h header.
-          # This 4.19 tree does not ship include/uapi/linux/mount.h. KernelSU's
-          # su_mount_ns.c includes <uapi/linux/mount.h> for MS_PRIVATE and MS_REC.
-          # Add only those missing compatibility definitions; no mount namespace code
-          # or KernelSU feature is disabled.
-          MOUNT_UAPI="include/uapi/linux/mount.h"
-          if [ ! -f "$MOUNT_UAPI" ]; then
+          if grep -Rqs '#include <uapi/linux/mount.h>' drivers/kernelsu && [ ! -f include/uapi/linux/mount.h ]; then
             mkdir -p include/uapi/linux
-            cat > "$MOUNT_UAPI" <<'EOF_MOUNT'
+            cat > include/uapi/linux/mount.h <<'EOF_MOUNT'
           #ifndef _UAPI_LINUX_MOUNT_H
           #define _UAPI_LINUX_MOUNT_H
           #ifndef MS_REC
@@ -1044,637 +200,224 @@ jobs:
           #ifndef MS_PRIVATE
           #define MS_PRIVATE (1 << 18)
           #endif
-          #endif /* _UAPI_LINUX_MOUNT_H */
+          #endif
           EOF_MOUNT
-            echo "[FIX] Added 4.19 UAPI mount.h compatibility definitions for KernelSU su_mount_ns.c"
-          else
-            echo "[OK] include/uapi/linux/mount.h already exists."
           fi
 
-          # V34 FIX 1 — Complete the KernelSU-Next v3.4.0 legacy fsnotify compatibility for Linux 4.19.
-          # The v3.4.0 legacy pkg_observer.c directly initializes .handle_inode_event, but this 4.19 fsnotify_ops
-          # has only .handle_event. KernelSU-Next's v3.2.0-legacy source provides the KSU_DECL_FSNOTIFY_OPS
-          # compatibility abstraction: <5.9 uses handle_event, while >=5.9 uses handle_inode_event.
-          # Apply the same abstraction to v3.4.0 legacy so package observation remains enabled, including the 4.19 filename type.
-          KSU_MANAGER_DIR="drivers/kernelsu/manager"
-          KSU_OBS="$KSU_MANAGER_DIR/pkg_observer.c"
-          KSU_DEFS="$KSU_MANAGER_DIR/pkg_observer_defs.h"
-          if [ -f "$KSU_OBS" ]; then
-            cat > "$KSU_DEFS" <<'EOF_KSU_FSNOTIFY'
-          // SPDX-License-Identifier: GPL-2.0
-          #ifndef __KSU_PKG_OBSERVER_DEFS_H
-          #define __KSU_PKG_OBSERVER_DEFS_H
-          #include <linux/version.h>
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)
-          typedef const struct qstr *ksu_fname_t;
-          #define ksu_fname_len(f) ((f)->len)
-          #define ksu_fname_arg(f) ((f)->name)
-          #else
-          typedef const unsigned char *ksu_fname_t;
-          #define ksu_fname_len(f) (strlen(f))
-          #define ksu_fname_arg(f) (f)
-          #endif
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
-          #define KSU_DECL_FSNOTIFY_OPS(name) \
-            int name(struct fsnotify_mark *mark, u32 mask, struct inode *inode, \
-                     struct inode *dir, const struct qstr *file_name, u32 cookie)
-          #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)
-          #define KSU_DECL_FSNOTIFY_OPS(name) \
-            int name(struct fsnotify_group *group, struct inode *inode, u32 mask, \
-                     const void *data, int data_type, ksu_fname_t file_name, \
-                     u32 cookie, struct fsnotify_iter_info *iter_info)
-          #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
-          #define KSU_DECL_FSNOTIFY_OPS(name) \
-            int name(struct fsnotify_group *group, struct inode *inode, u32 mask, \
-                     const void *data, int data_type, ksu_fname_t file_name, \
-                     u32 cookie, struct fsnotify_iter_info *iter_info)
-          #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
-          #define KSU_DECL_FSNOTIFY_OPS(name) \
-            int name(struct fsnotify_group *group, struct inode *inode, \
-                     struct fsnotify_mark *inode_mark, struct fsnotify_mark *vfsmount_mark, \
-                     u32 mask, const void *data, int data_type, ksu_fname_t file_name, \
-                     u32 cookie, struct fsnotify_iter_info *iter_info)
-          #else
-          #define KSU_DECL_FSNOTIFY_OPS(name) \
-            int name(struct fsnotify_group *group, struct inode *inode, \
-                     struct fsnotify_mark *inode_mark, struct fsnotify_mark *vfsmount_mark, \
-                     u32 mask, void *data, int data_type, ksu_fname_t file_name, u32 cookie)
-          #endif
-          #endif
-          EOF_KSU_FSNOTIFY
-            python3 - "$KSU_OBS" <<'PY_KSU'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1])
-          s=p.read_text()
-          if '#include "pkg_observer_defs.h"' not in s:
-              s=s.replace('#include "klog.h" // IWYU pragma: keep', '#include "klog.h" // IWYU pragma: keep\n#include "pkg_observer_defs.h"')
-          old="""static int ksu_handle_inode_event(struct fsnotify_mark *mark, u32 mask,
-                                            struct inode *inode, struct inode *dir,
-                                            const struct qstr *file_name, u32 cookie)"""
-          new="static KSU_DECL_FSNOTIFY_OPS(ksu_handle_inode_event)"
-          if old not in s:
-              print('[INFO] Current legacy pkg_observer signature differs; no v3.3-specific rewrite applied.')
-              p.write_text(s)
-              raise SystemExit(0)
-          s=s.replace(old,new,1)
-          # Linux 4.19 passes file_name as const unsigned char *, not struct qstr.
-          # Keep the v3.4.0 legacy logic identical while routing length/name access through the
-          # compatibility helpers defined above.
-          if 'file_name->len' in s:
-              s=s.replace('file_name->len', 'ksu_fname_len(file_name)')
-          if 'file_name->name' in s:
-              s=s.replace('file_name->name', 'ksu_fname_arg(file_name)')
-          old_ops="""static const struct fsnotify_ops ksu_ops = {
-          \t.handle_inode_event = ksu_handle_inode_event,
-          };"""
-          new_ops="""static const struct fsnotify_ops ksu_ops = {
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
-          \t.handle_inode_event = ksu_handle_inode_event,
-          #else
-          \t.handle_event = ksu_handle_inode_event,
-          #endif
-          };"""
-          if old_ops not in s:
-              print('[INFO] Current legacy pkg_observer fsnotify ops block differs; leaving it unchanged.')
-          s=s.replace(old_ops,new_ops,1)
-          p.write_text(s)
-          PY_KSU
-          if grep -qE 'file_name->(len|name)' "$KSU_OBS"; then
-            echo "[ERROR] pkg_observer still contains qstr-only file_name dereferences."
-            exit 1
-          fi
-            echo "[FIX] Applied complete KernelSU-Next fsnotify compatibility to v3.4.0 legacy pkg_observer (4.19 filename + handle_event API)."
-          else
-            echo "[ERROR] KernelSU pkg_observer.c not found; refusing to continue without compatibility fix."
-            exit 1
-          fi
-
-          # V81 FIX — Do not impose a stale task_work API requirement on the actual legacy source.
-          # The pinned KernelSU-Next legacy commit (dd074bc6...) has no task_work_add() path
-          # in policy/allowlist.c. The previous V35 compatibility block was written for a
-          # different KernelSU source layout and therefore aborted a valid legacy checkout.
-          # Source-level rule: only adapt task_work when the target source actually contains
-          # that API; otherwise leave allowlist.c untouched.
-          KSU_ALLOWLIST="drivers/kernelsu/policy/allowlist.c"
-          if [ -f "$KSU_ALLOWLIST" ]; then
-            if grep -qF "task_work_add(" "$KSU_ALLOWLIST"; then
-              python3 - "$KSU_ALLOWLIST" <<'PY_V79_ALLOWLIST'
+          for f in drivers/kernelsu/supercall/supercall.c drivers/kernelsu/policy/allowlist.c; do
+            if [ -f "$f" ] && grep -q 'TWA_RESUME' "$f" && ! grep -q 'KSU_TASK_WORK_NOTIFY' "$f"; then
+              python3 - "$f" <<'PY_TASKWORK'
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
           s = p.read_text()
-          if "#include <linux/sched/task.h>" not in s:
-              marker = "#include <linux/task_work.h>"
+          if '#include <linux/version.h>' not in s:
+              s = '#include <linux/version.h>\n' + s
+          marker = '#include <linux/task_work.h>'
+          macro = "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)\n#define KSU_TASK_WORK_NOTIFY TWA_RESUME\n#else\n#define KSU_TASK_WORK_NOTIFY true\n#endif"
+          if 'KSU_TASK_WORK_NOTIFY' not in s:
               if marker in s:
-                  s = s.replace(marker, marker + "\n#include <linux/sched/task.h>", 1)
-          if "KSU_TASK_WORK_RESUME" not in s:
-              marker = "#include <linux/task_work.h>"
-              macro = """
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
-          #define KSU_TASK_WORK_RESUME TWA_RESUME
-          #else
-          #define KSU_TASK_WORK_RESUME true
-          #endif""".strip()
-              if marker in s:
-                  s = s.replace(marker, marker + "\n#include <linux/version.h>\n\n" + macro, 1)
-          s = s.replace("task_work_add(tsk, cb, TWA_RESUME)",
-                        "task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)")
-          p.write_text(s)
-          PY_V79_ALLOWLIST
-              echo "[FIX] V79: adapted task_work only because the actual allowlist.c contains task_work_add()."
-            else
-              echo "[OK] V79: actual legacy allowlist.c has no task_work_add(); no unrelated compatibility rewrite applied."
-            fi
-          else
-            echo "[ERROR] KernelSU allowlist.c not found; refusing to continue without the legacy driver."
-            exit 1
-          fi
-
-          # V36 FIX 1 — Linux 4.19 KernelSU app_profile seccomp compatibility.
-          # KernelSU-Next v3.4.0 legacy resets seccomp.filter_count when escaping to root, but
-          # Linux 4.19's struct seccomp has only mode + filter (no filter_count).
-          # Keep the seccomp escape path intact and compile only the newer counter reset
-          # on kernels that actually provide that member.
-          # V84 FIX — remove the stale V78-era seccomp filter_count rewrite.
-          # Official KernelSU-Next legacy already guards filter_count with
-          # LINUX_VERSION_CODE >= 5.9 and uses put_seccomp_filter() on older kernels.
-          # V82 failed because its transformer expected four literal spaces and tried
-          # to rewrite an upstream line that was already correctly guarded.
-          KSU_APP_PROFILE="drivers/kernelsu/policy/app_profile.c"
-          if [ -f "$KSU_APP_PROFILE" ]; then
-            python3 - "$KSU_APP_PROFILE" <<'PY_V87_SECCOMP'
-          from pathlib import Path
-          import re, sys
-          p=Path(sys.argv[1])
-          s=p.read_text()
-          needle='atomic_set(&current->seccomp.filter_count, 0);'
-          if needle not in s:
-              raise SystemExit('[ERROR] V84: expected KernelSU app_profile seccomp filter_count reset not found')
-          # Upstream legacy already protects this line for >=5.9. Only add a guard if a
-          # compatibility source has an actually unguarded copy.
-          for m in list(re.finditer(re.escape(needle), s)):
-              line_start=s.rfind('\n', 0, m.start()) + 1
-              prefix=s[max(0,line_start-700):line_start]
-              if re.search(r'#if\s*\(LINUX_VERSION_CODE\s*>=\s*KERNEL_VERSION\(5,\s*9,\s*0\)', prefix):
-                  continue
-              line_end=s.find('\n',m.end())
-              if line_end < 0: line_end=len(s)
-              indent=re.match(r'[ \t]*',s[line_start:line_end]).group(0)
-              line=s[line_start:line_end]
-              repl=indent+'#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n'+line+'\n'+indent+'#endif'
-              s=s[:line_start]+repl+s[line_end:]
-              break
-          p.write_text(s)
-          PY_V87_SECCOMP
-            echo "[OK] V84: seccomp filter_count handling is compatible with Linux 4.19."
-          fi
-
-          # V36 FIX 2 — Repair the V33 touch include change without altering any touch data.
-          # The upstream common-touch.dtsi has no preprocessor guard. V33 injected one but the
-          # build log proves it was left unterminated. The actual duplicate-inclusion fix is simply
-          # to keep the common file intact and remove only the redundant Rev-1.0 include.
-          COMMON_TOUCH="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"
-          TOUCH_REV="arch/arm64/boot/dts/vendor/lge/lito-caymanlm/lito-caymanlm_lao_com/lito-caymanlm_lao_com-touch_rev-1.0.dtsi"
-          test -f "$COMMON_TOUCH"
-
-          python3 - "$COMMON_TOUCH" <<'PY_TOUCH_REPAIR'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1])
-          lines=p.read_text().splitlines()
-          guard='__LG_CAYMANLM_COMMON_TOUCH_DTSI__'
-          # Remove only the guard that earlier workflow revisions injected. The original
-          # upstream file starts with SPDX/comment lines, so match the guard anywhere in the
-          # first few lines rather than assuming it is line 1.
-          if any(guard in line for line in lines[:8]):
-              cleaned=[]
-              for line in lines:
-                  if guard in line or line.startswith('/* V33: idempotent include guard'):
-                      continue
-                  cleaned.append(line)
-              lines=cleaned
-          # If an earlier revision appended our matching final guard, remove that single line.
-          while lines and lines[-1].strip() in (f'#endif /* {guard} */', f'#endif // {guard}'):
-              lines.pop()
-          p.write_text('\n'.join(lines).rstrip()+'\n')
-          PY_TOUCH_REPAIR
-
-          if [ -f "$TOUCH_REV" ] && grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV"; then
-            sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$TOUCH_REV"
-            echo "[FIX] Removed only the redundant Rev-1.0 common-touch include; all Rev-1.0 nodes remain intact."
-          fi
-
-          # The source file itself must remain byte-for-byte equivalent to the upstream structure
-          # apart from any pre-existing local changes; specifically, it must not contain our broken guard.
-          if grep -q '__LG_CAYMANLM_COMMON_TOUCH_DTSI__' "$COMMON_TOUCH"; then
-            echo "[ERROR] Broken common-touch guard still present after reconciliation."
-            exit 1
-          fi
-          if grep -qF '#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"' "$TOUCH_REV"; then
-            echo "[ERROR] Redundant Rev-1.0 common-touch include still present."
-            exit 1
-          fi
-          echo "[CHECK] V34 touch reconciliation complete: common-touch definitions preserved, redundant include removed."
-
-          echo "[CHECK] KernelSU fsnotify compatibility and DT touch reconciliation are installed."
-
-          # Do not invoke a standalone DT overlay target. The real dtbs phase below is
-          # the authoritative verification path and preserves all existing overlays.
-          echo "[CHECK] DT and KernelSU compatibility fixes will be verified by the normal kernel build."
-
-          MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
-          # V84: pin the exact KernelSU-Next v3.4.0 Manager contract in the
-          # official legacy Kbuild. These are native Kbuild overrides, not APK modification.
-          # SukiSU builtin owns its Manager signature table; only pass the package identity.
-          MAKE_ARGS+=(KSU_MANAGER_PACKAGE="${KSU_MANAGER_PACKAGE}")
-
-          # V40: the real errors are NOT at the bottom of a `make -j` log (make keeps finishing running
-          # jobs after the first failure). Print them as the last lines and as annotations.
-          summarize_errors() {
-            local log="$1"
-            echo
-            echo "================= V99 ERROR SUMMARY (real errors from ${log##*/}) ================="
-            grep -nE "(error:|fatal error:|undefined reference|undefined symbol|ERROR:|Error [0-9]+$)" "$log" | grep -v "Waiting for unfinished" | head -60 || true
-            grep -nE "(error:|fatal error:|undefined reference|ERROR:)" "$log" | head -8 | while IFS= read -r l; do echo "::error::${l}"; done || true
-            echo "===================================================================================="
-          }
-
-          # V40 generator for the two KernelSU files that need Linux 5.x kernel internals.
-          cat > ../ksu_compat.py <<'PYGEN'
-          import pathlib, re, sys
-
-          mode, path, orig_out, gen_out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-          guard_ver = sys.argv[5] if len(sys.argv) > 5 else "5, 7, 0"
-          target = pathlib.Path(path)
-          src = target.read_text()
-          pathlib.Path(orig_out).write_text(src)
-          MARK = "V40 compat"
-          if MARK in src:
-              print(f"[OK] {path} already carries the V40 compat marker; unchanged")
-              raise SystemExit(0)
-
-
-          def clean(text):
-              """Remove comments and preprocessor lines; blank string/char literals."""
-              out, i, n = [], 0, len(text)
-              line_start = True
-              while i < n:
-                  c = text[i]
-                  if line_start:
-                      j = i
-                      while j < n and text[j] in " \t":
-                          j += 1
-                      if j < n and text[j] == "#":
-                          while j < n:
-                              if text[j] == "\n" and text[j - 1] != "\\":
-                                  break
-                              j += 1
-                          i = j
-                          continue
-                  if text.startswith("/*", i):
-                      j = text.find("*/", i + 2)
-                      j = n if j < 0 else j + 2
-                      out.append(" ")
-                      i = j
-                      continue
-                  if text.startswith("//", i):
-                      j = text.find("\n", i)
-                      i = n if j < 0 else j
-                      continue
-                  if c in "\"'":
-                      q, j = c, i + 1
-                      while j < n and text[j] != q:
-                          j += 2 if text[j] == "\\" else 1
-                      out.append(q + "S" + q)
-                      i = j + 1
-                      line_start = False
-                      continue
-                  out.append(c)
-                  line_start = c == "\n"
-                  i += 1
-              return "".join(out)
-
-
-          def find_functions(text):
-              funcs, prefix, depth, i, n = [], [], 0, 0, len(text)
-              while i < n:
-                  c = text[i]
-                  if c == "{":
-                      if depth == 0:
-                          head = "".join(prefix).strip()
-                          m = re.match(
-                              r"^(?P<ret>[\w\s\*]+?)\b(?P<name>\w+)\s*\((?P<args>.*)\)\s*(?:__\w+\s*(?:\([^)]*\))?\s*)*$",
-                              head, re.S)
-                          if m and "=" not in head:
-                              funcs.append((head, m.group("ret"), m.group("name")))
-                      depth += 1
-                  elif c == "}":
-                      depth -= 1
-                      if depth == 0:
-                          prefix = []
-                  elif depth == 0:
-                      if c == ";":
-                          prefix = []
-                      else:
-                          prefix.append(c)
-                  i += 1
-              return funcs
-
-
-          funcs = find_functions(clean(src))
-          stubs, names, seen = [], [], set()
-          for head, ret, name in funcs:
-              if re.search(r"\bstatic\b", ret) or name in seen:
-                  continue  # file-local helpers are only used by the code being replaced; duplicates come from #if/#else pairs
-              seen.add(name)
-              head_one = " ".join(head.split())
-              if "*" in ret:
-                  body = "return NULL;"
-              elif re.search(r"\bvoid\b", ret):
-                  body = ""
-              elif re.search(r"\bbool\b", ret):
-                  body = "return false;"
+                  s = s.replace(marker, marker + '\n' + macro, 1)
               else:
-                  body = "return 0;"
-              names.append(name)
-              stubs.append(f"{head_one}\n{{\n\t/* unsupported on this kernel: safe no-op */\n\t{body}\n}}\n")
-          if not stubs:
-              raise SystemExit(f"[ERROR] no exported function found in {path}; original saved to {orig_out}")
-
-          lines = src.splitlines()
-          includes = [l.rstrip() for l in lines if re.match(r"\s*#\s*include\b", l)]
-
-          if mode == "replace":
-              gen = ("/* V40 compat stub generated at build time (see workflow notes). */\n"
-                     + "\n".join(includes) + "\n\n" + "\n".join(stubs))
-          elif mode == "guard":
-              # keep the whole original body for newer kernels, stub it out below guard_ver
-              k, in_block = 0, False
-              while k < len(lines):
-                  t = lines[k].strip()
-                  if in_block:
-                      if "*/" in t:
-                          in_block = False
-                      k += 1
-                      continue
-                  if t.startswith("/*"):
-                      in_block = "*/" not in t
-                      k += 1
-                      continue
-                  if t == "" or t.startswith("//") or t.startswith("#"):
-                      while t.endswith("\\") and k + 1 < len(lines):  # continuation lines
-                          k += 1
-                          t = lines[k].strip()
-                      k += 1
-                      continue
-                  break
-              head = "\n".join(lines[:k])
-              body = "\n".join(lines[k:])
-              gen = (head + "\n#include <linux/version.h>\n"
-                     f"/* V40 compat: this file edits struct policydb, whose layout changed in Linux 5.7+ (flex_array\n"
-                     f" * avtab/type_val_to_struct, filename_trans hashtab). Below {guard_ver} every exported\n"
-                     f" * function is a safe no-op. */\n"
-                     f"#if LINUX_VERSION_CODE >= KERNEL_VERSION({guard_ver})\n"
-                     + body + "\n#else\n" + "\n".join(stubs) + "#endif /* V40 compat */\n")
-          else:
-              raise SystemExit("unknown mode " + mode)
-
-          target.write_text(gen)
-          pathlib.Path(gen_out).write_text(gen)
-          print(f"[FIX] {path}: {mode} mode, stubbed: " + ", ".join(names))
-          PYGEN
-
-          # V40 FIX 1: seccomp_cache.c mirrors the Linux 5.11+ per-filter seccomp action cache. 4.19 has
-          # no cache, so the exported functions become no-ops (V32's header definitions stay in place).
-          SC="drivers/kernelsu/infra/seccomp_cache.c"
-          if [ -f "$SC" ] && ! grep -q "action_cache" kernel/seccomp.c; then
-            python3 ../ksu_compat.py replace "$SC" ../logs/09-seccomp_cache.c.orig ../logs/09-seccomp_cache.c.generated
-          else
-            echo "[INFO] seccomp_cache.c no-op compat not needed or file not present"
-          fi
-
-          # V40 FIX 2: selinux/sepolicy.c edits struct policydb using the Linux 5.7+ layout. Keep the
-          # original code for >=5.7 and provide safe no-op stubs below that (rules.c is already stubbed).
-          SP="drivers/kernelsu/selinux/sepolicy.c"
-          if [ -f "$SP" ] && ! grep -q "struct filename_trans_key" security/selinux/ss/policydb.h; then
-            python3 ../ksu_compat.py guard "$SP" ../logs/09-sepolicy.c.orig ../logs/09-sepolicy.c.generated "5, 7, 0"
-          else
-            echo "[INFO] sepolicy.c pre-5.7 compat not needed or file not present"
-          fi
-
-          # V42 FIX: feature/selinux_hide.c reads/writes selinux_state.status_lock/status_page/policy and
-          # struct selinux_policy, which exist only since the Linux 5.7 SELinux rewrite. Keep the original
-          # code for >=5.7 and provide safe no-op stubs below that (same method as sepolicy.c).
-          SH="drivers/kernelsu/feature/selinux_hide.c"
-          if [ -f "$SH" ] && ! grep -rqs "struct selinux_policy" security/selinux/include; then
-            python3 ../ksu_compat.py guard "$SH" ../logs/09-selinux_hide.c.orig ../logs/09-selinux_hide.c.generated "5, 7, 0"
-          else
-            echo "[INFO] selinux_hide.c pre-5.7 compat not needed or file not present"
-          fi
-
-          # V41 FIX 1: supercall/dispatch.c uses tasklist_lock, init_task, task_pgrp() and task_session().
-          # On 4.19 these are declared only in <linux/sched/task.h> / <linux/sched/signal.h>.
-          DP="drivers/kernelsu/supercall/dispatch.c"
-          if [ -f "$DP" ] && ! grep -q "V41 compat" "$DP"; then
-            python3 - "$DP" <<'PY_DISPATCH'
-          import re, sys
-          from pathlib import Path
-          p = Path(sys.argv[1])
-          s = p.read_text()
-          add = ("/* V41 compat: on 4.19 tasklist_lock/init_task and task_pgrp()/task_session() are only\n"
-                 " * visible through the split sched headers (newer kernels pull them in implicitly). */\n"
-                 "#include <linux/sched/signal.h>\n"
-                 "#include <linux/sched/task.h>\n")
-          s2, n = re.subn(r"^(#include\b)", lambda m: add + m.group(1), s, count=1, flags=re.M)
-          if n != 1:
-              raise SystemExit("no #include line found in dispatch.c")
-          p.write_text(s2)
-          print("[FIX] dispatch.c: added <linux/sched/signal.h> and <linux/sched/task.h>")
-          PY_DISPATCH
-          fi
-
-          # V41 FIX 2: supercall/supercall.c passes TWA_RESUME to task_work_add(); 4.19 has a bool instead.
-          SCP="drivers/kernelsu/supercall/supercall.c"
-          if [ -f "$SCP" ] && grep -q "TWA_RESUME" "$SCP" && ! grep -q "V41 compat" "$SCP"; then
-            python3 - "$SCP" <<'PY_SUPERCALL'
-          import re, sys
-          from pathlib import Path
-          p = Path(sys.argv[1])
-          s = p.read_text().replace("TWA_RESUME", "KSU_TASK_WORK_RESUME")
-          add = """/* V41 compat: TWA_RESUME (Linux 5.7+) does not exist on 4.19, where task_work_add() takes a bool. */
-          #include <linux/version.h>
-          #include <linux/task_work.h>
-          #ifndef KSU_TASK_WORK_RESUME
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
-          #define KSU_TASK_WORK_RESUME TWA_RESUME
-          #else
-          #define KSU_TASK_WORK_RESUME true
-          #endif
-          #endif
-          """
-          s2, n = re.subn(r"^(#include\b)", lambda m: add + m.group(1), s, count=1, flags=re.M)
-          if n != 1:
-              raise SystemExit("no #include line found in supercall.c")
-          p.write_text(s2)
-          print("[FIX] supercall.c: TWA_RESUME -> KSU_TASK_WORK_RESUME compat")
-          PY_SUPERCALL
-          fi
-
-          # V40 FIX 3: compile ALL of drivers/kernelsu with keep-going first so every remaining
-          # KernelSU/4.19 incompatibility is listed in one run instead of one per 8-minute build.
-          echo "[V91] Pre-compiling drivers/kernelsu with keep-going to list ALL errors at once"
-          if ! make "${MAKE_ARGS[@]}" -j"$(nproc)" prepare > ../logs/09a-prepare.log 2>&1; then
-            tail -60 ../logs/09a-prepare.log
-            echo "[ERROR] make prepare failed (see logs/09a-prepare.log)"
-            exit 1
-          fi
-          # V41: flask.h/av_permissions.h are generated while security/selinux/ is built and drivers/kernelsu
-          # includes them. Without this step the pre-compile reported 7 false 'flask.h not found' errors.
-          echo "[V41] Building security/selinux first (generates flask.h and av_permissions.h)"
-          set +e
-          make "${MAKE_ARGS[@]}" -k -j"$(nproc)" security/selinux/ 2>&1 | tee ../logs/09a-selinux.log
-          SEL_RC=${PIPESTATUS[0]}
-          set -e
-          if [ "$SEL_RC" -ne 0 ]; then
-            summarize_errors ../logs/09a-selinux.log
-            echo "[ERROR] security/selinux failed to build (see logs/09a-selinux.log)"
-            exit 1
-          fi
-          test -f out/security/selinux/flask.h || echo "[WARN] out/security/selinux/flask.h not found after building security/selinux"
-          set +e
-          make "${MAKE_ARGS[@]}" -k -j"$(nproc)" drivers/kernelsu/ 2>&1 | tee ../logs/09a-kernelsu-precompile.log
-          PRE_RC=${PIPESTATUS[0]}
-          set -e
-          # SukiSU builtin owns the Manager signature table; there is no legacy
-          # KernelSU-Next UAPI-v4/manager-size override to validate here.
-          if [ "$PRE_RC" -ne 0 ]; then
-            if grep -qE "error:|fatal error:" ../logs/09a-kernelsu-precompile.log; then
-              summarize_errors ../logs/09a-kernelsu-precompile.log
-              echo "[ERROR] drivers/kernelsu has compile errors on this 4.19 kernel (all listed above)."
-              exit 1
+                  s = s.replace('#include <linux/version.h>', '#include <linux/version.h>\n#include <linux/task_work.h>\n' + macro, 1)
+          s = s.replace('task_work_add(current, &tw->cb, TWA_RESUME)', 'task_work_add(current, &tw->cb, KSU_TASK_WORK_NOTIFY)')
+          s = s.replace('task_work_add(tsk, cb, TWA_RESUME)', 'task_work_add(tsk, cb, KSU_TASK_WORK_NOTIFY)')
+          p.write_text(s)
+          PY_TASKWORK
             fi
-            echo "[WARN] SukiSU pre-compile returned ${PRE_RC} without a compiler error; continuing to the full build"
-          else
-            echo "[OK] SukiSU builtin drivers/kernelsu pre-compiled cleanly"
-          fi
-          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
-
-          grep -q '947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef' KernelSU-Next/kernel/manager/apk_sign.c
-          grep -q '0x35c' KernelSU-Next/kernel/manager/apk_sign.c
-          grep -Rqs 'SUSFS' KernelSU-Next/kernel
-
-          {
-            echo "manager_version=${KSU_VERSION}"
-            echo "manager_package=${KSU_MANAGER_PACKAGE}"
-            echo "manager_signature_size=0x35c"
-            echo "manager_signature_sha256=947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef"
-            echo "driver=SukiSU-Ultra builtin"
-            echo "driver_commit=$(git -C KernelSU-Next rev-parse HEAD)"
-            grep '^CONFIG_KSU=' out/.config
-            grep '^CONFIG_KSU_SUSFS=' out/.config
-          } | tee ../logs/09-sukisu-final-source-contract.log
-
-          # V40 FIX 4: build only the kernel Image (what is packaged). See KERNEL_BUILD_TARGETS in env.
-          set +e
-          make "${MAKE_ARGS[@]}" -k -j"$(nproc)" ${KERNEL_BUILD_TARGETS:-Image} 2>&1 | tee ../logs/09-kernel-build.log
-          BUILD_RC=${PIPESTATUS[0]}
-          set -e
-          if [ "$BUILD_RC" -ne 0 ]; then
-            summarize_errors ../logs/09-kernel-build.log
-            echo "[ERROR] Kernel build failed (make exit code ${BUILD_RC})"
-            exit "$BUILD_RC"
-          fi
-          test -s out/arch/arm64/boot/Image
-          sha256sum out/arch/arm64/boot/Image | tee ../logs/output-image.sha256
-          # Final source/build audit for the SukiSU builtin provider.
-          {
-            echo "CONFIG_KSU=$(grep '^CONFIG_KSU=' out/.config)"
-            echo "CONFIG_KSU_SUSFS=$(grep '^CONFIG_KSU_SUSFS=' out/.config)"
-            grep '^CONFIG_KSU_MANUAL_HOOK=' out/.config || echo "CONFIG_KSU_MANUAL_HOOK=not-defined-by-sukiSU-builtin"
-            grep -n 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
-            grep -n '947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef' KernelSU-Next/kernel/manager/apk_sign.c
-          } | tee ../logs/09-sukisu-build-audit.log
-          strings out/arch/arm64/boot/Image > ../logs/09-image-strings.txt
-          if ! grep -m1 'Linux version ' ../logs/09-image-strings.txt > ../logs/09-image-version.log; then
-            echo "[WARN] Linux version string was not found in Image; build artifact exists." | tee -a ../logs/09-image-version.log
-          fi
-          echo "[OK] Kernel Image built"
-
-          # Final linked-image contract: verify SukiSU's own signature table and
-          # required builtin SUSFS symbols. Do not require the old KSUNext UAPI.
-          test -s out/vmlinux
-          test -s out/arch/arm64/boot/Image
-          strings out/vmlinux | grep -Fq '947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef' || {
-            echo "[ERROR] final vmlinux is missing the SukiSU manager signature hash"; exit 1;
-          }
-          for sym in ksu_handle_execveat ksu_handle_faccessat ksu_handle_stat ksu_handle_setresuid ksu_handle_sys_reboot susfs_ksu_sid susfs_priv_app_sid; do
-            grep -qE "(^|[[:space:]])${sym}([[:space:]]|$)" <(llvm-nm -n out/vmlinux 2>/dev/null) || {
-              echo "[ERROR] final vmlinux is missing required SukiSU/SUSFS symbol ${sym}"
-              exit 1
-            }
           done
-          {
-            echo "manager_package=${KSU_MANAGER_PACKAGE}"
-            echo "manager_signature_size=0x35c"
-            echo "manager_signature_sha256=947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef"
-            echo "manager_version=${KSU_VERSION}"
-            echo "kernel_variant=SukiSU-Ultra builtin"
-            echo "builtin_susfs=yes"
-            echo "final_vmlinux_contract=passed"
-          } | tee ../logs/09-final-sukisu-contract.log
-          echo "[OK] V100: final vmlinux SukiSU builtin + SUSFS contract audit passed."
-          echo "::endgroup::"
 
-      - name: "9b. DTB diagnostic (non-blocking; captures the hidden dtc error text)"
-        if: always()
-        continue-on-error: true
+          NS=fs/namespace.c
+          if grep -Rqs 'extern int path_mount(' drivers/kernelsu && ! grep -qE '^int path_mount\(' "$NS"; then
+            cat >> "$NS" <<'EOF_PATHMOUNT'
+
+          /* V101: Linux 4.19 bridge for SukiSU path_mount(). */
+          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page)
+          {
+              char *buf, *dir_name;
+              mm_segment_t old_fs;
+              long ret;
+              buf = (char *)__get_free_page(GFP_KERNEL);
+              if (!buf) return -ENOMEM;
+              dir_name = d_path(path, buf, PAGE_SIZE);
+              if (IS_ERR(dir_name)) { free_page((unsigned long)buf); return PTR_ERR(dir_name); }
+              old_fs = get_fs();
+              set_fs(KERNEL_DS);
+              ret = ksys_mount((char __user *)dev_name, (char __user *)dir_name, (char __user *)type_page, flags, (void __user *)data_page);
+              set_fs(old_fs);
+              free_page((unsigned long)buf);
+              return ret;
+          }
+          EOF_PATHMOUNT
+          fi
+          if grep -Rqs 'extern int path_umount(' drivers/kernelsu && ! grep -qE '^int path_umount\(' "$NS"; then
+            cat >> "$NS" <<'EOF_PATHUMOUNT'
+
+          /* V101: Linux 4.19 bridge for SukiSU path_umount(). */
+          int path_umount(struct path *path, int flags)
+          {
+              char *buf, *name;
+              mm_segment_t old_fs;
+              long ret;
+              buf = (char *)__get_free_page(GFP_KERNEL);
+              if (!buf) return -ENOMEM;
+              name = d_path(path, buf, PAGE_SIZE);
+              if (IS_ERR(name)) { free_page((unsigned long)buf); return PTR_ERR(name); }
+              old_fs = get_fs();
+              set_fs(KERNEL_DS);
+              ret = ksys_umount((char __user *)name, flags);
+              set_fs(old_fs);
+              free_page((unsigned long)buf);
+              return ret;
+          }
+          EOF_PATHUMOUNT
+          fi
+
+          if grep -Rqs 'seccomp_filter_release' drivers/kernelsu && ! grep -q 'void seccomp_filter_release(' kernel/seccomp.c; then
+            cat >> kernel/seccomp.c <<'EOF_SECCOMP'
+
+          #ifdef CONFIG_SECCOMP
+          /* V101: Linux 4.19 bridge for SukiSU seccomp release API. */
+          void seccomp_filter_release(struct task_struct *tsk) { put_seccomp_filter(tsk); }
+          #endif
+          EOF_SECCOMP
+          fi
+
+          DP=drivers/kernelsu/supercall/dispatch.c
+          if [ -f "$DP" ] && grep -Eq 'tasklist_lock|task_pgrp\(|task_session\(' "$DP" && ! grep -q 'V101 sched compatibility' "$DP"; then
+            sed -i '1i #include <linux/sched/signal.h>' "$DP"
+            sed -i '1i #include <linux/sched/task.h>' "$DP"
+            sed -i '1i /* V101 sched compatibility */' "$DP"
+          fi
+
+          # Linux 4.19 lacks the post-5.7 selinux_state members used by SukiSU's
+          # optional selinux_hide implementation. Guard only this optional feature;
+          # never weaken SELinux or replace the real KSU policy injector.
+          SH=drivers/kernelsu/feature/selinux_hide.c
+          if [ -f "$SH" ] && grep -q 'selinux_state.status_lock' "$SH" && ! grep -q 'V101 4.19 selinux_hide guard' "$SH"; then
+            cp "$SH" ../logs/selinux_hide.original.c
+            {
+              echo '#include <linux/version.h>'
+              echo '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)'
+              cat "$SH"
+              echo '#else'
+              echo '#include <linux/init.h>'
+              echo '/* V101 4.19 selinux_hide guard: unsupported post-5.7 SELinux ABI. */'
+              echo 'void __init ksu_selinux_hide_init(void) {}'
+              echo 'void __exit ksu_selinux_hide_exit(void) {}'
+              echo 'void ksu_selinux_hide_drop_backup_if_unused(void) {}'
+              echo '#endif /* V101 4.19 selinux_hide guard */'
+            } > "$SH.tmp"
+            mv "$SH.tmp" "$SH"
+          fi
+
+          # The real 4.19 policy injector must remain active. This directly addresses
+          # the old setexeccon(u:r:ksu:s0) failure instead of hiding it with permissive SELinux.
+          grep -Eq 'void[[:space:]]+apply_kernelsu_rules[[:space:]]*\([[:space:]]*void[[:space:]]*\)' drivers/kernelsu/selinux/rules.c
+          grep -q 'ksu_allow(db, KERNEL_SU_DOMAIN, ALL, ALL, ALL)' drivers/kernelsu/selinux/rules.c
+          grep -q 'setup_selinux' drivers/kernelsu/selinux/selinux.c
+
+          # DT: remove only duplicate common-touch includes.
+          while IFS= read -r -d '' f; do
+            sed -i '\|^#include "../lito-caymanlm_common/lito-caymanlm_common-touch.dtsi"$|d' "$f"
+          done < <(find arch/arm64/boot/dts/vendor/lge/lito-caymanlm -type f -iname '*touch_rev-1.0.dtsi' -print0)
+
+          # DT: rename only board-local PM labels that duplicate the generic qcom labels.
+          PM_ROOT=arch/arm64/boot/dts/vendor/lge/lito-caymanlm
+          while IFS= read -r -d '' f; do
+            tag="$(basename "$f" .dtsi | tr -c 'A-Za-z0-9' '_' | tr '[:upper:]' '[:lower:]' | sed 's/_*$//')"
+            for base in camera_therm_default bmr_w_therm_default; do
+              if grep -qE "^[[:space:]]*${base}[[:space:]]*:[[:space:]]*${base}[[:space:]]*\{" "$f"; then
+                sed -i -E "s/^([[:space:]]*)${base}[[:space:]]*:[[:space:]]*${base}[[:space:]]*\{/\1${base}_${tag}: ${base}_${tag} {/" "$f"
+                sed -i "s/&${base}/\&${base}_${tag}/g" "$f"
+              fi
+            done
+          done < <(find "$PM_ROOT" -type f -iname '*pm*.dtsi' -print0)
+
+          if grep -RInE '^[[:space:]]*(camera_therm_default|bmr_w_therm_default)[[:space:]]*:[[:space:]]*\1[[:space:]]*\{' "$PM_ROOT" 2>/dev/null; then
+            echo '[ERROR] Duplicate board PM labels remain.'
+            exit 1
+          fi
+          git diff --check
+          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then exit 1; fi
+
+      - name: "7. Enable all compatible SukiSU/SUSFS features and enforce no-removal"
         shell: bash
         run: |
-          set +e
-          if [ ! -f kernel/out/.config ]; then echo "[SKIP] kernel/out/.config not present"; exit 0; fi
+          set -Eeuo pipefail
           cd kernel
-          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
-          export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
+          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
+          export PATH="${CLANG_BIN}:$PATH"
+          make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/pre-sukisu-defconfig.log 2>&1
+          ./scripts/config --file out/.config --enable KSU --enable KSU_FEATURE_ADBROOT --enable KPM --enable KSU_SUSFS
+          for sym in KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP; do
+            grep -Eq "^[[:space:]]*config[[:space:]]+${sym}([[:space:]]|$)" drivers/kernelsu/Kconfig
+            ./scripts/config --file out/.config --enable "${sym}"
+          done
+          make O=out olddefconfig > ../logs/sukisu-olddefconfig.log 2>&1
+          for sym in CONFIG_KSU CONFIG_KSU_FEATURE_ADBROOT CONFIG_KPM CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP; do
+            grep -q "^${sym}=y$" out/.config || { echo "[ERROR] ${sym} is not y"; exit 1; }
+          done
+          awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../post-integration-enabled-config.txt
+          while IFS= read -r line; do
+            sym="${line%%=*}"
+            case "$sym" in CONFIG_KSU*|CONFIG_KPM) continue ;; esac
+            grep -Fxq "$line" ../post-integration-enabled-config.txt || { echo "[ERROR] Baseline config changed: $line"; exit 1; }
+          done < ../baseline-enabled-config.txt
+
+      - name: "8. Build SukiSU subtree, then Image"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd kernel
+          export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
           MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
-          # Only informational: the Image is built without DTBs, so this never affects the result.
-          timeout 900 make "${MAKE_ARGS[@]}" -k -j"$(nproc)" V=1 dtbs > ../logs/09b-dtbs-diagnostic.log 2>&1
-          echo "dtbs_rc=$?" | tee ../logs/09b-dtbs-rc.txt
-          grep -nE "Input tree has errors|Error [0-9]+$" ../logs/09b-dtbs-diagnostic.log | head -20
-          echo "--- dtc quiet flags in the real dtc command line ---"
-          grep -m3 -oE -- "-q+ " ../logs/09b-dtbs-diagnostic.log
-          TMP="$(find out -name '*caymanlm_cn-rev-1.0_overlay*dts.tmp' 2>/dev/null | head -1)"
-          if [ -n "$TMP" ] && [ -x out/scripts/dtc/dtc ]; then
-            echo "--- dtc re-run without -qq on $TMP ---"
-            out/scripts/dtc/dtc -@ -I dts -O dtb -o /dev/null \
-              -i arch/arm64/boot/dts/vendor/lge -i arch/arm64/boot/dts/vendor -i arch/arm64/boot/dts -i include \
-              "$TMP" > ../logs/09b-dtc-verbose.txt 2>&1
-            head -60 ../logs/09b-dtc-verbose.txt
-            echo "--- which files define the duplicated labels (cpp line markers) ---"
-            awk '/^# [0-9]+ "/{f=$3} /camera_therm_default:|bmr_w_therm_default:/{print f " : " $0}' "$TMP" | tee ../logs/09b-dup-label-sources.txt
-            grep -n '^# 1 ".*therm.*"' "$TMP" | head -40 | tee ../logs/09b-therm-includes.txt
-          else
-            echo "[INFO] preprocessed overlay .dts.tmp not found; see logs/09b-dtbs-diagnostic.log"
-          fi
-          exit 0
+          MAKE_ARGS+=(KSU_MANAGER_PACKAGE="${KSU_MANAGER_PACKAGE}")
+          make O=out security/selinux/ > ../logs/selinux-build.log 2>&1
+          set +e
+          make "${MAKE_ARGS[@]}" -k -j"$(nproc)" M=drivers/kernelsu > ../logs/ksu-prebuild.log 2>&1
+          rc=$?
+          set -e
+          grep -nE '(error:|fatal error:|undefined reference|undefined symbol|Error [0-9]+$)' ../logs/ksu-prebuild.log | head -100 || true
+          test "$rc" -eq 0 || exit "$rc"
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" "${KERNEL_BUILD_TARGET}" > ../logs/kernel-build.log 2>&1
+          test -s out/vmlinux
+          test -s out/arch/arm64/boot/Image
+          sha256sum out/arch/arm64/boot/Image > ../logs/Image.sha256
 
-      - name: "10. Package AnyKernel3 and kernel.zip"
+      - name: "9. Final contracts and blocking DTB verification"
         if: success()
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[10/15] Package AnyKernel3 and kernel.zip"
+          cd kernel
+          export PATH="${CLANG_BIN}:$PATH"
+          strings out/vmlinux | grep -Fq "${KSU_MANAGER_SIGNATURE_SHA256}"
+          for sym in ksu_handle_execveat ksu_handle_faccessat ksu_handle_stat ksu_handle_setresuid ksu_handle_sys_reboot setup_ksu_cred apply_kernelsu_rules susfs_ksu_sid susfs_priv_app_sid; do
+            llvm-nm -n out/vmlinux | grep -Eq "[[:space:]]${sym}$" || { echo "[ERROR] Missing ${sym}"; exit 1; }
+          done
+          grep -A12 -B3 'void apply_kernelsu_rules(void)' drivers/kernelsu/selinux/rules.c | grep -q 'ksu_allow'
+          test ! -d susfs-backport
+          ! find . -type f \( -iname '*susfs*patch*' -o -iname '*nongki*build*' \) -print -quit | grep -q .
+          make O=out dtbs > ../logs/dtbs-final.log 2>&1
+          test -s out/arch/arm64/boot/Image
+
+      - name: "10. Package and create device runtime validation"
+        if: success()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           rm -rf release work-anykernel
-          mkdir -p release/logs release/build-info release/checksums work-anykernel
+          mkdir -p release/build-info release/logs release/checksums work-anykernel
           cp kernel/out/arch/arm64/boot/Image release/kernel-image
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git work-anykernel 2>&1 | tee logs/10-anykernel-clone.log
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git work-anykernel
           rm -rf work-anykernel/.git work-anykernel/modules work-anykernel/ramdisk
           cp kernel/out/arch/arm64/boot/Image work-anykernel/Image
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V99-LM-G900-KARNAL
+          kernel.string=V101-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1693,238 +436,88 @@ jobs:
           (cd work-anykernel && zip -qr ../release/AnyKernel3-OrangeFox-Flashable.zip .)
           mkdir -p release/kernel-payload
           cp kernel/out/arch/arm64/boot/Image release/kernel-payload/Image
-          cp source-info.txt baseline-info.txt toolchain-version.txt baseline-enabled-config.txt post-integration-enabled-config.txt release/build-info/ 2>/dev/null || true
-          cp logs/*.log release/logs/ 2>/dev/null || true
-          cp logs/*.patch release/logs/ 2>/dev/null || true
+          cp baseline-info.txt source-info.txt toolchain-version.txt baseline-enabled-config.txt post-integration-enabled-config.txt release/build-info/
+          cp logs/* release/logs/ 2>/dev/null || true
           (cd release/kernel-payload && zip -qr ../kernel.zip .)
           rm -rf release/kernel-payload
-          {
-            echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V99-LM-G900-KARNAL-BUILT"
-            echo "kernel_version=${BASELINE_KERNEL_VERSION}"
-            echo "source_commit=$(git -C kernel rev-parse HEAD)"
-            echo "cip_baseline=${BASELINE_CIP}"
-            echo "cip_target=${CIP_TARGET}"
-            echo "sukisu_ultra=${KSU_VERSION}"
-            echo "susfs_version=${SUSFS_VERSION}"
-            echo "susfs_backport_repo=${SUSFS_BACKPORT_REPO}"
-            echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
-            echo "clang=${CLANG_REV}"
-            echo "clang_commit=${CLANG_COMMIT}"
-            echo "defconfig=${TARGET_KERNEL_CONFIG}"
-          } > release/build-info/build-manifest.txt
+          cat > release/build-info/device-root-module-validation.sh <<'EOF_VALIDATE'
+          #!/system/bin/sh
+          set -u
+          echo '== kernel =='; uname -a
+          echo '== root =='; su -c id || exit 10
+          echo '== SELinux context =='; su -c 'cat /proc/self/attr/current'
+          echo '== KSU paths =='; su -c 'ls -ld /data/adb /data/adb/ksu /data/adb/ksu/bin /data/adb/modules /data/adb/modules_update'
+          echo '== KSU processes =='; su -c 'ps -A | grep -E "ksud|ksu" || true'
+          echo '== KSU SELinux log =='; su -c 'dmesg | grep -Ei "KernelSU|SukiSU|ksud|setexeccon|security_secctx_to_secid|apply_kernelsu_rules|Cached su SID" | tail -200 || true'
+          echo '== module smoke test =='; echo 'Install one known-safe module, reboot once, then run:'
+          echo 'su -c "ls -la /data/adb/modules"'
+          echo 'su -c "mount | grep /data/adb/modules || true"'
+          echo 'The old fatal setexeccon(u:r:ksu:s0) Invalid argument must not appear.'
+          EOF_VALIDATE
+          chmod +x release/build-info/device-root-module-validation.sh
           sha256sum release/kernel-image release/kernel.zip release/AnyKernel3-OrangeFox-Flashable.zip > release/checksums/SHA256SUMS
           rm -f release/kernel-image
           (cd release && zip -qr "../${OUTPUT_PREFIX}-output.zip" .)
-          echo "[OK] ${OUTPUT_PREFIX}-output.zip"
-          echo "::endgroup::"
 
-      - name: "11. Verify all final artifacts"
+      - name: "11. Verify artifacts twice"
         if: success()
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[11/15] Verify final artifacts"
-          {
-            test -s "${OUTPUT_PREFIX}-output.zip"
-            test -s release/kernel.zip
-            test -s release/AnyKernel3-OrangeFox-Flashable.zip
-            unzip -t "${OUTPUT_PREFIX}-output.zip"
-            unzip -t release/kernel.zip
-            unzip -t release/AnyKernel3-OrangeFox-Flashable.zip
-            unzip -l "${OUTPUT_PREFIX}-output.zip" | sed -n '1,220p'
-          } 2>&1 | tee logs/11-artifact-verify.log
-          echo "[OK] Final artifacts verified"
-          echo "::endgroup::"
+          test -s "${OUTPUT_PREFIX}-output.zip"
+          test -s release/kernel.zip
+          test -s release/AnyKernel3-OrangeFox-Flashable.zip
+          unzip -t "${OUTPUT_PREFIX}-output.zip"
+          unzip -t release/kernel.zip
+          unzip -t release/AnyKernel3-OrangeFox-Flashable.zip
+          unzip -t "${OUTPUT_PREFIX}-output.zip"
+          sha256sum "${OUTPUT_PREFIX}-output.zip" release/kernel.zip release/AnyKernel3-OrangeFox-Flashable.zip
 
-      - name: "12. Upload V100 final output"
+      - name: "12. Collect complete diagnostics"
+        if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set +e
+          mkdir -p diagnostics/logs
+          printf 'job_status=%s\nworkflow=%s\nsource_commit=%s\ncip_target=%s\nsukisu_commit=%s\ndefconfig=%s\n' \
+            "${JOB_STATUS}" "${WORKFLOW_VERSION}" "${KERNEL_COMMIT}" "${CIP_TARGET}" "${KSU_COMMIT}" "${TARGET_KERNEL_CONFIG:-UNRESOLVED}" > diagnostics/run-summary.txt
+          cp -a logs/. diagnostics/logs/ 2>/dev/null || true
+          cp -a baseline-info.txt baseline-defconfig.txt baseline-enabled-config.txt post-integration-enabled-config.txt source-info.txt toolchain-version.txt baseline-git-status.txt diagnostics/ 2>/dev/null || true
+          if [ -d kernel ]; then
+            { git -C kernel status --short; echo; git -C kernel rev-parse HEAD; echo; find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print; } > diagnostics/kernel-state.txt 2>&1
+          fi
+          rm -f "${OUTPUT_PREFIX}-complete-logs.zip"
+          (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
+
+      - name: "13. Upload successful output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V99-LM-G900-KARNAL-output
-          path: V99-LM-G900-KARNAL-output.zip
+          name: V101-LM-G900-KARNAL-output
+          path: V101-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V100 flashable ZIPs"
+      - name: "14. Upload flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V99-LM-G900-KARNAL-flashable-zips
+          name: V101-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "14. Collect complete diagnostics (always)"
-        if: always()
-        shell: bash
-        env:
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          # Diagnostics must never fail the job a second time. In earlier versions the diagnostic
-          # collector itself failed with "sort: write error: Broken pipe", masking
-          # the original CIP failure. V19 writes large inventories to files and only
-          # prints bounded summaries to the Actions console.
-          set +e
-          mkdir -p diagnostics diagnostics/logs diagnostics/cip-checks
-          {
-            echo "job_status=${JOB_STATUS}"
-            echo "workflow=${WORKFLOW_VERSION}"
-            echo "run_id=${GITHUB_RUN_ID}"
-            echo "run_number=${GITHUB_RUN_NUMBER}"
-            echo "sha=${GITHUB_SHA}"
-            echo "ref=${GITHUB_REF}"
-            echo "source_commit=${KERNEL_COMMIT}"
-            echo "cip_baseline=${BASELINE_CIP}"
-            echo "cip_target=${CIP_TARGET:-UNRESOLVED}"
-            echo "sukisu_ultra=${KSU_VERSION}"
-            echo "susfs=${SUSFS_VERSION}"
-            echo "susfs_backport_repo=${SUSFS_BACKPORT_REPO}"
-            echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
-            echo "clang=${CLANG_REV} (${CLANG_COMMIT})"
-            echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
-            echo "defconfig=${TARGET_KERNEL_CONFIG:-UNRESOLVED}"
-          } > diagnostics/run-summary.txt
-
-          # Preserve every generated log, including partial logs from failed steps.
-          cp -a logs/. diagnostics/logs/ 2>/dev/null || true
-          cp -a logs/device-tree/. diagnostics/device-tree/ 2>/dev/null || true
-          cp baseline-info.txt baseline-defconfig.txt baseline-enabled-config.txt \
-             post-integration-enabled-config.txt source-info.txt toolchain-version.txt \
-             baseline-git-status.txt diagnostics/ 2>/dev/null || true
-
-          # V38: two deep, still-open build blockers need the ACTUAL source to fix safely
-          # rather than guessing from truncated compiler output -- capture it here every run,
-          # success or failure, so it is always in the uploaded logs bundle:
-          #
-          # 1) drivers/kernelsu/selinux/rules.c (via the drivers/kernelsu symlink into
-          #    KernelSU-Next/kernel/selinux/) fails with ~20 errors before clang's
-          #    -ferror-limit cuts it off, so the file's full content past line ~182 has
-          #    never actually been seen. It manipulates struct selinux_state/selinux_policy
-          #    fields that only exist after Linux 5.7's SELinux RCU-policy rewrite; on this
-          #    4.19 tree the equivalent state (sidtab/policydb) isn't even in the same place,
-          #    so this is not a simple version-guard fix like the earlier ones and should not
-          #    be attempted without seeing the whole file and its Kbuild wiring.
-          mkdir -p diagnostics/ksu-selinux-source
-          for f in kernel/selinux/rules.c kernel/selinux/rules.h kernel/selinux/sepolicy.c \
-                   kernel/selinux/sepolicy.h kernel/selinux/selinux.c kernel/selinux/selinux.h \
-                   kernel/selinux/Kbuild kernel/Kbuild kernel/Kconfig; do
-            src="kernel/KernelSU-Next/${f}"
-            if [ -f "$src" ]; then
-              mkdir -p "diagnostics/ksu-selinux-source/$(dirname "$f")"
-              cp "$src" "diagnostics/ksu-selinux-source/${f}"
-            fi
-          done
-          grep -RnF 'selinux/rules' kernel/KernelSU-Next/kernel --include=Kbuild --include=Makefile \
-            > diagnostics/ksu-selinux-source/kbuild-references.txt 2>/dev/null || true
-          #
-          # 2) The lito-caymanlm_cn-rev-1.0_overlay.dtbo DTC failure ("ERROR: Input tree has
-          #    errors, aborting") has no supporting warning line in Kbuild's own dtc output, so
-          #    the actual defect is still unconfirmed -- V32's fix (a verified duplicate
-          #    common-touch.dtsi include) targeted the lao_com region and V37 generalized that
-          #    same fix to every *touch_rev-1.0.dtsi wrapper, but the CN overlay still fails
-          #    identically, so the real defect must be something else in this overlay's own
-          #    include chain. Capture the small raw source files directly (cheap; each is under
-          #    1 KB) and, if the build got far enough to generate it, the fully preprocessed
-          #    dts Kbuild actually fed to dtc -- that preprocessed file is the ground truth.
-          mkdir -p diagnostics/cn-overlay-source
-          find kernel/arch/arm64/boot/dts/vendor/lge/lito-caymanlm -iname '*cn-rev-1.0*' \
-            -o -iname '*cn-nfc*' 2>/dev/null | while read -r f; do
-            cp --parents "$f" diagnostics/cn-overlay-source/ 2>/dev/null || true
-          done
-          find kernel/arch/arm64/boot/dts/vendor/lge/lito-caymanlm -iname '*touch_rev-1.0.dtsi' \
-            -o -iname '*common-touch.dtsi' 2>/dev/null | while read -r f; do
-            cp --parents "$f" diagnostics/cn-overlay-source/ 2>/dev/null || true
-          done
-          find kernel/out/arch/arm64/boot/dts/vendor/lge -iname '.lito-caymanlm_cn-rev-1.0_overlay.dtbo.dts.tmp' \
-            2>/dev/null | while read -r f; do
-            cp "$f" diagnostics/cn-overlay-source/preprocessed-cn-rev-1.0.dts.tmp 2>/dev/null || true
-          done
-
-          # Full workspace inventory goes to a file, not the Actions stdout pipe.
-          find "$GITHUB_WORKSPACE" -type f \
-            -not -path '*/.git/*' \
-            -not -path '*/clang-prebuilt/*' \
-            -printf '%P\t%s bytes\n' 2>/dev/null | sort > diagnostics/workspace-files.txt 2>/dev/null || true
-
-          {
-            echo "=== A-Z BUILD RECORD V91 ==="
-            echo "Purpose=Preserve the known-working LM-G900 kernel baseline and change only the root provider to SukiSU-Ultra builtin with built-in SUSFS."
-            echo "Device=LG Velvet LM-G900 family; codename=caymanlm"
-            echo "Android/device branch=${DEVICE_REF}"
-            echo "Kernel repo=${KERNEL_REPO}"
-            echo "Kernel branch=${KERNEL_REF}"
-            echo "Kernel commit=${KERNEL_COMMIT}"
-            echo "Kernel version=${BASELINE_KERNEL_VERSION}"
-            echo "Known-working baseline Image SHA256=${BASELINE_KERNEL_SHA256}"
-            echo "Defconfig=${TARGET_KERNEL_CONFIG:-UNRESOLVED}"
-            echo "CIP baseline=${BASELINE_CIP}"
-            echo "CIP selected=${CIP_TARGET:-UNRESOLVED}"
-            echo "SukiSU-Ultra=${KSU_VERSION}"
-             echo "SukiSU-Ultra-manager=${KSU_MANAGER_BUILD}"
-            echo "SUSFS=${SUSFS_VERSION} (target ${SUSFS_TARGET_MAJOR}.${SUSFS_TARGET_MINOR}.${SUSFS_TARGET_PATCH})"
-            echo "SUSFS backport repo=${SUSFS_BACKPORT_REPO}"
-            echo "SUSFS backport ref=${SUSFS_BACKPORT_REF}"
-            echo "Clang=${CLANG_REV}"
-            echo "Clang commit=${CLANG_COMMIT}"
-            echo "Architecture=arm64"
-            echo "LLVM=1 LLVM_IAS=1"
-            echo "No-removal policy=Every baseline enabled CONFIG_* symbol must remain present after integration."
-            echo "Conflict policy=Never force, fuzz, or hide conflicts."
-            echo
-            echo "=== Repository revisions ==="
-            git -C kernel rev-parse HEAD 2>/dev/null || true
-            git -C device-caymanlm rev-parse HEAD 2>/dev/null || true
-            git -C device-sm7250-common rev-parse HEAD 2>/dev/null || true
-            git -C vendor-caymanlm rev-parse HEAD 2>/dev/null || true
-            git -C susfs-backport rev-parse HEAD 2>/dev/null || true
-            echo
-            echo "=== Inventory file ==="
-            echo "diagnostics/workspace-files.txt"
-            echo
-            echo "=== Kernel diff stat (staged + unstaged vs HEAD) ==="
-            git -C kernel diff HEAD --stat 2>/dev/null || true
-            echo
-            echo "=== Kernel diff names (staged + unstaged vs HEAD) ==="
-            git -C kernel diff HEAD --name-status 2>/dev/null || true
-            echo
-            echo "=== Final config ==="
-            if [ -f kernel/out/.config ]; then
-              sha256sum kernel/out/.config
-              grep -E '^CONFIG_(KSU|KSU_MANUAL_HOOK|KSU_SUSFS|KPROBES|KPROBE_EVENTS|MODULES)=' kernel/out/.config || true
-            fi
-            echo
-            echo "=== Release hashes ==="
-            find release -maxdepth 3 -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null || true
-          } > diagnostics/A-Z-BUILD-RECORD.txt 2>&1
-
-          if [ -d kernel ]; then
-            {
-              echo "=== Kernel git status ==="; git -C kernel status --short || true
-              echo; echo "=== Kernel HEAD ==="; git -C kernel rev-parse HEAD || true
-              echo; echo "=== Kernel version ==="; make -s -C kernel kernelversion 2>/dev/null || true
-              echo; echo "=== Reject files ==="; find kernel -type f -name '*.rej' -print 2>/dev/null || true
-              echo; echo "=== Merge conflict markers ==="; grep -RInE '^(<<<<<<<|=======|>>>>>>>)' kernel --exclude-dir=.git 2>/dev/null | head -200 || true
-            } > diagnostics/kernel-state.txt 2>&1
-          fi
-
-          # Copy the diagnostic bundle itself into the output zip only if the build
-          # reached packaging; always create the separate complete-logs artifact.
-          rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
-          (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
-
-          echo "::notice::V99 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
-          echo "::endgroup::"
-
-      - name: "15. Upload V100 complete diagnostics (always)"
+      - name: "15. Upload complete diagnostics"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V99-LM-G900-KARNAL-complete-logs
+          name: V101-LM-G900-KARNAL-complete-logs
           path: |
-            V99-LM-G900-KARNAL-complete-logs.zip
+            V101-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
