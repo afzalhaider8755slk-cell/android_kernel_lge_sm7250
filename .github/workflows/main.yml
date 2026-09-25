@@ -1,5 +1,5 @@
 
-name: V105-LM-G900-KARNAL-SukiSU-Builtin
+name: V106-LM-G900-KARNAL-SukiSU-Builtin
 
 on:
   workflow_dispatch:
@@ -29,8 +29,8 @@ env:
   KSU_MANAGER_SIGNATURE_SHA256: 947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V105
-  OUTPUT_PREFIX: V105-LM-G900-KARNAL
+  WORKFLOW_VERSION: V106
+  OUTPUT_PREFIX: V106-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -107,7 +107,7 @@ jobs:
           cd kernel
           git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
           git fetch --no-tags cip "refs/tags/${BASELINE_CIP}:refs/tags/${BASELINE_CIP}" "refs/tags/${CIP_TARGET}:refs/tags/${CIP_TARGET}"
-          # V104: preserve the V99 working order exactly. Step 3 has already
+          # V106: preserve the V99 working order exactly. Step 3 has already
           # generated kernel/out/.config; never reset/clean the tree here because
           # cleaning the working tree would delete out/ and make this legacy tree fail before any
           # new SukiSU code is reached. V99 passed this stage using the same 3-way
@@ -130,19 +130,26 @@ jobs:
             echo 3way > ../logs/cip-selected.txt
           fi
           git diff --check
-          # The legacy vendor Makefile requires the generated configuration
-          # from the selected output tree for kernelversion/kernelrelease after
-          # CIP 133 changes localversion-cip. Step 3 deliberately uses O=out,
-          # so these post-CIP queries MUST use the same output tree. Calling
-          # `make kernelversion` here asks the source tree for
-          # include/config/auto.conf, which does not exist in this O=out
-          # configuration layout and causes the false CIP failure:
-          #   include/generated/autoconf.h or include/config/auto.conf are missing
-          # This is a config-lifecycle/path error, not a CIP patch conflict.
+          # Source-level contract for this exact Linux 4.19.325 vendor tree:
+          # kernelversion is a Makefile-only value (VERSION/PATCHLEVEL/SUBLEVEL),
+          # while kernelrelease is configuration-dependent because setlocalversion()
+          # consumes the generated config. Do NOT invoke kernelversion through O=out:
+          # the out-tree recursive Makefile includes include/config/auto.conf before
+          # the target is evaluated. On this 4.19 tree that produces the misleading
+          # "Kernel configuration is invalid" error even though CIP applied cleanly.
+          # Read VERSION/PATCHLEVEL/SUBLEVEL directly from the source Makefile, then
+          # use the already-configured out tree only for kernelrelease.
           test -f out/.config
           test -f out/include/config/auto.conf
           test -f out/include/generated/autoconf.h
-          test "$(make -s O=out kernelversion)" = "${BASELINE_KERNEL_VERSION}"
+          KERNEL_VERSION_FROM_SOURCE="$(awk -F= '
+            /^[[:space:]]*VERSION[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); v=$2}
+            /^[[:space:]]*PATCHLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); p=$2}
+            /^[[:space:]]*SUBLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); s=$2}
+            END {print v "." p "." s}
+          ' Makefile)"
+          test "${KERNEL_VERSION_FROM_SOURCE}" = "${BASELINE_KERNEL_VERSION}"
+          printf 'source_kernelversion=%s\n' "${KERNEL_VERSION_FROM_SOURCE}" > ../logs/kernelversion-after-cip.txt
           KERNEL_RELEASE="$(make -s O=out kernelrelease)"
           printf '%s\n' "${KERNEL_RELEASE}" > ../logs/kernelrelease-after-cip.txt
           case "${KERNEL_RELEASE}" in
@@ -441,7 +448,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V105-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V106-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -518,8 +525,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V104-LM-G900-KARNAL-output
-          path: V104-LM-G900-KARNAL-output.zip
+          name: V106-LM-G900-KARNAL-output
+          path: V106-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -527,7 +534,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V105-LM-G900-KARNAL-kernel
+          name: V106-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -539,9 +546,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V104-LM-G900-KARNAL-complete-logs
+          name: V106-LM-G900-KARNAL-complete-logs
           path: |
-            V104-LM-G900-KARNAL-complete-logs.zip
+            V106-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
