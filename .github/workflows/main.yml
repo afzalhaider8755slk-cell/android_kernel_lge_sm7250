@@ -1,5 +1,5 @@
 
-name: V104-LM-G900-KARNAL-SukiSU-Builtin
+name: V105-LM-G900-KARNAL-SukiSU-Builtin
 
 on:
   workflow_dispatch:
@@ -29,8 +29,8 @@ env:
   KSU_MANAGER_SIGNATURE_SHA256: 947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V104
-  OUTPUT_PREFIX: V104-LM-G900-KARNAL
+  WORKFLOW_VERSION: V105
+  OUTPUT_PREFIX: V105-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -88,6 +88,9 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
           export PATH="${CLANG_BIN}:$PATH"
           make -C kernel O=out "${TARGET_KERNEL_CONFIG}" > logs/defconfig.log 2>&1
+          test -f kernel/out/.config
+          test -f kernel/out/include/config/auto.conf
+          test -f kernel/out/include/generated/autoconf.h
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' kernel/out/.config | sort > baseline-enabled-config.txt
           sha256sum baseline-enabled-config.txt > logs/baseline-enabled-config.sha256
           sha256sum baseline-defconfig.txt > logs/baseline-defconfig.sha256
@@ -106,7 +109,7 @@ jobs:
           git fetch --no-tags cip "refs/tags/${BASELINE_CIP}:refs/tags/${BASELINE_CIP}" "refs/tags/${CIP_TARGET}:refs/tags/${CIP_TARGET}"
           # V104: preserve the V99 working order exactly. Step 3 has already
           # generated kernel/out/.config; never reset/clean the tree here because
-          # git clean -fdx deletes out/ and makes this legacy tree fail before any
+          # cleaning the working tree would delete out/ and make this legacy tree fail before any
           # new SukiSU code is reached. V99 passed this stage using the same 3-way
           # fallback without cleaning the configured build output.
           test -f out/.config
@@ -127,9 +130,20 @@ jobs:
             echo 3way > ../logs/cip-selected.txt
           fi
           git diff --check
+          # The legacy vendor Makefile requires the generated configuration
+          # from the selected output tree for kernelversion/kernelrelease after
+          # CIP 133 changes localversion-cip. Step 3 deliberately uses O=out,
+          # so these post-CIP queries MUST use the same output tree. Calling
+          # `make kernelversion` here asks the source tree for
+          # include/config/auto.conf, which does not exist in this O=out
+          # configuration layout and causes the false CIP failure:
+          #   include/generated/autoconf.h or include/config/auto.conf are missing
+          # This is a config-lifecycle/path error, not a CIP patch conflict.
           test -f out/.config
-          test "$(make -s kernelversion)" = "${BASELINE_KERNEL_VERSION}"
-          KERNEL_RELEASE="$(make -s kernelrelease)"
+          test -f out/include/config/auto.conf
+          test -f out/include/generated/autoconf.h
+          test "$(make -s O=out kernelversion)" = "${BASELINE_KERNEL_VERSION}"
+          KERNEL_RELEASE="$(make -s O=out kernelrelease)"
           printf '%s\n' "${KERNEL_RELEASE}" > ../logs/kernelrelease-after-cip.txt
           case "${KERNEL_RELEASE}" in
             4.19.325-cip133-st17-perf*) ;;
@@ -427,7 +441,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V104-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V105-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -513,7 +527,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V104-LM-G900-KARNAL-kernel
+          name: V105-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
