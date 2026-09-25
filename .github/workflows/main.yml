@@ -1,5 +1,5 @@
 
-name: V109-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V110-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,8 +37,8 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V109-V99-FEATURES-PRESERVED-SUKISU-SUSFS-CHECKSUM-FIX
-  OUTPUT_PREFIX: V109-LM-G900-KARNAL
+  WORKFLOW_VERSION: V110-V99-FEATURES-PRESERVED-SUKISU-SUSFS-BLOBSHA-FIX
+  OUTPUT_PREFIX: V110-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -282,16 +282,30 @@ jobs:
           # rejected the verification stream with:
           #   sha256sum: standard input: no properly formatted checksum lines found
           # The cryptographic contract is unchanged; compare the digest directly.
-          EXPECTED_SUSFS_PATCH_SHA256="f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+          # IMPORTANT: f9d8ed... is the GitHub/Git blob SHA-1 for this exact
+          # pinned file, NOT a SHA-256 digest. V109 incorrectly compared that
+          # 40-hex Git blob ID against sha256sum's 64-hex output, so the build
+          # stopped here even though the downloaded SUSFS patch was the exact
+          # pinned source. Verify both identities independently:
+          #   1) git hash-object --stdin -> Git blob SHA-1
+          #   2) sha256sum              -> immutable byte-level SHA-256
+          EXPECTED_SUSFS_PATCH_BLOB_SHA="f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+          EXPECTED_SUSFS_PATCH_SHA256="8035f1a344e07b5d133ae44b46d505ce59096fbc391b1e92bf9a0f42192408c6"
+          ACTUAL_SUSFS_PATCH_BLOB_SHA="$(git hash-object ../logs/susfs-2.3.0.patch)"
           ACTUAL_SUSFS_PATCH_SHA256="$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')"
-          printf 'expected_sha256=%s\nactual_sha256=%s\n' \
-            "${EXPECTED_SUSFS_PATCH_SHA256}" "${ACTUAL_SUSFS_PATCH_SHA256}" \
-            > ../logs/susfs-sha256-verification.txt
+          {
+            printf 'expected_blob_sha=%s\n' "${EXPECTED_SUSFS_PATCH_BLOB_SHA}"
+            printf 'actual_blob_sha=%s\n' "${ACTUAL_SUSFS_PATCH_BLOB_SHA}"
+            printf 'expected_sha256=%s\n' "${EXPECTED_SUSFS_PATCH_SHA256}"
+            printf 'actual_sha256=%s\n' "${ACTUAL_SUSFS_PATCH_SHA256}"
+            printf 'patch_bytes=%s\n' "$(wc -c < ../logs/susfs-2.3.0.patch)"
+          } > ../logs/susfs-sha256-verification.txt
+          test "${ACTUAL_SUSFS_PATCH_BLOB_SHA}" = "${EXPECTED_SUSFS_PATCH_BLOB_SHA}"
           test "${ACTUAL_SUSFS_PATCH_SHA256}" = "${EXPECTED_SUSFS_PATCH_SHA256}"
-          printf 'patch_repo=%s\npatch_ref=%s\npatch_path=%s\npatch_url=%s\npatch_sha256=%s\n' \
+          printf 'patch_repo=%s\npatch_ref=%s\npatch_path=%s\npatch_url=%s\npatch_blob_sha=%s\npatch_sha256=%s\n' \
             "${SUSFS_KERNEL_PATCH_REPO}" "${SUSFS_KERNEL_PATCH_REF}" \
             "${SUSFS_KERNEL_PATCH_PATH}" "${SUSFS_KERNEL_PATCH_URL}" \
-            "${ACTUAL_SUSFS_PATCH_SHA256}" > ../logs/susfs-source-resolved.txt
+            "${ACTUAL_SUSFS_PATCH_BLOB_SHA}" "${ACTUAL_SUSFS_PATCH_SHA256}" > ../logs/susfs-source-resolved.txt
 
           # Refuse a partial/fuzzy application. Prefer direct application; if the
           # legacy vendor tree needs context relocation, allow only Git's 3-way
@@ -319,8 +333,9 @@ jobs:
           test -s include/linux/susfs_def.h
           grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
           grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
-          printf 'susfs_version=%s\npatch_ref=%s\npatch_url=%s\npatch_sha256=%s\n' \
+          printf 'susfs_version=%s\npatch_ref=%s\npatch_url=%s\npatch_blob_sha=%s\npatch_sha256=%s\n' \
             "${SUSFS_EXPECTED_VERSION}" "${SUSFS_KERNEL_PATCH_REF}" "${SUSFS_KERNEL_PATCH_URL}" \
+            "$(git hash-object ../logs/susfs-2.3.0.patch)" \
             "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" > ../logs/susfs-resolved.txt
 
           test -f drivers/kernelsu/manager/pkg_observer_compat.h
@@ -584,7 +599,8 @@ jobs:
           test -s fs/susfs.c
           grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
           test -f ../logs/susfs-2.3.0.patch
-          test "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" = "f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+          test "$(git hash-object ../logs/susfs-2.3.0.patch)" = "f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+          test "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" = "8035f1a344e07b5d133ae44b46d505ce59096fbc391b1e92bf9a0f42192408c6"
           grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
           for sym in CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP; do
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
@@ -607,7 +623,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V109-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V110-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
