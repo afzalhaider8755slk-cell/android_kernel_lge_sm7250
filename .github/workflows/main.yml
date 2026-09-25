@@ -1,5 +1,5 @@
 
-name: V107-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V108-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -33,11 +33,12 @@ env:
   SUSFS_KERNEL_PATCH_REPO: https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git
   SUSFS_KERNEL_PATCH_REF: f15603b246d7ce6008af8bdefa0a34b3df28326a
   SUSFS_KERNEL_PATCH_PATH: Patches/Patch/susfs_patch_to_4.19.patch
+  SUSFS_KERNEL_PATCH_URL: https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/f15603b246d7ce6008af8bdefa0a34b3df28326a/Patches/Patch/susfs_patch_to_4.19.patch
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V107-V99-FEATURES-PRESERVED-SUKISU-SUSFS
-  OUTPUT_PREFIX: V107-LM-G900-KARNAL
+  WORKFLOW_VERSION: V108-V99-FEATURES-PRESERVED-SUKISU-SUSFS-SOURCE-FIX
+  OUTPUT_PREFIX: V108-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -173,8 +174,14 @@ jobs:
           git init -q KernelSU
           git -C KernelSU remote add origin "https://github.com/${KSU_REPO}.git"
           git -C KernelSU fetch --depth=1 origin "${KSU_COMMIT}"
-          git -C KernelSU fetch --no-tags origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
-          git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"
+          git -C KernelSU fetch --no-tags --depth=64 origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
+          # The commit is pinned independently; the ancestry check is only a guard
+          # that the pinned commit belongs to the requested builtin line. If the
+          # remote branch history is shallow, deepen it before checking ancestry.
+          if ! git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"; then
+            git -C KernelSU fetch --no-tags --deepen=256 origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
+            git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"
+          fi
           git -C KernelSU checkout --detach "${KSU_COMMIT}"
           test "$(git -C KernelSU rev-parse HEAD)" = "${KSU_COMMIT}"
           test -f KernelSU/kernel/Kconfig
@@ -224,13 +231,25 @@ jobs:
           test ! -e include/linux/susfs.h
           test ! -e include/linux/susfs_def.h
 
-          git -C .. clone --depth=1 --no-checkout "${SUSFS_KERNEL_PATCH_REPO}" susfs-kernel-source
-          git -C ../susfs-kernel-source fetch --no-tags origin "${SUSFS_KERNEL_PATCH_REF}"
-          git -C ../susfs-kernel-source checkout --detach "${SUSFS_KERNEL_PATCH_REF}"
-          test "$(git -C ../susfs-kernel-source rev-parse HEAD)" = "${SUSFS_KERNEL_PATCH_REF}"
-          test -f "../susfs-kernel-source/${SUSFS_KERNEL_PATCH_PATH}"
-          cp "../susfs-kernel-source/${SUSFS_KERNEL_PATCH_PATH}" ../logs/susfs-2.3.0.patch
-          test "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" = "f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+          # V107 failure root cause: the Git object fetch/checkout path reached
+          # the pinned SUSFS commit, then the strict shell exited before the kernel
+          # patch could even be checked. The kernel patch itself was never tested.
+          # Do not resolve a fixed source artifact through a shallow repository clone.
+          # Fetch the exact immutable raw blob instead, then verify its SHA-256 before
+          # touching the kernel tree. This removes the failing Git ref/checkout layer
+          # while preserving the exact same kernel-side SUSFS 2.3.0 source.
+          rm -f ../logs/susfs-2.3.0.patch
+          curl -fL --retry 6 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 \
+            "${SUSFS_KERNEL_PATCH_URL}" -o ../logs/susfs-2.3.0.patch
+          test -s ../logs/susfs-2.3.0.patch
+          printf '%s  %s\n' \
+            "f9d8ed735f461ed982d2c49b338e35c17f4378e5" \
+            ../logs/susfs-2.3.0.patch | sha256sum -c -
+          printf 'patch_repo=%s\npatch_ref=%s\npatch_path=%s\npatch_url=%s\npatch_sha256=%s\n' \
+            "${SUSFS_KERNEL_PATCH_REPO}" "${SUSFS_KERNEL_PATCH_REF}" \
+            "${SUSFS_KERNEL_PATCH_PATH}" "${SUSFS_KERNEL_PATCH_URL}" \
+            "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" > ../logs/susfs-source-resolved.txt
 
           # Refuse a partial/fuzzy application. Prefer direct application; if the
           # legacy vendor tree needs context relocation, allow only Git's 3-way
@@ -258,8 +277,8 @@ jobs:
           test -s include/linux/susfs_def.h
           grep -q '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
           grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
-          printf 'susfs_version=%s\npatch_ref=%s\npatch_sha256=%s\n' \
-            "${SUSFS_EXPECTED_VERSION}" "${SUSFS_KERNEL_PATCH_REF}" \
+          printf 'susfs_version=%s\npatch_ref=%s\npatch_url=%s\npatch_sha256=%s\n' \
+            "${SUSFS_EXPECTED_VERSION}" "${SUSFS_KERNEL_PATCH_REF}" "${SUSFS_KERNEL_PATCH_URL}" \
             "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" > ../logs/susfs-resolved.txt
 
           test -f drivers/kernelsu/manager/pkg_observer_compat.h
@@ -546,7 +565,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V107-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V108-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -623,8 +642,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V107-LM-G900-KARNAL-output
-          path: V107-LM-G900-KARNAL-output.zip
+          name: V108-LM-G900-KARNAL-output
+          path: V108-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -632,7 +651,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V107-LM-G900-KARNAL-kernel
+          name: V108-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -644,9 +663,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V107-LM-G900-KARNAL-complete-logs
+          name: V108-LM-G900-KARNAL-complete-logs
           path: |
-            V107-LM-G900-KARNAL-complete-logs.zip
+            V108-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
