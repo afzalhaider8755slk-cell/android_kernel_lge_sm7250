@@ -1,5 +1,5 @@
 
-name: V128-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V129-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,8 +37,8 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V128-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
-  OUTPUT_PREFIX: V128-LM-G900-KARNAL
+  WORKFLOW_VERSION: V129-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
+  OUTPUT_PREFIX: V129-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -228,8 +228,8 @@ jobs:
           grep -Rqs 'susfs_priv_app_sid' KernelSU/kernel
           grep -Rqs 'susfs_is_current_ksu_domain' KernelSU/kernel
           # V100 error: the source has (void), so the old grep for () was a false failure.
-          grep -Eq 'void[[:space:]]+apply_kernelsu_rules[[:space:]]*\([[:space:]]*void[[:space:]]*\)' KernelSU/kernel/selinux/rules.c
-          grep -Eq 'void[[:space:]]+setup_ksu_cred[[:space:]]*\([[:space:]]*void[[:space:]]*\)' KernelSU/kernel/selinux/selinux.c
+          grep -Fq 'void apply_kernelsu_rules(void)' KernelSU/kernel/selinux/rules.c
+          grep -Fq 'void setup_ksu_cred(void)' KernelSU/kernel/selinux/selinux.c
           grep -q 'security_secctx_to_secid' KernelSU/kernel/selinux/selinux.c
           grep -q 'KERNEL_SU_CONTEXT' KernelSU/kernel/selinux/selinux.h
           grep -q 'handle_sepolicy' KernelSU/kernel/selinux/rules.c
@@ -881,7 +881,7 @@ jobs:
 
           # The real 4.19 policy injector must remain active. This directly addresses
           # the old setexeccon(u:r:ksu:s0) failure instead of hiding it with permissive SELinux.
-          grep -Eq 'void[[:space:]]+apply_kernelsu_rules[[:space:]]*\\([[:space:]]*void[[:space:]]*\\)' drivers/kernelsu/selinux/rules.c
+          grep -Fq 'void apply_kernelsu_rules(void)' drivers/kernelsu/selinux/rules.c
           grep -Fq 'ksu_allow(db, KERNEL_SU_DOMAIN, ALL, ALL, ALL)' drivers/kernelsu/selinux/rules.c
           grep -Fq 'setup_selinux' drivers/kernelsu/selinux/selinux.c
 
@@ -889,8 +889,8 @@ jobs:
           # SukiSU's optional selinux_hide implementation. The legacy guard above
           # must still provide every runtime entry point referenced by ksud.c.
           if grep -q 'V103 4.19 selinux_hide guard' drivers/kernelsu/feature/selinux_hide.c; then
-            grep -Eq 'void[[:space:]]+ksu_selinux_hide_handle_post_fs_data[[:space:]]*\([[:space:]]*void[[:space:]]*\)'               drivers/kernelsu/feature/selinux_hide.c
-            grep -Eq 'void[[:space:]]+ksu_selinux_hide_handle_second_stage[[:space:]]*\([[:space:]]*void[[:space:]]*\)'               drivers/kernelsu/feature/selinux_hide.c
+            grep -Fq 'void ksu_selinux_hide_handle_post_fs_data(void)' drivers/kernelsu/feature/selinux_hide.c
+            grep -Fq 'void ksu_selinux_hide_handle_second_stage(void)' drivers/kernelsu/feature/selinux_hide.c
             printf '%s\n' 'legacy 4.19 selinux_hide runtime entry points: PASS'               > ../logs/selinux-hide-4.19-entrypoints.log
           fi
 
@@ -1064,7 +1064,7 @@ jobs:
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
-          test "${OUTPUT_PREFIX}" = "V128-LM-G900-KARNAL"
+          test "${OUTPUT_PREFIX}" = "V129-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -1082,7 +1082,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V128-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V129-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1165,8 +1165,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V128-LM-G900-KARNAL-output
-          path: V128-LM-G900-KARNAL-output.zip
+          name: V129-LM-G900-KARNAL-output
+          path: V129-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1174,7 +1174,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V128-LM-G900-KARNAL-kernel
+          name: V129-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -1186,9 +1186,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V128-LM-G900-KARNAL-complete-logs
+          name: V129-LM-G900-KARNAL-complete-logs
           path: |
-            V128-LM-G900-KARNAL-complete-logs.zip
+            V129-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
