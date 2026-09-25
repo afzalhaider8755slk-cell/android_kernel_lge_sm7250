@@ -1,5 +1,5 @@
 
-name: V127-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V128-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,8 +37,8 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V127-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
-  OUTPUT_PREFIX: V127-LM-G900-KARNAL
+  WORKFLOW_VERSION: V128-V99-FEATURES-PRESERVED-SUKISU-BUILTIN-MATCHED-KERNEL-SUSFS-KPM-4_19
+  OUTPUT_PREFIX: V128-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -384,7 +384,7 @@ jobs:
 
           # SUSFS 2.3.0 is a single pinned patch, but this exact 4.19 vendor tree
           # has four known source-context differences.
-          CONFLICT_FILES=() A normal 3-way check reports
+          CONFLICT_FILES=()
           # those as conflicts even though the remaining hunks are clean. The correct
           # response is NOT to reject the patch and NOT to re-apply the whole patch:
           # apply the clean hunks once, isolate exactly the four audited files, then
@@ -1064,7 +1064,7 @@ jobs:
             grep -q "^${sym}=y$" out/.config || { echo "[ERROR] Final SUSFS feature ${sym} is not y"; exit 1; }
           done
           test ! -d susfs-backport
-          test "${OUTPUT_PREFIX}" = "V127-LM-G900-KARNAL"
+          test "${OUTPUT_PREFIX}" = "V128-LM-G900-KARNAL"
           make O=out dtbs > ../logs/dtbs-final.log 2>&1
           test -s out/arch/arm64/boot/Image
 
@@ -1082,7 +1082,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V127-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V128-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1165,8 +1165,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V127-LM-G900-KARNAL-output
-          path: V127-LM-G900-KARNAL-output.zip
+          name: V128-LM-G900-KARNAL-output
+          path: V128-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1174,7 +1174,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V127-LM-G900-KARNAL-kernel
+          name: V128-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -1186,9 +1186,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V127-LM-G900-KARNAL-complete-logs
+          name: V128-LM-G900-KARNAL-complete-logs
           path: |
-            V127-LM-G900-KARNAL-complete-logs.zip
+            V128-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
