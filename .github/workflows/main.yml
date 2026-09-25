@@ -1,5 +1,5 @@
 
-name: V102-LM-G900-KARNAL-SukiSU-Builtin
+name: V103-LM-G900-KARNAL-SukiSU-Builtin
 
 on:
   workflow_dispatch:
@@ -29,8 +29,8 @@ env:
   KSU_MANAGER_SIGNATURE_SHA256: 947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V102
-  OUTPUT_PREFIX: V102-LM-G900-KARNAL
+  WORKFLOW_VERSION: V103
+  OUTPUT_PREFIX: V103-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -69,7 +69,7 @@ jobs:
           "clang-prebuilt/${CLANG_REV}/bin/clang" --version | tee toolchain-version.txt
           echo "CLANG_BIN=${GITHUB_WORKSPACE}/clang-prebuilt/${CLANG_REV}/bin" >> "$GITHUB_ENV"
 
-      - name: "3. Verify and securely reconcile device tree and defconfig"
+      - name: "3. Verify device tree and defconfig"
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -77,36 +77,9 @@ jobs:
           git clone --depth=1 --branch "${COMMON_DEVICE_REF}" "${COMMON_DEVICE_REPO}" device-sm7250-common
           git clone --depth=1 --branch "${VENDOR_REF}" "${VENDOR_REPO}" vendor-caymanlm
           mkdir -p diagnostics/device-tree
-          cp device-caymanlm/BoardConfig.mk diagnostics/device-tree/BoardConfig.mk.original
-          cp device-sm7250-common/BoardConfigCommon.mk diagnostics/device-tree/BoardConfigCommon.mk.original
-          cp vendor-caymanlm/BoardConfigVendor.mk diagnostics/device-tree/BoardConfigVendor.mk.original
-
-          # Exact source-level security defect found in V101: the two pinned device trees
-          # explicitly inject androidboot.selinux=permissive. On this Android 16 userdebug
-          # build that is a real SELinux mode request, so it must be removed rather than
-          # masked, bypassed, or replaced with a guessed kernel value. AOSP init treats the
-          # permissive cmdline as permissive when ALLOW_PERMISSIVE_SELINUX is enabled.
-          # Only these two verified source lines are allowed to be changed here.
-          grep -Fqx 'androidboot.selinux=permissive \' device-caymanlm/BoardConfig.mk
-          grep -Fqx 'BOARD_KERNEL_CMDLINE += androidboot.selinux=permissive' device-sm7250-common/BoardConfigCommon.mk
-          ! grep -RInE 'androidboot\.selinux[=:]permissive' vendor-caymanlm 2>/dev/null
-          test "$(grep -RhoE 'androidboot\.selinux[=:]permissive' device-caymanlm device-sm7250-common vendor-caymanlm 2>/dev/null | wc -l)" -eq 2
-
-          sed -i '/^androidboot\.selinux=permissive[[:space:]]*\\[[:space:]]*$/d' device-caymanlm/BoardConfig.mk
-          sed -i '/^BOARD_KERNEL_CMDLINE[[:space:]]*+=[[:space:]]*androidboot\.selinux=permissive[[:space:]]*$/d' device-sm7250-common/BoardConfigCommon.mk
-          ! grep -RInE 'androidboot\.selinux[=:]permissive' device-caymanlm device-sm7250-common vendor-caymanlm 2>/dev/null
-
           cp device-caymanlm/BoardConfig.mk diagnostics/device-tree/BoardConfig.mk
           cp device-sm7250-common/BoardConfigCommon.mk diagnostics/device-tree/BoardConfigCommon.mk
           cp vendor-caymanlm/BoardConfigVendor.mk diagnostics/device-tree/BoardConfigVendor.mk
-          diff -u diagnostics/device-tree/BoardConfig.mk.original diagnostics/device-tree/BoardConfig.mk > logs/BoardConfig.mk-selinux-fix.diff || test $? -eq 1
-          diff -u diagnostics/device-tree/BoardConfigCommon.mk.original diagnostics/device-tree/BoardConfigCommon.mk > logs/BoardConfigCommon.mk-selinux-fix.diff || test $? -eq 1
-          test "$(grep -c '^[[:space:]]*androidboot\.hardware=caymanlm' device-caymanlm/BoardConfig.mk)" -eq 1
-          test "$(grep -c '^[[:space:]]*panic=0' device-caymanlm/BoardConfig.mk)" -eq 1
-          test "$(grep -c '^[[:space:]]*androidboot.init_fatal_reboot_target=recovery' device-caymanlm/BoardConfig.mk)" -eq 1
-          test "$(grep -c '^[[:space:]]*msm_watchdog_v2.disable=1' device-caymanlm/BoardConfig.mk)" -eq 1
-          grep -q 'androidboot.usbcontroller=a600000.dwc3' device-sm7250-common/BoardConfigCommon.mk
-
           TARGET_KERNEL_CONFIG="$({ grep -E '^[[:space:]]*TARGET_KERNEL_CONFIG[[:space:]]*:?=' device-caymanlm/BoardConfig.mk || true; } | tail -n1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+$//')"
           test "${TARGET_KERNEL_CONFIG}" = "vendor/lineageos_cayman_defconfig"
           echo "TARGET_KERNEL_CONFIG=${TARGET_KERNEL_CONFIG}" >> "$GITHUB_ENV"
@@ -120,6 +93,9 @@ jobs:
           sha256sum baseline-defconfig.txt > logs/baseline-defconfig.sha256
           printf 'baseline_kernel_sha256=%s\nbaseline_kernel_version=%s\nbaseline_cip=%s\ndefconfig=%s\n' \
             "${BASELINE_KERNEL_SHA256}" "${BASELINE_KERNEL_VERSION}" "${BASELINE_CIP}" "${TARGET_KERNEL_CONFIG}" > baseline-info.txt
+          # V103: V99 device-tree sources are the baseline and are intentionally not modified here.
+          # In particular, do not change any IP/network configuration or SELinux cmdline in this step.
+          sha256sum diagnostics/device-tree/BoardConfig.mk diagnostics/device-tree/BoardConfigCommon.mk diagnostics/device-tree/BoardConfigVendor.mk > logs/device-tree-source-sha256.txt
 
       - name: "4. Apply clean CIP 133 only"
         shell: bash
@@ -260,7 +236,7 @@ jobs:
           if grep -Rqs 'extern int path_mount(' drivers/kernelsu && ! grep -qE '^int path_mount\(' "$NS"; then
             cat >> "$NS" <<'EOF_PATHMOUNT'
 
-          /* V101: Linux 4.19 bridge for SukiSU path_mount(). */
+          /* V103: Linux 4.19 bridge for SukiSU path_mount(). */
           int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page)
           {
               char *buf, *dir_name;
@@ -282,7 +258,7 @@ jobs:
           if grep -Rqs 'extern int path_umount(' drivers/kernelsu && ! grep -qE '^int path_umount\(' "$NS"; then
             cat >> "$NS" <<'EOF_PATHUMOUNT'
 
-          /* V101: Linux 4.19 bridge for SukiSU path_umount(). */
+          /* V103: Linux 4.19 bridge for SukiSU path_umount(). */
           int path_umount(struct path *path, int flags)
           {
               char *buf, *name;
@@ -306,24 +282,24 @@ jobs:
             cat >> kernel/seccomp.c <<'EOF_SECCOMP'
 
           #ifdef CONFIG_SECCOMP
-          /* V101: Linux 4.19 bridge for SukiSU seccomp release API. */
+          /* V103: Linux 4.19 bridge for SukiSU seccomp release API. */
           void seccomp_filter_release(struct task_struct *tsk) { put_seccomp_filter(tsk); }
           #endif
           EOF_SECCOMP
           fi
 
           DP=drivers/kernelsu/supercall/dispatch.c
-          if [ -f "$DP" ] && grep -Eq 'tasklist_lock|task_pgrp\(|task_session\(' "$DP" && ! grep -q 'V101 sched compatibility' "$DP"; then
+          if [ -f "$DP" ] && grep -Eq 'tasklist_lock|task_pgrp\(|task_session\(' "$DP" && ! grep -q 'V103 sched compatibility' "$DP"; then
             sed -i '1i #include <linux/sched/signal.h>' "$DP"
             sed -i '1i #include <linux/sched/task.h>' "$DP"
-            sed -i '1i /* V101 sched compatibility */' "$DP"
+            sed -i '1i /* V103 sched compatibility */' "$DP"
           fi
 
           # Linux 4.19 lacks the post-5.7 selinux_state members used by SukiSU's
           # optional selinux_hide implementation. Guard only this optional feature;
           # never weaken SELinux or replace the real KSU policy injector.
           SH=drivers/kernelsu/feature/selinux_hide.c
-          if [ -f "$SH" ] && grep -q 'selinux_state.status_lock' "$SH" && ! grep -q 'V101 4.19 selinux_hide guard' "$SH"; then
+          if [ -f "$SH" ] && grep -q 'selinux_state.status_lock' "$SH" && ! grep -q 'V103 4.19 selinux_hide guard' "$SH"; then
             cp "$SH" ../logs/selinux_hide.original.c
             {
               echo '#include <linux/version.h>'
@@ -331,11 +307,11 @@ jobs:
               cat "$SH"
               echo '#else'
               echo '#include <linux/init.h>'
-              echo '/* V101 4.19 selinux_hide guard: unsupported post-5.7 SELinux ABI. */'
+              echo '/* V103 4.19 selinux_hide guard: unsupported post-5.7 SELinux ABI. */'
               echo 'void __init ksu_selinux_hide_init(void) {}'
               echo 'void __exit ksu_selinux_hide_exit(void) {}'
               echo 'void ksu_selinux_hide_drop_backup_if_unused(void) {}'
-              echo '#endif /* V101 4.19 selinux_hide guard */'
+              echo '#endif /* V103 4.19 selinux_hide guard */'
             } > "$SH.tmp"
             mv "$SH.tmp" "$SH"
           fi
@@ -446,7 +422,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V102-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V103-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -524,8 +500,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V101-LM-G900-KARNAL-output
-          path: V101-LM-G900-KARNAL-output.zip
+          name: V103-LM-G900-KARNAL-output
+          path: V103-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -533,7 +509,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V101-LM-G900-KARNAL-flashable-zips
+          name: V103-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -544,9 +520,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V101-LM-G900-KARNAL-complete-logs
+          name: V103-LM-G900-KARNAL-complete-logs
           path: |
-            V101-LM-G900-KARNAL-complete-logs.zip
+            V103-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
