@@ -173,14 +173,8 @@ jobs:
           git init -q KernelSU
           git -C KernelSU remote add origin "https://github.com/${KSU_REPO}.git"
           git -C KernelSU fetch --depth=1 origin "${KSU_COMMIT}"
-          git -C KernelSU fetch --no-tags --depth=64 origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
-          # The commit is pinned independently; the ancestry check is only a guard
-          # that the pinned commit belongs to the requested builtin line. If the
-          # remote branch history is shallow, deepen it before checking ancestry.
-          if ! git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"; then
-            git -C KernelSU fetch --no-tags --deepen=256 origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
-            git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"
-          fi
+          git -C KernelSU fetch --no-tags origin "refs/heads/${KSU_REF}:refs/remotes/origin/${KSU_REF}"
+          git -C KernelSU merge-base --is-ancestor "${KSU_COMMIT}" "refs/remotes/origin/${KSU_REF}"
           git -C KernelSU checkout --detach "${KSU_COMMIT}"
           test "$(git -C KernelSU rev-parse HEAD)" = "${KSU_COMMIT}"
           test -f KernelSU/kernel/Kconfig
