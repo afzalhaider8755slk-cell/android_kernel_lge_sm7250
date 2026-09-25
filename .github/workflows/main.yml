@@ -1,5 +1,5 @@
 
-name: V103-LM-G900-KARNAL-SukiSU-Builtin
+name: V104-LM-G900-KARNAL-SukiSU-Builtin
 
 on:
   workflow_dispatch:
@@ -29,8 +29,8 @@ env:
   KSU_MANAGER_SIGNATURE_SHA256: 947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V103
-  OUTPUT_PREFIX: V103-LM-G900-KARNAL
+  WORKFLOW_VERSION: V104
+  OUTPUT_PREFIX: V104-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -97,20 +97,24 @@ jobs:
           # In particular, do not change any IP/network configuration or SELinux cmdline in this step.
           sha256sum diagnostics/device-tree/BoardConfig.mk diagnostics/device-tree/BoardConfigCommon.mk diagnostics/device-tree/BoardConfigVendor.mk > logs/device-tree-source-sha256.txt
 
-      - name: "4. Apply clean CIP 133 only"
+      - name: "4. Apply V99-compatible CIP 133 only"
         shell: bash
         run: |
           set -Eeuo pipefail
           cd kernel
           git remote add cip https://gitlab.com/cip-project/cip-kernel/linux-cip.git
           git fetch --no-tags cip "refs/tags/${BASELINE_CIP}:refs/tags/${BASELINE_CIP}" "refs/tags/${CIP_TARGET}:refs/tags/${CIP_TARGET}"
+          # V104: preserve the V99 working order exactly. Step 3 has already
+          # generated kernel/out/.config; never reset/clean the tree here because
+          # git clean -fdx deletes out/ and makes this legacy tree fail before any
+          # new SukiSU code is reached. V99 passed this stage using the same 3-way
+          # fallback without cleaning the configured build output.
+          test -f out/.config
           git diff --binary "${BASELINE_CIP}..${CIP_TARGET}" > ../logs/cip-132-to-133.patch
           if git apply --check --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-direct-check.log 2>&1; then
             git apply --index --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-apply.log 2>&1
             echo direct > ../logs/cip-selected.txt
           else
-            git reset --hard "${KERNEL_COMMIT}"
-            git clean -fdx
             if ! git apply --3way --check --whitespace=nowarn ../logs/cip-132-to-133.patch > ../logs/cip-3way-check.log 2>&1; then
               cat ../logs/cip-direct-check.log ../logs/cip-3way-check.log
               exit 1
@@ -123,6 +127,7 @@ jobs:
             echo 3way > ../logs/cip-selected.txt
           fi
           git diff --check
+          test -f out/.config
           test "$(make -s kernelversion)" = "${BASELINE_KERNEL_VERSION}"
           KERNEL_RELEASE="$(make -s kernelrelease)"
           printf '%s\n' "${KERNEL_RELEASE}" > ../logs/kernelrelease-after-cip.txt
@@ -422,7 +427,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V103-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V104-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -461,7 +466,6 @@ jobs:
           EOF_VALIDATE
           chmod +x release/build-info/device-root-module-validation.sh
           sha256sum release/kernel-image release/kernel.zip release/AnyKernel3-OrangeFox-Flashable.zip > release/checksums/SHA256SUMS
-          rm -f release/kernel-image
           (cd release && zip -qr "../${OUTPUT_PREFIX}-output.zip" .)
 
       - name: "11. Verify artifacts twice"
@@ -500,19 +504,20 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V103-LM-G900-KARNAL-output
-          path: V103-LM-G900-KARNAL-output.zip
+          name: V104-LM-G900-KARNAL-output
+          path: V104-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "14. Upload flashable ZIPs"
+      - name: "14. Upload kernel artifacts"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V103-LM-G900-KARNAL-flashable-zips
+          name: V104-LM-G900-KARNAL-kernel
           path: |
-            release/AnyKernel3-OrangeFox-Flashable.zip
+            release/kernel-image
             release/kernel.zip
+            release/AnyKernel3-OrangeFox-Flashable.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -520,9 +525,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V103-LM-G900-KARNAL-complete-logs
+          name: V104-LM-G900-KARNAL-complete-logs
           path: |
-            V103-LM-G900-KARNAL-complete-logs.zip
+            V104-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
