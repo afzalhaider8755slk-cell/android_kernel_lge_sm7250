@@ -1,5 +1,5 @@
 
-name: V108-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
+name: V109-LM-G900-KARNAL-SukiSU-Builtin-V99-Features-Preserved
 
 on:
   workflow_dispatch:
@@ -37,8 +37,8 @@ env:
   SUSFS_EXPECTED_VERSION: v2.3.0
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V108-V99-FEATURES-PRESERVED-SUKISU-SUSFS-SOURCE-FIX
-  OUTPUT_PREFIX: V108-LM-G900-KARNAL
+  WORKFLOW_VERSION: V109-V99-FEATURES-PRESERVED-SUKISU-SUSFS-CHECKSUM-FIX
+  OUTPUT_PREFIX: V109-LM-G900-KARNAL
   KERNEL_BUILD_TARGET: Image
 
 jobs:
@@ -52,6 +52,39 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p logs diagnostics
+          cat > SOURCE-LEVEL-DEBUGGING-CONTRACT.txt <<'EOF_CONTRACT'
+          SOURCE-LEVEL DEBUGGING CONTRACT — LG LM-G900N KERNEL PROJECT
+          
+          Target: LG Velvet 5G LM-G900N / SM7250 / Android 16 API 36 / ARM64
+          Kernel: Linux 4.19.325-cip133 / legacy non-GKI / PREEMPT
+          Pinned source: 720c8d37ab7727af24c275bead988d6345ad174b
+          Defconfig: vendor/lineageos_cayman_defconfig
+          Golden baseline: V99
+          
+          1. Every build/runtime error is treated as a source-level compatibility problem.
+          2. Trace the failing symbol/API/config/value through every producer, consumer,
+             dependency and downstream/upstream workflow stage before changing anything.
+          3. Fix the root cause for this exact 4.19.325 non-GKI kernel, SM7250 platform,
+             device tree and Android 16 environment; do not use generic modern-GKI fixes.
+          4. After a fix, audit every other stage that consumes or depends on the changed
+             source/API/config/value and propagate the necessary compatible fix there too.
+          5. Preserve V99 working features and the known-good build order. Do not remove
+             features merely to hide a compile or runtime error.
+          6. Root provider contract is SukiSU-Ultra v4.2.0 builtin at commit
+             b20dee702035af09cb2ecb5f35443bbc1747f3e6, package com.sukisu.ultra.
+          7. Kernel-side SUSFS contract is the pinned SUSFS 2.3.0 4.19 patch at commit
+             f15603b246d7ce6008af8bdefa0a34b3df28326a, verified by its SHA-256 before use.
+          8. Real SukiSU SELinux policy injection must remain active. Never hide the old
+             setexeccon(u:r:ksu:s0) failure by weakening/permissive SELinux.
+          9. Do not alter IP/network configuration unless explicitly requested.
+          10. Do not hide, downgrade, bypass, or silently ignore errors. Preserve detailed
+              diagnostics so the next failure can be traced from actual evidence.
+          11. If an error is ambiguous, research the exact upstream/source implementation
+              and verify it against this pinned tree before selecting a compatibility fix.
+          12. The workflow artifact must carry this contract so future debugging retains
+              the same project rules even if the conversation context is unavailable.
+          EOF_CONTRACT
+          cp SOURCE-LEVEL-DEBUGGING-CONTRACT.txt diagnostics/SOURCE-LEVEL-DEBUGGING-CONTRACT.txt
           git clone --branch "${KERNEL_REF}" "${KERNEL_REPO}" kernel
           git -C kernel fetch --tags --force --prune
           git -C kernel checkout --detach "${KERNEL_COMMIT}"
@@ -243,13 +276,22 @@ jobs:
             --connect-timeout 20 --max-time 120 \
             "${SUSFS_KERNEL_PATCH_URL}" -o ../logs/susfs-2.3.0.patch
           test -s ../logs/susfs-2.3.0.patch
-          printf '%s  %s\n' \
-            "f9d8ed735f461ed982d2c49b338e35c17f4378e5" \
-            ../logs/susfs-2.3.0.patch | sha256sum -c -
+          # V109 source-level fix for the V108 failure:
+          # do not feed a generated line through sha256sum -c. The V108 runner
+          # reached the downloaded immutable patch successfully, then coreutils
+          # rejected the verification stream with:
+          #   sha256sum: standard input: no properly formatted checksum lines found
+          # The cryptographic contract is unchanged; compare the digest directly.
+          EXPECTED_SUSFS_PATCH_SHA256="f9d8ed735f461ed982d2c49b338e35c17f4378e5"
+          ACTUAL_SUSFS_PATCH_SHA256="$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')"
+          printf 'expected_sha256=%s\nactual_sha256=%s\n' \
+            "${EXPECTED_SUSFS_PATCH_SHA256}" "${ACTUAL_SUSFS_PATCH_SHA256}" \
+            > ../logs/susfs-sha256-verification.txt
+          test "${ACTUAL_SUSFS_PATCH_SHA256}" = "${EXPECTED_SUSFS_PATCH_SHA256}"
           printf 'patch_repo=%s\npatch_ref=%s\npatch_path=%s\npatch_url=%s\npatch_sha256=%s\n' \
             "${SUSFS_KERNEL_PATCH_REPO}" "${SUSFS_KERNEL_PATCH_REF}" \
             "${SUSFS_KERNEL_PATCH_PATH}" "${SUSFS_KERNEL_PATCH_URL}" \
-            "$(sha256sum ../logs/susfs-2.3.0.patch | awk '{print $1}')" > ../logs/susfs-source-resolved.txt
+            "${ACTUAL_SUSFS_PATCH_SHA256}" > ../logs/susfs-source-resolved.txt
 
           # Refuse a partial/fuzzy application. Prefer direct application; if the
           # legacy vendor tree needs context relocation, allow only Git's 3-way
@@ -565,7 +607,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V108-LM-G900-KARNAL-SukiSU-builtin
+          kernel.string=V109-LM-G900-KARNAL-SukiSU-builtin
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -584,7 +626,7 @@ jobs:
           (cd work-anykernel && zip -qr ../release/AnyKernel3-OrangeFox-Flashable.zip .)
           mkdir -p release/kernel-payload
           cp kernel/out/arch/arm64/boot/Image release/kernel-payload/Image
-          cp baseline-info.txt source-info.txt toolchain-version.txt baseline-enabled-config.txt post-integration-enabled-config.txt release/build-info/
+          cp baseline-info.txt source-info.txt toolchain-version.txt baseline-enabled-config.txt post-integration-enabled-config.txt SOURCE-LEVEL-DEBUGGING-CONTRACT.txt release/build-info/
           cp logs/* release/logs/ 2>/dev/null || true
           (cd release/kernel-payload && zip -qr ../kernel.zip .)
           rm -rf release/kernel-payload
@@ -631,7 +673,7 @@ jobs:
           printf 'job_status=%s\nworkflow=%s\nsource_commit=%s\ncip_target=%s\nsukisu_commit=%s\ndefconfig=%s\n' \
             "${JOB_STATUS}" "${WORKFLOW_VERSION}" "${KERNEL_COMMIT}" "${CIP_TARGET}" "${KSU_COMMIT}" "${TARGET_KERNEL_CONFIG:-UNRESOLVED}" > diagnostics/run-summary.txt
           cp -a logs/. diagnostics/logs/ 2>/dev/null || true
-          cp -a baseline-info.txt baseline-defconfig.txt baseline-enabled-config.txt post-integration-enabled-config.txt source-info.txt toolchain-version.txt baseline-git-status.txt diagnostics/ 2>/dev/null || true
+          cp -a baseline-info.txt baseline-defconfig.txt baseline-enabled-config.txt post-integration-enabled-config.txt source-info.txt toolchain-version.txt baseline-git-status.txt SOURCE-LEVEL-DEBUGGING-CONTRACT.txt diagnostics/ 2>/dev/null || true
           if [ -d kernel ]; then
             { git -C kernel status --short; echo; git -C kernel rev-parse HEAD; echo; find kernel -type f \( -name '*.rej' -o -name '*.orig' \) -print; } > diagnostics/kernel-state.txt 2>&1
           fi
@@ -642,8 +684,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V108-LM-G900-KARNAL-output
-          path: V108-LM-G900-KARNAL-output.zip
+          name: V109-LM-G900-KARNAL-output
+          path: V109-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -651,7 +693,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V108-LM-G900-KARNAL-kernel
+          name: V109-LM-G900-KARNAL-kernel
           path: |
             release/kernel-image
             release/kernel.zip
@@ -663,9 +705,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V108-LM-G900-KARNAL-complete-logs
+          name: V109-LM-G900-KARNAL-complete-logs
           path: |
-            V108-LM-G900-KARNAL-complete-logs.zip
+            V109-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
@@ -675,5 +717,6 @@ jobs:
             baseline-git-status.txt
             source-info.txt
             toolchain-version.txt
+            SOURCE-LEVEL-DEBUGGING-CONTRACT.txt
           if-no-files-found: warn
           retention-days: 30
