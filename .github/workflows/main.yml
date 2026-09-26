@@ -1,4 +1,4 @@
-name: V106-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V107-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V106
-  OUTPUT_PREFIX: V106-LM-G900-KARNAL
+  WORKFLOW_VERSION: V107
+  OUTPUT_PREFIX: V107-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V106
+    name: Build V107
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -866,17 +866,86 @@ jobs:
             fi
           fi
 
-          # path_mount/path_umount are Linux 5.9-era APIs. Preserve V99's proven
-          # 4.19 compatibility only when SukiSU actually references them.
-          if grep -RqsE '\bpath_mount\s*\(' drivers/kernelsu; then
-            grep -q 'int path_mount' fs/namespace.c || {
-              echo '[ERROR] SukiSU requires path_mount compatibility but V99 bridge is absent.'
+          # path_mount/path_umount are Linux 5.9-era APIs. This legacy 4.19.325
+          # tree has ksys_mount()/ksys_umount() instead. SukiSU's actual callers use the
+          # newer struct-path API, so provide the narrow compatibility bridge BEFORE the
+          # audit below. This is pure API adaptation; it does not remove or disable KSU.
+          NS="fs/namespace.c"
+          if grep -RqsE '\\bpath_mount\\s*\\(' drivers/kernelsu || grep -RqsE '\\bpath_umount\\s*\\(' drivers/kernelsu; then
+            if ! grep -q '^int path_mount(' "$NS" || ! grep -q '^int path_umount(' "$NS"; then
+              cat >> "$NS" <<'NAMESPACE_COMPAT_EOF'
+
+          /* SukiSU Ultra -> Linux 4.19 compatibility bridge.
+           * Newer SukiSU calls the post-5.9 struct-path mount API. This kernel still
+           * exposes ksys_mount()/ksys_umount(). Serialize the resolved path, temporarily
+           * use KERNEL_DS for the legacy syscall-shaped helpers, then restore the address
+           * limit. */
+          int path_mount(const char *dev_name, struct path *path,
+                         const char *type_page, unsigned long flags, void *data_page)
+          {
+              char *buf, *dir_name;
+              mm_segment_t old_fs;
+              long ret;
+
+              buf = (char *)__get_free_page(GFP_KERNEL);
+              if (!buf)
+                  return -ENOMEM;
+
+              dir_name = d_path(path, buf, PAGE_SIZE);
+              if (IS_ERR(dir_name)) {
+                  free_page((unsigned long)buf);
+                  return PTR_ERR(dir_name);
+              }
+
+              old_fs = get_fs();
+              set_fs(KERNEL_DS);
+              ret = ksys_mount((char __user *)dev_name, (char __user *)dir_name,
+                               (char __user *)type_page, flags,
+                               (void __user *)data_page);
+              set_fs(old_fs);
+
+              free_page((unsigned long)buf);
+              return ret;
+          }
+
+          int path_umount(struct path *path, int flags)
+          {
+              char *buf, *name;
+              mm_segment_t old_fs;
+              long ret;
+
+              buf = (char *)__get_free_page(GFP_KERNEL);
+              if (!buf)
+                  return -ENOMEM;
+
+              name = d_path(path, buf, PAGE_SIZE);
+              if (IS_ERR(name)) {
+                  free_page((unsigned long)buf);
+                  return PTR_ERR(name);
+              }
+
+              old_fs = get_fs();
+              set_fs(KERNEL_DS);
+              ret = ksys_umount((char __user *)name, flags);
+              set_fs(old_fs);
+
+              free_page((unsigned long)buf);
+              return ret;
+          }
+          NAMESPACE_COMPAT_EOF
+              echo "[FIX] Added SukiSU 4.19 path_mount/path_umount bridge before compatibility audit."
+            fi
+          fi
+
+          if grep -RqsE '\\bpath_mount\\s*\\(' drivers/kernelsu; then
+            grep -q '^int path_mount(' "$NS" || {
+              echo '[ERROR] SukiSU path_mount compatibility bridge is absent after insertion.'
               exit 1
             }
           fi
-          if grep -RqsE '\bpath_umount\s*\(' drivers/kernelsu; then
-            grep -q 'int path_umount' fs/namespace.c || {
-              echo '[ERROR] SukiSU requires path_umount compatibility but V99 bridge is absent.'
+          if grep -RqsE '\\bpath_umount\\s*\\(' drivers/kernelsu; then
+            grep -q '^int path_umount(' "$NS" || {
+              echo '[ERROR] SukiSU path_umount compatibility bridge is absent after insertion.'
               exit 1
             }
           fi
@@ -1546,7 +1615,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V106-LM-G900-KARNAL
+          kernel.string=V107-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1572,7 +1641,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V106-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V107-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1609,20 +1678,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V106 final output"
+      - name: "12. Upload V107 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V106-LM-G900-KARNAL-output
-          path: V106-LM-G900-KARNAL-output.zip
+          name: V107-LM-G900-KARNAL-output
+          path: V107-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V106 flashable ZIPs"
+      - name: "13. Upload V107 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V106-LM-G900-KARNAL-flashable-zips
+          name: V107-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1787,16 +1856,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V106 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V107 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V106 complete diagnostics (always)"
+      - name: "15. Upload V107 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V106-LM-G900-KARNAL-complete-logs
+          name: V107-LM-G900-KARNAL-complete-logs
           path: |
-            V106-LM-G900-KARNAL-complete-logs.zip
+            V107-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
