@@ -1,4 +1,4 @@
-name: V116-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V117-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V116
-  OUTPUT_PREFIX: V116-LM-G900-KARNAL
+  WORKFLOW_VERSION: V117
+  OUTPUT_PREFIX: V117-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V116
+    name: Build V117
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -188,13 +188,34 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq bc bison build-essential ccache clang flex gcc-aarch64-linux-gnu git lld libssl-dev libelf-dev libncurses-dev python3 rsync unzip zip wget curl device-tree-compiler patch
           } > logs/02-apt.log 2>&1
-          curl -fL --retry 5 --retry-delay 2 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" -o "/tmp/${CLANG_REV}.tar.gz" > logs/02-clang-download.log 2>&1
+          # Primary: exact AOSP prebuilt at the pinned commit. Android's archive
+          # endpoint returned HTTP 503 in V116; do not change compiler generation.
+          set +e
+          curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" \
+            -o "/tmp/${CLANG_REV}.tar.gz" > logs/02-clang-download.log 2>&1
+          CLANG_DL_RC=$?
+          set -e
+          if [ "${CLANG_DL_RC}" -ne 0 ]; then
+            # Audited fallback for transient Google archive failures. This is the same
+            # clang-r563880c AOSP prebuilt, published from the AOSP source commit; verify
+            # the immutable release asset SHA-256 before extraction.
+            curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
+              "https://github.com/SA9990/Toolchain/releases/download/clang-r563880c/clang-r563880c.tar.gz" \
+              -o "/tmp/${CLANG_REV}.tar.gz" > logs/02-clang-fallback-download.log 2>&1
+            printf '%s  %s\n' \
+              "57b456636aa9c3f5e159bc1dd6eddd7c6de654281cad84376e408a5d35f91bab" \
+              "/tmp/${CLANG_REV}.tar.gz" | sha256sum -c - > logs/02-clang-fallback-sha256.log 2>&1
+            echo "[OK] Official AOSP archive was unavailable; verified exact clang-r563880c fallback asset."
+          else
+            echo "[OK] Exact AOSP clang-r563880c archive downloaded from pinned commit."
+          fi
           mkdir -p "clang-prebuilt/${CLANG_REV}"
           tar -xzf "/tmp/${CLANG_REV}.tar.gz" -C "clang-prebuilt/${CLANG_REV}" > logs/02-clang-extract.log 2>&1
           export CLANG_BIN="$GITHUB_WORKSPACE/clang-prebuilt/${CLANG_REV}/bin"
           test -x "${CLANG_BIN}/clang"
           test -x "${CLANG_BIN}/ld.lld"
-          "${CLANG_BIN}/clang" --version | tee logs/02-clang-version.log
+          "${CLANG_BIN}/clang" --version > logs/02-clang-version.log 2>&1
           head -n1 logs/02-clang-version.log > toolchain-version.txt
           echo "CLANG_BIN=${CLANG_BIN}" >> "$GITHUB_ENV"
           echo "[OK] Android Clang ${CLANG_REV}"
@@ -244,7 +265,7 @@ jobs:
           cd kernel
           test -f "${DEFCONFIG}"
           cp "${DEFCONFIG}" ../baseline-defconfig.txt
-          sha256sum "${DEFCONFIG}" | tee ../logs/03-defconfig.sha256
+          sha256sum "${DEFCONFIG}" > ../logs/03-defconfig.sha256 2>&1
 
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
@@ -254,7 +275,7 @@ jobs:
           make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/03-defconfig-make.log 2>&1
 
           awk '/^CONFIG_[A-Za-z0-9_]+=(y|m|[0-9]+|"[^"]*")$/{print}' out/.config | sort > ../baseline-enabled-config.txt
-          sha256sum ../baseline-enabled-config.txt | tee ../logs/03-baseline-enabled-config.sha256
+          sha256sum ../baseline-enabled-config.txt > ../logs/03-baseline-enabled-config.sha256 2>&1
           {
             echo "baseline_kernel_sha256=${BASELINE_KERNEL_SHA256}"
             echo "baseline_kernel_version=${BASELINE_KERNEL_VERSION}"
@@ -1268,7 +1289,7 @@ jobs:
             exit 1
           fi
 
-          # V116 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
+          # V117 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
           # while this 4.19 arm64 tree exposes access_ok(type, addr, size). Adapt only
           # KPM's validation calls; no KPM functionality is disabled.
           KPM_C="drivers/kernelsu/kpm/kpm.c"
@@ -1294,10 +1315,10 @@ jobs:
               s = s.replace(marker, marker + macro, 1)
           p.write_text(s)
           PY_KPM_ACCESS
-            echo "[FIX] V116: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
+            echo "[FIX] V117: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
           fi
           if grep -nF 'access_ok(' "$KPM_C" | grep -v '#define KSU_ACCESS_OK' | grep -q .; then
-            echo "[ERROR] V116: unresolved direct access_ok(addr,size) calls remain in KPM."
+            echo "[ERROR] V117: unresolved direct access_ok(addr,size) calls remain in KPM."
             grep -nF 'access_ok(' "$KPM_C" || true
             exit 1
           fi
@@ -1446,7 +1467,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V116-LM-G900-KARNAL
+          kernel.string=V117-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1472,7 +1493,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V116-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V117-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1509,20 +1530,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V116 final output"
+      - name: "12. Upload V117 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V116-LM-G900-KARNAL-output
-          path: V116-LM-G900-KARNAL-output.zip
+          name: V117-LM-G900-KARNAL-output
+          path: V117-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V116 flashable ZIPs"
+      - name: "13. Upload V117 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V116-LM-G900-KARNAL-flashable-zips
+          name: V117-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1687,16 +1708,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V116 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V117 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V116 complete diagnostics (always)"
+      - name: "15. Upload V117 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V116-LM-G900-KARNAL-complete-logs
+          name: V117-LM-G900-KARNAL-complete-logs
           path: |
-            V116-LM-G900-KARNAL-complete-logs.zip
+            V117-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
