@@ -486,14 +486,17 @@ jobs:
           git -C susfs-4.19-adapt fetch --no-tags origin "$SUSFS_ADAPT_COMMIT"
           SUSFS_ADAPT_RESOLVED="$(git -C susfs-4.19-adapt rev-parse "$SUSFS_ADAPT_COMMIT^{commit}")"
           test "$SUSFS_ADAPT_RESOLVED" = "$SUSFS_ADAPT_COMMIT"
-          git -C susfs-4.19-adapt checkout --detach "$SUSFS_ADAPT_RESOLVED"
-          test -s "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH"
+          # Read the pinned patch directly from the immutable commit. This avoids relying
+          # on sparse/blob-filter checkout behavior and gives us an exact content hash.
+          git -C susfs-4.19-adapt cat-file -e "$SUSFS_ADAPT_COMMIT:$SUSFS_ADAPT_PATCH"
+          git -C susfs-4.19-adapt show "$SUSFS_ADAPT_COMMIT:$SUSFS_ADAPT_PATCH" > susfs-4.19-adapt.patch
+          test -s susfs-4.19-adapt.patch
 
           # SUSFS v2.3.0 for 4.19.325. The only known context mismatch on this exact
           # LM-G900 source is fs/proc/cmdline.c: LGE uses updated_command_line and
           # preserves charger-logo rewriting. All other hunks remain zero-fuzz strict.
           set +e
-          patch --dry-run --fuzz=0 -p1 < "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH" > ../logs/06-susfs-v23-dryrun.log 2>&1
+          patch --dry-run --fuzz=0 -p1 < "susfs-4.19-adapt.patch" > ../logs/06-susfs-v23-dryrun.log 2>&1
           DRY_RC=$?
           set -e
           echo "susfs_dryrun_rc=${DRY_RC}" > ../logs/06-susfs-v23-rc.log
@@ -504,7 +507,7 @@ jobs:
             fi
           fi
           set +e
-          patch --fuzz=0 -p1 < "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH" > ../logs/06-susfs-v23-apply.log 2>&1
+          patch --fuzz=0 -p1 < "susfs-4.19-adapt.patch" > ../logs/06-susfs-v23-apply.log 2>&1
           APPLY_RC=$?
           set -e
           echo "susfs_apply_rc=${APPLY_RC}" >> ../logs/06-susfs-v23-rc.log
@@ -583,7 +586,7 @@ jobs:
             sed -i '/endmenu/i\\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           fi
 
-          rm -rf susfs-4.19-adapt
+          rm -rf susfs-4.19-adapt susfs-4.19-adapt.patch
           echo "sukisu_version=$SUKISU_VERSION"
           echo "sukisu_commit=$SUKISU_BUILTIN_COMMIT"
           echo "susfs_version=v2.3.0"
