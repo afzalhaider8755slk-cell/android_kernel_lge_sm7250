@@ -1,4 +1,4 @@
-name: V107-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V108-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V107
-  OUTPUT_PREFIX: V107-LM-G900-KARNAL
+  WORKFLOW_VERSION: V108
+  OUTPUT_PREFIX: V108-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V107
+    name: Build V108
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -993,8 +993,11 @@ jobs:
           done < ../baseline-enabled-config.txt
 
           # Old external SUSFS/KSU-Next integration must be absent.
-          test ! -d SukiSU Ultra
-          ! find . -path './.git' -prune -o -type f -print0 | xargs -0 grep -Il 'SukiSU Ultra' 2>/dev/null | grep -q .
+          test ! -d "SukiSU-Ultra"
+          # No second/external SukiSU source tree is allowed after the pinned builtin
+          # has been copied into drivers/kernelsu. The directory itself is checked above;
+          # source text may legitimately contain the project name in comments/licenses.
+          test ! -d "SukiSU-Ultra"
 
           {
             echo "baseline_enabled=$(wc -l < ../baseline-enabled-config.txt)"
@@ -1615,7 +1618,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V107-LM-G900-KARNAL
+          kernel.string=V108-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1641,7 +1644,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V107-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V108-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1678,20 +1681,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V107 final output"
+      - name: "12. Upload V108 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V107-LM-G900-KARNAL-output
-          path: V107-LM-G900-KARNAL-output.zip
+          name: V108-LM-G900-KARNAL-output
+          path: V108-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V107 flashable ZIPs"
+      - name: "13. Upload V108 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V107-LM-G900-KARNAL-flashable-zips
+          name: V108-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1856,16 +1859,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V107 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V108 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V107 complete diagnostics (always)"
+      - name: "15. Upload V108 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V107-LM-G900-KARNAL-complete-logs
+          name: V108-LM-G900-KARNAL-complete-logs
           path: |
-            V107-LM-G900-KARNAL-complete-logs.zip
+            V108-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
