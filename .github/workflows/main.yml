@@ -1,4 +1,4 @@
-name: V108-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V109-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V108
-  OUTPUT_PREFIX: V108-LM-G900-KARNAL
+  WORKFLOW_VERSION: V109
+  OUTPUT_PREFIX: V109-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V108
+    name: Build V109
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1581,27 +1581,41 @@ jobs:
           echo "[CHECK] DT and KernelSU compatibility fixes will be verified by the normal kernel build."
 
           MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
-          MAKE_ARGS=(O=out CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++)
-          # Only informational: the Image is built without DTBs, so this never affects the result.
+          # DTBs are diagnostic-only; the requested product target is Image.
+          set +e
           timeout 900 make "${MAKE_ARGS[@]}" -k -j"$(nproc)" V=1 dtbs > ../logs/09b-dtbs-diagnostic.log 2>&1
-          echo "dtbs_rc=$?" | tee ../logs/09b-dtbs-rc.txt
-          grep -nE "Input tree has errors|Error [0-9]+$" ../logs/09b-dtbs-diagnostic.log | head -20
+          DTBS_RC=$?
+          set -e
+          echo "dtbs_rc=${DTBS_RC}" | tee ../logs/09b-dtbs-rc.txt
+          grep -nE "Input tree has errors|Error [0-9]+$" ../logs/09b-dtbs-diagnostic.log | head -20 || true
           echo "--- dtc quiet flags in the real dtc command line ---"
-          grep -m3 -oE -- "-q+ " ../logs/09b-dtbs-diagnostic.log
+          grep -m3 -oE -- "-q+ " ../logs/09b-dtbs-diagnostic.log || true
           TMP="$(find out -name '*caymanlm_cn-rev-1.0_overlay*dts.tmp' 2>/dev/null | head -1)"
           if [ -n "$TMP" ] && [ -x out/scripts/dtc/dtc ]; then
             echo "--- dtc re-run without -qq on $TMP ---"
             out/scripts/dtc/dtc -@ -I dts -O dtb -o /dev/null \
               -i arch/arm64/boot/dts/vendor/lge -i arch/arm64/boot/dts/vendor -i arch/arm64/boot/dts -i include \
-              "$TMP" > ../logs/09b-dtc-verbose.txt 2>&1
-            head -60 ../logs/09b-dtc-verbose.txt
+              "$TMP" > ../logs/09b-dtc-verbose.txt 2>&1 || true
+            head -60 ../logs/09b-dtc-verbose.txt || true
             echo "--- which files define the duplicated labels (cpp line markers) ---"
-            awk '/^# [0-9]+ "/{f=$3} /camera_therm_default:|bmr_w_therm_default:/{print f " : " $0}' "$TMP" | tee ../logs/09b-dup-label-sources.txt
-            grep -n '^# 1 ".*therm.*"' "$TMP" | head -40 | tee ../logs/09b-therm-includes.txt
+            awk '/^# [0-9]+ "/{f=$3} /camera_therm_default:|bmr_w_therm_default:/{print f " : " $0}' "$TMP" | tee ../logs/09b-dup-label-sources.txt || true
+            grep -n '^# 1 ".*therm.*"' "$TMP" | head -40 | tee ../logs/09b-therm-includes.txt || true
           else
             echo "[INFO] preprocessed overlay .dts.tmp not found; see logs/09b-dtbs-diagnostic.log"
           fi
-          exit 0
+          echo "[INFO] dtbs diagnostic completed with rc=${DTBS_RC}; continuing to authoritative Image build."
+
+          echo "::group::[9/15b] Build Image"
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" V=1 Image 2>&1 | tee ../logs/09-image-build.log
+          IMAGE_PIPE_RC=${PIPESTATUS[0]}
+          echo "image_build_rc=${IMAGE_PIPE_RC}" | tee ../logs/09-image-build-rc.txt
+          test "${IMAGE_PIPE_RC}" -eq 0
+          test -s out/arch/arm64/boot/Image
+          file out/arch/arm64/boot/Image | tee ../logs/09-image-file.log
+          sha256sum out/arch/arm64/boot/Image | tee ../logs/09-image-sha256.log
+          echo "::endgroup::"
+          echo "[OK] Image build completed successfully."
+
 
       - name: "10. Package AnyKernel3 and kernel.zip"
         if: success()
@@ -1618,7 +1632,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V108-LM-G900-KARNAL
+          kernel.string=V109-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1644,7 +1658,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V108-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V109-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1681,20 +1695,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V108 final output"
+      - name: "12. Upload V109 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V108-LM-G900-KARNAL-output
-          path: V108-LM-G900-KARNAL-output.zip
+          name: V109-LM-G900-KARNAL-output
+          path: V109-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V108 flashable ZIPs"
+      - name: "13. Upload V109 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V108-LM-G900-KARNAL-flashable-zips
+          name: V109-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1859,16 +1873,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V108 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V109 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V108 complete diagnostics (always)"
+      - name: "15. Upload V109 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V108-LM-G900-KARNAL-complete-logs
+          name: V109-LM-G900-KARNAL-complete-logs
           path: |
-            V108-LM-G900-KARNAL-complete-logs.zip
+            V109-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
