@@ -1,4 +1,4 @@
-name: V128-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V129-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V128
-  OUTPUT_PREFIX: V128-LM-G900-KARNAL
+  WORKFLOW_VERSION: V129
+  OUTPUT_PREFIX: V129-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V128
+    name: Build V129
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -838,12 +838,16 @@ jobs:
             }
           done < ../baseline-enabled-config.txt
 
-          # Old external SUSFS/KSU-Next integration must be absent.
-          test ! -d "SukiSU-Ultra"
-          # No second/external SukiSU source tree is allowed after the pinned builtin
-          # has been copied into drivers/kernelsu. The directory itself is checked above;
-          # source text may legitimately contain the project name in comments/licenses.
-          test ! -d "SukiSU-Ultra"
+          # The pinned SukiSU tree is a build-time staging source created by Step 6.
+          # Its presence is intentional; what must NOT exist is a second integration boundary
+          # such as a symlink or nested Git checkout under drivers/kernelsu.
+          test -d "SukiSU-Ultra"
+          test "$(<SukiSU-Ultra/.git/HEAD)" != ""
+          test ! -L "drivers/kernelsu"
+          test ! -e "drivers/kernelsu/.git"
+          test -f "drivers/kernelsu/Kconfig"
+          test -f "drivers/kernelsu/Makefile"
+          echo "[OK] Pinned SukiSU source remains staging-only; drivers/kernelsu is a real copied source tree."
 
           # V128 — exact SukiSU Ultra v4.2.0 -> Linux 4.19.325 source compatibility.
           # These are real compiler blockers observed in V128, not feature removals:
@@ -925,7 +929,7 @@ jobs:
           sulog.write_text(s)
           PY_V128_KSU_419
 
-          # V128: validate the generated SukiSU source instead of inserting an
+          # V129: validate the generated SukiSU source instead of inserting an
           # #endif at a guessed comment marker.
           python3 - "$KSU_SUCOMPAT" <<'PY_V128_SUCOMPAT'
           from pathlib import Path
@@ -940,16 +944,16 @@ jobs:
               elif re.match(r'^#\s*endif\b', t):
                   depth -= 1
                   if depth < 0:
-            raise SystemExit(f"[ERROR] V128: unmatched #endif at line {n}")
+                      raise SystemExit(f"[ERROR] V129: unmatched #endif at line {n}")
           if depth != 0:
-              raise SystemExit(f"[ERROR] V128: unbalanced preprocessor depth={depth}")
+              raise SystemExit(f"[ERROR] V129: unbalanced preprocessor depth={depth}")
           if "#ifdef CONFIG_KSU_SUSFS" not in s:
-              raise SystemExit("[ERROR] V128: CONFIG_KSU_SUSFS section missing")
+              raise SystemExit("[ERROR] V129: CONFIG_KSU_SUSFS section missing")
           PY_V128_SUCOMPAT
           
           grep -q 'KSU_TASK_WORK_RESUME' "$KSU_ALLOWLIST"
           grep -q 'struct user_arg_ptr user_arg_null' "$KSU_SULOG"
-          echo "[OK] V128: exact 4.19 task_work, SUSFS conditional, and sulog user_arg_ptr compatibility installed."
+          echo "[OK] V129: exact 4.19 task_work, SUSFS conditional, and sulog user_arg_ptr compatibility installed."
           
                     {
             echo "baseline_enabled=$(wc -l < ../baseline-enabled-config.txt)"
@@ -1683,20 +1687,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V128 final output"
+      - name: "12. Upload V129 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V128-LM-G900-KARNAL-output
-          path: V128-LM-G900-KARNAL-output.zip
+          name: V129-LM-G900-KARNAL-output
+          path: V129-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V128 flashable ZIPs"
+      - name: "13. Upload V129 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V128-LM-G900-KARNAL-flashable-zips
+          name: V129-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1861,16 +1865,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V128 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V129 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
       - name: "15. Upload V128 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V128-LM-G900-KARNAL-complete-logs
+          name: V129-LM-G900-KARNAL-complete-logs
           path: |
-            V128-LM-G900-KARNAL-complete-logs.zip
+            V129-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
