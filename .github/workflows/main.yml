@@ -1,4 +1,4 @@
-name: V118-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V119-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V118
-  OUTPUT_PREFIX: V118-LM-G900-KARNAL
+  WORKFLOW_VERSION: V119
+  OUTPUT_PREFIX: V119-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V118
+    name: Build V119
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -574,7 +574,7 @@ jobs:
           hook = """#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
           	if (static_branch_likely(&susfs_is_fake_cmdline_or_bootconfig_buffer_set)) {
           		susfs_spoof_cmdline_or_bootconfig(m);
-          		seq_putc(m, '\n');
+          		seq_putc(m, '\\n');
           		return 0;
           	}
           #endif
@@ -685,7 +685,7 @@ jobs:
           # newer struct-path API, so provide the narrow compatibility bridge BEFORE the
           # audit below. This is pure API adaptation; it does not remove or disable KSU.
           NS="fs/namespace.c"
-          if grep -RqsE '\\bpath_mount\\s*\\(' drivers/kernelsu || grep -RqsE '\\bpath_umount\\s*\\(' drivers/kernelsu; then
+          if grep -RqsE '\bpath_mount\s*\(' drivers/kernelsu || grep -RqsE '\bpath_umount\s*\(' drivers/kernelsu; then
             if ! grep -q '^int path_mount(' "$NS" || ! grep -q '^int path_umount(' "$NS"; then
               cat >> "$NS" <<'NAMESPACE_COMPAT_EOF'
 
@@ -751,13 +751,13 @@ jobs:
             fi
           fi
 
-          if grep -RqsE '\\bpath_mount\\s*\\(' drivers/kernelsu; then
+          if grep -RqsE '\bpath_mount\s*\(' drivers/kernelsu; then
             grep -q '^int path_mount(' "$NS" || {
               echo '[ERROR] SukiSU path_mount compatibility bridge is absent after insertion.'
               exit 1
             }
           fi
-          if grep -RqsE '\\bpath_umount\\s*\\(' drivers/kernelsu; then
+          if grep -RqsE '\bpath_umount\s*\(' drivers/kernelsu; then
             grep -q '^int path_umount(' "$NS" || {
               echo '[ERROR] SukiSU path_umount compatibility bridge is absent after insertion.'
               exit 1
@@ -813,8 +813,8 @@ jobs:
           # source text may legitimately contain the project name in comments/licenses.
           test ! -d "SukiSU-Ultra"
 
-          # V118 — exact SukiSU Ultra v4.2.0 -> Linux 4.19.325 source compatibility.
-          # These are real compiler blockers observed in V118, not feature removals:
+          # V119 — exact SukiSU Ultra v4.2.0 -> Linux 4.19.325 source compatibility.
+          # These are real compiler blockers observed in V119, not feature removals:
           #   1) allowlist.c: legacy task_work_add() requires bool, but the compatibility
           #      macro was not emitted when task_work.h was transitively included.
           #   2) sucompat.c: the pinned source has an unclosed CONFIG_KSU_SUSFS branch.
@@ -828,7 +828,7 @@ jobs:
           test -f "$KSU_SUCOMPAT"
           test -f "$KSU_SULOG"
 
-          python3 - "$KSU_ALLOWLIST" "$KSU_SUCOMPAT" "$KSU_SULOG" <<'PY_V118_KSU_419'
+          python3 - "$KSU_ALLOWLIST" "$KSU_SUCOMPAT" "$KSU_SULOG" <<'PY_V119_KSU_419'
           from pathlib import Path
           import sys
 
@@ -866,7 +866,7 @@ jobs:
               s = s.replace("task_work_add(tsk, cb, TWA_RESUME)",
                             "task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)", 1)
           if "task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)" in s and "KSU_TASK_WORK_RESUME true" not in s and "KSU_TASK_WORK_RESUME TWA_RESUME" not in s:
-              raise SystemExit("[ERROR] V118: task_work compatibility macro was not emitted")
+              raise SystemExit("[ERROR] V119: task_work compatibility macro was not emitted")
           allowlist.write_text(s)
 
           # 2. sucompat.c: close the actual CONFIG_KSU_SUSFS branch. The pinned file
@@ -889,14 +889,14 @@ jobs:
           if old in s and "struct user_arg_ptr user_arg_null = { 0 };" not in s:
               s = s.replace(old, new, 1)
           if "CONFIG_KSU_SUSFS" in s and "ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, &user_arg_null, gfp)" not in s:
-              raise SystemExit("[ERROR] V118: SUSFS sulog pointer adaptation missing")
+              raise SystemExit("[ERROR] V119: SUSFS sulog pointer adaptation missing")
           sulog.write_text(s)
-          PY_V118_KSU_419
+          PY_V119_KSU_419
 
           grep -q 'KSU_TASK_WORK_RESUME' "$KSU_ALLOWLIST"
           tail -n 3 "$KSU_SUCOMPAT" | grep -q 'KSU_SUSFS'
           grep -q 'struct user_arg_ptr user_arg_null' "$KSU_SULOG"
-          echo "[OK] V118: exact 4.19 task_work, SUSFS conditional, and sulog user_arg_ptr compatibility installed."
+          echo "[OK] V119: exact 4.19 task_work, SUSFS conditional, and sulog user_arg_ptr compatibility installed."
 
           {
             echo "baseline_enabled=$(wc -l < ../baseline-enabled-config.txt)"
@@ -1387,7 +1387,7 @@ jobs:
             exit 1
           fi
 
-          # V118 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
+          # V119 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
           # while this 4.19 arm64 tree exposes access_ok(type, addr, size). Adapt only
           # KPM's validation calls; no KPM functionality is disabled.
           KPM_C="drivers/kernelsu/kpm/kpm.c"
@@ -1413,10 +1413,10 @@ jobs:
               s = s.replace(marker, marker + macro, 1)
           p.write_text(s)
           PY_KPM_ACCESS
-            echo "[FIX] V118: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
+            echo "[FIX] V119: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
           fi
           if grep -nF 'access_ok(' "$KPM_C" | grep -v '#define KSU_ACCESS_OK' | grep -q .; then
-            echo "[ERROR] V118: unresolved direct access_ok(addr,size) calls remain in KPM."
+            echo "[ERROR] V119: unresolved direct access_ok(addr,size) calls remain in KPM."
             grep -nF 'access_ok(' "$KPM_C" || true
             exit 1
           fi
@@ -1565,7 +1565,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V118-LM-G900-KARNAL
+          kernel.string=V119-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1591,7 +1591,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V118-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V119-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1628,20 +1628,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V118 final output"
+      - name: "12. Upload V119 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V118-LM-G900-KARNAL-output
-          path: V118-LM-G900-KARNAL-output.zip
+          name: V119-LM-G900-KARNAL-output
+          path: V119-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V118 flashable ZIPs"
+      - name: "13. Upload V119 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V118-LM-G900-KARNAL-flashable-zips
+          name: V119-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1806,16 +1806,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V118 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V119 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V118 complete diagnostics (always)"
+      - name: "15. Upload V119 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V118-LM-G900-KARNAL-complete-logs
+          name: V119-LM-G900-KARNAL-complete-logs
           path: |
-            V118-LM-G900-KARNAL-complete-logs.zip
+            V119-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
