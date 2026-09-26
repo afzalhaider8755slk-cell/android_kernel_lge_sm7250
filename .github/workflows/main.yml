@@ -1,4 +1,4 @@
-name: V105-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V106-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V105
-  OUTPUT_PREFIX: V105-LM-G900-KARNAL
+  WORKFLOW_VERSION: V106
+  OUTPUT_PREFIX: V106-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V105
+    name: Build V106
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -758,15 +758,28 @@ jobs:
           grep -q 'ANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);' include/linux/mount.h
 
           # A failed hunk must never be silently accepted.
-          # Remove only the four expected reject files after their source-level anchors
-          # have been verified; any unexpected reject remains fatal.
+          # The four audited .rej files are consumed only after their exact semantic
+          # source-port anchors above pass. patch(1) also creates *.orig backups for
+          # successfully modified files; those are not unresolved conflicts and must
+          # not poison the source tree or artifact. Delete ONLY patch-generated backups.
           rm -f fs/namespace.c.rej fs/proc/cmdline.c.rej fs/proc/task_mmu.c.rej include/linux/mount.h.rej
-          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "[ERROR] Unresolved SUSFS .rej/.orig file remains after compatibility port."
-            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print
+          find . -type f -name '*.orig' -delete
+          if find . -type f -name '*.rej' -print -quit | grep -q .; then
+            echo "[ERROR] Unresolved SUSFS .rej file remains after compatibility port."
+            find . -type f -name '*.rej' -print
+            exit 1
+          fi
+          if find . -type f -name '*.orig' -print -quit | grep -q .; then
+            echo "[ERROR] Unexpected patch backup (*.orig) remains."
+            find . -type f -name '*.orig' -print
             exit 1
           fi
           ! grep -RnsE '^(<<<<<<<|=======|>>>>>>>)' fs include drivers/kernelsu 2>/dev/null | grep -q .
+          # Final source-integrity gate for this stage.
+          ! grep -RnsE '^(<<<<<<<|=======|>>>>>>>)' fs include drivers/kernelsu 2>/dev/null | grep -q .
+          test -s fs/susfs.c
+          test -s include/linux/susfs.h
+          test -s include/linux/susfs_def.h
           echo "[OK] SUSFS 4.19 patch + exact fs_context/LGE/KABI compatibility port complete."
 
           # Wire the existing KSU driver exactly once.
@@ -1533,7 +1546,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V105-LM-G900-KARNAL
+          kernel.string=V106-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1559,7 +1572,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V105-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V106-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1596,20 +1609,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V105 final output"
+      - name: "12. Upload V106 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V105-LM-G900-KARNAL-output
-          path: V105-LM-G900-KARNAL-output.zip
+          name: V106-LM-G900-KARNAL-output
+          path: V106-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V105 flashable ZIPs"
+      - name: "13. Upload V106 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V105-LM-G900-KARNAL-flashable-zips
+          name: V106-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1774,16 +1787,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V105 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V106 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V105 complete diagnostics (always)"
+      - name: "15. Upload V106 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V105-LM-G900-KARNAL-complete-logs
+          name: V106-LM-G900-KARNAL-complete-logs
           path: |
-            V105-LM-G900-KARNAL-complete-logs.zip
+            V106-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
