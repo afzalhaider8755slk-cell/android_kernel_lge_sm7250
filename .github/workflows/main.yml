@@ -903,6 +903,9 @@ EOF_KSU_FIX
           sulog.write_text(s)
           PY_V120_KSU_419
 
+          # Correct the generated conditional boundary before the common init section.
+          python3 -c 'from pathlib import Path; p=Path("drivers/kernelsu/feature/sucompat.c"); a=p.read_text().splitlines(); a=[x for i,x in enumerate(a) if not (i==len(a)-1 and x.lstrip().startswith(chr(35)+"endif"))]; i=next(i for i,x in enumerate(a) if x.strip()=="// dead code"); a.insert(i,chr(35)+"endif /* KSU_SUSFS */"); p.write_text("\n".join(a)+"\n")'
+
           grep -q 'KSU_TASK_WORK_RESUME' "$KSU_ALLOWLIST"
           tail -n 3 "$KSU_SUCOMPAT" | grep -q 'KSU_SUSFS'
           grep -q 'struct user_arg_ptr user_arg_null' "$KSU_SULOG"
