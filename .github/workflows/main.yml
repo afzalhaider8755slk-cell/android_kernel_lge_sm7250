@@ -1,4 +1,4 @@
-name: V113-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V114-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V113
-  OUTPUT_PREFIX: V113-LM-G900-KARNAL
+  WORKFLOW_VERSION: V114
+  OUTPUT_PREFIX: V114-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V113
+    name: Build V114
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -162,7 +162,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p logs diagnostics
-          exec > >(tee -a logs/01-checkout.log) 2>&1
+          exec > logs/01-checkout.log 2>&1
           echo "::group::[1/15] Checkout kernel source"
           git clone --branch "${KERNEL_REF}" "${KERNEL_REPO}" kernel
           cd kernel
@@ -205,7 +205,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p logs/device-tree diagnostics/device-tree
-          exec > >(tee -a logs/03-defconfig-selection.log) 2>&1
+          exec > logs/03-defconfig-selection.log 2>&1
           echo "::group::[3/15] Select and snapshot device defconfig"
 
           rm -rf device-caymanlm device-sm7250-common vendor-caymanlm
@@ -447,7 +447,7 @@ jobs:
           echo "::group::[6/15] Integrate pinned SukiSU builtin + SUSFS v2.3 4.19 port"
           cd kernel
           mkdir -p ../logs
-          exec > >(tee -a ../logs/06-sukisu-susfs.log) 2>&1
+          exec > ../logs/06-sukisu-susfs.log 2>&1
 
           rm -rf SukiSU-Ultra susfs4ksu susfs-4.19-adapt
           test ! -e drivers/kernelsu
@@ -489,18 +489,70 @@ jobs:
           git -C susfs-4.19-adapt checkout --detach "$SUSFS_ADAPT_RESOLVED"
           test -s "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH"
 
-          # This patch is the kernel-side SUSFS v2.3.0 implementation for 4.19.
-          # Apply with zero fuzz: any context mismatch is a hard error and must be
-          # manually reconciled rather than hidden.
-          patch --dry-run --fuzz=0 -p1 < "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH" \
-            > ../logs/06-susfs-v23-dryrun.log 2>&1
-          patch --fuzz=0 -p1 < "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH" \
-            > ../logs/06-susfs-v23-apply.log 2>&1
+          # SUSFS v2.3.0 for 4.19.325. The only known context mismatch on this exact
+          # LM-G900 source is fs/proc/cmdline.c: LGE uses updated_command_line and
+          # preserves charger-logo rewriting. All other hunks remain zero-fuzz strict.
+          set +e
+          patch --dry-run --fuzz=0 -p1 < "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH" > ../logs/06-susfs-v23-dryrun.log 2>&1
+          DRY_RC=$?
+          set -e
+          echo "susfs_dryrun_rc=${DRY_RC}" > ../logs/06-susfs-v23-rc.log
+          if [ "${DRY_RC}" -ne 0 ]; then
+            if ! grep -q "^Hunk #1 FAILED at 4" ../logs/06-susfs-v23-dryrun.log || [ "$(grep -c "FAILED" ../logs/06-susfs-v23-dryrun.log)" -ne 1 ] || ! grep -q "^checking file fs/proc/cmdline.c" ../logs/06-susfs-v23-dryrun.log; then
+              echo "[ERROR] SUSFS zero-fuzz dry-run has an unexpected conflict; full report is in the artifact."
+              exit 1
+            fi
+          fi
+          set +e
+          patch --fuzz=0 -p1 < "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH" > ../logs/06-susfs-v23-apply.log 2>&1
+          APPLY_RC=$?
+          set -e
+          echo "susfs_apply_rc=${APPLY_RC}" >> ../logs/06-susfs-v23-rc.log
+          if [ "${APPLY_RC}" -ne 0 ] && [ ! -f fs/proc/cmdline.c.rej ]; then
+            echo "[ERROR] SUSFS apply failed without the single audited cmdline reject."
+            exit 1
+          fi
+          if find . -type f \( -name "*.rej" -o -name "*.orig" \) ! -path "./fs/proc/cmdline.c.rej" -print -quit | grep -q .; then
+            echo "[ERROR] SUSFS adaptation produced an unexpected reject/backup."
+            exit 1
+          fi
 
-          # No rejects/backups or unresolved conflict markers are accepted.
-          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "[ERROR] SUSFS v2.3 4.19 adaptation left .rej/.orig files."
-            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("fs/proc/cmdline.c")
+          s = p.read_text()
+          decl = """#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          extern struct static_key_false susfs_is_fake_cmdline_or_bootconfig_buffer_set;
+          extern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);
+          #endif
+
+          """
+          if "susfs_is_fake_cmdline_or_bootconfig_buffer_set" not in s:
+              anchor = "#include <linux/seq_file.h>\n"
+              if anchor not in s: raise SystemExit("[ERROR] LGE cmdline include anchor not found")
+              s = s.replace(anchor, anchor + decl, 1)
+          hook = """#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          	if (static_branch_likely(&susfs_is_fake_cmdline_or_bootconfig_buffer_set)) {
+          		susfs_spoof_cmdline_or_bootconfig(m);
+          		seq_putc(m, '\n');
+          		return 0;
+          	}
+          #endif
+          """
+          if "susfs_spoof_cmdline_or_bootconfig(m);" not in s:
+              anchor = "static int cmdline_proc_show(struct seq_file *m, void *v)\n{\n"
+              if anchor not in s: raise SystemExit("[ERROR] LGE cmdline show-function anchor not found")
+              s = s.replace(anchor, anchor + hook, 1)
+          if "updated_command_line" not in s: raise SystemExit("[ERROR] updated_command_line was removed")
+          if "lge_get_boot_mode" not in s: raise SystemExit("[ERROR] charger-logo behavior was removed")
+          if "susfs_spoof_cmdline_or_bootconfig(m);" not in s: raise SystemExit("[ERROR] SUSFS cmdline hook missing")
+          p.write_text(s)
+          PY
+
+          rm -f fs/proc/cmdline.c.rej
+          find . -type f -name "*.orig" -delete
+          if find . -type f -name "*.rej" -print -quit | grep -q .; then
+            echo "[ERROR] Unresolved SUSFS reject remains after exact source port."
             exit 1
           fi
           ! grep -RnsE '^(<<<<<<<|=======|>>>>>>>)' fs include drivers/kernelsu 2>/dev/null | grep -q .
@@ -1210,7 +1262,7 @@ jobs:
             exit 1
           fi
 
-          # V113 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
+          # V114 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
           # while this 4.19 arm64 tree exposes access_ok(type, addr, size). Adapt only
           # KPM's validation calls; no KPM functionality is disabled.
           KPM_C="drivers/kernelsu/kpm/kpm.c"
@@ -1236,10 +1288,10 @@ jobs:
               s = s.replace(marker, marker + macro, 1)
           p.write_text(s)
           PY_KPM_ACCESS
-            echo "[FIX] V113: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
+            echo "[FIX] V114: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
           fi
           if grep -nF 'access_ok(' "$KPM_C" | grep -v '#define KSU_ACCESS_OK' | grep -q .; then
-            echo "[ERROR] V113: unresolved direct access_ok(addr,size) calls remain in KPM."
+            echo "[ERROR] V114: unresolved direct access_ok(addr,size) calls remain in KPM."
             grep -nF 'access_ok(' "$KPM_C" || true
             exit 1
           fi
@@ -1362,13 +1414,13 @@ jobs:
           echo "[INFO] dtbs diagnostic completed with rc=${DTBS_RC}; continuing to authoritative Image build."
 
           echo "::group::[9/15b] Build Image"
-          make "${MAKE_ARGS[@]}" -j"$(nproc)" V=1 Image 2>&1 | tee ../logs/09-image-build.log
-          IMAGE_PIPE_RC=${PIPESTATUS[0]}
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" V=1 Image > ../logs/09-image-build.log 2>&1
+          IMAGE_PIPE_RC=$?
           echo "image_build_rc=${IMAGE_PIPE_RC}" | tee ../logs/09-image-build-rc.txt
           test "${IMAGE_PIPE_RC}" -eq 0
           test -s out/arch/arm64/boot/Image
-          file out/arch/arm64/boot/Image | tee ../logs/09-image-file.log
-          sha256sum out/arch/arm64/boot/Image | tee ../logs/09-image-sha256.log
+          file out/arch/arm64/boot/Image > ../logs/09-image-file.log 2>&1
+          sha256sum out/arch/arm64/boot/Image > ../logs/09-image-sha256.log 2>&1
           echo "::endgroup::"
           echo "[OK] Image build completed successfully."
 
@@ -1388,7 +1440,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V113-LM-G900-KARNAL
+          kernel.string=V114-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1414,7 +1466,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V113-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V114-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1451,20 +1503,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V113 final output"
+      - name: "12. Upload V114 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V113-LM-G900-KARNAL-output
-          path: V113-LM-G900-KARNAL-output.zip
+          name: V114-LM-G900-KARNAL-output
+          path: V114-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V113 flashable ZIPs"
+      - name: "13. Upload V114 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V113-LM-G900-KARNAL-flashable-zips
+          name: V114-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1629,16 +1681,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V113 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V114 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V113 complete diagnostics (always)"
+      - name: "15. Upload V114 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V113-LM-G900-KARNAL-complete-logs
+          name: V114-LM-G900-KARNAL-complete-logs
           path: |
-            V113-LM-G900-KARNAL-complete-logs.zip
+            V114-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
