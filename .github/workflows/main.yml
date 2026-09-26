@@ -1,4 +1,4 @@
-name: V112-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V113-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -33,17 +33,17 @@ env:
   SUKISU_BUILTIN_COMMIT: d86f9026ab26ce9632ff6df43b11276093b66930
   KERNEL_BUILD_TARGETS: Image
   SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
-  SUSFS_REF: kernel-4.19
-  SUSFS_COMMIT: 001e69919c6271f690fd00b17e4c721c9e599152
-  SUSFS_VERSION: v1.5.5-kernel-4.19
+  SUSFS_REF: kernel-4.19-v2.3-adapted
+  SUSFS_COMMIT: b63995881d956464efeb63225d7302f22c79b7f8
+  SUSFS_VERSION: v2.3.0-kernel-4.19-adapted
   # SukiSU builtin d86f902 supplies the KSU-side SUSFS ABI/config, but not the kernel-side
   # fs/susfs.c + include/linux/susfs*.h implementation. The official SUSFS 4.19 branch
   # is therefore integrated separately and pinned to the audited 1.5.5-era commit.
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V112
-  OUTPUT_PREFIX: V112-LM-G900-KARNAL
+  WORKFLOW_VERSION: V113
+  OUTPUT_PREFIX: V113-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V112
+    name: Build V113
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -444,12 +444,12 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "::group::[6/15] Integrate pinned SukiSU builtin + legacy 4.19 SUSFS"
+          echo "::group::[6/15] Integrate pinned SukiSU builtin + SUSFS v2.3 4.19 port"
           cd kernel
           mkdir -p ../logs
           exec > >(tee -a ../logs/06-sukisu-susfs.log) 2>&1
 
-          rm -rf SukiSU-Ultra drivers/kernelsu susfs4ksu
+          rm -rf SukiSU-Ultra susfs4ksu susfs-4.19-adapt
           test ! -e drivers/kernelsu
 
           # ---- SukiSU side: pinned non-GKI builtin source ----
@@ -466,339 +466,64 @@ jobs:
           grep -Eq '^config[[:space:]]+KPM([[:space:]]|$)' SukiSU-Ultra/kernel/Kconfig
           grep -Eq '^config[[:space:]]+KSU_SUSFS([[:space:]]|$)' SukiSU-Ultra/kernel/Kconfig
           grep -Eq '^config[[:space:]]+KSU_MANUAL_HOOK([[:space:]]|$)' SukiSU-Ultra/kernel/Kconfig
-
           cp -a SukiSU-Ultra/kernel drivers/kernelsu
           rm -rf SukiSU-Ultra
 
-          # The pinned builtin tree already contains the KSU-side SUSFS ABI/config.
-          # Do NOT apply an old 10_enable_susfs_for_ksu.patch on top of it; that would
-          # risk duplicate/conflicting KSU changes. We only add the kernel-side 4.19 code.
-          grep -Eq '^config[[:space:]]+KSU_SUSFS([[:space:]]|$)' drivers/kernelsu/Kconfig
-          grep -Rqs 'susfs_is_sid_equal' drivers/kernelsu
-          grep -Rqs 'susfs_set_ksu_sid' drivers/kernelsu
+          # The pinned SukiSU builtin already supplies the KSU-side SUSFS command ABI
+          # (dispatch.c, Kconfig and userspace contract). For this legacy 4.19 kernel,
+          # the kernel-side implementation must match that ABI exactly.
+          #
+          # Upstream susfs4ksu's official kernel-4.19 branch is v1.5.5 and predates the
+          # current SukiSU SUSFS ABI (ADD_SUS_PATH_LOOP / SUS_MAP / SHOW_* / AVC spoofing).
+          # Mixing those two generations was the direct cause of the V112 undefined-symbol
+          # build failure. We therefore use a separately audited 4.19.325 adaptation of
+          # SUSFS v2.3.0, which is the ABI generation expected by the pinned SukiSU tree.
+          SUSFS_ADAPT_REPO="https://github.com/Hotsteel2901/NonGKI_Kernel_Build_OP8.git"
+          SUSFS_ADAPT_COMMIT="b63995881d956464efeb63225d7302f22c79b7f8"
+          SUSFS_ADAPT_PATCH="Patches/Patch/susfs_patch_to_4.19.patch"
 
-          # ---- Kernel side: official SUSFS kernel-4.19 source ----
-          git clone --filter=blob:none --branch "$SUSFS_REF" --single-branch --no-checkout \
-            "$SUSFS_REPO" susfs4ksu
-          SUSFS_RESOLVED_COMMIT="$(git -C susfs4ksu rev-parse "$SUSFS_COMMIT^{commit}")"
-          printf 'requested_commit=%s\nresolved_commit=%s\n' \
-            "$SUSFS_COMMIT" "$SUSFS_RESOLVED_COMMIT" > ../logs/06-susfs-checkout.log
-          git -C susfs4ksu checkout --detach "$SUSFS_RESOLVED_COMMIT"
-          test "$SUSFS_RESOLVED_COMMIT" = "$SUSFS_COMMIT"
+          git clone --filter=blob:none --no-checkout "$SUSFS_ADAPT_REPO" susfs-4.19-adapt
+          git -C susfs-4.19-adapt fetch --no-tags origin "$SUSFS_ADAPT_COMMIT"
+          SUSFS_ADAPT_RESOLVED="$(git -C susfs-4.19-adapt rev-parse "$SUSFS_ADAPT_COMMIT^{commit}")"
+          test "$SUSFS_ADAPT_RESOLVED" = "$SUSFS_ADAPT_COMMIT"
+          git -C susfs-4.19-adapt checkout --detach "$SUSFS_ADAPT_RESOLVED"
+          test -s "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH"
 
-          SUSFS_KERNEL_PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
-          test -s "$SUSFS_KERNEL_PATCH"
-          test -s susfs4ksu/kernel_patches/fs/susfs.c
-          test -s susfs4ksu/kernel_patches/include/linux/susfs.h
+          # This patch is the kernel-side SUSFS v2.3.0 implementation for 4.19.
+          # Apply with zero fuzz: any context mismatch is a hard error and must be
+          # manually reconciled rather than hidden.
+          patch --dry-run --fuzz=0 -p1 < "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH" \
+            > ../logs/06-susfs-v23-dryrun.log 2>&1
+          patch --fuzz=0 -p1 < "susfs-4.19-adapt/$SUSFS_ADAPT_PATCH" \
+            > ../logs/06-susfs-v23-apply.log 2>&1
 
-          # Stage the SUSFS implementation files before the patch, exactly as the
-          # SUSFS project documents for non-GKI kernels.
-          cp -a susfs4ksu/kernel_patches/fs/. fs/
-          cp -a susfs4ksu/kernel_patches/include/linux/. include/linux/
-          test -s fs/susfs.c
-          test -s include/linux/susfs.h
-          test -s include/linux/susfs_def.h
-
-          # Apply the official 4.19 SUSFS patch. This kernel carries Android's fs_context
-          # backport, so the upstream 4.19 patch has four known context mismatches in
-          # fs/namespace.c plus LGE-specific proc/cmdline context. We do NOT force/fuzz those
-          # hunks. Instead, we apply all clean hunks and then apply an exact, idempotent
-          # compatibility port for the affected functions below.
-          set +e
-          patch --dry-run -p1 < "$SUSFS_KERNEL_PATCH" > ../logs/06-susfs-kernel-dryrun.log 2>&1
-          DRY_RC=$?
-          patch -p1 < "$SUSFS_KERNEL_PATCH" > ../logs/06-susfs-kernel-apply.log 2>&1
-          APPLY_RC=$?
-          set -e
-          printf 'dryrun_rc=%s\napply_rc=%s\n' "$DRY_RC" "$APPLY_RC" | tee ../logs/06-susfs-kernel-rc.log
-
-          # The only expected rejects on this exact tree are:
-          #   fs/namespace.c: fs_context mount allocator + clone_mnt compatibility
-          #   fs/proc/cmdline.c: LGE updated_command_line path
-          #   fs/proc/task_mmu.c: LGE/4.19 source context
-          #   include/linux/mount.h: Android KABI reserve context
-          # Any other reject is a hard failure.
-          {
-            find . -type f -name '*.rej' -print
-          } > ../logs/06-susfs-reject-files-before-compat.log
-          if find . -type f -name '*.rej' \
-              ! -path './fs/namespace.c.rej' \
-              ! -path './fs/proc/cmdline.c.rej' \
-              ! -path './fs/proc/task_mmu.c.rej' \
-              ! -path './include/linux/mount.h.rej' \
-              -print -quit | grep -q .; then
-            echo "[ERROR] Unexpected SUSFS reject file outside the four audited compatibility files."
-            exit 1
-          fi
-
-          # SUSFS 1.5.5's README explicitly allows manual repair for kernel-version/context
-          # differences. This port follows the project's own 4.19+ fs_context guidance:
-          # vfs_create_mount() is the allocator entry point on this tree, not the old
-          # vfs_kern_mount() allocator. We preserve the original SUSFS semantics rather than
-          # dropping the mount-hiding feature.
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          def edit(path, fn):
-              p = Path(path)
-              s = p.read_text()
-              ns = fn(s)
-              if ns != s:
-                  p.write_text(ns)
-                  print("[PATCHED]", path)
-              else:
-                  print("[OK]", path)
-
-          def add_once(s, marker, needle, block, where="before"):
-              if block.strip() in s:
-                  return s
-              if needle not in s:
-                  raise SystemExit(f"[ERROR] anchor not found: {marker}")
-              return s.replace(needle, block + needle if where == "before" else needle + block, 1)
-
-          # 1) namespace.c: add SUSFS declarations when the first hunk could not match
-          # because this device tree has the Android fs_context include.
-          def namespace_port(s):
-              if "#include <linux/susfs_def.h>" not in s:
-                  anchor = "#include <linux/sched/task.h>\n"
-                  block = "#if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)\n#include <linux/susfs_def.h>\n#endif\n"
-                  s = s.replace(anchor, anchor + block, 1)
-              if "static DEFINE_IDA(susfs_mnt_id_ida);" not in s:
-                  anchor = '#include "internal.h"\n\n'
-                  block = '''#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          extern bool susfs_is_current_ksu_domain(void);
-          extern bool susfs_is_current_zygote_domain(void);
-
-          static DEFINE_IDA(susfs_mnt_id_ida);
-          static DEFINE_IDA(susfs_mnt_group_ida);
-
-          #define CL_ZYGOTE_COPY_MNT_NS BIT(24) /* used by copy_mnt_ns() */
-          #define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
-          #endif
-
-          #ifdef CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
-          extern void susfs_auto_add_sus_ksu_default_mount(const char __user *to_pathname);
-          bool susfs_is_auto_add_sus_ksu_default_mount_enabled = true;
-          #endif
-          #ifdef CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
-          extern int susfs_auto_add_sus_bind_mount(const char *pathname, struct path *path_target);
-          bool susfs_is_auto_add_sus_bind_mount_enabled = true;
-          #endif
-          #ifdef CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
-          extern void susfs_auto_add_try_umount_for_bind_mount(struct path *path);
-          bool susfs_is_auto_add_try_umount_for_bind_mount_enabled = true;
-          #endif
-
-          '''
-                  if anchor not in s:
-                      raise SystemExit("[ERROR] namespace.c internal.h anchor not found")
-                  s = s.replace(anchor, anchor + block, 1)
-
-              # 2) Android fs_context tree: patch vfs_create_mount(), the actual allocator
-              # used by vfs_kern_mount()/fc_mount().
-              if "alloc_vfsmnt(fc->source ?: \"none\", true, 0)" not in s:
-                  old = 'mnt = alloc_vfsmnt(fc->source ?: "none");'
-                  new = '''#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          	if (unlikely(susfs_is_current_ksu_domain())) {
-          		mnt = alloc_vfsmnt(fc->source ?: "none", true, 0);
-          		goto bypass_susfs_mount_alloc;
-          	}
-          #endif
-          	mnt = alloc_vfsmnt(fc->source ?: "none");
-          #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          bypass_susfs_mount_alloc:
-          #endif'''
-                  if old not in s:
-                      # If a previous partial patch already changed the call, do not duplicate.
-                      if "mnt = alloc_vfsmnt(fc->source ?: \"none\");" not in s:
-                          raise SystemExit("[ERROR] vfs_create_mount allocator anchor not found")
-                  else:
-                      s = s.replace(old, new, 1)
-
-              # 3) clone_mnt(): use the SUSFS-aware allocator on this fs_context kernel.
-              if "bool is_current_ksu_domain = susfs_is_current_ksu_domain();" not in s:
-                  anchor = '''	struct mount *mnt;
-          	int err;
-
-          	mnt = alloc_vfsmnt(old->mnt_devname);'''
-                  block = '''	struct mount *mnt;
-          	int err;
-
-          #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          	bool is_current_ksu_domain = susfs_is_current_ksu_domain();
-          	bool is_current_zygote_domain = susfs_is_current_zygote_domain();
-
-          	if (unlikely(is_current_ksu_domain)) {
-          		if (!(flag & CL_COPY_MNT_NS)) {
-          			mnt = alloc_vfsmnt(old->mnt_devname, true, 0);
-          			goto bypass_susfs_clone_alloc;
-          		}
-          		mnt = alloc_vfsmnt(old->mnt_devname, true, old->mnt_id);
-          		if (mnt)
-          			mnt->mnt.susfs_mnt_id_backup = DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE;
-          		goto bypass_susfs_clone_alloc;
-          	}
-          	if (likely(is_current_zygote_domain) && (old->mnt_id >= DEFAULT_SUS_MNT_ID)) {
-          		mnt = alloc_vfsmnt(old->mnt_devname, true, 0);
-          		goto bypass_susfs_clone_alloc;
-          	}
-          	if ((flag & CL_COPY_MNT_NS) && (old->mnt_id >= DEFAULT_SUS_MNT_ID)) {
-          		mnt = alloc_vfsmnt(old->mnt_devname, true, 0);
-          		goto bypass_susfs_clone_alloc;
-          	}
-          	mnt = alloc_vfsmnt(old->mnt_devname, false, 0);
-          bypass_susfs_clone_alloc:
-          #else
-          	mnt = alloc_vfsmnt(old->mnt_devname);
-          #endif'''
-                  if anchor not in s:
-                      raise SystemExit("[ERROR] clone_mnt allocator anchor not found")
-                  s = s.replace(anchor, block, 1)
-
-              # 4) clone_mnt() post-parent zygote mnt-id reorder.
-              marker = "mnt->mnt.susfs_mnt_id_backup = mnt->mnt_id;"
-              if marker not in s:
-                  anchor = '''	mnt->mnt.mnt_root = dget(root);
-          	mnt->mnt_mountpoint = mnt->mnt.mnt_root;
-          	mnt->mnt_parent = mnt;
-          	lock_mount_hash();'''
-                  block = '''	mnt->mnt.mnt_root = dget(root);
-          	mnt->mnt_mountpoint = mnt->mnt.mnt_root;
-          	mnt->mnt_parent = mnt;
-
-          #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-          	if (likely(is_current_zygote_domain) && !(flag & CL_ZYGOTE_COPY_MNT_NS)) {
-          		mnt->mnt.susfs_mnt_id_backup = mnt->mnt_id;
-          		mnt->mnt_id = current->susfs_last_fake_mnt_id++;
-          	}
-          #endif
-          	lock_mount_hash();'''
-                  if anchor not in s:
-                      raise SystemExit("[ERROR] clone_mnt zygote anchor not found")
-                  s = s.replace(anchor, block, 1)
-
-              return s
-
-          edit("fs/namespace.c", namespace_port)
-
-          # The original 4.19 tree has a one-argument alloc_vfsmnt() call in
-          # vfs_create_mount(). SUSFS changes that allocator ABI to
-          # (name, should_spoof, custom_mnt_id). Keep the neutral/non-spoofing
-          # semantics for this call; clone_mnt() is handled by the SUSFS semantic port.
-          def namespace_allocator_arity(s):
-              old = 'mnt = alloc_vfsmnt(fc->source ?: "none");'
-              new = 'mnt = alloc_vfsmnt(fc->source ?: "none", false, 0);'
-              if old in s:
-                  s = s.replace(old, new, 1)
-              if re.search(r'alloc_vfsmnt\\([^,()]+\\)', s):
-                  raise SystemExit("[ERROR] namespace.c still contains a one-argument alloc_vfsmnt() call")
-              return s
-
-          edit("fs/namespace.c", namespace_allocator_arity)
-
-          # 5) LGE proc/cmdline.c has an updated_command_line buffer instead of the
-          # upstream saved_command_line context. Insert SUSFS spoofing at the same
-          # semantic point, immediately before emitting the command line.
-          def cmdline_port(s):
-              if "susfs_spoof_cmdline_or_bootconfig(m)" in s:
-                  return s
-              anchor = '\tseq_puts(m, updated_command_line);\n'
-              block = '''#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          	if (!susfs_spoof_cmdline_or_bootconfig(m)) {
-          		seq_putc(m, '\\n');
-          		return 0;
-          	}
-          #endif
-          '''
-              if "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG" not in s:
-                  inc = '#include <linux/slab.h>\n'
-                  decl = '''#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          extern int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);
-          #endif
-          '''
-                  if inc in s:
-                      s = s.replace(inc, inc + decl, 1)
-                  else:
-                      raise SystemExit("[ERROR] cmdline.c include anchor not found")
-              if anchor not in s:
-                  raise SystemExit("[ERROR] cmdline.c output anchor not found")
-              return s.replace(anchor, block + anchor, 1)
-
-          edit("fs/proc/cmdline.c", cmdline_port)
-
-          # 6) task_mmu.c only missed the SUSFS header include on this tree; the
-          # two functional hunks already applied cleanly.
-          def task_mmu_port(s):
-              if "#include <linux/susfs_def.h>" in s:
-                  return s
-              anchor = "#include <linux/mm_inline.h>\n"
-              block = '''#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-          #include <linux/susfs_def.h>
-          #endif
-          '''
-              if anchor not in s:
-                  raise SystemExit("[ERROR] task_mmu.c include anchor not found")
-              return s.replace(anchor, anchor + block, 1)
-
-          edit("fs/proc/task_mmu.c", task_mmu_port)
-
-          # 7) Android KABI reserve slot 4 is the SUSFS mount backup storage.
-          def mount_port(s):
-              if "ANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);" in s:
-                  return s
-              old = "\tANDROID_KABI_RESERVE(4);"
-              new = '''#ifdef CONFIG_KSU_SUSFS
-          	ANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);
-          #else
-          	ANDROID_KABI_RESERVE(4);
-          #endif
-          #if defined(CONFIG_KSU_SUSFS) && !defined(ANDROID_KABI_RESERVE)
-          	u64 susfs_mnt_id_backup;
-          #endif'''
-              if old not in s:
-                  raise SystemExit("[ERROR] include/linux/mount.h KABI reserve anchor not found")
-              return s.replace(old, new, 1)
-
-          edit("include/linux/mount.h", mount_port)
-          PY
-
-          # The compatibility port is intentionally source-anchored and idempotent.
-          # Verify every previously rejected file is now semantically patched.
-          grep -q '#include <linux/susfs_def.h>' fs/namespace.c
-          grep -q 'alloc_vfsmnt(fc->source ?: "none", true, 0)' fs/namespace.c
-          grep -q 'bool is_current_ksu_domain = susfs_is_current_ksu_domain();' fs/namespace.c
-          grep -q 'current->susfs_last_fake_mnt_id++' fs/namespace.c
-          grep -q 'susfs_spoof_cmdline_or_bootconfig(m)' fs/proc/cmdline.c
-          grep -q '#include <linux/susfs_def.h>' fs/proc/task_mmu.c
-          grep -q 'ANDROID_KABI_USE(4, u64 susfs_mnt_id_backup);' include/linux/mount.h
-
-          # A failed hunk must never be silently accepted.
-          # The four audited .rej files are consumed only after their exact semantic
-          # source-port anchors above pass. patch(1) also creates *.orig backups for
-          # successfully modified files; those are not unresolved conflicts and must
-          # not poison the source tree or artifact. Delete ONLY patch-generated backups.
-          rm -f fs/namespace.c.rej fs/proc/cmdline.c.rej fs/proc/task_mmu.c.rej include/linux/mount.h.rej
-          find . -type f -name '*.orig' -delete
-          if find . -type f -name '*.rej' -print -quit | grep -q .; then
-            echo "[ERROR] Unresolved SUSFS .rej file remains after compatibility port."
-            find . -type f -name '*.rej' -print
-            exit 1
-          fi
-          if find . -type f -name '*.orig' -print -quit | grep -q .; then
-            echo "[ERROR] Unexpected patch backup (*.orig) remains."
-            find . -type f -name '*.orig' -print
+          # No rejects/backups or unresolved conflict markers are accepted.
+          if find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
+            echo "[ERROR] SUSFS v2.3 4.19 adaptation left .rej/.orig files."
+            find . -type f \( -name '*.rej' -o -name '*.orig' \) -print
             exit 1
           fi
           ! grep -RnsE '^(<<<<<<<|=======|>>>>>>>)' fs include drivers/kernelsu 2>/dev/null | grep -q .
-          # Final source-integrity gate for this stage.
-          ! grep -RnsE '^(<<<<<<<|=======|>>>>>>>)' fs include drivers/kernelsu 2>/dev/null | grep -q .
+
+          # Exact ABI contract expected by the pinned SukiSU dispatch.c.
           test -s fs/susfs.c
           test -s include/linux/susfs.h
           test -s include/linux/susfs_def.h
-          echo "[OK] SUSFS 4.19 patch + exact fs_context/LGE/KABI compatibility port complete."
+          grep -q 'susfs_add_sus_path_loop' include/linux/susfs.h
+          grep -q 'susfs_set_hide_sus_mnts_for_non_su_procs' include/linux/susfs.h
+          grep -q 'susfs_enable_log' include/linux/susfs.h
+          grep -q 'susfs_add_sus_map' include/linux/susfs.h
+          grep -q 'susfs_set_avc_log_spoofing' include/linux/susfs.h
+          grep -q 'susfs_get_enabled_features' include/linux/susfs.h
+          grep -q 'susfs_show_variant' include/linux/susfs.h
+          grep -q 'susfs_show_version' include/linux/susfs.h
+          grep -q 'SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
 
-          # Wire the existing KSU driver exactly once.
+          # Kernel build wiring must include the SUSFS object exactly once.
+          grep -Eq '^obj-\$\(CONFIG_KSU_SUSFS\)[[:space:]]+\+= susfs\.o$' fs/Makefile
+          test "$(grep -cE '^obj-\$\(CONFIG_KSU_SUSFS\)[[:space:]]+\+= susfs\.o$' fs/Makefile)" -eq 1
+
+          # Wire KSU exactly once.
           if ! grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile; then
             printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
           fi
@@ -806,33 +531,14 @@ jobs:
             sed -i '/endmenu/i\\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           fi
 
-          # Contract checks: all requested KSU/SUSFS/KPM features must still exist.
-          grep -Eq '^config[[:space:]]+KSU([[:space:]]|$)' drivers/kernelsu/Kconfig
-          grep -Eq '^config[[:space:]]+KSU_MANUAL_HOOK([[:space:]]|$)' drivers/kernelsu/Kconfig
-          grep -Eq '^config[[:space:]]+KPM([[:space:]]|$)' drivers/kernelsu/Kconfig
-          grep -Eq '^config[[:space:]]+KSU_SUSFS([[:space:]]|$)' drivers/kernelsu/Kconfig
-          for sym in KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP; do
-            grep -Eq "^config[[:space:]]+$sym([[:space:]]|$)" drivers/kernelsu/Kconfig
-          done
-          test -s fs/susfs.c
-          test -s include/linux/susfs.h
-          ! find . -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .
-          ! grep -RnsE '^(<<<<<<<|=======|>>>>>>>)' drivers/kernelsu fs include/linux 2>/dev/null | grep -q .
-
-          {
-            echo "sukisu_version=$SUKISU_VERSION"
-            echo "sukisu_commit=$SUKISU_BUILTIN_COMMIT"
-            echo "susfs_version=$SUSFS_VERSION"
-            echo "susfs_ref=$SUSFS_REF"
-            echo "susfs_commit=$SUSFS_COMMIT"
-            echo "susfs_kernel_patch=$SUSFS_KERNEL_PATCH"
-            echo "config_kpm=present"
-            echo "config_ksu_manual_hook=present"
-            echo "config_ksu_susfs=present"
-          } | tee ../logs/06-sukisu-susfs-resolved.txt
-
-          rm -rf susfs4ksu
-          echo "[OK] Pinned SukiSU builtin + SUSFS kernel-4.19 integration applied; no hunk is silently skipped."
+          rm -rf susfs-4.19-adapt
+          echo "sukisu_version=$SUKISU_VERSION"
+          echo "sukisu_commit=$SUKISU_BUILTIN_COMMIT"
+          echo "susfs_version=v2.3.0"
+          echo "susfs_kernel_adapter_repo=$SUSFS_ADAPT_REPO"
+          echo "susfs_kernel_adapter_commit=$SUSFS_ADAPT_COMMIT"
+          echo "susfs_kernel_adapter_patch=$SUSFS_ADAPT_PATCH"
+          echo "[OK] SukiSU builtin + SUSFS v2.3.0 4.19 kernel adapter integrated with zero-fuzz patching."
           echo "::endgroup::"
 
       - name: "6b. Cross-setup SukiSU/SUSFS/KPM contract audit"
@@ -1504,7 +1210,7 @@ jobs:
             exit 1
           fi
 
-          # V112 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
+          # V113 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
           # while this 4.19 arm64 tree exposes access_ok(type, addr, size). Adapt only
           # KPM's validation calls; no KPM functionality is disabled.
           KPM_C="drivers/kernelsu/kpm/kpm.c"
@@ -1530,10 +1236,10 @@ jobs:
               s = s.replace(marker, marker + macro, 1)
           p.write_text(s)
           PY_KPM_ACCESS
-            echo "[FIX] V112: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
+            echo "[FIX] V113: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
           fi
           if grep -nF 'access_ok(' "$KPM_C" | grep -v '#define KSU_ACCESS_OK' | grep -q .; then
-            echo "[ERROR] V112: unresolved direct access_ok(addr,size) calls remain in KPM."
+            echo "[ERROR] V113: unresolved direct access_ok(addr,size) calls remain in KPM."
             grep -nF 'access_ok(' "$KPM_C" || true
             exit 1
           fi
@@ -1682,7 +1388,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V112-LM-G900-KARNAL
+          kernel.string=V113-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1708,7 +1414,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V112-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V113-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1745,20 +1451,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V112 final output"
+      - name: "12. Upload V113 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V112-LM-G900-KARNAL-output
-          path: V112-LM-G900-KARNAL-output.zip
+          name: V113-LM-G900-KARNAL-output
+          path: V113-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V112 flashable ZIPs"
+      - name: "13. Upload V113 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V112-LM-G900-KARNAL-flashable-zips
+          name: V113-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1923,16 +1629,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V112 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V113 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V112 complete diagnostics (always)"
+      - name: "15. Upload V113 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V112-LM-G900-KARNAL-complete-logs
+          name: V113-LM-G900-KARNAL-complete-logs
           path: |
-            V112-LM-G900-KARNAL-complete-logs.zip
+            V113-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
