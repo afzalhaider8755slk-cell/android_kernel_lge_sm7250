@@ -1,4 +1,4 @@
-name: V109-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V110-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V109
-  OUTPUT_PREFIX: V109-LM-G900-KARNAL
+  WORKFLOW_VERSION: V110
+  OUTPUT_PREFIX: V110-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V109
+    name: Build V110
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -681,6 +681,21 @@ jobs:
 
           edit("fs/namespace.c", namespace_port)
 
+          # The original 4.19 tree has a one-argument alloc_vfsmnt() call in
+          # vfs_create_mount(). SUSFS changes that allocator ABI to
+          # (name, should_spoof, custom_mnt_id). Keep the neutral/non-spoofing
+          # semantics for this call; clone_mnt() is handled by the SUSFS semantic port.
+          def namespace_allocator_arity(s):
+              old = 'mnt = alloc_vfsmnt(fc->source ?: "none");'
+              new = 'mnt = alloc_vfsmnt(fc->source ?: "none", false, 0);'
+              if old in s:
+                  s = s.replace(old, new, 1)
+              if re.search(r'alloc_vfsmnt\\([^,()]+\\)', s):
+                  raise SystemExit("[ERROR] namespace.c still contains a one-argument alloc_vfsmnt() call")
+              return s
+
+          edit("fs/namespace.c", namespace_allocator_arity)
+
           # 5) LGE proc/cmdline.c has an updated_command_line buffer instead of the
           # upstream saved_command_line context. Insert SUSFS spoofing at the same
           # semantic point, immediately before emitting the command line.
@@ -857,9 +872,9 @@ jobs:
           /* SukiSU 4.19 compatibility: Linux 5.9+ helper absent from this kernel. */
           #ifndef SUKISU_419_SECCOMP_FILTER_RELEASE_COMPAT
           #define SUKISU_419_SECCOMP_FILTER_RELEASE_COMPAT
-          void seccomp_filter_release(struct seccomp_filter *filter)
+          void seccomp_filter_release(struct task_struct *tsk)
           {
-                  put_seccomp_filter(filter);
+                  put_seccomp_filter(tsk);
           }
           #endif
           EOF_SUKISU_SECCOMP
@@ -1488,6 +1503,39 @@ jobs:
             exit 1
           fi
 
+          # V110 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
+          # while this 4.19 arm64 tree exposes access_ok(type, addr, size). Adapt only
+          # KPM's validation calls; no KPM functionality is disabled.
+          KPM_C="drivers/kernelsu/kpm/kpm.c"
+          if [ -f "$KPM_C" ] && grep -qE '(^|[^A-Za-z0-9_])access_ok\\(' "$KPM_C"; then
+            python3 - "$KPM_C" <<'PY_KPM_ACCESS'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          if '#include <linux/uaccess.h>' not in s:
+              marker = '#include <linux/kernel.h>\n'
+              if marker in s:
+                  s = s.replace(marker, marker + '#include <linux/uaccess.h>\n', 1)
+              else:
+                  s = '#include <linux/uaccess.h>\n' + s
+          s = s.replace('access_ok(', 'KSU_ACCESS_OK(')
+          macro = '''#ifndef KSU_ACCESS_OK
+          #define KSU_ACCESS_OK(addr, size) access_ok(VERIFY_READ, (addr), (size))
+          #endif
+          '''
+          if '#define KSU_ACCESS_OK(' not in s:
+              marker = '#include <linux/uaccess.h>\n'
+              s = s.replace(marker, marker + macro, 1)
+          p.write_text(s)
+          PY_KPM_ACCESS
+            echo "[FIX] V110: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
+          fi
+          if grep -qE '(^|[^A-Za-z0-9_])access_ok\\(' "$KPM_C"; then
+            echo "[ERROR] V110: unresolved direct access_ok() calls remain in KPM."
+            exit 1
+          fi
+
           # V36 FIX 1 — Linux 4.19 KernelSU app_profile seccomp compatibility.
           # SukiSU Ultra v3.4.0 legacy resets seccomp.filter_count when escaping to root, but
           # Linux 4.19's struct seccomp has only mode + filter (no filter_count).
@@ -1632,7 +1680,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V109-LM-G900-KARNAL
+          kernel.string=V110-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1658,7 +1706,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V109-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V110-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1695,20 +1743,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V109 final output"
+      - name: "12. Upload V110 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V109-LM-G900-KARNAL-output
-          path: V109-LM-G900-KARNAL-output.zip
+          name: V110-LM-G900-KARNAL-output
+          path: V110-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V109 flashable ZIPs"
+      - name: "13. Upload V110 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V109-LM-G900-KARNAL-flashable-zips
+          name: V110-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1873,16 +1921,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V109 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V110 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V109 complete diagnostics (always)"
+      - name: "15. Upload V110 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V109-LM-G900-KARNAL-complete-logs
+          name: V110-LM-G900-KARNAL-complete-logs
           path: |
-            V109-LM-G900-KARNAL-complete-logs.zip
+            V110-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
