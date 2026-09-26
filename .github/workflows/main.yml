@@ -1,4 +1,4 @@
-name: V125-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V126-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V125
-  OUTPUT_PREFIX: V125-LM-G900-KARNAL
+  WORKFLOW_VERSION: V126
+  OUTPUT_PREFIX: V126-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V125
+    name: Build V126
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -502,7 +502,7 @@ jobs:
           grep -Eq '^config[[:space:]]+KSU_MANUAL_HOOK([[:space:]]|$)' SukiSU-Ultra/kernel/Kconfig
           cp -a SukiSU-Ultra/kernel drivers/kernelsu
 
-          # V125: keep kernel-wide GNU89; use Kbuild's documented per-file flag for apk_sign.c.
+          # V126: keep kernel-wide GNU89; use Kbuild's documented per-file flag for apk_sign.c.
           KSU_MAKE="drivers/kernelsu/Makefile"
           grep -q '^CFLAGS_apk_sign.o' "$KSU_MAKE" || printf 'CFLAGS_apk_sign.o += -std=gnu99\n' >> "$KSU_MAKE"
 
@@ -532,7 +532,7 @@ jobs:
           EOF_KSU_FIX
           grep -q '^obj-$(CONFIG_KSU).*sukisu_fix.o' "$KSU_MAKE" || printf 'obj-$(CONFIG_KSU) += sukisu_fix.o\n' >> "$KSU_MAKE"
           test -s drivers/kernelsu/sukisu_fix.c
-          echo "[OK] V125: legacy SukiSU 4.19 ABI compatibility installed; no KSU/SUSFS feature disabled."
+          echo "[OK] V126: legacy SukiSU 4.19 ABI compatibility installed; no KSU/SUSFS feature disabled."
 
           # The pinned SukiSU builtin already supplies the KSU-side SUSFS command ABI
           # (dispatch.c, Kconfig and userspace contract). For this legacy 4.19 kernel,
@@ -628,7 +628,7 @@ jobs:
           fi
           ! grep -RnsE '^(<<<<<<<|=======|>>>>>>>)' fs include drivers/kernelsu 2>/dev/null | grep -q .
 
-          # V125: the complete legacy SukiSU ABI fix is installed in Step 6 above; do not overwrite it here.\n\n          # Exact ABI contract expected by the pinned SukiSU dispatch.c.
+          # V126: the complete legacy SukiSU ABI fix is installed in Step 6 above; do not overwrite it here.\n\n          # Exact ABI contract expected by the pinned SukiSU dispatch.c.
           test -s fs/susfs.c
           test -s include/linux/susfs.h
           test -s include/linux/susfs_def.h
@@ -808,6 +808,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          trap 'rc=$?; echo "[ERROR] Step 8 failed at: $BASH_COMMAND (rc=$rc)" | tee ../logs/08-step-error.log; exit $rc' ERR
           echo "::group::[8/15] Configure SukiSU/SUSFS/KPM"
           cd kernel
           export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1
@@ -844,8 +845,8 @@ jobs:
           # source text may legitimately contain the project name in comments/licenses.
           test ! -d "SukiSU-Ultra"
 
-          # V125 — exact SukiSU Ultra v4.2.0 -> Linux 4.19.325 source compatibility.
-          # These are real compiler blockers observed in V125, not feature removals:
+          # V126 — exact SukiSU Ultra v4.2.0 -> Linux 4.19.325 source compatibility.
+          # These are real compiler blockers observed in V126, not feature removals:
           #   1) allowlist.c: legacy task_work_add() requires bool, but the compatibility
           #      macro was not emitted when task_work.h was transitively included.
           #   2) sucompat.c: the pinned source has an unclosed CONFIG_KSU_SUSFS branch.
@@ -859,7 +860,7 @@ jobs:
           test -f "$KSU_SUCOMPAT"
           test -f "$KSU_SULOG"
 
-          python3 - "$KSU_ALLOWLIST" "$KSU_SUCOMPAT" "$KSU_SULOG" <<'PY_V125_KSU_419'
+          python3 - "$KSU_ALLOWLIST" "$KSU_SUCOMPAT" "$KSU_SULOG" <<'PY_V126_KSU_419'
           from pathlib import Path
           import sys
 
@@ -897,7 +898,7 @@ jobs:
               s = s.replace("task_work_add(tsk, cb, TWA_RESUME)",
                             "task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)", 1)
           if "task_work_add(tsk, cb, KSU_TASK_WORK_RESUME)" in s and "KSU_TASK_WORK_RESUME true" not in s and "KSU_TASK_WORK_RESUME TWA_RESUME" not in s:
-              raise SystemExit("[ERROR] V125: task_work compatibility macro was not emitted")
+              raise SystemExit("[ERROR] V126: task_work compatibility macro was not emitted")
           allowlist.write_text(s)
 
           # 2. sucompat.c: close the actual CONFIG_KSU_SUSFS branch. The pinned file
@@ -920,9 +921,9 @@ jobs:
           if old in s and "struct user_arg_ptr user_arg_null = { 0 };" not in s:
               s = s.replace(old, new, 1)
           if "CONFIG_KSU_SUSFS" in s and "ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, &user_arg_null, gfp)" not in s:
-              raise SystemExit("[ERROR] V125: SUSFS sulog pointer adaptation missing")
+              raise SystemExit("[ERROR] V126: SUSFS sulog pointer adaptation missing")
           sulog.write_text(s)
-          PY_V125_KSU_419
+          PY_V126_KSU_419
 
           # Correct the generated conditional boundary before the common init section.
           python3 -c 'from pathlib import Path; p=Path("drivers/kernelsu/feature/sucompat.c"); a=p.read_text().splitlines(); a=[x for i,x in enumerate(a) if not (i==len(a)-1 and x.lstrip().startswith(chr(35)+"endif"))]; i=next(i for i,x in enumerate(a) if x.strip()=="// dead code"); a.insert(i,chr(35)+"endif /* KSU_SUSFS */"); p.write_text("\n".join(a)+"\n")'
@@ -930,7 +931,7 @@ jobs:
           grep -q 'KSU_TASK_WORK_RESUME' "$KSU_ALLOWLIST"
           grep -q '#endif /\* KSU_SUSFS \*/' "$KSU_SUCOMPAT"
           grep -q 'struct user_arg_ptr user_arg_null' "$KSU_SULOG"
-          echo "[OK] V125: exact 4.19 task_work, SUSFS conditional, and sulog user_arg_ptr compatibility installed."
+          echo "[OK] V126: exact 4.19 task_work, SUSFS conditional, and sulog user_arg_ptr compatibility installed."
 
           {
             echo "baseline_enabled=$(wc -l < ../baseline-enabled-config.txt)"
@@ -1421,7 +1422,7 @@ jobs:
             exit 1
           fi
 
-          # V125 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
+          # V126 FIX — SukiSU/KPM source uses modern access_ok(addr, size),
           # while this 4.19 arm64 tree exposes access_ok(type, addr, size). Adapt only
           # KPM's validation calls; no KPM functionality is disabled.
           KPM_C="drivers/kernelsu/kpm/kpm.c"
@@ -1447,10 +1448,10 @@ jobs:
               s = s.replace(marker, marker + macro, 1)
           p.write_text(s)
           PY_KPM_ACCESS
-            echo "[FIX] V125: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
+            echo "[FIX] V126: adapted KPM access_ok() calls to the 4.19 arm64 ABI."
           fi
           if grep -nF 'access_ok(' "$KPM_C" | grep -v '#define KSU_ACCESS_OK' | grep -q .; then
-            echo "[ERROR] V125: unresolved direct access_ok(addr,size) calls remain in KPM."
+            echo "[ERROR] V126: unresolved direct access_ok(addr,size) calls remain in KPM."
             grep -nF 'access_ok(' "$KPM_C" || true
             exit 1
           fi
@@ -1601,7 +1602,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V125-LM-G900-KARNAL
+          kernel.string=V126-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1627,7 +1628,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V125-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V126-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1664,20 +1665,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V125 final output"
+      - name: "12. Upload V126 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V125-LM-G900-KARNAL-output
-          path: V125-LM-G900-KARNAL-output.zip
+          name: V126-LM-G900-KARNAL-output
+          path: V126-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V125 flashable ZIPs"
+      - name: "13. Upload V126 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V125-LM-G900-KARNAL-flashable-zips
+          name: V126-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1842,16 +1843,16 @@ jobs:
           rm -f "../${OUTPUT_PREFIX}-complete-logs.zip"
           (cd diagnostics && zip -qr "../${OUTPUT_PREFIX}-complete-logs.zip" .) || true
 
-          echo "::notice::V125 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
+          echo "::notice::V126 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V125 complete diagnostics (always)"
+      - name: "15. Upload V126 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V125-LM-G900-KARNAL-complete-logs
+          name: V126-LM-G900-KARNAL-complete-logs
           path: |
-            V125-LM-G900-KARNAL-complete-logs.zip
+            V126-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
