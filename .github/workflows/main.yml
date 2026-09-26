@@ -188,28 +188,41 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq bc bison build-essential ccache clang flex gcc-aarch64-linux-gnu git lld libssl-dev libelf-dev libncurses-dev python3 rsync unzip zip wget curl device-tree-compiler patch
           } > logs/02-apt.log 2>&1
-          # Primary: exact AOSP prebuilt at the pinned commit. Android's archive
-          # endpoint returned HTTP 503 in V116; do not change compiler generation.
+          # Toolchain is pinned to the exact AOSP git commit already recorded in
+          # CLANG_COMMIT. Do not substitute a newer compiler generation. The Gitiles
+          # archive is attempted first; if that endpoint is temporarily unavailable,
+          # retry the same immutable source with wget before using the audited mirror.
+          rm -f "/tmp/${CLANG_REV}.tar.gz"
           set +e
-          curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
+          curl -fL --connect-timeout 30 --max-time 900 --retry 8 --retry-delay 5 --retry-all-errors \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" \
             -o "/tmp/${CLANG_REV}.tar.gz" > logs/02-clang-download.log 2>&1
           CLANG_DL_RC=$?
           set -e
-          if [ "${CLANG_DL_RC}" -ne 0 ]; then
-            # Audited fallback for transient Google archive failures. This is the same
-            # clang-r563880c AOSP prebuilt, published from the AOSP source commit; verify
-            # the immutable release asset SHA-256 before extraction.
-            curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
+          if [ "${CLANG_DL_RC}" -ne 0 ] || [ ! -s "/tmp/${CLANG_REV}.tar.gz" ]; then
+            rm -f "/tmp/${CLANG_REV}.tar.gz"
+            set +e
+            wget -q --timeout=30 --tries=8 --waitretry=5 \
+              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_COMMIT}/${CLANG_REV}.tar.gz" \
+              -O "/tmp/${CLANG_REV}.tar.gz" > logs/02-clang-wget.log 2>&1
+            CLANG_WGET_RC=$?
+            set -e
+          else
+            CLANG_WGET_RC=0
+          fi
+          if [ "${CLANG_DL_RC}" -ne 0 ] && [ "${CLANG_WGET_RC}" -ne 0 ]; then
+            # Audited emergency mirror: this release publishes the same AOSP
+            # clang-r563880c archive and its immutable SHA-256 is checked before use.
+            rm -f "/tmp/${CLANG_REV}.tar.gz"
+            curl -fL --connect-timeout 30 --max-time 900 --retry 8 --retry-delay 5 --retry-all-errors \
               "https://github.com/SA9990/Toolchain/releases/download/clang-r563880c/clang-r563880c.tar.gz" \
               -o "/tmp/${CLANG_REV}.tar.gz" > logs/02-clang-fallback-download.log 2>&1
             printf '%s  %s\n' \
               "57b456636aa9c3f5e159bc1dd6eddd7c6de654281cad84376e408a5d35f91bab" \
               "/tmp/${CLANG_REV}.tar.gz" | sha256sum -c - > logs/02-clang-fallback-sha256.log 2>&1
-            echo "[OK] Official AOSP archive was unavailable; verified exact clang-r563880c fallback asset."
-          else
-            echo "[OK] Exact AOSP clang-r563880c archive downloaded from pinned commit."
+            echo "[OK] Verified audited clang-r563880c mirror asset."
           fi
+          test -s "/tmp/${CLANG_REV}.tar.gz"
           mkdir -p "clang-prebuilt/${CLANG_REV}"
           tar -xzf "/tmp/${CLANG_REV}.tar.gz" -C "clang-prebuilt/${CLANG_REV}" > logs/02-clang-extract.log 2>&1
           export CLANG_BIN="$GITHUB_WORKSPACE/clang-prebuilt/${CLANG_REV}/bin"
@@ -801,7 +814,7 @@ jobs:
           test ! -d "SukiSU-Ultra"
 
           # V118 — exact SukiSU Ultra v4.2.0 -> Linux 4.19.325 source compatibility.
-          # These are real compiler blockers observed in V117, not feature removals:
+          # These are real compiler blockers observed in V118, not feature removals:
           #   1) allowlist.c: legacy task_work_add() requires bool, but the compatibility
           #      macro was not emitted when task_work.h was transitively included.
           #   2) sucompat.c: the pinned source has an unclosed CONFIG_KSU_SUSFS branch.
