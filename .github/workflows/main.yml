@@ -1,4 +1,4 @@
-name: V130-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V131-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V130
-  OUTPUT_PREFIX: V130-LM-G900-KARNAL
+  WORKFLOW_VERSION: V131
+  OUTPUT_PREFIX: V131-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V130
+    name: Build V131
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1645,9 +1645,18 @@ jobs:
           fi
           echo "[INFO] dtbs diagnostic completed with rc=${DTBS_RC}; continuing to authoritative Image build."
 
-          echo "::group::[9/15b] Build Image"
+          echo "::group::[9/15b] Build Image — live file activity only"
           set +o pipefail
-          make "${MAKE_ARGS[@]}" -j"$(nproc)" V=1 Image 2>&1 | tee ../logs/09-image-build.log | awk '/(^|[[:space:]])(CC|HOSTCC|HOSTCXX|AS|LD|AR|OBJCOPY|OBJDUMP|STRIP|GEN|CHK|UPD|GZIP|MODPOST|DTC)[[:space:]]/ {print}'
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" Image 2>&1 | tee ../logs/09-image-build.log | awk '
+            {
+              line=\$0
+              if (line ~ /(^|[[:space:]])(CC|HOSTCC|HOSTCXX|AS|LD|AR|OBJCOPY|OBJDUMP|STRIP|GEN|CHK|UPD|GZIP|MODPOST|DTC)([[:space:]]|$)/) {
+                sub(/^[[:space:]]+/, "", line)
+                print "[LOAD] " line
+                fflush()
+              }
+            }
+          '
           IMAGE_PIPE_RC=${PIPESTATUS[0]}
           set -o pipefail
           echo "image_build_rc=${IMAGE_PIPE_RC}" | tee ../logs/09-image-build-rc.txt
@@ -1656,7 +1665,7 @@ jobs:
           file out/arch/arm64/boot/Image > ../logs/09-image-file.log 2>&1
           sha256sum out/arch/arm64/boot/Image > ../logs/09-image-sha256.log 2>&1
           echo "::endgroup::"
-          echo "[OK] Image build completed successfully."
+          echo "[OK] Image build completed successfully; full compiler output is stored in logs/09-image-build.log."
 
 
       - name: "10. Package AnyKernel3 and kernel.zip"
@@ -1700,7 +1709,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V130-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V131-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1741,8 +1750,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V130-LM-G900-KARNAL-output
-          path: V129-LM-G900-KARNAL-output.zip
+          name: V131-LM-G900-KARNAL-output
+          path: V131-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1750,7 +1759,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V130-LM-G900-KARNAL-flashable-zips
+          name: V131-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1924,7 +1933,7 @@ jobs:
         with:
           name: V130-LM-G900-KARNAL-complete-logs
           path: |
-            V130-LM-G900-KARNAL-complete-logs.zip
+            V131-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
