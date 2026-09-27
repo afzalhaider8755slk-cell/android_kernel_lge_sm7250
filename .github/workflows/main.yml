@@ -1,4 +1,4 @@
-name: V129-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V130-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V129
-  OUTPUT_PREFIX: V129-LM-G900-KARNAL
+  WORKFLOW_VERSION: V130
+  OUTPUT_PREFIX: V130-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V129
+    name: Build V130
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -950,7 +950,57 @@ jobs:
           if "#ifdef CONFIG_KSU_SUSFS" not in s:
               raise SystemExit("[ERROR] V129: CONFIG_KSU_SUSFS section missing")
           PY_V128_SUCOMPAT
-          
+
+          # V130: the pinned SukiSU sucompat.c carries its init/exit entrypoints
+          # immediately after a CONFIG_KSU_SUSFS conditional. In this 4.19 unity build,
+          # those lifecycle entrypoints must remain outside that feature conditional:
+          # kernelsu_init() calls ksu_sucompat_init() unconditionally, while the
+          # su_compat_handler itself is valid for both SUSFS and non-SUSFS paths.
+          # Move only the two lifecycle functions across the final SUSFS #endif; do not
+          # alter the sucompat hook implementations or disable any feature.
+          python3 - "$KSU_SUCOMPAT" <<'PY_V130_SUCOMPAT'
+          from pathlib import Path
+          import re, sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+
+          init_mark = "void __init ksu_sucompat_init(void)"
+          exit_mark = "void __exit ksu_sucompat_exit(void)"
+          close_mark = "#endif /* KSU_SUSFS */"
+
+          if init_mark not in s or exit_mark not in s:
+              raise SystemExit("[ERROR] V130: sucompat lifecycle entrypoints are missing")
+          if s.count(init_mark) != 1 or s.count(exit_mark) != 1:
+              raise SystemExit("[ERROR] V130: unexpected duplicate sucompat lifecycle entrypoints")
+          if not s.rstrip().endswith(close_mark):
+              raise SystemExit("[ERROR] V130: expected final CONFIG_KSU_SUSFS guard is missing")
+
+          init_pos = s.index(init_mark)
+          exit_pos = s.index(exit_mark, init_pos)
+          prefix = s[:init_pos].rstrip()
+          lifecycle = s[init_pos:].rstrip()
+
+          if not lifecycle.endswith(close_mark):
+              raise SystemExit("[ERROR] V130: lifecycle block is not followed by the expected SUSFS close")
+          lifecycle = lifecycle[:-len(close_mark)].rstrip()
+
+          # Preserve the exact function bodies; only change which side of the final
+          # CONFIG_KSU_SUSFS boundary they live on.
+          s = prefix + "\n\n" + close_mark + "\n\n" + lifecycle + "\n"
+          p.write_text(s)
+
+          # Structural proof: both public entrypoints are now after the SUSFS guard.
+          s = p.read_text()
+          close_pos = s.rfind(close_mark)
+          if close_pos < 0:
+              raise SystemExit("[ERROR] V130: final SUSFS guard close disappeared")
+          if s.find(init_mark) < close_pos or s.find(exit_mark) < close_pos:
+              raise SystemExit("[ERROR] V130: lifecycle entrypoints remain inside CONFIG_KSU_SUSFS")
+          if s.count(init_mark) != 1 or s.count(exit_mark) != 1:
+              raise SystemExit("[ERROR] V130: lifecycle entrypoint count changed")
+          PY_V130_SUCOMPAT
+
           grep -q 'KSU_TASK_WORK_RESUME' "$KSU_ALLOWLIST"
           grep -q 'struct user_arg_ptr user_arg_null' "$KSU_SULOG"
           echo "[OK] V129: exact 4.19 task_work, SUSFS conditional, and sulog user_arg_ptr compatibility installed."
@@ -1624,7 +1674,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V128-LM-G900-KARNAL
+          kernel.string=V130-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -1650,7 +1700,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V128-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V130-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -1687,20 +1737,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V129 final output"
+      - name: "12. Upload V130 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V129-LM-G900-KARNAL-output
+          name: V130-LM-G900-KARNAL-output
           path: V129-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V129 flashable ZIPs"
+      - name: "13. Upload V130 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V129-LM-G900-KARNAL-flashable-zips
+          name: V130-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1868,13 +1918,13 @@ jobs:
           echo "::notice::V129 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned SukiSU Ultra commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; legacy SUSFS 4.19 integration, source-version checks, exact conflict rejection, the Step-7 ERR-trap/subshell fix, the official SukiSU Ultra builtin source, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V128 complete diagnostics (always)"
+      - name: "15. Upload V130 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V129-LM-G900-KARNAL-complete-logs
+          name: V130-LM-G900-KARNAL-complete-logs
           path: |
-            V129-LM-G900-KARNAL-complete-logs.zip
+            V130-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
