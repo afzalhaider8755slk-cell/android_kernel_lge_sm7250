@@ -1,4 +1,4 @@
-name: V131-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V132-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V131
-  OUTPUT_PREFIX: V131-LM-G900-KARNAL
+  WORKFLOW_VERSION: V132
+  OUTPUT_PREFIX: V132-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V131
+    name: Build V132
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -1649,7 +1649,7 @@ jobs:
           set +o pipefail
           make "${MAKE_ARGS[@]}" -j"$(nproc)" Image 2>&1 | tee ../logs/09-image-build.log | awk '
             {
-              line=\$0
+              line=$0
               if (line ~ /(^|[[:space:]])(CC|HOSTCC|HOSTCXX|AS|LD|AR|OBJCOPY|OBJDUMP|STRIP|GEN|CHK|UPD|GZIP|MODPOST|DTC)([[:space:]]|$)/) {
                 sub(/^[[:space:]]+/, "", line)
                 print "[LOAD] " line
@@ -1750,8 +1750,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V131-LM-G900-KARNAL-output
-          path: V131-LM-G900-KARNAL-output.zip
+          name: V132-LM-G900-KARNAL-output
+          path: V132-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1759,7 +1759,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V131-LM-G900-KARNAL-flashable-zips
+          name: V132-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1933,7 +1933,7 @@ jobs:
         with:
           name: V130-LM-G900-KARNAL-complete-logs
           path: |
-            V131-LM-G900-KARNAL-complete-logs.zip
+            V132-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
