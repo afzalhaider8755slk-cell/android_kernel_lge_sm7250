@@ -1,4 +1,4 @@
-name: V99-LM-G900-KARNAL-BUILT
+name: V1-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
@@ -80,8 +80,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V99
-  OUTPUT_PREFIX: V99-LM-G900-KARNAL
+  WORKFLOW_VERSION: V1
+  OUTPUT_PREFIX: V1-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official KernelSU-Next legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -191,7 +191,7 @@ env:
 
 jobs:
   build:
-    name: Build V99
+    name: Build V1
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -3565,7 +3565,7 @@ jobs:
           cat > work-anykernel/anykernel.sh <<'AK3'
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=V99-LM-G900-KARNAL
+          kernel.string=V1-LM-G900-KARNAL
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -3591,7 +3591,7 @@ jobs:
           rm -rf release/kernel-payload
           {
             echo "workflow=${WORKFLOW_VERSION}"
-            echo "workflow_name=V99-LM-G900-KARNAL-BUILT"
+            echo "workflow_name=V1-LM-G900-KARNAL-BUILT"
             echo "kernel_version=${BASELINE_KERNEL_VERSION}"
             echo "source_commit=$(git -C kernel rev-parse HEAD)"
             echo "cip_baseline=${BASELINE_CIP}"
@@ -3629,20 +3629,20 @@ jobs:
           echo "[OK] Final artifacts verified"
           echo "::endgroup::"
 
-      - name: "12. Upload V99 final output"
+      - name: "12. Upload V1 final output"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V99-LM-G900-KARNAL-output
-          path: V99-LM-G900-KARNAL-output.zip
+          name: V1-LM-G900-KARNAL-output
+          path: V1-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: "13. Upload V99 flashable ZIPs"
+      - name: "13. Upload V1 flashable ZIPs"
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V99-LM-G900-KARNAL-flashable-zips
+          name: V1-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -3810,13 +3810,13 @@ jobs:
           echo "::notice::V99 diagnostics collected; V82 adds 4.19 ksys mount bridges, DT duplicate-label reconciliation, and the prior seccomp_filter_release() compat (see Step 9); V42 selinux_hide.c compatibility guard and keep-going full build; V41 SELinux-header generation before the KernelSU pre-compile, dispatch.c sched-header includes, supercall.c task_work compat, DTC duplicate-label diagnostics; V40 pinned KernelSU-Next commit, seccomp_cache no-op compat, whole-KernelSU keep-going pre-compile, Image-only build with DTB diagnostic (Step 9b) and error summary are enabled; SUSFS acquisition retries, source-version consistency checks, safe 3-way fallback, exact four-file source reconciliation, the Step-7 ERR-trap/subshell fix, the pershoot/KernelSU-Next official legacy driver plus KSU_SUSFS Kconfig compatibility, the TARGET_KERNEL_CONFIG cross-step export fix, and artifact naming fixes are enabled."
           echo "::endgroup::"
 
-      - name: "15. Upload V99 complete diagnostics (always)"
+      - name: "15. Upload V1 complete diagnostics (always)"
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: V99-LM-G900-KARNAL-complete-logs
+          name: V1-LM-G900-KARNAL-complete-logs
           path: |
-            V99-LM-G900-KARNAL-complete-logs.zip
+            V1-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
