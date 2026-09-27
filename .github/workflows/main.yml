@@ -1,4 +1,4 @@
-name: V132-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
+name: V133-LM-G900-KARNAL-SUKISU-SUSFS-BUILT
 
 on:
   push:
@@ -42,8 +42,8 @@ env:
 
   CLANG_REV: clang-r563880c
   CLANG_COMMIT: f8439f0628d799092dd07df440a6334cab28939c
-  WORKFLOW_VERSION: V132
-  OUTPUT_PREFIX: V132-LM-G900-KARNAL
+  WORKFLOW_VERSION: V133
+  OUTPUT_PREFIX: V133-LM-G900-KARNAL
   # Historical integration notes are retained for auditability; active KSU source is
   # the official SukiSU Ultra legacy branch configured above.
   # 2) pin the SUSFS backport source to the audited commit
@@ -153,7 +153,7 @@ env:
 
 jobs:
   build:
-    name: Build V132
+    name: Build V133
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -617,6 +617,7 @@ jobs:
           if "updated_command_line" not in s: raise SystemExit("[ERROR] updated_command_line was removed")
           if "lge_get_boot_mode" not in s: raise SystemExit("[ERROR] charger-logo behavior was removed")
           if "susfs_spoof_cmdline_or_bootconfig(m);" not in s: raise SystemExit("[ERROR] SUSFS cmdline hook missing")
+          if "susfs_is_fake_cmdline_or_bootconfig_buffer_set" not in s: raise SystemExit("[ERROR] SUSFS cmdline static-key declaration missing")
           p.write_text(s)
           PY
 
@@ -632,6 +633,8 @@ jobs:
           test -s fs/susfs.c
           test -s include/linux/susfs.h
           test -s include/linux/susfs_def.h
+          grep -q 'susfs_spoof_cmdline_or_bootconfig(m);' fs/proc/cmdline.c
+          grep -q 'susfs_is_fake_cmdline_or_bootconfig_buffer_set' fs/proc/cmdline.c
           grep -q 'susfs_add_sus_path_loop' include/linux/susfs.h
           grep -q 'susfs_set_hide_sus_mnts_for_non_su_procs' include/linux/susfs.h
           grep -q 'susfs_enable_log' include/linux/susfs.h
@@ -817,12 +820,50 @@ jobs:
 
           make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/08-defconfig.log 2>&1
 
-          ./scripts/config --file out/.config --enable KSU --enable KSU_MANUAL_HOOK --enable KSU_SUSFS --enable KPM
-          grep -q '^CONFIG_KALLSYMS=y$' out/.config
-          grep -q '^CONFIG_KALLSYMS_ALL=y$' out/.config
+          # Explicitly enable every SukiSU Ultra v4.2.0 feature that is compatible with
+          # this ARM64 non-GKI 4.19.325 kernel. Do not rely on Kconfig defaults: this makes
+          # the feature contract auditable and guarantees these remain =y after olddefconfig.
+          ./scripts/config --file out/.config \
+            --enable KSU \
+            --enable KSU_MANUAL_HOOK \
+            --enable KSU_FEATURE_ADBROOT \
+            --enable KPM \
+            --enable KSU_SUSFS \
+            --enable KSU_SUSFS_SUS_PATH \
+            --enable KSU_SUSFS_SUS_MOUNT \
+            --enable KSU_SUSFS_SUS_KSTAT \
+            --enable KSU_SUSFS_SPOOF_UNAME \
+            --enable KSU_SUSFS_ENABLE_LOG \
+            --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            --enable KSU_SUSFS_OPEN_REDIRECT \
+            --enable KSU_SUSFS_SUS_MAP \
+            --enable KALLSYMS \
+            --enable KALLSYMS_ALL
+
           make O=out olddefconfig > ../logs/08-olddefconfig.log 2>&1
 
-          for sym in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_SUSFS CONFIG_KPM CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL; do
+          # These are the complete v4.2.0 SukiSU/SUSFS feature symbols exposed by the
+          # pinned Kconfig and applicable to this 64-bit legacy 4.19 build. KSU_DEBUG is
+          # intentionally NOT forced on: it is a debug facility, not a compatibility
+          # requirement, and the upstream default is n.
+          for sym in \
+            CONFIG_KSU \
+            CONFIG_KSU_MANUAL_HOOK \
+            CONFIG_KSU_FEATURE_ADBROOT \
+            CONFIG_KPM \
+            CONFIG_KSU_SUSFS \
+            CONFIG_KSU_SUSFS_SUS_PATH \
+            CONFIG_KSU_SUSFS_SUS_MOUNT \
+            CONFIG_KSU_SUSFS_SUS_KSTAT \
+            CONFIG_KSU_SUSFS_SPOOF_UNAME \
+            CONFIG_KSU_SUSFS_ENABLE_LOG \
+            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+            CONFIG_KSU_SUSFS_SUS_MAP \
+            CONFIG_KALLSYMS \
+            CONFIG_KALLSYMS_ALL; do
             grep -q "^${sym}=y$" out/.config || {
               echo "[ERROR] Required SukiSU generated config missing: ${sym}=y" | tee ../logs/08-generated-config-contract-failure.log
               exit 1
@@ -1750,8 +1791,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V132-LM-G900-KARNAL-output
-          path: V132-LM-G900-KARNAL-output.zip
+          name: V133-LM-G900-KARNAL-output
+          path: V133-LM-G900-KARNAL-output.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -1759,7 +1800,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: V132-LM-G900-KARNAL-flashable-zips
+          name: V133-LM-G900-KARNAL-flashable-zips
           path: |
             release/AnyKernel3-OrangeFox-Flashable.zip
             release/kernel.zip
@@ -1933,7 +1974,7 @@ jobs:
         with:
           name: V130-LM-G900-KARNAL-complete-logs
           path: |
-            V132-LM-G900-KARNAL-complete-logs.zip
+            V133-LM-G900-KARNAL-complete-logs.zip
             diagnostics/
             logs/
             baseline-info.txt
