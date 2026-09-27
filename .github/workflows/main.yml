@@ -1879,6 +1879,7 @@ jobs:
           from pathlib import Path
           import re
           import subprocess
+          import os
 
           kernel = Path("kernel")
           ksu = kernel / "KernelSU-Next/kernel"
