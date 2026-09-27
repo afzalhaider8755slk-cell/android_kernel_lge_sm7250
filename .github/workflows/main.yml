@@ -2,6 +2,10 @@ name: V99-LM-G900-KARNAL-BUILT
 
 on:
   workflow_dispatch:
+  # V99-RF1: retain manual dispatch and rebuild automatically on production branch changes.
+  push:
+    branches:
+      - sixteen
 
 permissions:
   contents: read
@@ -42,6 +46,8 @@ env:
   KSU_REPO_OWNER: KernelSU-Next
   KSU_REPO: KernelSU-Next
   KSU_REF: legacy
+  # V99-RF1: immutable legacy driver source for the validated 4.19 ABI.
+  KSU_COMMIT: dd074bc6c4b33ca4cdf7da05838c71a26ebd6a66
   # V82 adds only the KSU_SUSFS Kconfig namespace to the legacy driver so the
   # existing SUSFS 2.3 backport/inline-hook layer remains enabled. No SUSFS source,
   # CIP, DT, packaging, or unrelated kernel feature is removed.
@@ -491,6 +497,10 @@ jobs:
 
           git clone --branch "${KSU_REF}" --single-branch \
             "https://github.com/${KSU_REPO_OWNER}/${KSU_REPO}" KernelSU-Next
+          git -C KernelSU-Next fetch --no-tags origin "${KSU_COMMIT}"
+          git -C KernelSU-Next checkout --detach "${KSU_COMMIT}"
+          test "$(git -C KernelSU-Next rev-parse HEAD)" = "${KSU_COMMIT}"
+          echo "[OK] KernelSU-Next legacy source pinned to ${KSU_COMMIT}"
 
           # V81 SOURCE-LEVEL FIX — The legacy UAPI already contains the modern
           # ksu_get_info_cmd.uapi_version field, but it defines KERNEL_SU_UAPI_VERSION
@@ -870,6 +880,7 @@ jobs:
           from pathlib import Path
           import re
           import subprocess
+          import os
 
           root = Path("KernelSU-Next/kernel")
           runtime = root / "runtime/ksud_integration.c"
@@ -1831,6 +1842,21 @@ jobs:
           cp "susfs-backport/${INLINE_SCRIPT}" logs/07-susfs-inline-hook-patches.sh
           chmod +x logs/07-susfs-inline-hook-patches.sh
           (cd kernel && bash ../logs/07-susfs-inline-hook-patches.sh) 2>&1 | tee logs/07-susfs-inline-hooks.log
+          # V99-RF2: align the SUSFS 2.3.0 legacy SELinux exception with
+          # KernelSU-Next's actual root domain. The helper still carries the
+          # older u:r:su:s0 spelling; this tree uses u:r:ksu:s0.
+          if grep -q 'ksu_sid' kernel/security/selinux/hooks.c 2>/dev/null && \
+             grep -q 'u:r:su:s0' kernel/security/selinux/hooks.c 2>/dev/null; then
+            sed -i 's/u:r:su:s0/u:r:ksu:s0/g' kernel/security/selinux/hooks.c
+            echo "[FIX] V99-RF2: SELinux transition exception aligned to u:r:ksu:s0"
+          fi
+          if grep -q 'ksu_sid' kernel/security/selinux/hooks.c 2>/dev/null && \
+             grep -q 'u:r:su:s0' kernel/security/selinux/hooks.c 2>/dev/null; then
+            echo "[ERROR] V99-RF2: stale u:r:su:s0 remains in KernelSU SELinux compatibility code"
+            exit 1
+          fi
+          echo "[OK] V99-RF2: SELinux compatibility context audit complete."
+
 
           # ------------------------------------------------------------------
           # V99-R12: reconcile the pinned legacy KernelSU ABI AFTER the external
@@ -1853,13 +1879,14 @@ jobs:
           from pathlib import Path
           import re
           import subprocess
+          import os
 
           kernel = Path("kernel")
           ksu = kernel / "KernelSU-Next/kernel"
           sucompat_c = ksu / "feature/sucompat.c"
           sucompat_h = ksu / "feature/sucompat.h"
 
-          EXPECTED_KSU = "dd074bc6c4b33ca4cdf7da05838c71a26ebd6a66"
+          EXPECTED_KSU = os.environ["KSU_COMMIT"]
           ksu_repo = kernel / "KernelSU-Next"
           if not ksu_repo.is_dir():
               raise SystemExit(
@@ -2414,6 +2441,8 @@ jobs:
 
           {
             echo "=== V99 PRE-BUILD SOURCE AUDIT ==="
+            echo "ksu_commit_expected=${KSU_COMMIT}"
+            echo "ksu_commit_resolved=$(git -C KernelSU-Next rev-parse HEAD)"
             echo "kernel_commit=$(git rev-parse HEAD)"
             echo "ksu_commit=$(git -C KernelSU-Next rev-parse HEAD)"
             echo "ksu_describe=$(git -C KernelSU-Next describe --tags 2>/dev/null || true)"
@@ -2435,7 +2464,13 @@ jobs:
           make O=out "${TARGET_KERNEL_CONFIG}" > ../logs/08-defconfig.log 2>&1
           grep -RqsE "^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)" drivers/kernelsu fs include || { echo "[ERROR] KSU_SUSFS Kconfig symbol is missing after SUSFS + inline-hook integration."; exit 1; }
           ./scripts/config --file out/.config --enable KSU --enable KSU_SUSFS --enable KSU_MANUAL_HOOK
+          # SUS_SU is intentionally disabled for this manual/inline-hook 4.19 port.
+          ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_SU || true
           grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' out/.config
+          if grep -q '^CONFIG_KSU_KPROBES_HOOK=y$' out/.config; then
+            echo "[ERROR] KernelSU kprobe hook mode is enabled alongside manual hooks."
+            exit 1
+          fi
           # V84: the driver-mode flag is only valid if the actual non-GKI manual hooks
           # already installed by the V82 SUSFS 2.3 inline-hook stage are present.
           for hook in             fs/exec.c fs/open.c fs/read_write.c fs/stat.c             drivers/input/input.c kernel/reboot.c kernel/sys.c; do
@@ -2540,6 +2575,40 @@ jobs:
             } > include/linux/minmax.h
             echo "[FIX] Added missing include/linux/minmax.h compatibility header for KernelSU-Next"
           fi
+          # V99-RF3: FBE boot-flow fix for ksud services. Modern Android FBE
+          # devices may not fire the legacy nonencrypted/vold.decrypt triggers.
+          # Preserve those triggers and add zygote-start so module services
+          # cannot be skipped after a successful post-fs-data stage.
+          KSU_KSUD_RC="KernelSU-Next/kernel/runtime/ksud_integration.c"
+          test -f "$KSU_KSUD_RC"
+          python3 - "$KSU_KSUD_RC" <<'PY_FBE_RC'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text()
+          marker='\t"on property:vold.decrypt=trigger_restart_framework\\n"\n\t"    exec u:r:" KERNEL_SU_DOMAIN ":s0 root -- " KSUD_PATH " services\\n"\n\t"\\n"\n'
+          if '"on zygote-start\\n"' not in s:
+              if marker not in s:
+                  raise SystemExit('[ERROR] V99-RF3: KERNEL_SU_RC service trigger anchor missing')
+              addition=marker+'\t"on zygote-start\\n"\n\t"    exec u:r:" KERNEL_SU_DOMAIN ":s0 root -- " KSUD_PATH " services\\n"\n\t"\\n"\n'
+              s=s.replace(marker, addition, 1)
+              p.write_text(s)
+              print('[FIX] V99-RF3: added on zygote-start -> ksud services')
+          if '"on zygote-start\\n"' not in p.read_text():
+              raise SystemExit('[ERROR] V99-RF3: zygote-start trigger was not installed')
+          print('[OK] V99-RF3: FBE-safe ksud services trigger present')
+          PY_FBE_RC
+
+          # V99-RF4: runtime source contracts for the exact failure seen on the
+          # LG 4.19.325 device. Keep the live legacy policydb path and KSU
+          # domain/file creation; do not replace them with newer SELinux APIs.
+          grep -q 'void apply_kernelsu_rules()' KernelSU-Next/kernel/selinux/rules.c
+          grep -q 'ksu_type(db, KERNEL_SU_DOMAIN, "domain")' KernelSU-Next/kernel/selinux/rules.c
+          grep -q 'ksu_type(db, KERNEL_SU_FILE, "file_type")' KernelSU-Next/kernel/selinux/rules.c
+          grep -q 'apply_kernelsu_rules();' KernelSU-Next/kernel/runtime/ksud_integration.c
+          grep -q 'KERNEL_SU_DOMAIN ":s0 root -- " KSUD_PATH " services' KernelSU-Next/kernel/runtime/ksud_integration.c
+          echo "[OK] V99-RF4: SELinux + ksud runtime source contracts verified."
+
           # V84 FIX — do NOT rewrite KernelSU-Next file_wrapper.c by line number.
           # The official legacy source already gates iopoll behind >= 6.1 and
           # remap_file_range behind >= 4.20. On this 4.19.325 kernel those
@@ -3528,6 +3597,7 @@ jobs:
             echo "cip_baseline=${BASELINE_CIP}"
             echo "cip_target=${CIP_TARGET}"
             echo "kernelsu_next=${KSU_VERSION}"
+            echo "kernelsu_legacy_commit=${KSU_COMMIT}"
             echo "susfs_version=${SUSFS_VERSION}"
             echo "susfs_backport_repo=${SUSFS_BACKPORT_REPO}"
             echo "susfs_backport_ref=${SUSFS_BACKPORT_REF}"
